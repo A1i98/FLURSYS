@@ -1,0 +1,34 @@
+[package]
+name = "flursys"
+version = "0.1.0"
+edition = "2021"
+authors = ["A1i98 and contributors"]
+description = "Rust-native scientific simulation system"
+license = "MIT"
+repository = "https://github.com/A1i98/flursys"
+keywords = [
+  "cfd",
+  "finite-volume",
+  "navier-stokes",
+  "pde",
+  "rust",
+  "scientific-computing",
+]
+categories = ["science", "simulation"]
+default-run = "flursys"
+
+[lib]
+name = "flursys"
+path = "src/lib.rs"
+
+[[bin]]
+name = "flursys"
+path = "src/bin/flursys.rs"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+panic = "abort"
+
+[dependencies]
+rayon = "1"
