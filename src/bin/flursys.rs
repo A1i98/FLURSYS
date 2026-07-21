@@ -1,5 +1,8 @@
 use flursys::cases::{BackwardStepCase, CavityCase, CylinderCase};
-use flursys::{Case, ConvectionScheme, IncompressibleSolver, PressureSolverKind, SimulationConfig};
+use flursys::{
+    Case, ConvectionScheme, IncompressibleSolver, PressureSolverKind, PressureVelocityCoupling,
+    SimulationConfig,
+};
 use std::collections::HashMap;
 use std::env;
 use std::path::PathBuf;
@@ -161,6 +164,15 @@ fn common_config(
         "sor" => PressureSolverKind::Sor,
         other => return Err(format!("Unknown pressure solver '{other}'")),
     };
+    let coupling = match options
+        .get("coupling")
+        .map(String::as_str)
+        .unwrap_or("projection")
+    {
+        "projection" | "transient" => PressureVelocityCoupling::Projection,
+        "simple" | "steady-simple" => PressureVelocityCoupling::Simple,
+        other => return Err(format!("Unknown pressure-velocity coupling '{other}'")),
+    };
 
     Ok(SimulationConfig {
         case,
@@ -170,10 +182,13 @@ fn common_config(
         t_end: value(options, "t-end", defaults.t_end)?,
         max_steps: value(options, "max-steps", defaults.max_steps)?,
         convection,
+        coupling,
         pressure_solver,
         pressure_max_iters: value(options, "pressure-iters", 1200_usize)?,
         pressure_tolerance: value(options, "pressure-tol", 1.0e-5_f64)?,
         pressure_omega: value(options, "pressure-omega", 1.7_f64)?,
+        velocity_relaxation: value(options, "velocity-relax", 0.7_f64)?,
+        pressure_relaxation: value(options, "pressure-relax", 0.3_f64)?,
         print_every: value(options, "print-every", 100_usize)?,
         output_every: value(options, "output-every", 100_usize)?,
         frame_every: value(options, "frame-every", 500_usize)?,
@@ -244,8 +259,10 @@ fn print_case_help(case: &str) {
     println!("  --nx N --ny N");
     println!("  --dt DT --t-end T --max-steps N");
     println!("  --convection upwind|central");
+    println!("  --coupling projection|simple");
     println!("  --pressure-solver pcg|sor");
     println!("  --pressure-iters N --pressure-tol EPS --pressure-omega W");
+    println!("  --velocity-relax A --pressure-relax A (SIMPLE only)");
     println!("  --print-every N --output-every N --frame-every N");
     println!("  --steady-tol EPS --minimum-steps N");
     println!("  --threads N (0 = automatic CPU worker count)");

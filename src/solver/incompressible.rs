@@ -21,6 +21,15 @@ pub enum PressureSolverKind {
     Sor,
 }
 
+/// Pressure-velocity coupling strategy for incompressible flow.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PressureVelocityCoupling {
+    /// Transient fractional-step projection method.
+    Projection,
+    /// Steady, segregated SIMPLE-style iterations with pseudo-time momentum updates.
+    Simple,
+}
+
 #[derive(Clone, Debug)]
 pub struct SimulationConfig {
     pub case: Case,
@@ -30,10 +39,15 @@ pub struct SimulationConfig {
     pub max_steps: usize,
     pub t_end: f64,
     pub convection: ConvectionScheme,
+    pub coupling: PressureVelocityCoupling,
     pub pressure_solver: PressureSolverKind,
     pub pressure_max_iters: usize,
     pub pressure_tolerance: f64,
     pub pressure_omega: f64,
+    /// SIMPLE momentum under-relaxation. Ignored by the projection method.
+    pub velocity_relaxation: f64,
+    /// SIMPLE pressure under-relaxation. Ignored by the projection method.
+    pub pressure_relaxation: f64,
     pub print_every: usize,
     pub output_every: usize,
     pub frame_every: usize,
@@ -49,8 +63,14 @@ impl SimulationConfig {
         if self.nx < 4 || self.ny < 4 {
             return Err("nx and ny must be at least 4".to_string());
         }
-        if !(self.dt > 0.0 && self.t_end > 0.0) {
-            return Err("dt and t_end must be positive".to_string());
+        if !self.dt.is_finite() || self.dt <= 0.0 {
+            return Err("dt must be finite and positive".to_string());
+        }
+        if !self.t_end.is_finite() || self.t_end < 0.0 {
+            return Err("t_end must be finite and non-negative".to_string());
+        }
+        if self.coupling == PressureVelocityCoupling::Projection && self.t_end == 0.0 {
+            return Err("t_end must be positive for projection coupling".to_string());
         }
         if self.max_steps == 0 {
             return Err("max_steps must be positive".to_string());
@@ -58,13 +78,42 @@ impl SimulationConfig {
         if self.pressure_max_iters == 0 {
             return Err("pressure_max_iters must be positive".to_string());
         }
-        if !(0.0 < self.pressure_omega && self.pressure_omega < 2.0) {
+        if !self.pressure_omega.is_finite()
+            || self.pressure_omega <= 0.0
+            || self.pressure_omega >= 2.0
+        {
             return Err("pressure_omega must lie between 0 and 2".to_string());
+        }
+        if !self.velocity_relaxation.is_finite()
+            || self.velocity_relaxation <= 0.0
+            || self.velocity_relaxation > 1.0
+        {
+            return Err("velocity_relaxation must lie between 0 (exclusive) and 1".to_string());
+        }
+        if !self.pressure_relaxation.is_finite()
+            || self.pressure_relaxation <= 0.0
+            || self.pressure_relaxation > 1.0
+        {
+            return Err("pressure_relaxation must lie between 0 (exclusive) and 1".to_string());
+        }
+        if !self.steady_tolerance.is_finite() || self.steady_tolerance <= 0.0 {
+            return Err("steady_tolerance must be finite and positive".to_string());
+        }
+        if !self.fluid_properties_are_valid() {
+            return Err(
+                "fluid density and kinematic viscosity must be finite and positive".to_string(),
+            );
         }
         if self.print_every == 0 || self.output_every == 0 || self.frame_every == 0 {
             return Err("Output intervals must be positive".to_string());
         }
         Ok(())
+    }
+
+    fn fluid_properties_are_valid(&self) -> bool {
+        let density = self.case.density();
+        let viscosity = self.case.kinematic_viscosity();
+        density.is_finite() && density > 0.0 && viscosity.is_finite() && viscosity > 0.0
     }
 }
 
@@ -167,15 +216,31 @@ impl IncompressibleSolver {
             "Grid: {} x {}, dx={:.6}, dy={:.6}",
             self.grid.nx, self.grid.ny, self.grid.dx, self.grid.dy
         );
-        println!(
-            "rho={:.6}, nu={:.6}, dt={:.6}, max_steps={}, t_end={:.6}",
-            self.cfg.case.density(),
-            self.cfg.case.kinematic_viscosity(),
-            self.cfg.dt,
-            self.cfg.max_steps,
-            self.cfg.t_end
-        );
+        match self.cfg.coupling {
+            PressureVelocityCoupling::Projection => println!(
+                "rho={:.6}, nu={:.6}, dt={:.6}, max_steps={}, t_end={:.6}",
+                self.cfg.case.density(),
+                self.cfg.case.kinematic_viscosity(),
+                self.cfg.dt,
+                self.cfg.max_steps,
+                self.cfg.t_end
+            ),
+            PressureVelocityCoupling::Simple => println!(
+                "rho={:.6}, nu={:.6}, pseudo_dt={:.6}, max_iterations={}",
+                self.cfg.case.density(),
+                self.cfg.case.kinematic_viscosity(),
+                self.cfg.dt,
+                self.cfg.max_steps
+            ),
+        }
         println!("CPU worker threads: {}", self.pool.current_num_threads());
+        match self.cfg.coupling {
+            PressureVelocityCoupling::Projection => println!("Coupling: transient projection"),
+            PressureVelocityCoupling::Simple => println!(
+                "Coupling: steady SIMPLE-style, velocity relaxation={:.3}, pressure relaxation={:.3}",
+                self.cfg.velocity_relaxation, self.cfg.pressure_relaxation
+            ),
+        }
         match self.cfg.pressure_solver {
             PressureSolverKind::Pcg => println!(
                 "Pressure: PCG + Jacobi preconditioner, tol={:.3e}, max_iters={}",
@@ -194,22 +259,32 @@ impl IncompressibleSolver {
             );
         }
 
-        while self.step < self.cfg.max_steps && self.time < self.cfg.t_end {
+        while self.step < self.cfg.max_steps
+            && (self.cfg.coupling == PressureVelocityCoupling::Simple || self.time < self.cfg.t_end)
+        {
             let diag = self.advance_one_step()?;
             self.last_diag = diag;
 
-            if self.step % self.cfg.output_every == 0 {
+            if self.step.is_multiple_of(self.cfg.output_every) {
                 self.append_histories(diag)?;
             }
-            if self.step % self.cfg.frame_every == 0 {
+            if self.step.is_multiple_of(self.cfg.frame_every) {
                 self.write_snapshot()?;
             }
-            if self.step % self.cfg.print_every == 0 {
+            if self.step.is_multiple_of(self.cfg.print_every) {
+                let progress = match self.cfg.coupling {
+                    PressureVelocityCoupling::Projection => {
+                        format!(
+                            "step {:>8}/{:<8} t={:>10.4}",
+                            self.step, self.cfg.max_steps, self.time
+                        )
+                    }
+                    PressureVelocityCoupling::Simple => {
+                        format!("iteration {:>8}/{:<8}", self.step, self.cfg.max_steps)
+                    }
+                };
                 println!(
-                    "step {:>8}/{:<8} t={:>10.4} div={:.3e} p_res={:.3e} p_it={:>4} du={:.3e} umax={:.5} Cd={:.5} Cl={:.5} xr/h={:.5} elapsed={:.1}s",
-                    self.step,
-                    self.cfg.max_steps,
-                    self.time,
+                    "{progress} div={:.3e} p_res={:.3e} p_it={:>4} du={:.3e} umax={:.5} Cd={:.5} Cl={:.5} xr/h={:.5} elapsed={:.1}s",
                     diag.max_divergence,
                     diag.pressure_residual,
                     diag.pressure_iterations,
@@ -282,7 +357,8 @@ impl IncompressibleSolver {
         let old_u = self.u.clone();
         let old_v = self.v.clone();
 
-        self.predict_momentum();
+        let simple = self.cfg.coupling == PressureVelocityCoupling::Simple;
+        self.predict_momentum(simple);
         apply_velocity_boundaries(
             &self.cfg.case,
             &self.grid,
@@ -291,9 +367,29 @@ impl IncompressibleSolver {
             &mut self.u_star,
             &mut self.v_star,
         );
+        let old_pressure = simple.then(|| self.p.clone());
+        if simple {
+            // During SIMPLE the Poisson solve is for p', not the absolute pressure.
+            self.p.fill(0.0);
+        }
         self.build_pressure_rhs();
         let (pressure_residual, pressure_iterations) = self.solve_pressure_poisson()?;
-        self.correct_velocity();
+        self.correct_velocity(if simple {
+            self.cfg.velocity_relaxation
+        } else {
+            1.0
+        });
+        if let Some(old_pressure) = old_pressure {
+            let pressure_relaxation = self.cfg.pressure_relaxation;
+            for (pressure, correction) in self
+                .p
+                .as_mut_slice()
+                .iter_mut()
+                .zip(old_pressure.as_slice())
+            {
+                *pressure = *correction + pressure_relaxation * *pressure;
+            }
+        }
         apply_velocity_boundaries(
             &self.cfg.case,
             &self.grid,
@@ -327,7 +423,7 @@ impl IncompressibleSolver {
         })
     }
 
-    fn predict_momentum(&mut self) {
+    fn predict_momentum(&mut self, include_pressure_gradient: bool) {
         self.u_star.fill(0.0);
         self.v_star.fill(0.0);
         let Self {
@@ -335,6 +431,7 @@ impl IncompressibleSolver {
             cfg,
             grid,
             solid,
+            p,
             u,
             v,
             u_star,
@@ -350,6 +447,13 @@ impl IncompressibleSolver {
         let convection_scheme = cfg.convection;
         let u_values = u.as_slice();
         let v_values = v.as_slice();
+        let p_values = p.as_slice();
+        let rho = cfg.case.density();
+        let velocity_relaxation = if include_pressure_gradient {
+            cfg.velocity_relaxation
+        } else {
+            1.0
+        };
         let stencil = MomentumStencil {
             solid,
             case: &cfg.case,
@@ -387,7 +491,15 @@ impl IncompressibleSolver {
                             (ue * phi_e - uw * phi_w) / dx + (vn * phi_n - vs * phi_s) / dy;
                         let diffusion = (ue_nb - 2.0 * up + uw_nb) / (dx * dx)
                             + (un_nb - 2.0 * up + us_nb) / (dy * dy);
-                        row[i] = up + dt * (-convection + nu * diffusion);
+                        let pressure_gradient = if include_pressure_gradient {
+                            (p_values[i + nx * j] - p_values[i - 1 + nx * j]) / dx
+                        } else {
+                            0.0
+                        };
+                        row[i] = up
+                            + velocity_relaxation
+                                * dt
+                                * (-convection + nu * diffusion - pressure_gradient / rho);
                     }
                 });
 
@@ -426,7 +538,15 @@ impl IncompressibleSolver {
                             (ue * phi_e - uw * phi_w) / dx + (vn * phi_n - vs * phi_s) / dy;
                         let diffusion = (ve_nb - 2.0 * vp + vw_nb) / (dx * dx)
                             + (vn_nb - 2.0 * vp + vs_nb) / (dy * dy);
-                        row[i] = vp + dt * (-convection + nu * diffusion);
+                        let pressure_gradient = if include_pressure_gradient {
+                            (p_values[i + nx * j] - p_values[i + nx * (j - 1)]) / dy
+                        } else {
+                            0.0
+                        };
+                        row[i] = vp
+                            + velocity_relaxation
+                                * dt
+                                * (-convection + nu * diffusion - pressure_gradient / rho);
                     }
                 });
         });
@@ -444,7 +564,12 @@ impl IncompressibleSolver {
             ..
         } = self;
         let nx = grid.nx;
-        let rho_over_dt = cfg.case.density() / cfg.dt;
+        let correction_scale = if cfg.coupling == PressureVelocityCoupling::Simple {
+            cfg.velocity_relaxation
+        } else {
+            1.0
+        };
+        let rho_over_dt = cfg.case.density() / (correction_scale * cfg.dt);
         let u_values = u_star.as_slice();
         let v_values = v_star.as_slice();
         pool.install(|| {
@@ -792,8 +917,8 @@ impl IncompressibleSolver {
         })
     }
 
-    fn correct_velocity(&mut self) {
-        let dt_over_rho = self.cfg.dt / self.cfg.case.density();
+    fn correct_velocity(&mut self, correction_scale: f64) {
+        let dt_over_rho = correction_scale * self.cfg.dt / self.cfg.case.density();
         self.u
             .as_mut_slice()
             .copy_from_slice(self.u_star.as_slice());
@@ -1145,10 +1270,12 @@ impl IncompressibleSolver {
             self.cfg.case.name(),
             &self.grid,
             &self.solid,
-            &self.p,
-            &self.u_cell,
-            &self.v_cell,
-            &self.vorticity,
+            output::VtkFields {
+                pressure: &self.p,
+                u: &self.u_cell,
+                v: &self.v_cell,
+                vorticity: &self.vorticity,
+            },
         )?;
         self.write_case_specific_profiles()?;
         Ok(())
@@ -1236,7 +1363,8 @@ impl IncompressibleSolver {
         writeln!(w, "Case: {}", self.cfg.case.name()).map_err(|e| e.to_string())?;
         writeln!(
             w,
-            "Method: finite volume, staggered grid, projection method"
+            "Method: finite volume, staggered grid, {:?}",
+            self.cfg.coupling
         )
         .map_err(|e| e.to_string())?;
         writeln!(w, "Grid: {} x {}", self.grid.nx, self.grid.ny).map_err(|e| e.to_string())?;
@@ -1246,13 +1374,26 @@ impl IncompressibleSolver {
         writeln!(w, "dy: {}", self.grid.dy).map_err(|e| e.to_string())?;
         writeln!(w, "rho: {}", self.cfg.case.density()).map_err(|e| e.to_string())?;
         writeln!(w, "nu: {}", self.cfg.case.kinematic_viscosity()).map_err(|e| e.to_string())?;
-        writeln!(w, "dt: {}", self.cfg.dt).map_err(|e| e.to_string())?;
-        writeln!(w, "t_end: {}", self.cfg.t_end).map_err(|e| e.to_string())?;
-        writeln!(w, "max_steps: {}", self.cfg.max_steps).map_err(|e| e.to_string())?;
+        match self.cfg.coupling {
+            PressureVelocityCoupling::Projection => {
+                writeln!(w, "dt: {}", self.cfg.dt).map_err(|e| e.to_string())?;
+                writeln!(w, "t_end: {}", self.cfg.t_end).map_err(|e| e.to_string())?;
+                writeln!(w, "max_steps: {}", self.cfg.max_steps).map_err(|e| e.to_string())?;
+            }
+            PressureVelocityCoupling::Simple => {
+                writeln!(w, "pseudo_dt: {}", self.cfg.dt).map_err(|e| e.to_string())?;
+                writeln!(w, "max_iterations: {}", self.cfg.max_steps).map_err(|e| e.to_string())?;
+            }
+        }
         writeln!(w, "cpu_threads: {}", self.pool.current_num_threads())
             .map_err(|e| e.to_string())?;
         writeln!(w, "convection: {:?}", self.cfg.convection).map_err(|e| e.to_string())?;
+        writeln!(w, "coupling: {:?}", self.cfg.coupling).map_err(|e| e.to_string())?;
         writeln!(w, "pressure_solver: {:?}", self.cfg.pressure_solver)
+            .map_err(|e| e.to_string())?;
+        writeln!(w, "velocity_relaxation: {}", self.cfg.velocity_relaxation)
+            .map_err(|e| e.to_string())?;
+        writeln!(w, "pressure_relaxation: {}", self.cfg.pressure_relaxation)
             .map_err(|e| e.to_string())?;
         Ok(())
     }
@@ -1567,10 +1708,13 @@ mod tests {
             max_steps: 2,
             t_end: 0.002,
             convection: ConvectionScheme::FirstOrderUpwind,
+            coupling: PressureVelocityCoupling::Projection,
             pressure_solver: PressureSolverKind::Pcg,
             pressure_max_iters: 10,
             pressure_tolerance: 1.0e-4,
             pressure_omega: 1.5,
+            velocity_relaxation: 0.7,
+            pressure_relaxation: 0.3,
             print_every: 1,
             output_every: 1,
             frame_every: 1,

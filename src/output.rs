@@ -4,6 +4,13 @@ use std::fs::{create_dir_all, File, OpenOptions};
 use std::io::{BufWriter, Write};
 use std::path::Path;
 
+pub struct VtkFields<'a> {
+    pub pressure: &'a Field2D,
+    pub u: &'a Field2D,
+    pub v: &'a Field2D,
+    pub vorticity: &'a Field2D,
+}
+
 pub fn ensure_output_tree(root: &Path) -> Result<(), String> {
     create_dir_all(root).map_err(|e| format!("Cannot create {}: {e}", root.display()))?;
     create_dir_all(root.join("frames"))
@@ -49,10 +56,7 @@ pub fn write_legacy_vtk(
     title: &str,
     grid: &UniformGrid2D,
     solid: &Mask2D,
-    p: &Field2D,
-    u: &Field2D,
-    v: &Field2D,
-    vorticity: &Field2D,
+    fields: VtkFields<'_>,
 ) -> Result<(), String> {
     let file = File::create(path).map_err(|e| format!("Cannot create {}: {e}", path.display()))?;
     let mut w = BufWriter::new(file);
@@ -67,20 +71,20 @@ pub fn write_legacy_vtk(
 
     writeln!(w, "SCALARS pressure double 1").map_err(io_err)?;
     writeln!(w, "LOOKUP_TABLE default").map_err(io_err)?;
-    write_scalar_field(&mut w, p)?;
+    write_scalar_field(&mut w, fields.pressure)?;
 
     writeln!(w, "SCALARS speed double 1").map_err(io_err)?;
     writeln!(w, "LOOKUP_TABLE default").map_err(io_err)?;
     for j in 0..grid.ny {
         for i in 0..grid.nx {
-            let speed = (u[(i, j)].powi(2) + v[(i, j)].powi(2)).sqrt();
+            let speed = (fields.u[(i, j)].powi(2) + fields.v[(i, j)].powi(2)).sqrt();
             writeln!(w, "{speed:.12e}").map_err(io_err)?;
         }
     }
 
     writeln!(w, "SCALARS vorticity double 1").map_err(io_err)?;
     writeln!(w, "LOOKUP_TABLE default").map_err(io_err)?;
-    write_scalar_field(&mut w, vorticity)?;
+    write_scalar_field(&mut w, fields.vorticity)?;
 
     writeln!(w, "SCALARS solid int 1").map_err(io_err)?;
     writeln!(w, "LOOKUP_TABLE default").map_err(io_err)?;
@@ -93,7 +97,7 @@ pub fn write_legacy_vtk(
     writeln!(w, "VECTORS velocity double").map_err(io_err)?;
     for j in 0..grid.ny {
         for i in 0..grid.nx {
-            writeln!(w, "{:.12e} {:.12e} 0", u[(i, j)], v[(i, j)]).map_err(io_err)?;
+            writeln!(w, "{:.12e} {:.12e} 0", fields.u[(i, j)], fields.v[(i, j)]).map_err(io_err)?;
         }
     }
     Ok(())
@@ -147,11 +151,14 @@ pub fn write_ppm_frame(
             }
         }
     }
-    if symmetric {
+    if !min_v.is_finite() || !max_v.is_finite() {
+        min_v = 0.0;
+        max_v = 1.0;
+    } else if symmetric {
         let bound = min_v.abs().max(max_v.abs()).max(1.0e-14);
         min_v = -bound;
         max_v = bound;
-    } else if !(max_v > min_v) {
+    } else if max_v <= min_v {
         max_v = min_v + 1.0;
     }
 

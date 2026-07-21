@@ -20,10 +20,12 @@ cargo test
 ```bash
 cargo run --release --bin flursys -- list
 cargo run --release --bin flursys -- cavity --threads 4
+cargo run --release --bin flursys -- cavity --coupling simple --max-steps 10000
 ```
 
 Available cases include a lid-driven cavity, cylinder flow, and backward-facing step. Results are
-written to the selected output directory in CSV, VTK, and PPM formats.
+written to the selected output directory in CSV, VTK, and PPM formats. The current solver supports
+transient projection and a steady SIMPLE-style coupling for laminar incompressible flow.
 
 ## License
 

@@ -12,5 +12,6 @@ pub mod solver;
 
 pub use cases::{Case, CaseKind};
 pub use solver::{
-    ConvectionScheme, IncompressibleSolver, PressureSolverKind, RunSummary, SimulationConfig,
+    ConvectionScheme, IncompressibleSolver, PressureSolverKind, PressureVelocityCoupling,
+    RunSummary, SimulationConfig,
 };
