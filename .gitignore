@@ -19,7 +19,7 @@ Thumbs.db
 /.codex/
 /.vscode/
 
-/README.md
+!README.md
 /docs/
 /CONTRIBUTING.md
 /CHANGELOG.md
