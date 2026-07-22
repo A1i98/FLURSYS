@@ -16,7 +16,8 @@ pub mod solver;
 pub use cases::{Case, CaseKind};
 pub use preprocess::{
     BoundaryCondition, BoundaryConditionKind, BoundaryFace, GeometryDimension, GeometryModel,
-    MeshSettings, MeshTopology, PreprocessingModel, SolverBoundaryOverrides,
+    GeometryPart, GeometryPartKind, MeshSettings, MeshTopology, PreprocessingModel,
+    SolverBoundaryOverrides,
 };
 pub use project::{Project, ProjectCase, ProjectCoupling, ProjectPressureSolver, ProjectSolver};
 pub use solver::{

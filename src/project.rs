@@ -420,6 +420,7 @@ fn default_preprocessing(_case: &ProjectCase) -> PreprocessingModel {
 mod tests {
     use super::*;
     use crate::cases::{BoundaryKind, Side};
+    use crate::{GeometryPart, GeometryPartKind};
 
     #[test]
     fn default_project_converts_to_a_valid_simulation() {
@@ -489,5 +490,48 @@ mod tests {
         project.ensure_preprocessing_defaults();
         project.validate().unwrap();
         assert_eq!(project.preprocessing.boundaries.len(), 6);
+    }
+
+    #[test]
+    fn parametric_geometry_parts_round_trip_with_a_project() {
+        let mut project = Project::default();
+        project.preprocessing.geometry.parts.push(GeometryPart {
+            name: "inlet-block".to_string(),
+            kind: GeometryPartKind::Box {
+                length: 2.0,
+                width: 1.0,
+                height: 0.5,
+            },
+            x: 1.0,
+            y: 0.0,
+            z: 0.25,
+        });
+        let json = serde_json::to_string(&project).unwrap();
+        let restored: Project = serde_json::from_str(&json).unwrap();
+        restored.validate().unwrap();
+        assert_eq!(restored.preprocessing.geometry.parts.len(), 1);
+        assert!(matches!(
+            restored.preprocessing.geometry.parts[0].kind,
+            GeometryPartKind::Box { .. }
+        ));
+    }
+
+    #[test]
+    fn geometry_part_names_must_be_unique() {
+        let part = GeometryPart {
+            name: "shared-name".to_string(),
+            kind: GeometryPartKind::Cylinder {
+                radius: 0.5,
+                height: 1.0,
+                segments: 32,
+            },
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
+        let mut project = Project::default();
+        project.preprocessing.geometry.parts.push(part.clone());
+        project.preprocessing.geometry.parts.push(part);
+        assert!(project.validate().unwrap_err().contains("not unique"));
     }
 }

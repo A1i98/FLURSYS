@@ -23,6 +23,10 @@ pub struct GeometryModel {
     /// not claim that the 2D solver has become a 3D numerical solver.
     pub dimension: GeometryDimension,
     pub extrusion_depth: f64,
+    /// Parametric solid primitives authored in the Geometry workbench.
+    /// They are project data now and will become mesh inputs when the solver
+    /// gains arbitrary 3D geometry support.
+    pub parts: Vec<GeometryPart>,
 }
 
 impl Default for GeometryModel {
@@ -30,8 +34,99 @@ impl Default for GeometryModel {
         Self {
             dimension: GeometryDimension::ExtrudedThreeD,
             extrusion_depth: 0.25,
+            parts: Vec::new(),
         }
     }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "kebab-case")]
+pub enum GeometryPartKind {
+    Box {
+        length: f64,
+        width: f64,
+        height: f64,
+    },
+    Cylinder {
+        radius: f64,
+        height: f64,
+        #[serde(default = "default_cylinder_segments")]
+        segments: usize,
+    },
+}
+
+impl GeometryPartKind {
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Box { .. } => "Box",
+            Self::Cylinder { .. } => "Cylinder",
+        }
+    }
+
+    fn validate(&self) -> Result<(), String> {
+        match self {
+            Self::Box {
+                length,
+                width,
+                height,
+            } if positive(*length) && positive(*width) && positive(*height) => Ok(()),
+            Self::Cylinder {
+                radius,
+                height,
+                segments,
+            } if positive(*radius) && positive(*height) && *segments >= 8 => Ok(()),
+            Self::Box { .. } => Err("box dimensions must be finite and positive".to_string()),
+            Self::Cylinder { .. } => Err(
+                "cylinder radius/height must be finite and positive and segments must be at least 8"
+                    .to_string(),
+            ),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct GeometryPart {
+    pub name: String,
+    #[serde(flatten)]
+    pub kind: GeometryPartKind,
+    /// Position of the primitive centre in model units.
+    pub x: f64,
+    pub y: f64,
+    pub z: f64,
+}
+
+impl GeometryPart {
+    pub fn summary(&self) -> String {
+        format!(
+            "{} · {} · ({:.3}, {:.3}, {:.3})",
+            self.name,
+            self.kind.label(),
+            self.x,
+            self.y,
+            self.z
+        )
+    }
+
+    fn validate(&self) -> Result<(), String> {
+        if self.name.trim().is_empty() {
+            return Err("geometry part name cannot be empty".to_string());
+        }
+        if !self.x.is_finite() || !self.y.is_finite() || !self.z.is_finite() {
+            return Err(format!(
+                "geometry part {} has a non-finite position",
+                self.name
+            ));
+        }
+        self.kind.validate()
+    }
+}
+
+fn default_cylinder_segments() -> usize {
+    32
+}
+
+fn positive(value: f64) -> bool {
+    value.is_finite() && value > 0.0
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -169,6 +264,18 @@ impl PreprocessingModel {
     pub fn validate(&self) -> Result<(), String> {
         if !self.geometry.extrusion_depth.is_finite() || self.geometry.extrusion_depth <= 0.0 {
             return Err("geometry extrusion_depth must be finite and positive".to_string());
+        }
+        if self.geometry.parts.len() > 128 {
+            return Err("geometry contains more than 128 parts".to_string());
+        }
+        for (index, part) in self.geometry.parts.iter().enumerate() {
+            part.validate()?;
+            if self.geometry.parts[..index]
+                .iter()
+                .any(|existing| existing.name == part.name)
+            {
+                return Err(format!("geometry part name {} is not unique", part.name));
+            }
         }
         if self.mesh.cells_z == 0 {
             return Err("mesh cells_z must be positive".to_string());

@@ -26,7 +26,8 @@
   "preprocessing": {
     "geometry": {
       "dimension": "extruded-three-d",
-      "extrusion_depth": 0.25
+      "extrusion_depth": 0.25,
+      "parts": []
     },
     "mesh": {
       "topology": "structured",

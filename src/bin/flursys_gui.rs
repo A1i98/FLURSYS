@@ -1,8 +1,8 @@
 use flursys::cases::{BackwardStepCase, CavityCase, CylinderCase};
 use flursys::runtime::{SolverCommand, SolverController, SolverState, SolverUpdate};
 use flursys::{
-    BoundaryConditionKind, BoundaryFace, FieldUpdate, Project, ProjectCase, ProjectCoupling,
-    ProjectPressureSolver,
+    BoundaryConditionKind, BoundaryFace, FieldUpdate, GeometryPart, GeometryPartKind, Project,
+    ProjectCase, ProjectCoupling, ProjectPressureSolver,
 };
 use slint::{
     ComponentHandle, Image, Rgba8Pixel, SharedPixelBuffer, SharedString, Timer, TimerMode,
@@ -75,6 +75,15 @@ slint::slint! {
 
         in-out property <int> current-step: 0;
         in-out property <int> case-index: 0;
+        in-out property <int> part-kind-index: 0;
+        in-out property <string> part-name: "Part 1";
+        in-out property <string> part-size-x: "1.0";
+        in-out property <string> part-size-y: "1.0";
+        in-out property <string> part-size-z: "1.0";
+        in-out property <string> part-pos-x: "0.0";
+        in-out property <string> part-pos-y: "0.0";
+        in-out property <string> part-pos-z: "0.0";
+        in-out property <string> geometry-parts-summary: "No custom solids in this project.";
         in-out property <string> status: "Idle";
         in-out property <string> project-path: "case.flursys.json";
         in-out property <string> project-name: "Lid-driven cavity";
@@ -109,7 +118,7 @@ slint::slint! {
         callback load-project(); callback save-project(); callback show-mesh(); callback show-field();
         callback animation-play-pause(); callback animation-next(); callback show-geometry-3d();
         callback rotate-geometry-3d(); callback apply-boundary(); callback select-step(int);
-        callback select-case();
+        callback select-case(); callback add-part(); callback remove-last-part();
 
         VerticalLayout {
             spacing: 0px;
@@ -169,7 +178,7 @@ slint::slint! {
                             HorizontalLayout {
                                 spacing: 16px;
                                 Card {
-                                    width: 390px;
+                                    width: 300px;
                                     VerticalLayout {
                                         padding: 18px; spacing: 10px;
                                         Text { text: "CASE LIBRARY"; color: rgb(240, 195, 109); font-size: 11px; font-weight: 700; }
@@ -185,11 +194,39 @@ slint::slint! {
                                     }
                                 }
                                 Card {
+                                    width: 355px;
+                                    VerticalLayout {
+                                        padding: 18px; spacing: 8px;
+                                        Text { text: "3D PART DESIGNER"; color: rgb(240, 195, 109); font-size: 11px; font-weight: 700; }
+                                        Text { text: "Create parametric solids"; color: rgb(226, 237, 245); font-size: 16px; font-weight: 700; }
+                                        ComboBox { model: ["Box", "Cylinder"]; current-index <=> root.part-kind-index; }
+                                        Text { text: "Part name"; color: rgb(140, 167, 185); font-size: 11px; }
+                                        LineEdit { text <=> root.part-name; }
+                                        Text { text: "Dimensions  (X / Y / Z; cylinder uses radius / radius / height)"; color: rgb(140, 167, 185); font-size: 10px; }
+                                        HorizontalLayout {
+                                            LineEdit { text <=> root.part-size-x; }
+                                            LineEdit { text <=> root.part-size-y; }
+                                            LineEdit { text <=> root.part-size-z; }
+                                        }
+                                        Text { text: "Centre position  (X / Y / Z)"; color: rgb(140, 167, 185); font-size: 10px; }
+                                        HorizontalLayout {
+                                            LineEdit { text <=> root.part-pos-x; }
+                                            LineEdit { text <=> root.part-pos-y; }
+                                            LineEdit { text <=> root.part-pos-z; }
+                                        }
+                                        HorizontalLayout {
+                                            Button { text: "ADD SOLID"; clicked => { root.add-part(); } }
+                                            Button { text: "REMOVE LAST"; clicked => { root.remove-last-part(); } }
+                                        }
+                                        Text { text: root.geometry-parts-summary; color: rgb(126, 153, 170); font-size: 10px; wrap: word-wrap; vertical-stretch: 1; }
+                                    }
+                                }
+                                Card {
                                     horizontal-stretch: 1;
                                     VerticalLayout {
                                         padding: 18px; spacing: 10px;
                                         Text { text: "GEOMETRY PREVIEW"; color: rgb(240, 195, 109); font-size: 11px; font-weight: 700; }
-                                        Text { text: root.case-name; color: rgb(229, 239, 246); font-size: 17px; font-weight: 700; }
+                                        Text { text: root.case-name + " · " + root.geometry-parts-summary; color: rgb(229, 239, 246); font-size: 13px; font-weight: 700; wrap: word-wrap; }
                                         Rectangle { vertical-stretch: 1; background: rgb(9, 16, 22); border-color: rgb(40, 66, 82); border-width: 1px; Image { source: root.visualization-image; width: parent.width; height: parent.height; image-fit: contain; } }
                                         HorizontalLayout { Button { text: "3D PREVIEW"; clicked => { root.show-geometry-3d(); } } Button { text: "ROTATE"; clicked => { root.rotate-geometry-3d(); } } }
                                     }
@@ -480,6 +517,44 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
         state.animation_playing = false;
         state.log(format!("Geometry selected: {selected_case}."));
         write_project_to_ui(&ui, &state.project);
+        refresh_ui(&ui, &state);
+    });
+
+    let weak_ui = ui.as_weak();
+    let parts_state = state.clone();
+    ui.on_add_part(move || {
+        let Some(ui) = weak_ui.upgrade() else {
+            return;
+        };
+        let mut state = parts_state.borrow_mut();
+        sync_project_from_ui(&ui, &mut state.project);
+        match geometry_part_from_ui(&ui) {
+            Ok(part) if state.project.preprocessing.geometry.parts.len() < 128 => {
+                state.log(format!("Added 3D solid: {}.", part.name));
+                state.project.preprocessing.geometry.parts.push(part);
+                state.show_geometry_3d = true;
+                state.show_mesh = false;
+            }
+            Ok(_) => state.log("A project can contain at most 128 geometry parts."),
+            Err(error) => state.log(error),
+        }
+        refresh_ui(&ui, &state);
+    });
+
+    let weak_ui = ui.as_weak();
+    let parts_state = state.clone();
+    ui.on_remove_last_part(move || {
+        let Some(ui) = weak_ui.upgrade() else {
+            return;
+        };
+        let mut state = parts_state.borrow_mut();
+        if let Some(part) = state.project.preprocessing.geometry.parts.pop() {
+            state.log(format!("Removed 3D solid: {}.", part.name));
+        } else {
+            state.log("There is no custom 3D solid to remove.");
+        }
+        state.show_geometry_3d = true;
+        state.show_mesh = false;
         refresh_ui(&ui, &state);
     });
 
@@ -779,7 +854,71 @@ fn write_project_to_ui(ui: &MainWindow, project: &Project) {
         project.preprocessing.geometry.extrusion_depth
     )));
     ui.set_mesh_nz(project.preprocessing.mesh.cells_z as i32);
+    ui.set_geometry_parts_summary(SharedString::from(geometry_parts_summary(project)));
+    ui.set_part_name(SharedString::from(format!(
+        "Part {}",
+        project.preprocessing.geometry.parts.len() + 1
+    )));
     write_boundary_to_ui(ui, project, BoundaryFace::Left);
+}
+
+fn geometry_part_from_ui(ui: &MainWindow) -> Result<GeometryPart, String> {
+    let name = ui.get_part_name().trim().to_string();
+    if name.is_empty() {
+        return Err("3D part name cannot be empty".to_string());
+    }
+    let x_size = parse_positive(ui.get_part_size_x().as_str(), "X/radius")?;
+    let y_size = parse_positive(ui.get_part_size_y().as_str(), "Y")?;
+    let z_size = parse_positive(ui.get_part_size_z().as_str(), "Z/height")?;
+    let x = parse_finite(ui.get_part_pos_x().as_str(), "position X")?;
+    let y = parse_finite(ui.get_part_pos_y().as_str(), "position Y")?;
+    let z = parse_finite(ui.get_part_pos_z().as_str(), "position Z")?;
+    let kind = if ui.get_part_kind_index() == 1 {
+        GeometryPartKind::Cylinder {
+            radius: x_size,
+            height: z_size,
+            segments: 32,
+        }
+    } else {
+        GeometryPartKind::Box {
+            length: x_size,
+            width: y_size,
+            height: z_size,
+        }
+    };
+    Ok(GeometryPart {
+        name,
+        kind,
+        x,
+        y,
+        z,
+    })
+}
+
+fn parse_positive(value: &str, label: &str) -> Result<f64, String> {
+    let value = parse_finite(value, label)?;
+    if value > 0.0 {
+        Ok(value)
+    } else {
+        Err(format!("{label} must be positive"))
+    }
+}
+
+fn parse_finite(value: &str, label: &str) -> Result<f64, String> {
+    value
+        .parse::<f64>()
+        .ok()
+        .filter(|value| value.is_finite())
+        .ok_or_else(|| format!("{label} must be a finite number"))
+}
+
+fn geometry_parts_summary(project: &Project) -> String {
+    let parts = &project.preprocessing.geometry.parts;
+    match parts.len() {
+        0 => "No custom solids in this project.".to_string(),
+        1 => format!("1 solid: {}", parts[0].summary()),
+        count => format!("{count} solids · latest: {}", parts[count - 1].summary()),
+    }
 }
 
 fn project_case_from_index(index: i32) -> ProjectCase {
@@ -837,6 +976,7 @@ fn boundary_face_index(face: BoundaryFace) -> i32 {
 }
 
 fn refresh_ui(ui: &MainWindow, state: &AppState) {
+    ui.set_geometry_parts_summary(SharedString::from(geometry_parts_summary(&state.project)));
     let update = state.last_update.as_ref();
     let solver_state = update.map_or(SolverState::Idle, |update| update.state);
     ui.set_status(SharedString::from(format!("{:?}", solver_state)));
@@ -1059,40 +1199,201 @@ fn render_geometry_3d(project: &Project, rotation: f32) -> Image {
         [205, 115, 175, 255],
     );
 
-    match &project.case {
-        ProjectCase::Cylinder { .. } => draw_ellipse(
-            &mut pixels,
-            width,
-            height,
-            (front_left + 105, (front_top + front_bottom) / 2),
-            24,
-            24,
-            [240, 195, 109, 255],
-        ),
-        ProjectCase::BackwardFacingStep { .. } => {
-            let x = front_left + 90;
-            let y = front_bottom - 55;
-            draw_line(
+    if project.preprocessing.geometry.parts.is_empty() {
+        match &project.case {
+            ProjectCase::Cylinder { .. } => draw_ellipse(
                 &mut pixels,
                 width,
                 height,
-                (front_left, y),
-                (x, y),
+                (front_left + 105, (front_top + front_bottom) / 2),
+                24,
+                24,
                 [240, 195, 109, 255],
-            );
-            draw_line(
-                &mut pixels,
-                width,
-                height,
-                (x, y),
-                (x, front_bottom),
-                [240, 195, 109, 255],
-            );
+            ),
+            ProjectCase::BackwardFacingStep { .. } => {
+                let x = front_left + 90;
+                let y = front_bottom - 55;
+                draw_line(
+                    &mut pixels,
+                    width,
+                    height,
+                    (front_left, y),
+                    (x, y),
+                    [240, 195, 109, 255],
+                );
+                draw_line(
+                    &mut pixels,
+                    width,
+                    height,
+                    (x, y),
+                    (x, front_bottom),
+                    [240, 195, 109, 255],
+                );
+            }
+            ProjectCase::LidDrivenCavity { .. } => {}
         }
-        ProjectCase::LidDrivenCavity { .. } => {}
+    } else {
+        let scale = geometry_scene_scale(&project.preprocessing.geometry.parts);
+        for (index, part) in project.preprocessing.geometry.parts.iter().enumerate() {
+            let color = part_color(index);
+            match &part.kind {
+                GeometryPartKind::Box {
+                    length,
+                    width,
+                    height,
+                } => draw_part_box(
+                    &mut pixels,
+                    PREVIEW_WIDTH,
+                    PREVIEW_HEIGHT,
+                    part,
+                    *length,
+                    *width,
+                    *height,
+                    rotation,
+                    scale,
+                    color,
+                ),
+                GeometryPartKind::Cylinder { radius, height, .. } => draw_part_cylinder(
+                    &mut pixels,
+                    PREVIEW_WIDTH,
+                    PREVIEW_HEIGHT,
+                    part,
+                    *radius,
+                    *height,
+                    rotation,
+                    scale,
+                    color,
+                ),
+            }
+        }
     }
 
     image_from_rgba(width, height, pixels)
+}
+
+fn geometry_scene_scale(parts: &[GeometryPart]) -> f64 {
+    let extent = parts.iter().fold(1.0_f64, |extent, part| {
+        let size = match &part.kind {
+            GeometryPartKind::Box {
+                length,
+                width,
+                height,
+            } => 0.5 * length.max(*width).max(*height),
+            GeometryPartKind::Cylinder { radius, height, .. } => radius.max(0.5 * height),
+        };
+        extent
+            .max(part.x.abs() + size)
+            .max(part.y.abs() + size)
+            .max(part.z.abs() + size)
+    });
+    (110.0 / extent).clamp(16.0, 72.0)
+}
+
+fn part_color(index: usize) -> [u8; 4] {
+    const COLORS: [[u8; 4]; 5] = [
+        [77, 168, 184, 255],
+        [240, 195, 109, 255],
+        [116, 189, 135, 255],
+        [205, 115, 175, 255],
+        [134, 147, 241, 255],
+    ];
+    COLORS[index % COLORS.len()]
+}
+
+fn scene_point(x: f64, y: f64, z: f64, rotation: f32, scale: f64) -> (i32, i32) {
+    let angle = f64::from(rotation) + 0.75;
+    let horizontal = x * angle.cos() - y * angle.sin();
+    let depth = x * angle.sin() + y * angle.cos();
+    (
+        (260.0 + horizontal * scale) as i32,
+        (218.0 - z * scale - depth * scale * 0.36) as i32,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_part_box(
+    pixels: &mut [u8],
+    image_width: u32,
+    image_height: u32,
+    part: &GeometryPart,
+    length: f64,
+    width: f64,
+    height: f64,
+    rotation: f32,
+    scale: f64,
+    color: [u8; 4],
+) {
+    let hx = 0.5 * length;
+    let hy = 0.5 * width;
+    let hz = 0.5 * height;
+    let corners = [
+        (-hx, -hy, -hz),
+        (hx, -hy, -hz),
+        (hx, hy, -hz),
+        (-hx, hy, -hz),
+        (-hx, -hy, hz),
+        (hx, -hy, hz),
+        (hx, hy, hz),
+        (-hx, hy, hz),
+    ]
+    .map(|(x, y, z)| scene_point(part.x + x, part.y + y, part.z + z, rotation, scale));
+    for (from, to) in [
+        (0, 1),
+        (1, 2),
+        (2, 3),
+        (3, 0),
+        (4, 5),
+        (5, 6),
+        (6, 7),
+        (7, 4),
+        (0, 4),
+        (1, 5),
+        (2, 6),
+        (3, 7),
+    ] {
+        draw_line(
+            pixels,
+            image_width,
+            image_height,
+            corners[from],
+            corners[to],
+            color,
+        );
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_part_cylinder(
+    pixels: &mut [u8],
+    image_width: u32,
+    image_height: u32,
+    part: &GeometryPart,
+    radius: f64,
+    height: f64,
+    rotation: f32,
+    scale: f64,
+    color: [u8; 4],
+) {
+    let mut previous_bottom = None;
+    let mut previous_top = None;
+    for step in 0..=32 {
+        let angle = step as f64 * std::f64::consts::TAU / 32.0;
+        let x = part.x + radius * angle.cos();
+        let y = part.y + radius * angle.sin();
+        let bottom = scene_point(x, y, part.z - 0.5 * height, rotation, scale);
+        let top = scene_point(x, y, part.z + 0.5 * height, rotation, scale);
+        if let Some(previous) = previous_bottom {
+            draw_line(pixels, image_width, image_height, previous, bottom, color);
+        }
+        if let Some(previous) = previous_top {
+            draw_line(pixels, image_width, image_height, previous, top, color);
+        }
+        if step % 8 == 0 {
+            draw_line(pixels, image_width, image_height, bottom, top, color);
+        }
+        previous_bottom = Some(bottom);
+        previous_top = Some(top);
+    }
 }
 
 fn draw_ellipse(
@@ -1310,5 +1611,22 @@ mod tests {
     #[test]
     fn geometry_preview_accepts_a_project_mesh() {
         let _image = render_geometry_3d(&Project::default(), 0.0);
+    }
+
+    #[test]
+    fn geometry_preview_renders_parametric_parts() {
+        let mut project = Project::default();
+        project.preprocessing.geometry.parts.push(GeometryPart {
+            name: "test-cylinder".to_string(),
+            kind: GeometryPartKind::Cylinder {
+                radius: 0.5,
+                height: 1.0,
+                segments: 32,
+            },
+            x: 0.0,
+            y: 0.0,
+            z: 0.5,
+        });
+        let _image = render_geometry_3d(&project, 0.35);
     }
 }
