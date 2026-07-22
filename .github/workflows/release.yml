@@ -1,0 +1,66 @@
+name: FLURSYS release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: linux-x86_64
+            archive: tar.gz
+          - os: macos-latest
+            target: macos
+            archive: tar.gz
+          - os: windows-latest
+            target: windows-x86_64
+            archive: zip
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build CLI and desktop workbench
+        run: cargo build --locked --release --bin flursys --bin flursys-gui --features gui
+      - name: Package Unix binaries
+        if: matrix.archive == 'tar.gz'
+        run: |
+          mkdir -p dist
+          tar -C target/release -czf "dist/flursys-${{ github.ref_name }}-${{ matrix.target }}.tar.gz" flursys flursys-gui
+          sha256sum dist/* > "dist/flursys-${{ matrix.target }}-checksums.txt"
+      - name: Package Windows binaries
+        if: matrix.archive == 'zip'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Compress-Archive -Path target/release/flursys.exe,target/release/flursys-gui.exe -DestinationPath "dist/flursys-${{ github.ref_name }}-${{ matrix.target }}.zip"
+          Get-FileHash -Algorithm SHA256 dist/* | ForEach-Object { "{0}  {1}" -f $_.Hash.ToLower(), $_.Path } | Set-Content "dist/flursys-${{ matrix.target }}-checksums.txt"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: flursys-${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+
+  publish:
+    name: Publish GitHub release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          make_latest: ${{ contains(github.ref_name, '-') && 'false' || 'true' }}
+          files: dist/*
