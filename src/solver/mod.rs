@@ -1,6 +1,6 @@
 mod incompressible;
 
 pub use incompressible::{
-    ConvectionScheme, IncompressibleSolver, PressureSolverKind, PressureVelocityCoupling,
-    RunSummary, SimulationConfig,
+    ConvectionScheme, FieldUpdate, IncompressibleSolver, PressureSolverKind,
+    PressureVelocityCoupling, RunSummary, SimulationConfig, SolverStep,
 };

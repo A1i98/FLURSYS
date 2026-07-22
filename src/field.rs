@@ -107,6 +107,10 @@ impl Mask2D {
     pub fn ny(&self) -> usize {
         self.ny
     }
+
+    pub fn as_slice(&self) -> &[bool] {
+        &self.data
+    }
 }
 
 impl Index<(usize, usize)> for Mask2D {

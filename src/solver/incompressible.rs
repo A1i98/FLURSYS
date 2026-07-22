@@ -128,6 +128,31 @@ pub struct RunSummary {
     pub converged: bool,
 }
 
+/// Diagnostics and an optional field snapshot produced after one solver iteration.
+#[derive(Clone, Debug)]
+pub struct SolverStep {
+    pub iteration: usize,
+    pub time: f64,
+    pub continuity_residual: f64,
+    pub pressure_residual: f64,
+    pub pressure_iterations: usize,
+    pub momentum_residual: f64,
+    pub max_speed: f64,
+    pub drag_coefficient: f64,
+    pub lift_coefficient: f64,
+    pub converged: bool,
+}
+
+/// Cell-centred fields suitable for a UI preview or remote observer.
+#[derive(Clone, Debug)]
+pub struct FieldUpdate {
+    pub nx: usize,
+    pub ny: usize,
+    pub pressure: Vec<f64>,
+    pub speed: Vec<f64>,
+    pub solid: Vec<bool>,
+}
+
 #[derive(Clone, Copy, Debug, Default)]
 struct Diagnostics {
     pressure_residual: f64,
@@ -318,6 +343,41 @@ impl IncompressibleSolver {
             elapsed: started.elapsed(),
             converged,
         })
+    }
+
+    /// Advance the numerical state by one iteration without performing file output.
+    ///
+    /// This is the integration point for interactive frontends and worker threads.
+    pub fn advance(&mut self) -> Result<SolverStep, String> {
+        let diag = self.advance_one_step()?;
+        self.last_diag = diag;
+        let converged = self.cfg.case.kind() != CaseKind::CylinderRe100
+            && self.step >= self.cfg.minimum_steps
+            && diag.velocity_change < self.cfg.steady_tolerance
+            && diag.max_divergence < 10.0 * self.cfg.pressure_tolerance;
+
+        Ok(SolverStep {
+            iteration: self.step,
+            time: self.time,
+            continuity_residual: diag.max_divergence,
+            pressure_residual: diag.pressure_residual,
+            pressure_iterations: diag.pressure_iterations,
+            momentum_residual: diag.velocity_change,
+            max_speed: diag.max_speed,
+            drag_coefficient: diag.cd,
+            lift_coefficient: diag.cl,
+            converged,
+        })
+    }
+
+    pub fn field_update(&self) -> FieldUpdate {
+        FieldUpdate {
+            nx: self.grid.nx,
+            ny: self.grid.ny,
+            pressure: self.p.as_slice().to_vec(),
+            speed: self.speed.as_slice().to_vec(),
+            solid: self.solid.as_slice().to_vec(),
+        }
     }
 
     fn initialize_velocity(&mut self) {

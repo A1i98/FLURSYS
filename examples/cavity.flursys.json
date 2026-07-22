@@ -1,0 +1,26 @@
+{
+  "format_version": 1,
+  "name": "Lid-driven cavity Re=100",
+  "case": {
+    "kind": "lid-driven-cavity",
+    "length": 1.0,
+    "height": 1.0,
+    "density": 1.0,
+    "lid_velocity": 1.0,
+    "reynolds": 100.0
+  },
+  "solver": {
+    "nx": 64,
+    "ny": 64,
+    "dt": 0.001,
+    "max_iterations": 10000,
+    "coupling": "simple",
+    "pressure_solver": "pcg",
+    "pressure_tolerance": 0.00001,
+    "pressure_iterations": 1200,
+    "velocity_relaxation": 0.7,
+    "pressure_relaxation": 0.3,
+    "steady_tolerance": 0.0000001,
+    "threads": 0
+  }
+}

@@ -8,10 +8,13 @@ pub mod cases;
 pub mod field;
 pub mod grid;
 pub mod output;
+pub mod project;
+pub mod runtime;
 pub mod solver;
 
 pub use cases::{Case, CaseKind};
+pub use project::{Project, ProjectCase, ProjectCoupling, ProjectPressureSolver, ProjectSolver};
 pub use solver::{
-    ConvectionScheme, IncompressibleSolver, PressureSolverKind, PressureVelocityCoupling,
-    RunSummary, SimulationConfig,
+    ConvectionScheme, FieldUpdate, IncompressibleSolver, PressureSolverKind,
+    PressureVelocityCoupling, RunSummary, SimulationConfig, SolverStep,
 };

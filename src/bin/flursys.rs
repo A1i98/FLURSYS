@@ -1,7 +1,7 @@
 use flursys::cases::{BackwardStepCase, CavityCase, CylinderCase};
 use flursys::{
     Case, ConvectionScheme, IncompressibleSolver, PressureSolverKind, PressureVelocityCoupling,
-    SimulationConfig,
+    Project, SimulationConfig,
 };
 use std::collections::HashMap;
 use std::env;
@@ -27,6 +27,19 @@ fn run_cli() -> Result<(), String> {
         println!("  backward-step  backward-facing step flow");
         return Ok(());
     }
+    if args[0] == "--project" {
+        let path = args
+            .get(1)
+            .ok_or_else(|| "--project requires a .flursys.json path".to_string())?;
+        let output_dir = match args.get(2..).unwrap_or_default() {
+            [] => PathBuf::from("results/project-run"),
+            [flag, path] if flag == "--out" => PathBuf::from(path),
+            _ => return Err("Usage: flursys --project CASE.flursys.json [--out PATH]".to_string()),
+        };
+        let project = Project::load(path)?;
+        println!("Project: {}", project.name);
+        return run_solver(project.simulation_config(output_dir)?);
+    }
 
     let case_slug = args[0].as_str();
     let options = parse_options(&args[1..])?;
@@ -42,6 +55,10 @@ fn run_cli() -> Result<(), String> {
         other => return Err(format!("Unknown case '{other}'. Run `flursys list`.")),
     };
 
+    run_solver(config)
+}
+
+fn run_solver(config: SimulationConfig) -> Result<(), String> {
     let mut solver = IncompressibleSolver::new(config)?;
     let summary = solver.run()?;
     println!();
@@ -248,6 +265,7 @@ fn print_help() {
     println!("  flursys cavity [options]");
     println!("  flursys cylinder [options]");
     println!("  flursys backward-step [options]");
+    println!("  flursys --project CASE.flursys.json [--out PATH]");
     println!();
     println!("Run `flursys <case> --help` for available options.");
 }
