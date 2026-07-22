@@ -28,6 +28,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - name: Install Linux GUI dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install --yes libfontconfig1-dev
       - name: Build CLI and desktop workbench
         run: cargo build --locked --release --bin flursys --bin flursys-gui --features gui
       - name: Package Unix binaries
