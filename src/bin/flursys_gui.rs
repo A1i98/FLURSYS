@@ -1,5 +1,9 @@
+use flursys::cases::{BackwardStepCase, CavityCase, CylinderCase};
 use flursys::runtime::{SolverCommand, SolverController, SolverState, SolverUpdate};
-use flursys::{FieldUpdate, Project, ProjectCoupling, ProjectPressureSolver};
+use flursys::{
+    BoundaryConditionKind, BoundaryFace, FieldUpdate, Project, ProjectCase, ProjectCoupling,
+    ProjectPressureSolver,
+};
 use slint::{
     ComponentHandle, Image, Rgba8Pixel, SharedPixelBuffer, SharedString, Timer, TimerMode,
 };
@@ -11,32 +15,66 @@ use std::time::Duration;
 slint::slint! {
     import { Button, ComboBox, LineEdit, SpinBox, TextEdit } from "std-widgets.slint";
 
-    component PanelTitle inherits Text {
-        color: rgb(219, 231, 242);
-        font-size: 14px;
+    component SectionTitle inherits Text {
+        color: rgb(228, 238, 246);
+        font-size: 22px;
         font-weight: 700;
     }
 
-    component MetricCard inherits Rectangle {
+    component SectionHint inherits Text {
+        color: rgb(135, 160, 178);
+        font-size: 12px;
+        wrap: word-wrap;
+    }
+
+    component Card inherits Rectangle {
+        background: rgb(20, 34, 45);
+        border-color: rgb(48, 74, 92);
+        border-width: 1px;
+        border-radius: 5px;
+    }
+
+    component MetricCard inherits Card {
         in property <string> label;
         in property <string> value;
-        background: rgb(23, 35, 46);
-        border-color: rgb(48, 72, 90);
-        border-width: 1px;
-        border-radius: 3px;
         VerticalLayout {
-            padding: 8px;
-            Text { text: root.label; color: rgb(131, 160, 182); font-size: 11px; }
-            Text { text: root.value; color: rgb(240, 195, 109); font-size: 18px; font-weight: 700; }
+            padding: 12px;
+            Text { text: root.label; color: rgb(135, 160, 178); font-size: 11px; }
+            Text { text: root.value; color: rgb(240, 195, 109); font-size: 20px; font-weight: 700; }
         }
+    }
+
+    component WorkflowItem inherits Rectangle {
+        in property <string> number;
+        in property <string> title;
+        in property <string> detail;
+        in property <bool> active;
+        callback select();
+        height: 66px;
+        background: root.active ? rgb(30, 61, 78) : rgb(17, 29, 38);
+        border-color: root.active ? rgb(77, 168, 184) : rgb(36, 58, 73);
+        border-width: 1px;
+        border-radius: 4px;
+        HorizontalLayout {
+            padding: 10px;
+            spacing: 10px;
+            Text { text: root.number; color: root.active ? rgb(240, 195, 109) : rgb(109, 137, 155); font-size: 17px; font-weight: 800; vertical-alignment: center; }
+            VerticalLayout {
+                Text { text: root.title; color: root.active ? rgb(232, 241, 248) : rgb(180, 199, 211); font-size: 13px; font-weight: 700; }
+                Text { text: root.detail; color: rgb(123, 151, 169); font-size: 10px; }
+            }
+        }
+        TouchArea { clicked => { root.select(); } }
     }
 
     export component MainWindow inherits Window {
         title: "FLURSYS | CFD Workbench";
         width: 1440px;
         height: 900px;
-        background: rgb(13, 21, 28);
+        background: rgb(11, 19, 26);
 
+        in-out property <int> current-step: 0;
+        in-out property <int> case-index: 0;
         in-out property <string> status: "Idle";
         in-out property <string> project-path: "case.flursys.json";
         in-out property <string> project-name: "Lid-driven cavity";
@@ -50,6 +88,11 @@ slint::slint! {
         in-out property <int> pressure-solver-index: 0;
         in-out property <string> velocity-relaxation: "0.7";
         in-out property <string> pressure-relaxation: "0.3";
+        in-out property <string> extrusion-depth: "0.25";
+        in-out property <int> mesh-nz: 8;
+        in-out property <int> boundary-face-index: 0;
+        in-out property <int> boundary-kind-index: 0;
+        in-out property <string> boundary-value: "0.0";
         in-out property <string> residual-summary: "Waiting for a solver run.";
         in-out property <image> residual-image;
         in-out property <float> continuity-level: 0.0;
@@ -62,170 +105,208 @@ slint::slint! {
         in-out property <string> animation-status: "Frame 0 / 0";
         in-out property <string> log-text: "FLURSYS Slint workbench ready.";
 
-        callback start();
-        callback pause();
-        callback resume();
-        callback stop();
-        callback load-project();
-        callback save-project();
-        callback show-mesh();
-        callback show-field();
-        callback animation-play-pause();
-        callback animation-next();
+        callback start(); callback pause(); callback resume(); callback stop();
+        callback load-project(); callback save-project(); callback show-mesh(); callback show-field();
+        callback animation-play-pause(); callback animation-next(); callback show-geometry-3d();
+        callback rotate-geometry-3d(); callback apply-boundary(); callback select-step(int);
+        callback select-case();
 
         VerticalLayout {
             spacing: 0px;
             Rectangle {
-                height: 56px;
-                background: rgb(22, 38, 51);
-                border-color: rgb(49, 78, 98);
+                height: 60px;
+                background: rgb(20, 37, 49);
+                border-color: rgb(50, 79, 99);
                 border-width: 1px;
                 HorizontalLayout {
-                    padding: 12px;
-                    spacing: 10px;
-                    Text { text: "FLURSYS"; color: rgb(232, 241, 248); font-size: 22px; font-weight: 800; }
-                    Rectangle { width: 1px; background: rgb(58, 83, 99); }
-                    Text { text: "CFD WORKBENCH"; color: rgb(131, 160, 182); font-size: 12px; }
+                    padding: 14px;
+                    spacing: 11px;
+                    Text { text: "FLURSYS"; color: rgb(233, 242, 248); font-size: 23px; font-weight: 800; }
+                    Rectangle { width: 1px; background: rgb(65, 94, 112); }
+                    Text { text: "CFD WORKBENCH"; color: rgb(136, 164, 182); font-size: 12px; }
                     Rectangle { horizontal-stretch: 1; }
-                    Text { text: "SOLVER STATUS"; color: rgb(131, 160, 182); font-size: 11px; }
-                    Text { text: root.status; color: rgb(240, 195, 109); font-size: 13px; font-weight: 700; }
-                    Button { text: "START"; clicked => { root.start(); } }
-                    Button { text: "PAUSE"; clicked => { root.pause(); } }
-                    Button { text: "RESUME"; clicked => { root.resume(); } }
-                    Button { text: "STOP"; clicked => { root.stop(); } }
+                    Text { text: "PROJECT"; color: rgb(136, 164, 182); font-size: 10px; }
+                    Text { text: root.project-name; color: rgb(215, 229, 238); font-size: 12px; }
+                    Rectangle { width: 1px; background: rgb(65, 94, 112); }
+                    Text { text: "SOLVER"; color: rgb(136, 164, 182); font-size: 10px; }
+                    Text { text: root.status; color: rgb(240, 195, 109); font-size: 12px; font-weight: 700; }
                 }
             }
 
             HorizontalLayout {
-                spacing: 8px;
-                padding: 8px;
+                spacing: 0px;
                 Rectangle {
-                    width: 320px;
-                    background: rgb(17, 29, 38);
-                    border-color: rgb(41, 66, 82);
+                    width: 248px;
+                    background: rgb(14, 25, 34);
+                    border-color: rgb(37, 58, 73);
                     border-width: 1px;
                     VerticalLayout {
                         padding: 12px;
-                        spacing: 9px;
-                        PanelTitle { text: "PROJECT & CASE"; }
-                        Text { text: "Project file"; color: rgb(131, 160, 182); font-size: 11px; }
-                        LineEdit { text <=> root.project-path; }
-                        HorizontalLayout {
-                            Button { text: "LOAD"; clicked => { root.load-project(); } }
-                            Button { text: "SAVE"; clicked => { root.save-project(); } }
-                        }
-                        Text { text: "Project name"; color: rgb(131, 160, 182); font-size: 11px; }
-                        LineEdit { text <=> root.project-name; }
-                        Text { text: "Case"; color: rgb(131, 160, 182); font-size: 11px; }
-                        Rectangle {
-                            height: 34px;
-                            background: rgb(23, 43, 56);
-                            border-color: rgb(54, 89, 108);
-                            border-width: 1px;
-                            Text { text: root.case-name; color: rgb(219, 231, 242); vertical-alignment: center; }
-                        }
-                        Text { text: "Imported cases retain their geometry and boundary data. Use a project file to define and exchange cases."; color: rgb(131, 160, 182); font-size: 11px; wrap: word-wrap; }
-                        Rectangle { height: 1px; background: rgb(41, 66, 82); }
-                        PanelTitle { text: "MESH & SOLVER"; }
-                        HorizontalLayout {
-                            Text { text: "Nx"; color: rgb(169, 189, 204); vertical-alignment: center; }
-                            SpinBox { value <=> root.nx; minimum: 4; maximum: 1024; }
-                            Text { text: "Ny"; color: rgb(169, 189, 204); vertical-alignment: center; }
-                            SpinBox { value <=> root.ny; minimum: 4; maximum: 1024; }
-                        }
-                        Text { text: "Pseudo-time step"; color: rgb(131, 160, 182); font-size: 11px; }
-                        LineEdit { text <=> root.dt-text; }
-                        Text { text: "Iterations"; color: rgb(131, 160, 182); font-size: 11px; }
-                        SpinBox { value <=> root.iterations; minimum: 1; maximum: 10000000; }
-                        Text { text: "CPU threads (0 = auto)"; color: rgb(131, 160, 182); font-size: 11px; }
-                        SpinBox { value <=> root.threads; minimum: 0; maximum: 256; }
-                        Text { text: "Coupling"; color: rgb(131, 160, 182); font-size: 11px; }
-                        ComboBox { model: ["SIMPLE-style steady", "Projection transient"]; current-index <=> root.coupling-index; }
-                        Text { text: "Pressure solver"; color: rgb(131, 160, 182); font-size: 11px; }
-                        ComboBox { model: ["PCG + Jacobi", "SOR"]; current-index <=> root.pressure-solver-index; }
+                        spacing: 8px;
+                        Text { text: "SIMULATION WORKFLOW"; color: rgb(132, 161, 180); font-size: 10px; font-weight: 700; }
+                        WorkflowItem { number: "01"; title: "Geometry"; detail: "Choose domain and project"; active: root.current-step == 0; select => { root.select-step(0); } }
+                        WorkflowItem { number: "02"; title: "Mesh"; detail: "Structured volume controls"; active: root.current-step == 1; select => { root.select-step(1); } }
+                        WorkflowItem { number: "03"; title: "Setup"; detail: "Boundaries and physics"; active: root.current-step == 2; select => { root.select-step(2); } }
+                        WorkflowItem { number: "04"; title: "Run"; detail: "Solver and convergence"; active: root.current-step == 3; select => { root.select-step(3); } }
+                        WorkflowItem { number: "05"; title: "Results"; detail: "Fields and animation"; active: root.current-step == 4; select => { root.select-step(4); } }
+                        Rectangle { vertical-stretch: 1; }
+                        Rectangle { height: 1px; background: rgb(37, 58, 73); }
+                        Text { text: "Active numerical core"; color: rgb(136, 164, 182); font-size: 10px; }
+                        Text { text: "2D structured FVM\n3D workbench preview"; color: rgb(190, 209, 220); font-size: 11px; wrap: word-wrap; }
                     }
                 }
 
-                VerticalLayout {
-                    spacing: 8px;
-                    Rectangle {
-                        vertical-stretch: 3;
-                        background: rgb(17, 29, 38);
-                        border-color: rgb(41, 66, 82);
-                        border-width: 1px;
+                Rectangle {
+                    horizontal-stretch: 1;
+                    background: rgb(11, 19, 26);
+
+                    if root.current-step == 0 : Rectangle {
+                        width: parent.width; height: parent.height;
                         VerticalLayout {
-                            padding: 12px;
-                            PanelTitle { text: "SOLUTION MONITOR"; }
-                            Text { text: "Residual monitor"; color: rgb(131, 160, 182); font-size: 12px; }
-                            Rectangle {
-                                vertical-stretch: 1;
-                                background: rgb(11, 18, 24);
-                                border-color: rgb(35, 59, 74);
-                                border-width: 1px;
-                                Image { source: root.residual-image; width: parent.width; height: parent.height; image-fit: contain; }
-                            }
-                            Text { text: "CONTINUITY"; color: rgb(131, 160, 182); font-size: 10px; }
-                            Rectangle {
-                                height: 7px; background: rgb(8, 14, 19);
-                                Rectangle { width: parent.width * root.continuity-level; background: rgb(77, 168, 184); }
-                            }
-                            Text { text: "MOMENTUM"; color: rgb(131, 160, 182); font-size: 10px; }
-                            Rectangle {
-                                height: 7px; background: rgb(8, 14, 19);
-                                Rectangle { width: parent.width * root.momentum-level; background: rgb(116, 189, 135); }
-                            }
-                            Text { text: "PRESSURE"; color: rgb(131, 160, 182); font-size: 10px; }
-                            Rectangle {
-                                height: 7px; background: rgb(8, 14, 19);
-                                Rectangle { width: parent.width * root.pressure-level; background: rgb(240, 195, 109); }
-                            }
-                            Text { text: "The worker publishes sampled diagnostics; rendering remains independent from numerical iterations."; color: rgb(111, 138, 157); font-size: 11px; }
-                        }
-                    }
-                    Rectangle {
-                        vertical-stretch: 2;
-                        background: rgb(17, 29, 38);
-                        border-color: rgb(41, 66, 82);
-                        border-width: 1px;
-                        VerticalLayout {
-                            padding: 12px;
-                            PanelTitle { text: "CONVERGENCE & FORCES"; }
+                            padding: 26px; spacing: 16px;
+                            SectionTitle { text: "01  Geometry"; }
+                            SectionHint { text: "Start every simulation by choosing a supported geometry and saving a portable project definition."; }
                             HorizontalLayout {
-                                MetricCard { label: "CONTINUITY"; value: root.status == "Running" ? "LIVE" : "STANDBY"; }
-                                MetricCard { label: "ITERATION"; value: root.iterations; }
-                                MetricCard { label: "WORKERS"; value: root.threads == 0 ? "AUTO" : root.threads; }
+                                spacing: 16px;
+                                Card {
+                                    width: 390px;
+                                    VerticalLayout {
+                                        padding: 18px; spacing: 10px;
+                                        Text { text: "CASE LIBRARY"; color: rgb(240, 195, 109); font-size: 11px; font-weight: 700; }
+                                        Text { text: "Select the physical domain"; color: rgb(226, 237, 245); font-size: 16px; font-weight: 700; }
+                                        ComboBox { model: ["Lid-driven cavity", "Cylinder flow Re=100", "Backward-facing step"]; current-index <=> root.case-index; }
+                                        Button { text: "USE THIS GEOMETRY"; clicked => { root.select-case(); } }
+                                        Rectangle { height: 1px; background: rgb(47, 74, 91); }
+                                        Text { text: "Project name"; color: rgb(140, 167, 185); font-size: 11px; }
+                                        LineEdit { text <=> root.project-name; }
+                                        Text { text: "Project file"; color: rgb(140, 167, 185); font-size: 11px; }
+                                        LineEdit { text <=> root.project-path; }
+                                        HorizontalLayout { Button { text: "LOAD"; clicked => { root.load-project(); } } Button { text: "SAVE"; clicked => { root.save-project(); } } }
+                                    }
+                                }
+                                Card {
+                                    horizontal-stretch: 1;
+                                    VerticalLayout {
+                                        padding: 18px; spacing: 10px;
+                                        Text { text: "GEOMETRY PREVIEW"; color: rgb(240, 195, 109); font-size: 11px; font-weight: 700; }
+                                        Text { text: root.case-name; color: rgb(229, 239, 246); font-size: 17px; font-weight: 700; }
+                                        Rectangle { vertical-stretch: 1; background: rgb(9, 16, 22); border-color: rgb(40, 66, 82); border-width: 1px; Image { source: root.visualization-image; width: parent.width; height: parent.height; image-fit: contain; } }
+                                        HorizontalLayout { Button { text: "3D PREVIEW"; clicked => { root.show-geometry-3d(); } } Button { text: "ROTATE"; clicked => { root.rotate-geometry-3d(); } } }
+                                    }
+                                }
                             }
-                            Text { text: root.force-summary; color: rgb(214, 227, 236); font-family: "monospace"; wrap: word-wrap; }
                         }
                     }
-                }
 
-                Rectangle {
-                    width: 330px;
-                    background: rgb(17, 29, 38);
-                    border-color: rgb(41, 66, 82);
-                    border-width: 1px;
-                    VerticalLayout {
-                        padding: 12px;
-                        spacing: 9px;
-                        PanelTitle { text: "FIELD VIEW"; }
-                        Rectangle {
-                            height: 260px;
-                            background: rgb(11, 18, 24);
-                            border-color: rgb(35, 59, 74);
-                            border-width: 1px;
-                            Image { source: root.visualization-image; width: parent.width; height: parent.height; image-fit: contain; }
+                    if root.current-step == 1 : Rectangle {
+                        width: parent.width; height: parent.height;
+                        VerticalLayout {
+                            padding: 26px; spacing: 16px;
+                            SectionTitle { text: "02  Mesh"; }
+                            SectionHint { text: "Define the active structured solver grid and retain extrusion layers for the 3D workbench model."; }
+                            HorizontalLayout {
+                                spacing: 16px;
+                                Card { width: 400px; VerticalLayout { padding: 18px; spacing: 11px;
+                                    Text { text: "STRUCTURED GRID"; color: rgb(240, 195, 109); font-size: 11px; font-weight: 700; }
+                                    Text { text: "Planar cells"; color: rgb(140, 167, 185); font-size: 11px; }
+                                    HorizontalLayout { Text { text: "Nx"; color: rgb(205, 220, 229); vertical-alignment: center; } SpinBox { value <=> root.nx; minimum: 4; maximum: 1024; } Text { text: "Ny"; color: rgb(205, 220, 229); vertical-alignment: center; } SpinBox { value <=> root.ny; minimum: 4; maximum: 1024; } }
+                                    Text { text: "Extrusion layers (Nz)"; color: rgb(140, 167, 185); font-size: 11px; }
+                                    SpinBox { value <=> root.mesh-nz; minimum: 1; maximum: 1024; }
+                                    Text { text: "Extrusion depth"; color: rgb(140, 167, 185); font-size: 11px; }
+                                    LineEdit { text <=> root.extrusion-depth; }
+                                    Text { text: "The active solver uses Nx × Ny. Nz is retained in the project and drives the 3D mesh preview."; color: rgb(126, 153, 170); font-size: 11px; wrap: word-wrap; }
+                                    Button { text: "GENERATE MESH PREVIEW"; clicked => { root.show-mesh(); } }
+                                } }
+                                Card { horizontal-stretch: 1; VerticalLayout { padding: 18px; spacing: 10px;
+                                    Text { text: "MESH INSPECTION"; color: rgb(240, 195, 109); font-size: 11px; font-weight: 700; }
+                                    Rectangle { vertical-stretch: 1; background: rgb(9, 16, 22); border-color: rgb(40, 66, 82); border-width: 1px; Image { source: root.visualization-image; width: parent.width; height: parent.height; image-fit: contain; } }
+                                    Text { text: root.visualization-title + " · " + root.animation-status; color: rgb(163, 188, 203); font-size: 11px; }
+                                    HorizontalLayout { Button { text: "2D GRID"; clicked => { root.show-mesh(); } } Button { text: "3D VOLUME"; clicked => { root.show-geometry-3d(); } } }
+                                } }
+                            }
                         }
-                        Text { text: root.visualization-title + " · " + root.animation-status; color: rgb(169, 197, 213); font-size: 11px; }
-                        HorizontalLayout {
-                            Button { text: "MESH"; clicked => { root.show-mesh(); } }
-                            Button { text: "FIELD"; clicked => { root.show-field(); } }
-                            Button { text: "PLAY / PAUSE"; clicked => { root.animation-play-pause(); } }
-                            Button { text: "NEXT"; clicked => { root.animation-next(); } }
+                    }
+
+                    if root.current-step == 2 : Rectangle {
+                        width: parent.width; height: parent.height;
+                        VerticalLayout {
+                            padding: 26px; spacing: 16px;
+                            SectionTitle { text: "03  Setup"; }
+                            SectionHint { text: "Assign boundary conditions to named faces. Changes are saved in the project and supported planar conditions reach the solver."; }
+                            HorizontalLayout {
+                                spacing: 16px;
+                                Card { width: 420px; VerticalLayout { padding: 18px; spacing: 10px;
+                                    Text { text: "BOUNDARY CONDITIONS"; color: rgb(240, 195, 109); font-size: 11px; font-weight: 700; }
+                                    Text { text: "Boundary face"; color: rgb(140, 167, 185); font-size: 11px; }
+                                    ComboBox { model: ["Left / inlet", "Right / outlet", "Bottom", "Top", "Front", "Back"]; current-index <=> root.boundary-face-index; }
+                                    Text { text: "Condition"; color: rgb(140, 167, 185); font-size: 11px; }
+                                    ComboBox { model: ["Case default", "Velocity", "Pressure outlet", "Wall", "Symmetry"]; current-index <=> root.boundary-kind-index; }
+                                    Text { text: "Value  (u for velocity/wall; p for outlet)"; color: rgb(140, 167, 185); font-size: 11px; }
+                                    LineEdit { text <=> root.boundary-value; }
+                                    Button { text: "APPLY BOUNDARY CONDITION"; clicked => { root.apply-boundary(); } }
+                                    Rectangle { height: 1px; background: rgb(47, 74, 91); }
+                                    Text { text: "Front and back are retained for the future 3D solver. The active 2D solver accepts a pressure outlet on the right face."; color: rgb(126, 153, 170); font-size: 11px; wrap: word-wrap; }
+                                } }
+                                Card { horizontal-stretch: 1; VerticalLayout { padding: 18px; spacing: 10px;
+                                    Text { text: "BOUNDARY & VOLUME VIEW"; color: rgb(240, 195, 109); font-size: 11px; font-weight: 700; }
+                                    Rectangle { vertical-stretch: 1; background: rgb(9, 16, 22); border-color: rgb(40, 66, 82); border-width: 1px; Image { source: root.visualization-image; width: parent.width; height: parent.height; image-fit: contain; } }
+                                    Text { text: "Cyan: left · Gold: right · Green: top · Magenta: bottom"; color: rgb(163, 188, 203); font-size: 11px; }
+                                    HorizontalLayout { Button { text: "SHOW 3D"; clicked => { root.show-geometry-3d(); } } Button { text: "ROTATE"; clicked => { root.rotate-geometry-3d(); } } }
+                                } }
+                            }
                         }
-                        Text { text: root.field-summary; color: rgb(111, 138, 157); font-size: 11px; wrap: word-wrap; }
-                        PanelTitle { text: "SOLVER LOG"; }
-                        TextEdit { text: root.log-text; read-only: true; vertical-stretch: 1; }
+                    }
+
+                    if root.current-step == 3 : Rectangle {
+                        width: parent.width; height: parent.height;
+                        VerticalLayout {
+                            padding: 26px; spacing: 16px;
+                            SectionTitle { text: "04  Run"; }
+                            SectionHint { text: "Choose the numerical method, start the worker, and follow convergence without blocking the interface."; }
+                            HorizontalLayout {
+                                spacing: 16px;
+                                Card { width: 400px; VerticalLayout { padding: 18px; spacing: 10px;
+                                    Text { text: "SOLVER CONTROLS"; color: rgb(240, 195, 109); font-size: 11px; font-weight: 700; }
+                                    Text { text: "Coupling"; color: rgb(140, 167, 185); font-size: 11px; } ComboBox { model: ["SIMPLE-style steady", "Projection transient"]; current-index <=> root.coupling-index; }
+                                    Text { text: "Pressure solver"; color: rgb(140, 167, 185); font-size: 11px; } ComboBox { model: ["PCG + Jacobi", "SOR"]; current-index <=> root.pressure-solver-index; }
+                                    Text { text: "Pseudo-time step"; color: rgb(140, 167, 185); font-size: 11px; } LineEdit { text <=> root.dt-text; }
+                                    Text { text: "Iterations"; color: rgb(140, 167, 185); font-size: 11px; } SpinBox { value <=> root.iterations; minimum: 1; maximum: 10000000; }
+                                    Text { text: "CPU threads (0 = auto)"; color: rgb(140, 167, 185); font-size: 11px; } SpinBox { value <=> root.threads; minimum: 0; maximum: 256; }
+                                    HorizontalLayout { Button { text: "START"; clicked => { root.start(); } } Button { text: "PAUSE"; clicked => { root.pause(); } } Button { text: "RESUME"; clicked => { root.resume(); } } Button { text: "STOP"; clicked => { root.stop(); } } }
+                                } }
+                                Card { horizontal-stretch: 1; VerticalLayout { padding: 18px; spacing: 10px;
+                                    Text { text: "LIVE CONVERGENCE"; color: rgb(240, 195, 109); font-size: 11px; font-weight: 700; }
+                                    Rectangle { vertical-stretch: 1; background: rgb(9, 16, 22); border-color: rgb(40, 66, 82); border-width: 1px; Image { source: root.residual-image; width: parent.width; height: parent.height; image-fit: contain; } }
+                                    HorizontalLayout { MetricCard { label: "STATUS"; value: root.status; } MetricCard { label: "ITERATIONS"; value: root.iterations; } MetricCard { label: "WORKERS"; value: root.threads == 0 ? "AUTO" : root.threads; } }
+                                } }
+                            }
+                        }
+                    }
+
+                    if root.current-step == 4 : Rectangle {
+                        width: parent.width; height: parent.height;
+                        VerticalLayout {
+                            padding: 26px; spacing: 16px;
+                            SectionTitle { text: "05  Results"; }
+                            SectionHint { text: "Inspect generated field snapshots, animate sampled results, and review the run log."; }
+                            HorizontalLayout {
+                                spacing: 16px;
+                                Card { horizontal-stretch: 1; VerticalLayout { padding: 18px; spacing: 10px;
+                                    Text { text: root.visualization-title; color: rgb(240, 195, 109); font-size: 11px; font-weight: 700; }
+                                    Rectangle { vertical-stretch: 1; background: rgb(9, 16, 22); border-color: rgb(40, 66, 82); border-width: 1px; Image { source: root.visualization-image; width: parent.width; height: parent.height; image-fit: contain; } }
+                                    Text { text: root.animation-status; color: rgb(163, 188, 203); font-size: 11px; }
+                                    HorizontalLayout { Button { text: "FIELD"; clicked => { root.show-field(); } } Button { text: "MESH"; clicked => { root.show-mesh(); } } Button { text: "PLAY / PAUSE"; clicked => { root.animation-play-pause(); } } Button { text: "NEXT"; clicked => { root.animation-next(); } } }
+                                } }
+                                Card { width: 390px; VerticalLayout { padding: 18px; spacing: 10px;
+                                    Text { text: "RUN SUMMARY"; color: rgb(240, 195, 109); font-size: 11px; font-weight: 700; }
+                                    Text { text: root.residual-summary; color: rgb(213, 227, 236); font-family: "monospace"; font-size: 12px; }
+                                    Text { text: root.force-summary; color: rgb(213, 227, 236); font-family: "monospace"; font-size: 12px; }
+                                    Text { text: root.field-summary; color: rgb(140, 167, 185); font-size: 11px; wrap: word-wrap; }
+                                    Text { text: "SOLVER LOG"; color: rgb(240, 195, 109); font-size: 11px; font-weight: 700; }
+                                    TextEdit { text: root.log-text; read-only: true; vertical-stretch: 1; }
+                                } }
+                            }
+                        }
                     }
                 }
             }
@@ -243,6 +324,8 @@ struct AppState {
     frame_index: usize,
     animation_playing: bool,
     show_mesh: bool,
+    show_geometry_3d: bool,
+    geometry_rotation: f32,
     last_animation_tick: std::time::Instant,
 }
 
@@ -264,7 +347,9 @@ impl AppState {
             frames: VecDeque::new(),
             frame_index: 0,
             animation_playing: false,
-            show_mesh: true,
+            show_mesh: false,
+            show_geometry_3d: true,
+            geometry_rotation: 0.0,
             last_animation_tick: std::time::Instant::now(),
         }
     }
@@ -347,6 +432,57 @@ fn main() -> Result<(), slint::PlatformError> {
 }
 
 fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
+    let weak_ui = ui.as_weak();
+    let workflow_state = state.clone();
+    ui.on_select_step(move |step| {
+        let Some(ui) = weak_ui.upgrade() else {
+            return;
+        };
+        let mut state = workflow_state.borrow_mut();
+        sync_project_from_ui(&ui, &mut state.project);
+        let step = step.clamp(0, 4);
+        ui.set_current_step(step);
+        match step {
+            0 | 2 => {
+                state.show_geometry_3d = true;
+                state.show_mesh = false;
+                state.animation_playing = false;
+            }
+            1 => {
+                state.show_geometry_3d = false;
+                state.show_mesh = true;
+                state.animation_playing = false;
+            }
+            4 => {
+                state.show_geometry_3d = false;
+                state.show_mesh = false;
+                state.frame_index = state.frames.len().saturating_sub(1);
+            }
+            _ => {}
+        }
+        refresh_ui(&ui, &state);
+    });
+
+    let weak_ui = ui.as_weak();
+    let case_state = state.clone();
+    ui.on_select_case(move || {
+        let Some(ui) = weak_ui.upgrade() else {
+            return;
+        };
+        let mut state = case_state.borrow_mut();
+        sync_project_from_ui(&ui, &mut state.project);
+        state.project.case = project_case_from_index(ui.get_case_index());
+        state.project.ensure_preprocessing_defaults();
+        let selected_case = case_name(&state.project.case);
+        state.project.name = selected_case.to_string();
+        state.show_geometry_3d = true;
+        state.show_mesh = false;
+        state.animation_playing = false;
+        state.log(format!("Geometry selected: {selected_case}."));
+        write_project_to_ui(&ui, &state.project);
+        refresh_ui(&ui, &state);
+    });
+
     let weak_ui = ui.as_weak();
     let start_state = state.clone();
     ui.on_start(move || {
@@ -456,6 +592,7 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
         };
         let mut state = mesh_state.borrow_mut();
         state.show_mesh = true;
+        state.show_geometry_3d = false;
         state.animation_playing = false;
         refresh_ui(&ui, &state);
     });
@@ -468,6 +605,7 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
         };
         let mut state = field_state.borrow_mut();
         state.show_mesh = false;
+        state.show_geometry_3d = false;
         state.frame_index = state.frames.len().saturating_sub(1);
         refresh_ui(&ui, &state);
     });
@@ -503,6 +641,80 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
         }
         refresh_ui(&ui, &state);
     });
+
+    let weak_ui = ui.as_weak();
+    let geometry_state = state.clone();
+    ui.on_show_geometry_3d(move || {
+        let Some(ui) = weak_ui.upgrade() else {
+            return;
+        };
+        let mut state = geometry_state.borrow_mut();
+        sync_project_from_ui(&ui, &mut state.project);
+        state.show_geometry_3d = true;
+        state.show_mesh = false;
+        state.animation_playing = false;
+        state.log("Showing the saved geometry and mesh extrusion preview.");
+        refresh_ui(&ui, &state);
+    });
+
+    let weak_ui = ui.as_weak();
+    let rotate_state = state.clone();
+    ui.on_rotate_geometry_3d(move || {
+        let Some(ui) = weak_ui.upgrade() else {
+            return;
+        };
+        let mut state = rotate_state.borrow_mut();
+        sync_project_from_ui(&ui, &mut state.project);
+        state.show_geometry_3d = true;
+        state.show_mesh = false;
+        state.animation_playing = false;
+        state.geometry_rotation = (state.geometry_rotation + 0.45) % std::f32::consts::TAU;
+        refresh_ui(&ui, &state);
+    });
+
+    let weak_ui = ui.as_weak();
+    let boundary_state = state.clone();
+    ui.on_apply_boundary(move || {
+        let Some(ui) = weak_ui.upgrade() else {
+            return;
+        };
+        let mut state = boundary_state.borrow_mut();
+        sync_project_from_ui(&ui, &mut state.project);
+        let face = boundary_face_from_index(ui.get_boundary_face_index());
+        if ui.get_boundary_kind_index() == 2 && face != BoundaryFace::Right {
+            state.log("The active 2D solver accepts a pressure outlet only on the right boundary.");
+            refresh_ui(&ui, &state);
+            return;
+        }
+        let value = parse_number(ui.get_boundary_value().as_str(), 0.0);
+        let kind = match ui.get_boundary_kind_index() {
+            1 => BoundaryConditionKind::Velocity {
+                u: value,
+                v: 0.0,
+                w: 0.0,
+            },
+            2 => BoundaryConditionKind::PressureOutlet { pressure: value },
+            3 => BoundaryConditionKind::Wall {
+                u: value,
+                v: 0.0,
+                w: 0.0,
+            },
+            4 => BoundaryConditionKind::Symmetry,
+            _ => BoundaryConditionKind::CaseDefault,
+        };
+        if let Some(boundary) = state.project.preprocessing.boundary_mut(face) {
+            boundary.kind = kind;
+            state.log(format!("{} boundary updated.", face.label()));
+        } else {
+            state.log(format!(
+                "{} boundary is missing from the project.",
+                face.label()
+            ));
+        }
+        state.show_geometry_3d = true;
+        state.show_mesh = false;
+        refresh_ui(&ui, &state);
+    });
 }
 
 fn sync_project_from_ui(ui: &MainWindow, project: &mut Project) {
@@ -530,11 +742,17 @@ fn sync_project_from_ui(ui: &MainWindow, project: &mut Project) {
         ui.get_pressure_relaxation().as_str(),
         project.solver.pressure_relaxation,
     );
+    project.preprocessing.geometry.extrusion_depth = parse_number(
+        ui.get_extrusion_depth().as_str(),
+        project.preprocessing.geometry.extrusion_depth,
+    );
+    project.preprocessing.mesh.cells_z = ui.get_mesh_nz().max(1) as usize;
 }
 
 fn write_project_to_ui(ui: &MainWindow, project: &Project) {
     ui.set_project_name(SharedString::from(project.name.as_str()));
     ui.set_case_name(SharedString::from(case_name(&project.case)));
+    ui.set_case_index(project_case_index(&project.case));
     ui.set_nx(project.solver.nx as i32);
     ui.set_ny(project.solver.ny as i32);
     ui.set_dt_text(SharedString::from(format!("{:.6}", project.solver.dt)));
@@ -556,6 +774,66 @@ fn write_project_to_ui(ui: &MainWindow, project: &Project) {
         "{:.3}",
         project.solver.pressure_relaxation
     )));
+    ui.set_extrusion_depth(SharedString::from(format!(
+        "{:.3}",
+        project.preprocessing.geometry.extrusion_depth
+    )));
+    ui.set_mesh_nz(project.preprocessing.mesh.cells_z as i32);
+    write_boundary_to_ui(ui, project, BoundaryFace::Left);
+}
+
+fn project_case_from_index(index: i32) -> ProjectCase {
+    match index {
+        1 => ProjectCase::from(CylinderCase::default()),
+        2 => ProjectCase::from(BackwardStepCase::default()),
+        _ => ProjectCase::from(CavityCase::default()),
+    }
+}
+
+fn project_case_index(case: &ProjectCase) -> i32 {
+    match case {
+        ProjectCase::LidDrivenCavity { .. } => 0,
+        ProjectCase::Cylinder { .. } => 1,
+        ProjectCase::BackwardFacingStep { .. } => 2,
+    }
+}
+
+fn write_boundary_to_ui(ui: &MainWindow, project: &Project, face: BoundaryFace) {
+    ui.set_boundary_face_index(boundary_face_index(face));
+    let Some(boundary) = project.preprocessing.boundary(face) else {
+        return;
+    };
+    let (kind_index, value) = match &boundary.kind {
+        BoundaryConditionKind::CaseDefault => (0, 0.0),
+        BoundaryConditionKind::Velocity { u, .. } => (1, *u),
+        BoundaryConditionKind::PressureOutlet { pressure } => (2, *pressure),
+        BoundaryConditionKind::Wall { u, .. } => (3, *u),
+        BoundaryConditionKind::Symmetry => (4, 0.0),
+    };
+    ui.set_boundary_kind_index(kind_index);
+    ui.set_boundary_value(SharedString::from(format!("{value:.6}")));
+}
+
+fn boundary_face_from_index(index: i32) -> BoundaryFace {
+    match index {
+        1 => BoundaryFace::Right,
+        2 => BoundaryFace::Bottom,
+        3 => BoundaryFace::Top,
+        4 => BoundaryFace::Front,
+        5 => BoundaryFace::Back,
+        _ => BoundaryFace::Left,
+    }
+}
+
+fn boundary_face_index(face: BoundaryFace) -> i32 {
+    match face {
+        BoundaryFace::Left => 0,
+        BoundaryFace::Right => 1,
+        BoundaryFace::Bottom => 2,
+        BoundaryFace::Top => 3,
+        BoundaryFace::Front => 4,
+        BoundaryFace::Back => 5,
+    }
 }
 
 fn refresh_ui(ui: &MainWindow, state: &AppState) {
@@ -595,7 +873,14 @@ fn refresh_ui(ui: &MainWindow, state: &AppState) {
         state.logs.iter().cloned().collect::<Vec<_>>().join("\n"),
     ));
     ui.set_residual_image(render_residual_chart(&state.residual_history));
-    if state.show_mesh {
+    if state.show_geometry_3d {
+        ui.set_visualization_title(SharedString::from("3D GEOMETRY & MESH"));
+        ui.set_animation_status(SharedString::from(format!(
+            "{} layers · boundary setup retained in project",
+            state.project.preprocessing.mesh.cells_z
+        )));
+        ui.set_visualization_image(render_geometry_3d(&state.project, state.geometry_rotation));
+    } else if state.show_mesh {
         ui.set_visualization_title(SharedString::from("MESH PREVIEW"));
         ui.set_animation_status(SharedString::from(format!(
             "{} × {} structured grid",
@@ -650,6 +935,187 @@ fn render_mesh(nx: usize, ny: usize) -> Image {
         }
     }
     image_from_rgba(width, height, pixels)
+}
+
+fn render_geometry_3d(project: &Project, rotation: f32) -> Image {
+    let width = PREVIEW_WIDTH;
+    let height = PREVIEW_HEIGHT;
+    let mut pixels = vec![0_u8; (width * height * 4) as usize];
+    fill(&mut pixels, [11, 18, 24, 255]);
+
+    let front_left = 74_i32;
+    let front_right = 360_i32;
+    let front_top = 62_i32;
+    let front_bottom = 264_i32;
+    let depth = 62.0;
+    let offset_x = (rotation.cos() * depth) as i32;
+    let offset_y = (-42.0 - rotation.sin().abs() * 14.0) as i32;
+    let front = [
+        (front_left, front_bottom),
+        (front_right, front_bottom),
+        (front_right, front_top),
+        (front_left, front_top),
+    ];
+    let back = front.map(|(x, y)| (x + offset_x, y + offset_y));
+    let mesh = &project.preprocessing.mesh;
+    let nx = project.solver.nx.clamp(4, 28) as i32;
+    let ny = project.solver.ny.clamp(4, 24) as i32;
+    let nz = mesh.cells_z.clamp(1, 16) as i32;
+
+    for column in 0..=nx {
+        let x = front_left + (front_right - front_left) * column / nx;
+        draw_line(
+            &mut pixels,
+            width,
+            height,
+            (x, front_top),
+            (x, front_bottom),
+            [45, 82, 103, 255],
+        );
+    }
+    for row in 0..=ny {
+        let y = front_top + (front_bottom - front_top) * row / ny;
+        draw_line(
+            &mut pixels,
+            width,
+            height,
+            (front_left, y),
+            (front_right, y),
+            [45, 82, 103, 255],
+        );
+    }
+    for layer in 0..=nz {
+        let ratio = layer as f32 / nz as f32;
+        for &(from, to) in &[(front[0], back[0]), (front[1], back[1])] {
+            let x = from.0 + ((to.0 - from.0) as f32 * ratio) as i32;
+            let y = from.1 + ((to.1 - from.1) as f32 * ratio) as i32;
+            draw_line(
+                &mut pixels,
+                width,
+                height,
+                (x, y),
+                (x + front_right - front_left, y),
+                [34, 62, 79, 255],
+            );
+        }
+    }
+    for index in 0..4 {
+        draw_line(
+            &mut pixels,
+            width,
+            height,
+            front[index],
+            front[(index + 1) % 4],
+            [196, 215, 226, 255],
+        );
+        draw_line(
+            &mut pixels,
+            width,
+            height,
+            back[index],
+            back[(index + 1) % 4],
+            [94, 126, 143, 255],
+        );
+        draw_line(
+            &mut pixels,
+            width,
+            height,
+            front[index],
+            back[index],
+            [94, 126, 143, 255],
+        );
+    }
+
+    draw_line(
+        &mut pixels,
+        width,
+        height,
+        front[0],
+        front[3],
+        [77, 168, 184, 255],
+    );
+    draw_line(
+        &mut pixels,
+        width,
+        height,
+        front[1],
+        front[2],
+        [240, 195, 109, 255],
+    );
+    draw_line(
+        &mut pixels,
+        width,
+        height,
+        front[2],
+        front[3],
+        [116, 189, 135, 255],
+    );
+    draw_line(
+        &mut pixels,
+        width,
+        height,
+        front[0],
+        front[1],
+        [205, 115, 175, 255],
+    );
+
+    match &project.case {
+        ProjectCase::Cylinder { .. } => draw_ellipse(
+            &mut pixels,
+            width,
+            height,
+            (front_left + 105, (front_top + front_bottom) / 2),
+            24,
+            24,
+            [240, 195, 109, 255],
+        ),
+        ProjectCase::BackwardFacingStep { .. } => {
+            let x = front_left + 90;
+            let y = front_bottom - 55;
+            draw_line(
+                &mut pixels,
+                width,
+                height,
+                (front_left, y),
+                (x, y),
+                [240, 195, 109, 255],
+            );
+            draw_line(
+                &mut pixels,
+                width,
+                height,
+                (x, y),
+                (x, front_bottom),
+                [240, 195, 109, 255],
+            );
+        }
+        ProjectCase::LidDrivenCavity { .. } => {}
+    }
+
+    image_from_rgba(width, height, pixels)
+}
+
+fn draw_ellipse(
+    pixels: &mut [u8],
+    width: u32,
+    height: u32,
+    center: (i32, i32),
+    radius_x: i32,
+    radius_y: i32,
+    color: [u8; 4],
+) {
+    let mut previous = None;
+    for step in 0..=48 {
+        let angle = step as f32 * std::f32::consts::TAU / 48.0;
+        let point = (
+            center.0 + (radius_x as f32 * angle.cos()) as i32,
+            center.1 + (radius_y as f32 * angle.sin()) as i32,
+        );
+        if let Some(last) = previous {
+            draw_line(pixels, width, height, last, point, color);
+        }
+        previous = Some(point);
+    }
 }
 
 fn render_speed_field(field: &FieldUpdate) -> Image {
@@ -839,5 +1305,10 @@ mod tests {
             solid: vec![false, false, false, true],
         };
         let _image = render_speed_field(&field);
+    }
+
+    #[test]
+    fn geometry_preview_accepts_a_project_mesh() {
+        let _image = render_geometry_3d(&Project::default(), 0.0);
     }
 }

@@ -34,6 +34,11 @@ residual, force, and field updates.
 Simulation projects use versioned `.flursys.json` files, so supported cases can be created,
 shared, imported, and run after compilation from either the GUI or CLI.
 
+The workbench also stores named boundary conditions, extrusion depth, and mesh-layer settings in
+each project. Its 3D view is an engineering pre-processing preview of the structured 2D domain;
+the current numerical kernel remains a 2D structured finite-volume solver. True 3D solving and
+unstructured mesh generation are intentionally separate future solver milestones.
+
 ## License
 
 MIT

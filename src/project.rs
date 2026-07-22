@@ -5,7 +5,8 @@
 
 use crate::cases::{BackwardStepCase, CavityCase, CylinderCase};
 use crate::{
-    Case, ConvectionScheme, PressureSolverKind, PressureVelocityCoupling, SimulationConfig,
+    BoundaryCondition, BoundaryConditionKind, BoundaryFace, Case, ConvectionScheme,
+    PreprocessingModel, PressureSolverKind, PressureVelocityCoupling, SimulationConfig,
 };
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -20,6 +21,11 @@ pub struct Project {
     pub case: ProjectCase,
     #[serde(default)]
     pub solver: ProjectSolver,
+    /// Geometry, mesh, and named boundary data retained independently from the
+    /// current 2D solver. This is additive to format version 1 so existing
+    /// projects remain importable.
+    #[serde(default)]
+    pub preprocessing: PreprocessingModel,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -88,10 +94,12 @@ pub enum ProjectPressureSolver {
 
 impl Default for Project {
     fn default() -> Self {
+        let case = ProjectCase::from(CavityCase::default());
         Self {
             format_version: PROJECT_FORMAT_VERSION,
             name: "Lid-driven cavity".to_string(),
-            case: ProjectCase::from(CavityCase::default()),
+            preprocessing: default_preprocessing(&case),
+            case,
             solver: ProjectSolver::default(),
         }
     }
@@ -121,8 +129,9 @@ impl Project {
         let path = path.as_ref();
         let text = fs::read_to_string(path)
             .map_err(|error| format!("cannot read project {}: {error}", path.display()))?;
-        let project: Self = serde_json::from_str(&text)
+        let mut project: Self = serde_json::from_str(&text)
             .map_err(|error| format!("invalid FLURSYS project {}: {error}", path.display()))?;
+        project.ensure_preprocessing_defaults();
         project.validate()?;
         Ok(project)
     }
@@ -175,6 +184,7 @@ impl Project {
             steady_tolerance: solver.steady_tolerance,
             minimum_steps: 100,
             threads: solver.threads,
+            boundary_overrides: self.preprocessing.solver_overrides(),
             output_dir: output_dir.into(),
         })
     }
@@ -189,8 +199,32 @@ impl Project {
         if self.name.trim().is_empty() {
             return Err("project name cannot be empty".to_string());
         }
+        self.preprocessing.validate()?;
+        self.validate_active_solver_boundaries()?;
         self.simulation_config_unvalidated(PathBuf::from("results/validation"))
             .validate()
+    }
+
+    /// Supplies explicit, named planar boundaries to projects saved before
+    /// pre-processing data was added.
+    pub fn ensure_preprocessing_defaults(&mut self) {
+        if self.preprocessing.boundaries.is_empty() {
+            self.preprocessing = default_preprocessing(&self.case);
+        }
+    }
+
+    fn validate_active_solver_boundaries(&self) -> Result<(), String> {
+        for boundary in &self.preprocessing.boundaries {
+            if boundary.face != BoundaryFace::Right
+                && matches!(boundary.kind, BoundaryConditionKind::PressureOutlet { .. })
+            {
+                return Err(format!(
+                    "the active 2D solver supports a pressure outlet only on the right boundary; {} is retained for future 3D workflows but cannot run yet",
+                    boundary.face.label()
+                ));
+            }
+        }
+        Ok(())
     }
 
     fn simulation_config_unvalidated(&self, output_dir: PathBuf) -> SimulationConfig {
@@ -227,6 +261,7 @@ impl Project {
             steady_tolerance: solver.steady_tolerance,
             minimum_steps: 100,
             threads: solver.threads,
+            boundary_overrides: self.preprocessing.solver_overrides(),
             output_dir,
         }
     }
@@ -309,13 +344,82 @@ impl From<CavityCase> for ProjectCase {
     }
 }
 
+impl From<CylinderCase> for ProjectCase {
+    fn from(case: CylinderCase) -> Self {
+        Self::Cylinder {
+            length: case.length,
+            height: case.height,
+            diameter: case.diameter,
+            center_x: case.xc,
+            center_y: case.yc,
+            density: case.rho,
+            freestream_velocity: case.u_inf,
+            reynolds: case.reynolds,
+            perturbation: case.perturbation,
+        }
+    }
+}
+
+impl From<BackwardStepCase> for ProjectCase {
+    fn from(case: BackwardStepCase) -> Self {
+        Self::BackwardFacingStep {
+            length: case.length,
+            height: case.height,
+            step_height: case.step_height,
+            step_x: case.step_x,
+            density: case.rho,
+            mean_velocity: case.u_mean,
+            reynolds: case.reynolds,
+        }
+    }
+}
+
 fn default_perturbation() -> f64 {
     1.0e-3
+}
+
+fn default_preprocessing(_case: &ProjectCase) -> PreprocessingModel {
+    PreprocessingModel {
+        boundaries: vec![
+            BoundaryCondition {
+                name: "inlet-left".to_string(),
+                face: BoundaryFace::Left,
+                kind: BoundaryConditionKind::CaseDefault,
+            },
+            BoundaryCondition {
+                name: "outlet-right".to_string(),
+                face: BoundaryFace::Right,
+                kind: BoundaryConditionKind::CaseDefault,
+            },
+            BoundaryCondition {
+                name: "bottom".to_string(),
+                face: BoundaryFace::Bottom,
+                kind: BoundaryConditionKind::CaseDefault,
+            },
+            BoundaryCondition {
+                name: "top".to_string(),
+                face: BoundaryFace::Top,
+                kind: BoundaryConditionKind::CaseDefault,
+            },
+            BoundaryCondition {
+                name: "front".to_string(),
+                face: BoundaryFace::Front,
+                kind: BoundaryConditionKind::Symmetry,
+            },
+            BoundaryCondition {
+                name: "back".to_string(),
+                face: BoundaryFace::Back,
+                kind: BoundaryConditionKind::Symmetry,
+            },
+        ],
+        ..PreprocessingModel::default()
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cases::{BoundaryKind, Side};
 
     #[test]
     fn default_project_converts_to_a_valid_simulation() {
@@ -338,5 +442,52 @@ mod tests {
         let project = Project::load(path).unwrap();
         assert_eq!(project.name, "Lid-driven cavity Re=100");
         project.simulation_config("target/import-test").unwrap();
+    }
+
+    #[test]
+    fn named_boundary_conditions_become_solver_overrides() {
+        let mut project = Project::default();
+        project
+            .preprocessing
+            .boundary_mut(BoundaryFace::Left)
+            .unwrap()
+            .kind = BoundaryConditionKind::Velocity {
+            u: 2.5,
+            v: 0.0,
+            w: 0.0,
+        };
+        let config = project.simulation_config("target/boundary-test").unwrap();
+        assert!(matches!(
+            config.boundary_overrides.kind(&config.case, Side::Left),
+            BoundaryKind::Velocity
+        ));
+        assert_eq!(
+            config
+                .boundary_overrides
+                .velocity(&config.case, Side::Left, 0.0, 0.5, 0.0),
+            (2.5, 0.0)
+        );
+    }
+
+    #[test]
+    fn legacy_project_data_receives_named_boundaries() {
+        let mut project: Project = serde_json::from_str(
+            r#"{
+                "format_version": 1,
+                "name": "Legacy cavity",
+                "case": {
+                    "kind": "lid-driven-cavity",
+                    "length": 1.0,
+                    "height": 1.0,
+                    "density": 1.0,
+                    "lid_velocity": 1.0,
+                    "reynolds": 100.0
+                }
+            }"#,
+        )
+        .unwrap();
+        project.ensure_preprocessing_defaults();
+        project.validate().unwrap();
+        assert_eq!(project.preprocessing.boundaries.len(), 6);
     }
 }

@@ -1,7 +1,7 @@
 use flursys::cases::{BackwardStepCase, CavityCase, CylinderCase};
 use flursys::{
     Case, ConvectionScheme, IncompressibleSolver, PressureSolverKind, PressureVelocityCoupling,
-    SimulationConfig,
+    SimulationConfig, SolverBoundaryOverrides,
 };
 use std::path::PathBuf;
 
@@ -27,6 +27,7 @@ fn config(case: Case, nx: usize, ny: usize, name: &str) -> SimulationConfig {
         steady_tolerance: 1.0e-10,
         minimum_steps: 100,
         threads: 1,
+        boundary_overrides: SolverBoundaryOverrides::default(),
         output_dir: PathBuf::from(format!("target/smoke-tests/{name}")),
     }
 }

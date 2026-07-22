@@ -2,6 +2,7 @@ use crate::cases::{BoundaryKind, Case, CaseKind, Side};
 use crate::field::{Field2D, Mask2D};
 use crate::grid::UniformGrid2D;
 use crate::output;
+use crate::preprocess::SolverBoundaryOverrides;
 use rayon::prelude::*;
 use rayon::{ThreadPool, ThreadPoolBuilder};
 use std::fs::File;
@@ -55,6 +56,9 @@ pub struct SimulationConfig {
     pub minimum_steps: usize,
     /// Number of worker threads. Zero selects Rayon's automatic CPU count.
     pub threads: usize,
+    /// Explicit project-boundary overrides. Empty overrides preserve the
+    /// selected case's analytical boundary profiles.
+    pub boundary_overrides: SolverBoundaryOverrides,
     pub output_dir: PathBuf,
 }
 
@@ -405,6 +409,7 @@ impl IncompressibleSolver {
         }
         apply_velocity_boundaries(
             &self.cfg.case,
+            &self.cfg.boundary_overrides,
             &self.grid,
             &self.solid,
             self.time,
@@ -421,6 +426,7 @@ impl IncompressibleSolver {
         self.predict_momentum(simple);
         apply_velocity_boundaries(
             &self.cfg.case,
+            &self.cfg.boundary_overrides,
             &self.grid,
             &self.solid,
             self.time + self.cfg.dt,
@@ -452,6 +458,7 @@ impl IncompressibleSolver {
         }
         apply_velocity_boundaries(
             &self.cfg.case,
+            &self.cfg.boundary_overrides,
             &self.grid,
             &self.solid,
             self.time + self.cfg.dt,
@@ -517,6 +524,7 @@ impl IncompressibleSolver {
         let stencil = MomentumStencil {
             solid,
             case: &cfg.case,
+            boundaries: &cfg.boundary_overrides,
             grid,
         };
 
@@ -638,7 +646,16 @@ impl IncompressibleSolver {
                 .enumerate()
                 .for_each(|(j, row)| {
                     for i in 0..nx {
-                        if solid[(i, j)] || pressure_outlet_cell(&cfg.case, solid, nx, i, j) {
+                        if solid[(i, j)]
+                            || pressure_outlet_cell(
+                                &cfg.case,
+                                &cfg.boundary_overrides,
+                                solid,
+                                nx,
+                                i,
+                                j,
+                            )
+                        {
                             row[i] = 0.0;
                             continue;
                         }
@@ -703,7 +720,7 @@ impl IncompressibleSolver {
                 }
             }
 
-            if self.cfg.case.pressure_reference_required() {
+            if self.pressure_reference_required() {
                 if let Some((ri, rj)) = self.find_reference_cell() {
                     let reference_pressure = self.p[(ri, rj)];
                     for jj in 0..self.grid.ny {
@@ -739,6 +756,7 @@ impl IncompressibleSolver {
         let nx = self.grid.nx;
         let solid = &self.solid;
         let case = &self.cfg.case;
+        let boundaries = &self.cfg.boundary_overrides;
         let rhs = self.rhs.as_slice();
         let outlet_pressure = self.outlet_pressure();
         self.pool.install(|| {
@@ -748,8 +766,9 @@ impl IncompressibleSolver {
                 .for_each(|(j, (x_row, b_row))| {
                     for i in 0..nx {
                         let k = i + nx * j;
-                        if solid[(i, j)] || pressure_outlet_cell(case, solid, nx, i, j) {
-                            let value = if pressure_outlet_cell(case, solid, nx, i, j) {
+                        if solid[(i, j)] || pressure_outlet_cell(case, boundaries, solid, nx, i, j)
+                        {
+                            let value = if pressure_outlet_cell(case, boundaries, solid, nx, i, j) {
                                 outlet_pressure
                             } else {
                                 0.0
@@ -763,7 +782,7 @@ impl IncompressibleSolver {
                 });
         });
 
-        if self.cfg.case.pressure_reference_required() {
+        if self.pressure_reference_required() {
             self.project_pressure_zero_mean(&mut x);
             self.project_pressure_zero_mean(&mut b);
         }
@@ -775,7 +794,7 @@ impl IncompressibleSolver {
                 .zip(q.par_iter())
                 .for_each(|((r_value, &b_value), &q_value)| *r_value = b_value - q_value);
         });
-        if self.cfg.case.pressure_reference_required() {
+        if self.pressure_reference_required() {
             self.project_pressure_zero_mean(&mut r);
         }
 
@@ -786,7 +805,7 @@ impl IncompressibleSolver {
         }
 
         self.apply_jacobi_preconditioner(&r, &mut z);
-        if self.cfg.case.pressure_reference_required() {
+        if self.pressure_reference_required() {
             self.project_pressure_zero_mean(&mut z);
         }
         direction.copy_from_slice(&z);
@@ -816,7 +835,7 @@ impl IncompressibleSolver {
                         *r_value -= alpha * q_value;
                     });
             });
-            if self.cfg.case.pressure_reference_required() {
+            if self.pressure_reference_required() {
                 self.project_pressure_zero_mean(&mut x);
                 self.project_pressure_zero_mean(&mut r);
             }
@@ -830,7 +849,7 @@ impl IncompressibleSolver {
             }
 
             self.apply_jacobi_preconditioner(&r, &mut z);
-            if self.cfg.case.pressure_reference_required() {
+            if self.pressure_reference_required() {
                 self.project_pressure_zero_mean(&mut z);
             }
             let rz_new = self.parallel_dot(&r, &z);
@@ -845,13 +864,14 @@ impl IncompressibleSolver {
                     },
                 );
             });
-            if self.cfg.case.pressure_reference_required() {
+            if self.pressure_reference_required() {
                 self.project_pressure_zero_mean(&mut direction);
             }
             rz_old = rz_new;
         }
 
         let case = &self.cfg.case;
+        let boundaries = &self.cfg.boundary_overrides;
         let solid = &self.solid;
         let outlet_pressure = self.outlet_pressure();
         self.pool.install(|| {
@@ -863,7 +883,7 @@ impl IncompressibleSolver {
                     for i in 0..nx {
                         row[i] = if solid[(i, j)] {
                             0.0
-                        } else if pressure_outlet_cell(case, solid, nx, i, j) {
+                        } else if pressure_outlet_cell(case, boundaries, solid, nx, i, j) {
                             outlet_pressure
                         } else {
                             x[i + nx * j]
@@ -881,11 +901,12 @@ impl IncompressibleSolver {
         let ny = self.grid.ny;
         let solid = &self.solid;
         let case = &self.cfg.case;
+        let boundaries = &self.cfg.boundary_overrides;
         self.pool.install(|| {
             result.par_chunks_mut(nx).enumerate().for_each(|(j, row)| {
                 for i in 0..nx {
                     let k = i + nx * j;
-                    if solid[(i, j)] || pressure_outlet_cell(case, solid, nx, i, j) {
+                    if solid[(i, j)] || pressure_outlet_cell(case, boundaries, solid, nx, i, j) {
                         row[i] = x[k];
                         continue;
                     }
@@ -921,11 +942,12 @@ impl IncompressibleSolver {
         let ny = self.grid.ny;
         let solid = &self.solid;
         let case = &self.cfg.case;
+        let boundaries = &self.cfg.boundary_overrides;
         self.pool.install(|| {
             z.par_chunks_mut(nx).enumerate().for_each(|(j, row)| {
                 for i in 0..nx {
                     let k = i + nx * j;
-                    if solid[(i, j)] || pressure_outlet_cell(case, solid, nx, i, j) {
+                    if solid[(i, j)] || pressure_outlet_cell(case, boundaries, solid, nx, i, j) {
                         row[i] = r[k];
                         continue;
                     }
@@ -956,10 +978,11 @@ impl IncompressibleSolver {
         let pool = &self.pool;
         let solid = &self.solid;
         let case = &self.cfg.case;
+        let boundaries = &self.cfg.boundary_overrides;
         let nx = self.grid.nx;
         let ny = self.grid.ny;
         project_zero_mean(pool, values, solid, nx, ny, |i, j| {
-            pressure_outlet_cell(case, solid, nx, i, j)
+            pressure_outlet_cell(case, boundaries, solid, nx, i, j)
         });
     }
 
@@ -1160,22 +1183,25 @@ impl IncompressibleSolver {
         i + 1 == self.grid.nx
             && !self.solid[(i, j)]
             && matches!(
-                self.cfg.case.boundary_kind(Side::Right),
+                self.cfg
+                    .boundary_overrides
+                    .kind(&self.cfg.case, Side::Right),
                 BoundaryKind::PressureOutlet { .. }
             )
     }
 
     fn outlet_pressure(&self) -> f64 {
-        match self.cfg.case.boundary_kind(Side::Right) {
+        match self
+            .cfg
+            .boundary_overrides
+            .kind(&self.cfg.case, Side::Right)
+        {
             BoundaryKind::PressureOutlet { pressure } => pressure,
             _ => 0.0,
         }
     }
 
     fn find_reference_cell(&self) -> Option<(usize, usize)> {
-        if !self.cfg.case.pressure_reference_required() {
-            return None;
-        }
         for j in 0..self.grid.ny {
             for i in 0..self.grid.nx {
                 if !self.solid[(i, j)] {
@@ -1184,6 +1210,15 @@ impl IncompressibleSolver {
             }
         }
         None
+    }
+
+    fn pressure_reference_required(&self) -> bool {
+        !matches!(
+            self.cfg
+                .boundary_overrides
+                .kind(&self.cfg.case, Side::Right),
+            BoundaryKind::PressureOutlet { .. }
+        )
     }
 
     fn cylinder_force_coefficients(&self) -> (f64, f64) {
@@ -1461,6 +1496,7 @@ impl IncompressibleSolver {
 
 fn apply_velocity_boundaries(
     case: &Case,
+    boundaries: &SolverBoundaryOverrides,
     grid: &UniformGrid2D,
     solid: &Mask2D,
     time: f64,
@@ -1469,16 +1505,18 @@ fn apply_velocity_boundaries(
 ) {
     for j in 0..grid.ny {
         let y = grid.u_face_y(j);
-        match case.boundary_kind(Side::Left) {
+        match boundaries.kind(case, Side::Left) {
             BoundaryKind::Velocity => {
-                u[(0, j)] = case.boundary_velocity(Side::Left, 0.0, y, time).0
+                u[(0, j)] = boundaries.velocity(case, Side::Left, 0.0, y, time).0
             }
             BoundaryKind::Symmetry => u[(0, j)] = 0.0,
             BoundaryKind::PressureOutlet { .. } => u[(0, j)] = u[(1, j)],
         }
-        match case.boundary_kind(Side::Right) {
+        match boundaries.kind(case, Side::Right) {
             BoundaryKind::Velocity => {
-                u[(grid.nx, j)] = case.boundary_velocity(Side::Right, grid.length, y, time).0
+                u[(grid.nx, j)] = boundaries
+                    .velocity(case, Side::Right, grid.length, y, time)
+                    .0
             }
             BoundaryKind::Symmetry => u[(grid.nx, j)] = 0.0,
             BoundaryKind::PressureOutlet { .. } => u[(grid.nx, j)] = u[(grid.nx - 1, j)],
@@ -1487,16 +1525,16 @@ fn apply_velocity_boundaries(
 
     for i in 0..grid.nx {
         let x = grid.v_face_x(i);
-        match case.boundary_kind(Side::Bottom) {
+        match boundaries.kind(case, Side::Bottom) {
             BoundaryKind::Velocity => {
-                v[(i, 0)] = case.boundary_velocity(Side::Bottom, x, 0.0, time).1
+                v[(i, 0)] = boundaries.velocity(case, Side::Bottom, x, 0.0, time).1
             }
             BoundaryKind::Symmetry => v[(i, 0)] = 0.0,
             BoundaryKind::PressureOutlet { .. } => v[(i, 0)] = v[(i, 1)],
         }
-        match case.boundary_kind(Side::Top) {
+        match boundaries.kind(case, Side::Top) {
             BoundaryKind::Velocity => {
-                v[(i, grid.ny)] = case.boundary_velocity(Side::Top, x, grid.height, time).1
+                v[(i, grid.ny)] = boundaries.velocity(case, Side::Top, x, grid.height, time).1
             }
             BoundaryKind::Symmetry => v[(i, grid.ny)] = 0.0,
             BoundaryKind::PressureOutlet { .. } => v[(i, grid.ny)] = v[(i, grid.ny - 1)],
@@ -1541,11 +1579,18 @@ fn v_face_open(solid: &Mask2D, ny: usize, i: usize, j: usize) -> bool {
     }
 }
 
-fn pressure_outlet_cell(case: &Case, solid: &Mask2D, nx: usize, i: usize, j: usize) -> bool {
+fn pressure_outlet_cell(
+    case: &Case,
+    boundaries: &SolverBoundaryOverrides,
+    solid: &Mask2D,
+    nx: usize,
+    i: usize,
+    j: usize,
+) -> bool {
     i + 1 == nx
         && !solid[(i, j)]
         && matches!(
-            case.boundary_kind(Side::Right),
+            boundaries.kind(case, Side::Right),
             BoundaryKind::PressureOutlet { .. }
         )
 }
@@ -1553,6 +1598,7 @@ fn pressure_outlet_cell(case: &Case, solid: &Mask2D, nx: usize, i: usize, j: usi
 struct MomentumStencil<'a> {
     solid: &'a Mask2D,
     case: &'a Case,
+    boundaries: &'a SolverBoundaryOverrides,
     grid: &'a UniformGrid2D,
 }
 
@@ -1571,10 +1617,22 @@ impl MomentumStencil<'_> {
         }
 
         if jj < 0 {
-            return tangential_ghost_u(self.case, Side::Bottom, center, self.grid.u_face_x(i));
+            return tangential_ghost_u(
+                self.case,
+                self.boundaries,
+                Side::Bottom,
+                center,
+                self.grid.u_face_x(i),
+            );
         }
         if jj >= self.grid.ny as isize {
-            return tangential_ghost_u(self.case, Side::Top, center, self.grid.u_face_x(i));
+            return tangential_ghost_u(
+                self.case,
+                self.boundaries,
+                Side::Top,
+                center,
+                self.grid.u_face_x(i),
+            );
         }
         center
     }
@@ -1593,39 +1651,63 @@ impl MomentumStencil<'_> {
         }
 
         if ii < 0 {
-            return tangential_ghost_v(self.case, Side::Left, center, self.grid.v_face_y(j));
+            return tangential_ghost_v(
+                self.case,
+                self.boundaries,
+                Side::Left,
+                center,
+                self.grid.v_face_y(j),
+            );
         }
         if ii >= self.grid.nx as isize {
-            return tangential_ghost_v(self.case, Side::Right, center, self.grid.v_face_y(j));
+            return tangential_ghost_v(
+                self.case,
+                self.boundaries,
+                Side::Right,
+                center,
+                self.grid.v_face_y(j),
+            );
         }
         center
     }
 }
 
-fn tangential_ghost_u(case: &Case, side: Side, center: f64, x: f64) -> f64 {
-    match case.boundary_kind(side) {
+fn tangential_ghost_u(
+    case: &Case,
+    boundaries: &SolverBoundaryOverrides,
+    side: Side,
+    center: f64,
+    x: f64,
+) -> f64 {
+    match boundaries.kind(case, side) {
         BoundaryKind::Velocity => {
             let y = if side == Side::Bottom {
                 0.0
             } else {
                 case.domain().1
             };
-            let wall_u = case.boundary_velocity(side, x, y, 0.0).0;
+            let wall_u = boundaries.velocity(case, side, x, y, 0.0).0;
             2.0 * wall_u - center
         }
         BoundaryKind::Symmetry | BoundaryKind::PressureOutlet { .. } => center,
     }
 }
 
-fn tangential_ghost_v(case: &Case, side: Side, center: f64, y: f64) -> f64 {
-    match case.boundary_kind(side) {
+fn tangential_ghost_v(
+    case: &Case,
+    boundaries: &SolverBoundaryOverrides,
+    side: Side,
+    center: f64,
+    y: f64,
+) -> f64 {
+    match boundaries.kind(case, side) {
         BoundaryKind::Velocity => {
             let x = if side == Side::Left {
                 0.0
             } else {
                 case.domain().0
             };
-            let wall_v = case.boundary_velocity(side, x, y, 0.0).1;
+            let wall_v = boundaries.velocity(case, side, x, y, 0.0).1;
             2.0 * wall_v - center
         }
         BoundaryKind::Symmetry | BoundaryKind::PressureOutlet { .. } => center,
@@ -1757,6 +1839,7 @@ fn project_zero_mean<F>(
 mod tests {
     use super::*;
     use crate::cases::CavityCase;
+    use crate::{BoundaryConditionKind, BoundaryFace, Project};
 
     #[test]
     fn cavity_configuration_builds() {
@@ -1781,9 +1864,29 @@ mod tests {
             steady_tolerance: 1.0e-8,
             minimum_steps: 1,
             threads: 1,
+            boundary_overrides: SolverBoundaryOverrides::default(),
             output_dir: PathBuf::from("target/test-output"),
         };
         let solver = IncompressibleSolver::new(cfg);
         assert!(solver.is_ok());
+    }
+
+    #[test]
+    fn project_boundary_override_sets_the_solver_face_velocity() {
+        let mut project = Project::default();
+        project
+            .preprocessing
+            .boundary_mut(BoundaryFace::Left)
+            .unwrap()
+            .kind = BoundaryConditionKind::Velocity {
+            u: 1.75,
+            v: 0.0,
+            w: 0.0,
+        };
+        let config = project
+            .simulation_config("target/boundary-application-test")
+            .unwrap();
+        let solver = IncompressibleSolver::new(config).unwrap();
+        assert_eq!(solver.u[(0, solver.grid.ny / 2)], 1.75);
     }
 }

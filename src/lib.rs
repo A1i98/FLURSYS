@@ -8,11 +8,16 @@ pub mod cases;
 pub mod field;
 pub mod grid;
 pub mod output;
+pub mod preprocess;
 pub mod project;
 pub mod runtime;
 pub mod solver;
 
 pub use cases::{Case, CaseKind};
+pub use preprocess::{
+    BoundaryCondition, BoundaryConditionKind, BoundaryFace, GeometryDimension, GeometryModel,
+    MeshSettings, MeshTopology, PreprocessingModel, SolverBoundaryOverrides,
+};
 pub use project::{Project, ProjectCase, ProjectCoupling, ProjectPressureSolver, ProjectSolver};
 pub use solver::{
     ConvectionScheme, FieldUpdate, IncompressibleSolver, PressureSolverKind,

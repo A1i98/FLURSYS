@@ -22,5 +22,25 @@
     "pressure_relaxation": 0.3,
     "steady_tolerance": 0.0000001,
     "threads": 0
+  },
+  "preprocessing": {
+    "geometry": {
+      "dimension": "extruded-three-d",
+      "extrusion_depth": 0.25
+    },
+    "mesh": {
+      "topology": "structured",
+      "cells_z": 8,
+      "growth_rate": 1.0,
+      "boundary_layers": 0
+    },
+    "boundaries": [
+      { "name": "inlet-left", "face": "left", "type": "case-default" },
+      { "name": "outlet-right", "face": "right", "type": "case-default" },
+      { "name": "bottom", "face": "bottom", "type": "case-default" },
+      { "name": "moving-lid", "face": "top", "type": "case-default" },
+      { "name": "front", "face": "front", "type": "symmetry" },
+      { "name": "back", "face": "back", "type": "symmetry" }
+    ]
   }
 }

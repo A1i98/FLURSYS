@@ -281,7 +281,10 @@ fn publish(updates: &Sender<SolverUpdate>, update: SolverUpdate) {
 mod tests {
     use super::*;
     use crate::cases::CavityCase;
-    use crate::{Case, ConvectionScheme, PressureSolverKind, PressureVelocityCoupling};
+    use crate::{
+        Case, ConvectionScheme, PressureSolverKind, PressureVelocityCoupling,
+        SolverBoundaryOverrides,
+    };
     use std::path::PathBuf;
 
     fn config() -> SimulationConfig {
@@ -306,6 +309,7 @@ mod tests {
             steady_tolerance: 1.0e-10,
             minimum_steps: 100,
             threads: 1,
+            boundary_overrides: SolverBoundaryOverrides::default(),
             output_dir: PathBuf::from("target/runtime-test"),
         }
     }

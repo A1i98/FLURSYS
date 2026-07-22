@@ -1,7 +1,7 @@
 use flursys::cases::{BackwardStepCase, CavityCase, CylinderCase};
 use flursys::{
     Case, ConvectionScheme, IncompressibleSolver, PressureSolverKind, PressureVelocityCoupling,
-    Project, SimulationConfig,
+    Project, SimulationConfig, SolverBoundaryOverrides,
 };
 use std::collections::HashMap;
 use std::env;
@@ -212,6 +212,7 @@ fn common_config(
         steady_tolerance: value(options, "steady-tol", 1.0e-7_f64)?,
         minimum_steps: value(options, "minimum-steps", 2_000_usize)?,
         threads: value(options, "threads", 0_usize)?,
+        boundary_overrides: SolverBoundaryOverrides::default(),
         output_dir: PathBuf::from(
             options
                 .get("out")
