@@ -158,7 +158,7 @@ slint::slint! {
         callback start(); callback pause(); callback resume(); callback stop();
         callback load-project(); callback save-project(); callback show-mesh(); callback show-field();
         callback animation-play-pause(); callback animation-next(); callback show-geometry-3d();
-        callback rotate-geometry-3d(); callback apply-boundary(); callback select-step(int);
+        callback rotate-geometry-3d(); callback apply-boundary(); callback show-boundary-face(); callback select-step(int);
         callback select-case(); callback add-part(); callback remove-last-part();
         callback apply-thermal-boundary(); callback select-result-field(int);
         callback geometry-drag(float, float, float, float); callback geometry-zoom(float); callback reset-geometry-view();
@@ -327,7 +327,7 @@ slint::slint! {
                                     ComboBox { model: ["Case default", "Velocity", "Pressure outlet", "Wall", "Symmetry"]; current-index <=> root.boundary-kind-index; }
                                     Text { text: "Value  (u for velocity/wall; p for outlet)"; color: rgb(140, 167, 185); font-size: 11px; }
                                     LineEdit { text <=> root.boundary-value; }
-                                    Button { text: "APPLY BOUNDARY CONDITION"; clicked => { root.apply-boundary(); } }
+                                    HorizontalLayout { Button { text: "APPLY"; clicked => { root.apply-boundary(); } } Button { text: "SHOW FACE"; clicked => { root.show-boundary-face(); } } }
                                     Rectangle { height: 1px; background: rgb(47, 74, 91); }
                                     Text { text: "Front and back are retained for the future 3D solver. The active 2D solver accepts a pressure outlet on the right face."; color: rgb(126, 153, 170); font-size: 11px; wrap: word-wrap; }
                                 } }
@@ -435,6 +435,7 @@ struct AppState {
     geometry_pitch: f32,
     geometry_zoom: f32,
     geometry_drag_anchor: Option<(f32, f32, f32, f32)>,
+    selected_boundary_face: BoundaryFace,
     last_animation_tick: std::time::Instant,
 }
 
@@ -462,6 +463,7 @@ impl AppState {
             geometry_pitch: 0.0,
             geometry_zoom: 1.0,
             geometry_drag_anchor: None,
+            selected_boundary_face: BoundaryFace::Left,
             last_animation_tick: std::time::Instant::now(),
         }
     }
@@ -889,6 +891,7 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
         let mut state = boundary_state.borrow_mut();
         sync_project_from_ui(&ui, &mut state.project);
         let face = boundary_face_from_index(ui.get_boundary_face_index());
+        state.selected_boundary_face = face;
         if ui.get_boundary_kind_index() == 2 && face != BoundaryFace::Right {
             state.log("The active 2D solver accepts a pressure outlet only on the right boundary.");
             refresh_ui(&ui, &state);
@@ -921,6 +924,23 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
         }
         state.show_geometry_3d = true;
         state.show_mesh = false;
+        refresh_ui(&ui, &state);
+    });
+
+    let weak_ui = ui.as_weak();
+    let boundary_preview_state = state.clone();
+    ui.on_show_boundary_face(move || {
+        let Some(ui) = weak_ui.upgrade() else {
+            return;
+        };
+        let mut state = boundary_preview_state.borrow_mut();
+        sync_project_from_ui(&ui, &mut state.project);
+        state.selected_boundary_face = boundary_face_from_index(ui.get_boundary_face_index());
+        state.show_geometry_3d = true;
+        state.show_mesh = false;
+        state.animation_playing = false;
+        let label = state.selected_boundary_face.label();
+        state.log(format!("Highlighted {label} boundary in the mesh preview."));
         refresh_ui(&ui, &state);
     });
 
@@ -1293,9 +1313,10 @@ fn refresh_ui(ui: &MainWindow, state: &AppState) {
         .expect("project extrusion settings are validated before rendering");
         let z_exaggeration = preview_z_exaggeration(&mesh);
         ui.set_animation_status(SharedString::from(format!(
-            "{} cells · {} layers · visual Z ×{:.1} · preview samples ≤28 × 28 × 16 · yaw {:.0}° · pitch {:.0}° · zoom {:.0}%",
+            "{} cells · {} layers · selected: {} · visual Z ×{:.1} · preview samples ≤28 × 28 × 16 · yaw {:.0}° · pitch {:.0}° · zoom {:.0}%",
             mesh.cell_count(),
             mesh.nz,
+            state.selected_boundary_face.label(),
             z_exaggeration,
             state.geometry_yaw.to_degrees(),
             state.geometry_pitch.to_degrees(),
@@ -1306,6 +1327,7 @@ fn refresh_ui(ui: &MainWindow, state: &AppState) {
             state.geometry_yaw,
             state.geometry_pitch,
             state.geometry_zoom,
+            Some(state.selected_boundary_face),
         ));
     } else if state.show_mesh {
         ui.set_visualization_title(SharedString::from("MESH PREVIEW"));
@@ -1326,7 +1348,10 @@ fn refresh_ui(ui: &MainWindow, state: &AppState) {
             mesh.dy,
             mesh.dx.max(mesh.dy) / mesh.dx.min(mesh.dy),
         )));
-        ui.set_visualization_image(render_mesh(&state.project));
+        ui.set_visualization_image(render_mesh(
+            &state.project,
+            Some(state.selected_boundary_face),
+        ));
     } else if let Some(field) = state.frames.get(state.frame_index) {
         let selected = ui.get_result_field_index();
         let (title, image) = match selected {
@@ -1380,7 +1405,7 @@ fn render_empty_image() -> Image {
     image_from_rgba(PREVIEW_WIDTH, PREVIEW_HEIGHT, pixels)
 }
 
-fn render_mesh(project: &Project) -> Image {
+fn render_mesh(project: &Project, selected_boundary: Option<BoundaryFace>) -> Image {
     let width = PREVIEW_WIDTH;
     let height = PREVIEW_HEIGHT;
     let mut pixels = vec![0_u8; (width * height * 4) as usize];
@@ -1436,45 +1461,77 @@ fn render_mesh(project: &Project) -> Image {
             [52, 87, 106, 255],
         );
     }
-    draw_line(
+    draw_boundary_line_2d(
         &mut pixels,
         width,
         height,
+        BoundaryFace::Bottom,
+        selected_boundary,
         (origin_x as i32, origin_y as i32),
         ((origin_x + draw_width) as i32, origin_y as i32),
-        [205, 115, 175, 255],
     );
-    draw_line(
+    draw_boundary_line_2d(
         &mut pixels,
         width,
         height,
+        BoundaryFace::Right,
+        selected_boundary,
         ((origin_x + draw_width) as i32, origin_y as i32),
         (
             (origin_x + draw_width) as i32,
             (origin_y - draw_height) as i32,
         ),
-        [240, 195, 109, 255],
     );
-    draw_line(
+    draw_boundary_line_2d(
         &mut pixels,
         width,
         height,
+        BoundaryFace::Top,
+        selected_boundary,
         (
             (origin_x + draw_width) as i32,
             (origin_y - draw_height) as i32,
         ),
         (origin_x as i32, (origin_y - draw_height) as i32),
-        [116, 189, 135, 255],
     );
-    draw_line(
+    draw_boundary_line_2d(
         &mut pixels,
         width,
         height,
+        BoundaryFace::Left,
+        selected_boundary,
         (origin_x as i32, (origin_y - draw_height) as i32),
         (origin_x as i32, origin_y as i32),
-        [77, 168, 184, 255],
     );
     image_from_rgba(width, height, pixels)
+}
+
+fn draw_boundary_line_2d(
+    pixels: &mut [u8],
+    width: u32,
+    height: u32,
+    face: BoundaryFace,
+    selected: Option<BoundaryFace>,
+    start: (i32, i32),
+    end: (i32, i32),
+) {
+    let color = if selected == Some(face) {
+        [255, 255, 255, 255]
+    } else {
+        boundary_color(face)
+    };
+    draw_line(pixels, width, height, start, end, color);
+}
+
+fn boundary_color(face: BoundaryFace) -> [u8; 4] {
+    match face {
+        BoundaryFace::Left => [77, 168, 184, 255],
+        BoundaryFace::Right => [240, 195, 109, 255],
+        BoundaryFace::Top => [116, 189, 135, 255],
+        BoundaryFace::Bottom => [205, 115, 175, 255],
+        BoundaryFace::Front => [111, 148, 236, 255],
+        BoundaryFace::Back => [175, 126, 210, 255],
+    }
 }
 
 fn project_case_domain(case: &ProjectCase) -> (f64, f64) {
@@ -1540,7 +1597,13 @@ fn sampled_indices(count: usize, maximum_lines: usize) -> Vec<usize> {
     indices
 }
 
-fn render_geometry_3d(project: &Project, yaw: f32, pitch: f32, zoom: f32) -> Image {
+fn render_geometry_3d(
+    project: &Project,
+    yaw: f32,
+    pitch: f32,
+    zoom: f32,
+    selected_boundary: Option<BoundaryFace>,
+) -> Image {
     let width = PREVIEW_WIDTH;
     let height = PREVIEW_HEIGHT;
     let mut pixels = vec![0_u8; (width * height * 4) as usize];
@@ -1601,6 +1664,7 @@ fn render_geometry_3d(project: &Project, yaw: f32, pitch: f32, zoom: f32) -> Ima
             );
         }
     }
+    draw_boundaries_3d(&mut pixels, width, height, &mesh, camera, selected_boundary);
     draw_case_solid_3d(&mut pixels, width, height, &project.case, &mesh, camera);
     // Parametric workbench parts remain an overlay until they can be converted
     // into conformal CFD cells by a CAD/meshing kernel.
@@ -1642,6 +1706,90 @@ fn render_geometry_3d(project: &Project, yaw: f32, pitch: f32, zoom: f32) -> Ima
         }
     }
     image_from_rgba(width, height, pixels)
+}
+
+fn draw_boundaries_3d(
+    pixels: &mut [u8],
+    width: u32,
+    height: u32,
+    mesh: &ExtrudedMesh3D,
+    camera: MeshCamera,
+    selected: Option<BoundaryFace>,
+) {
+    let faces = [
+        (
+            BoundaryFace::Left,
+            [
+                (0, 0, 0),
+                (0, mesh.base.ny, 0),
+                (0, mesh.base.ny, mesh.nz),
+                (0, 0, mesh.nz),
+            ],
+        ),
+        (
+            BoundaryFace::Right,
+            [
+                (mesh.base.nx, 0, 0),
+                (mesh.base.nx, mesh.base.ny, 0),
+                (mesh.base.nx, mesh.base.ny, mesh.nz),
+                (mesh.base.nx, 0, mesh.nz),
+            ],
+        ),
+        (
+            BoundaryFace::Bottom,
+            [
+                (0, 0, 0),
+                (mesh.base.nx, 0, 0),
+                (mesh.base.nx, 0, mesh.nz),
+                (0, 0, mesh.nz),
+            ],
+        ),
+        (
+            BoundaryFace::Top,
+            [
+                (0, mesh.base.ny, 0),
+                (mesh.base.nx, mesh.base.ny, 0),
+                (mesh.base.nx, mesh.base.ny, mesh.nz),
+                (0, mesh.base.ny, mesh.nz),
+            ],
+        ),
+        (
+            BoundaryFace::Front,
+            [
+                (0, 0, 0),
+                (mesh.base.nx, 0, 0),
+                (mesh.base.nx, mesh.base.ny, 0),
+                (0, mesh.base.ny, 0),
+            ],
+        ),
+        (
+            BoundaryFace::Back,
+            [
+                (0, 0, mesh.nz),
+                (mesh.base.nx, 0, mesh.nz),
+                (mesh.base.nx, mesh.base.ny, mesh.nz),
+                (0, mesh.base.ny, mesh.nz),
+            ],
+        ),
+    ];
+    for (face, corners) in faces {
+        let color = if selected == Some(face) {
+            [255, 255, 255, 255]
+        } else {
+            boundary_color(face)
+        };
+        let points = corners.map(|(i, j, k)| camera.project(mesh.node(i, j, k)));
+        for index in 0..4 {
+            draw_line(
+                pixels,
+                width,
+                height,
+                points[index],
+                points[(index + 1) % 4],
+                color,
+            );
+        }
+    }
 }
 
 fn draw_case_solid_3d(
@@ -2393,7 +2541,7 @@ mod tests {
 
     #[test]
     fn geometry_preview_accepts_a_project_mesh() {
-        let _image = render_geometry_3d(&Project::default(), 0.0, 0.0, 1.0);
+        let _image = render_geometry_3d(&Project::default(), 0.0, 0.0, 1.0, None);
     }
 
     #[test]
@@ -2410,7 +2558,7 @@ mod tests {
             y: 0.0,
             z: 0.5,
         });
-        let _image = render_geometry_3d(&project, 0.35, -0.2, 1.1);
+        let _image = render_geometry_3d(&project, 0.35, -0.2, 1.1, Some(BoundaryFace::Top));
     }
 
     #[test]
