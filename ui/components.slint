@@ -1,0 +1,82 @@
+    import { Button, ComboBox, LineEdit, SpinBox, TextEdit } from "std-widgets.slint";
+
+    export component SectionTitle inherits Text {
+        color: rgb(228, 238, 246);
+        font-size: 22px;
+        font-weight: 700;
+    }
+
+    export component SectionHint inherits Text {
+        color: rgb(135, 160, 178);
+        font-size: 12px;
+        wrap: word-wrap;
+    }
+
+    export component Card inherits Rectangle {
+        background: rgb(20, 34, 45);
+        border-color: rgb(48, 74, 92);
+        border-width: 1px;
+        border-radius: 5px;
+    }
+
+    export component MetricCard inherits Card {
+        in property <string> label;
+        in property <string> value;
+        VerticalLayout {
+            padding: 12px;
+            Text { text: root.label; color: rgb(135, 160, 178); font-size: 11px; }
+            Text { text: root.value; color: rgb(240, 195, 109); font-size: 20px; font-weight: 700; }
+        }
+    }
+
+    export component InteractiveGeometryPreview inherits Rectangle {
+        in property <image> preview-image;
+        callback orbit(float, float, float, float);
+        callback zoom(float);
+        callback reset-view();
+        callback pick-boundary(float, float, float, float);
+        background: rgb(9, 16, 22);
+        border-color: rgb(40, 66, 82);
+        border-width: 1px;
+
+        Image { source: root.preview-image; width: parent.width; height: parent.height; image-fit: contain; }
+        Text {
+            x: 10px; y: parent.height - self.height - 8px;
+            text: "DRAG: ORBIT  ·  WHEEL: ZOOM  ·  DOUBLE-CLICK: RESET";
+            color: rgb(145, 174, 190); font-size: 10px; font-weight: 700;
+        }
+        TouchArea {
+            mouse-cursor: self.pressed ? grabbing : grab;
+            moved => {
+                root.orbit(self.mouse-x / 1px, self.mouse-y / 1px,
+                    self.pressed-x / 1px, self.pressed-y / 1px);
+            }
+            scroll-event(event) => { root.zoom(event.delta-y / 1px); accept }
+            double-clicked => { root.reset-view(); }
+            clicked => { root.pick-boundary(self.mouse-x / 1px, self.mouse-y / 1px, root.width / 1px, root.height / 1px); }
+        }
+    }
+
+    export component WorkflowItem inherits Rectangle {
+        in property <string> number;
+        in property <string> title;
+        in property <string> detail;
+        in property <bool> active;
+        callback select();
+        height: 66px;
+        background: root.active ? rgb(30, 61, 78) : rgb(17, 29, 38);
+        border-color: root.active ? rgb(77, 168, 184) : rgb(36, 58, 73);
+        border-width: 1px;
+        border-radius: 4px;
+        HorizontalLayout {
+            padding: 10px;
+            spacing: 10px;
+            Text { text: root.number; color: root.active ? rgb(240, 195, 109) : rgb(109, 137, 155); font-size: 17px; font-weight: 800; vertical-alignment: center; }
+            VerticalLayout {
+                Text { text: root.title; color: root.active ? rgb(232, 241, 248) : rgb(180, 199, 211); font-size: 13px; font-weight: 700; }
+                Text { text: root.detail; color: rgb(123, 151, 169); font-size: 10px; }
+            }
+        }
+        TouchArea { clicked => { root.select(); } }
+    }
+

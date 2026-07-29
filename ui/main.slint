@@ -1,0 +1,343 @@
+import { Button, ComboBox, LineEdit, SpinBox, TextEdit } from "std-widgets.slint";
+import { SectionTitle, SectionHint, Card, MetricCard, InteractiveGeometryPreview, WorkflowItem } from "components.slint";
+
+    export component MainWindow inherits Window {
+        title: "FLURSYS | CFD Workbench";
+        width: 1440px;
+        height: 900px;
+        background: rgb(11, 19, 26);
+
+        in-out property <int> current-step: 0;
+        in-out property <int> case-index: 0;
+        in-out property <int> part-kind-index: 0;
+        in-out property <string> part-name: "Part 1";
+        in-out property <string> part-size-x: "1.0";
+        in-out property <string> part-size-y: "1.0";
+        in-out property <string> part-size-z: "1.0";
+        in-out property <string> part-pos-x: "0.0";
+        in-out property <string> part-pos-y: "0.0";
+        in-out property <string> part-pos-z: "0.0";
+        in-out property <string> geometry-parts-summary: "No custom solids in this project.";
+        in-out property <string> status: "Idle";
+        in-out property <string> project-path: "case.flursys.json";
+        in-out property <string> project-name: "Lid-driven cavity";
+        in-out property <string> case-name: "Lid-driven cavity";
+        in-out property <int> nx: 64;
+        in-out property <int> ny: 64;
+        in-out property <string> dt-text: "0.001";
+        in-out property <int> iterations: 10000;
+        in-out property <int> threads: 0;
+        in-out property <int> gui-update-every: 10;
+        in-out property <int> history-every: 10;
+        in-out property <int> frame-every: 100;
+        in-out property <int> coupling-index: 0;
+        in-out property <int> pressure-solver-index: 0;
+        in-out property <string> velocity-relaxation: "0.7";
+        in-out property <string> pressure-relaxation: "0.3";
+        in-out property <string> extrusion-depth: "0.25";
+        in-out property <int> mesh-nz: 8;
+        in-out property <string> mesh-inspection: "Mesh inspection is waiting for a valid grid.";
+        in-out property <int> boundary-face-index: 0;
+        in-out property <int> boundary-kind-index: 0;
+        in-out property <string> boundary-value: "0.0";
+        in-out property <string> boundary-summary: "No boundary summary available.";
+        in-out property <string> preflight-summary: "Run validation before starting the solver.";
+        in-out property <int> energy-model-index: 0;
+        in-out property <string> initial-temperature: "293.15";
+        in-out property <string> thermal-diffusivity: "0.000022";
+        in-out property <string> thermal-source: "0.0";
+        in-out property <int> thermal-face-index: 0;
+        in-out property <int> thermal-boundary-kind-index: 0;
+        in-out property <string> thermal-boundary-value: "293.15";
+        in-out property <int> buoyancy-model-index: 0;
+        in-out property <string> reference-temperature: "293.15";
+        in-out property <string> thermal-expansion: "0.0034";
+        in-out property <string> gravity-x: "0.0";
+        in-out property <string> gravity-y: "-9.81";
+        in-out property <int> result-field-index: 0;
+        in-out property <string> residual-summary: "Waiting for a solver run.";
+        in-out property <image> residual-image;
+        in-out property <float> continuity-level: 0.0;
+        in-out property <float> momentum-level: 0.0;
+        in-out property <float> pressure-level: 0.0;
+        in-out property <string> force-summary: "Cd: —\nCl: —";
+        in-out property <string> field-summary: "No field snapshot received.";
+        in-out property <image> visualization-image;
+        in-out property <string> visualization-title: "MESH PREVIEW";
+        in-out property <string> animation-status: "Frame 0 / 0";
+        in-out property <string> log-text: "FLURSYS Slint workbench ready.";
+
+        callback start(); callback pause(); callback resume(); callback stop(); callback validate-case();
+        callback load-project(); callback save-project(); callback show-mesh(); callback show-field();
+        callback animation-play-pause(); callback animation-next(); callback show-geometry-3d();
+        callback rotate-geometry-3d(); callback apply-boundary(); callback show-boundary-face(); callback select-step(int);
+        callback select-case(); callback add-part(); callback remove-last-part();
+        callback apply-thermal-boundary(); callback select-result-field(int);
+        callback geometry-drag(float, float, float, float); callback geometry-zoom(float); callback reset-geometry-view();
+        callback pick-boundary(float, float, float, float);
+
+        VerticalLayout {
+            spacing: 0px;
+            Rectangle {
+                height: 60px;
+                background: rgb(20, 37, 49);
+                border-color: rgb(50, 79, 99);
+                border-width: 1px;
+                HorizontalLayout {
+                    padding: 14px;
+                    spacing: 11px;
+                    Text { text: "FLURSYS"; color: rgb(233, 242, 248); font-size: 23px; font-weight: 800; }
+                    Rectangle { width: 1px; background: rgb(65, 94, 112); }
+                    Text { text: "CFD WORKBENCH"; color: rgb(136, 164, 182); font-size: 12px; }
+                    Rectangle { horizontal-stretch: 1; }
+                    Text { text: "PROJECT"; color: rgb(136, 164, 182); font-size: 10px; }
+                    Text { text: root.project-name; color: rgb(215, 229, 238); font-size: 12px; }
+                    Rectangle { width: 1px; background: rgb(65, 94, 112); }
+                    Text { text: "SOLVER"; color: rgb(136, 164, 182); font-size: 10px; }
+                    Text { text: root.status; color: rgb(240, 195, 109); font-size: 12px; font-weight: 700; }
+                }
+            }
+
+            HorizontalLayout {
+                spacing: 0px;
+                Rectangle {
+                    width: 248px;
+                    background: rgb(14, 25, 34);
+                    border-color: rgb(37, 58, 73);
+                    border-width: 1px;
+                    VerticalLayout {
+                        padding: 12px;
+                        spacing: 8px;
+                        Text { text: "SIMULATION WORKFLOW"; color: rgb(132, 161, 180); font-size: 10px; font-weight: 700; }
+                        WorkflowItem { number: "01"; title: "Geometry"; detail: "Choose domain and project"; active: root.current-step == 0; select => { root.select-step(0); } }
+                        WorkflowItem { number: "02"; title: "Mesh"; detail: "Structured volume controls"; active: root.current-step == 1; select => { root.select-step(1); } }
+                        WorkflowItem { number: "03"; title: "Setup"; detail: "Boundaries and physics"; active: root.current-step == 2; select => { root.select-step(2); } }
+                        WorkflowItem { number: "04"; title: "Run"; detail: "Solver and convergence"; active: root.current-step == 3; select => { root.select-step(3); } }
+                        WorkflowItem { number: "05"; title: "Results"; detail: "Fields and animation"; active: root.current-step == 4; select => { root.select-step(4); } }
+                        Rectangle { vertical-stretch: 1; }
+                        Rectangle { height: 1px; background: rgb(37, 58, 73); }
+                        Text { text: "Active numerical core"; color: rgb(136, 164, 182); font-size: 10px; }
+                        Text { text: "2D structured FVM\n3D workbench preview"; color: rgb(190, 209, 220); font-size: 11px; wrap: word-wrap; }
+                    }
+                }
+
+                Rectangle {
+                    horizontal-stretch: 1;
+                    background: rgb(11, 19, 26);
+
+                    if root.current-step == 0 : Rectangle {
+                        width: parent.width; height: parent.height;
+                        VerticalLayout {
+                            padding: 26px; spacing: 16px;
+                            SectionTitle { text: "01  Geometry"; }
+                            SectionHint { text: "Start every simulation by choosing a supported geometry and saving a portable project definition."; }
+                            HorizontalLayout {
+                                spacing: 16px;
+                                Card {
+                                    width: 300px;
+                                    VerticalLayout {
+                                        padding: 18px; spacing: 10px;
+                                        Text { text: "CASE LIBRARY"; color: rgb(240, 195, 109); font-size: 11px; font-weight: 700; }
+                                        Text { text: "Select the physical domain"; color: rgb(226, 237, 245); font-size: 16px; font-weight: 700; }
+                                        ComboBox { model: ["Lid-driven cavity", "Cylinder flow Re=100", "Backward-facing step"]; current-index <=> root.case-index; }
+                                        Button { text: "USE THIS GEOMETRY"; clicked => { root.select-case(); } }
+                                        Rectangle { height: 1px; background: rgb(47, 74, 91); }
+                                        Text { text: "Project name"; color: rgb(140, 167, 185); font-size: 11px; }
+                                        LineEdit { text <=> root.project-name; }
+                                        Text { text: "Project file"; color: rgb(140, 167, 185); font-size: 11px; }
+                                        LineEdit { text <=> root.project-path; }
+                                        HorizontalLayout { Button { text: "LOAD"; clicked => { root.load-project(); } } Button { text: "SAVE"; clicked => { root.save-project(); } } }
+                                    }
+                                }
+                                Card {
+                                    width: 365px;
+                                    VerticalLayout {
+                                        padding: 18px; spacing: 8px;
+                                        Text { text: "3D PART DESIGNER"; color: rgb(240, 195, 109); font-size: 11px; font-weight: 700; }
+                                        Text { text: "Create parametric solids"; color: rgb(226, 237, 245); font-size: 16px; font-weight: 700; }
+                                        ComboBox { model: ["Box", "Cylinder"]; current-index <=> root.part-kind-index; }
+                                        Text { text: root.part-kind-index == 0 ? "Box: length × width × height" : "Cylinder: radius × height"; color: rgb(126, 153, 170); font-size: 10px; }
+                                        Text { text: "Part name"; color: rgb(140, 167, 185); font-size: 11px; }
+                                        LineEdit { text <=> root.part-name; }
+                                        Text { text: "Dimensions"; color: rgb(140, 167, 185); font-size: 10px; }
+                                        HorizontalLayout {
+                                            VerticalLayout { Text { text: root.part-kind-index == 0 ? "X / length" : "Radius"; color: rgb(126, 153, 170); font-size: 10px; } LineEdit { text <=> root.part-size-x; } }
+                                            VerticalLayout { Text { text: root.part-kind-index == 0 ? "Y / width" : "Reference radius"; color: rgb(126, 153, 170); font-size: 10px; } LineEdit { text <=> root.part-size-y; } }
+                                        }
+                                        Text { text: "Z / height"; color: rgb(126, 153, 170); font-size: 10px; }
+                                        LineEdit { text <=> root.part-size-z; }
+                                        Text { text: "Centre position"; color: rgb(140, 167, 185); font-size: 10px; }
+                                        HorizontalLayout {
+                                            VerticalLayout { Text { text: "X"; color: rgb(126, 153, 170); font-size: 10px; } LineEdit { text <=> root.part-pos-x; } }
+                                            VerticalLayout { Text { text: "Y"; color: rgb(126, 153, 170); font-size: 10px; } LineEdit { text <=> root.part-pos-y; } }
+                                        }
+                                        Text { text: "Z"; color: rgb(126, 153, 170); font-size: 10px; }
+                                        LineEdit { text <=> root.part-pos-z; }
+                                        HorizontalLayout {
+                                            Button { text: "ADD SOLID"; clicked => { root.add-part(); } }
+                                            Button { text: "REMOVE LAST"; clicked => { root.remove-last-part(); } }
+                                        }
+                                        Text { text: root.geometry-parts-summary; color: rgb(126, 153, 170); font-size: 10px; wrap: word-wrap; vertical-stretch: 1; }
+                                    }
+                                }
+                                Card {
+                                    horizontal-stretch: 1;
+                                    VerticalLayout {
+                                        padding: 18px; spacing: 10px;
+                                        Text { text: "GEOMETRY PREVIEW"; color: rgb(240, 195, 109); font-size: 11px; font-weight: 700; }
+                                        Text { text: root.case-name + " · " + root.geometry-parts-summary; color: rgb(229, 239, 246); font-size: 13px; font-weight: 700; wrap: word-wrap; }
+                                        InteractiveGeometryPreview { vertical-stretch: 1; preview-image: root.visualization-image; orbit(x, y, pressed-x, pressed-y) => { root.geometry-drag(x, y, pressed-x, pressed-y); } zoom(delta) => { root.geometry-zoom(delta); } reset-view => { root.reset-geometry-view(); } pick-boundary(x, y, w, h) => { root.pick-boundary(x, y, w, h); } }
+                                        HorizontalLayout { Button { text: "3D PREVIEW"; clicked => { root.show-geometry-3d(); } } Button { text: "ROTATE"; clicked => { root.rotate-geometry-3d(); } } Button { text: "FIT VIEW"; clicked => { root.reset-geometry-view(); } } }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    if root.current-step == 1 : Rectangle {
+                        width: parent.width; height: parent.height;
+                        VerticalLayout {
+                            padding: 26px; spacing: 16px;
+                            SectionTitle { text: "02  Mesh"; }
+                            SectionHint { text: "Define the active structured solver grid and retain extrusion layers for the 3D workbench model."; }
+                            HorizontalLayout {
+                                spacing: 16px;
+                                Card { width: 400px; VerticalLayout { padding: 18px; spacing: 11px;
+                                    Text { text: "STRUCTURED GRID"; color: rgb(240, 195, 109); font-size: 11px; font-weight: 700; }
+                                    Text { text: "Planar cells"; color: rgb(140, 167, 185); font-size: 11px; }
+                                    HorizontalLayout { Text { text: "Nx"; color: rgb(205, 220, 229); vertical-alignment: center; } SpinBox { value <=> root.nx; minimum: 4; maximum: 1024; } Text { text: "Ny"; color: rgb(205, 220, 229); vertical-alignment: center; } SpinBox { value <=> root.ny; minimum: 4; maximum: 1024; } }
+                                    Text { text: "Extrusion layers (Nz)"; color: rgb(140, 167, 185); font-size: 11px; }
+                                    SpinBox { value <=> root.mesh-nz; minimum: 1; maximum: 1024; }
+                                    Text { text: "Extrusion depth"; color: rgb(140, 167, 185); font-size: 11px; }
+                                    LineEdit { text <=> root.extrusion-depth; }
+                                    Text { text: "The active solver uses Nx × Ny. Nz is retained in the project and drives the 3D mesh preview."; color: rgb(126, 153, 170); font-size: 11px; wrap: word-wrap; }
+                                    Button { text: "GENERATE MESH PREVIEW"; clicked => { root.show-mesh(); } }
+                                } }
+                                Card { horizontal-stretch: 1; VerticalLayout { padding: 18px; spacing: 10px;
+                                    Text { text: "MESH INSPECTION"; color: rgb(240, 195, 109); font-size: 11px; font-weight: 700; }
+                                    Text { text: root.mesh-inspection; color: rgb(180, 202, 214); font-family: "monospace"; font-size: 11px; wrap: word-wrap; }
+                                    InteractiveGeometryPreview { vertical-stretch: 1; preview-image: root.visualization-image; orbit(x, y, pressed-x, pressed-y) => { root.geometry-drag(x, y, pressed-x, pressed-y); } zoom(delta) => { root.geometry-zoom(delta); } reset-view => { root.reset-geometry-view(); } pick-boundary(x, y, w, h) => { root.pick-boundary(x, y, w, h); } }
+                                    Text { text: root.visualization-title + " · " + root.animation-status; color: rgb(163, 188, 203); font-size: 11px; }
+                                    HorizontalLayout { Button { text: "2D GRID"; clicked => { root.show-mesh(); } } Button { text: "3D VOLUME"; clicked => { root.show-geometry-3d(); } } }
+                                } }
+                            }
+                        }
+                    }
+
+                    if root.current-step == 2 : Rectangle {
+                        width: parent.width; height: parent.height;
+                        VerticalLayout {
+                            padding: 26px; spacing: 16px;
+                            SectionTitle { text: "03  Setup"; }
+                            SectionHint { text: "Assign flow and thermal boundary conditions. Executable energy and Boussinesq controls are saved with the project."; }
+                            HorizontalLayout {
+                                spacing: 16px;
+                                Card { width: 420px; VerticalLayout { padding: 18px; spacing: 10px;
+                                    Text { text: "BOUNDARY CONDITIONS"; color: rgb(240, 195, 109); font-size: 11px; font-weight: 700; }
+                                    Text { text: "Boundary face"; color: rgb(140, 167, 185); font-size: 11px; }
+                                    ComboBox { model: ["Left / inlet", "Right / outlet", "Bottom", "Top", "Front", "Back"]; current-index <=> root.boundary-face-index; }
+                                    Text { text: "Condition"; color: rgb(140, 167, 185); font-size: 11px; }
+                                    ComboBox { model: ["Case default", "Velocity", "Pressure outlet", "Wall", "Symmetry"]; current-index <=> root.boundary-kind-index; }
+                                    Text { text: "Value  (u for velocity/wall; p for outlet)"; color: rgb(140, 167, 185); font-size: 11px; }
+                                    LineEdit { text <=> root.boundary-value; }
+                                    HorizontalLayout { Button { text: "APPLY"; clicked => { root.apply-boundary(); } } Button { text: "SHOW FACE"; clicked => { root.show-boundary-face(); } } }
+                                    Rectangle { height: 1px; background: rgb(47, 74, 91); }
+                                    Text { text: "BOUNDARY SUMMARY"; color: rgb(240, 195, 109); font-size: 10px; font-weight: 700; }
+                                    Text { text: root.boundary-summary; color: rgb(180, 202, 214); font-family: "monospace"; font-size: 10px; wrap: word-wrap; }
+                                    Text { text: "Front and back are retained for the future 3D solver. The active 2D solver accepts a pressure outlet on the right face."; color: rgb(126, 153, 170); font-size: 11px; wrap: word-wrap; }
+                                } }
+                                Card { width: 410px; VerticalLayout { padding: 18px; spacing: 8px;
+                                    Text { text: "ENERGY & BUOYANCY"; color: rgb(240, 195, 109); font-size: 11px; font-weight: 700; }
+                                    Text { text: "Energy model"; color: rgb(140, 167, 185); font-size: 11px; }
+                                    ComboBox { model: ["Flow only", "Constant-property energy"]; current-index <=> root.energy-model-index; }
+                                    HorizontalLayout {
+                                        VerticalLayout { Text { text: "Initial T (K)"; color: rgb(140, 167, 185); font-size: 10px; } LineEdit { text <=> root.initial-temperature; } }
+                                        VerticalLayout { Text { text: "Thermal diffusivity"; color: rgb(140, 167, 185); font-size: 10px; } LineEdit { text <=> root.thermal-diffusivity; } }
+                                    }
+                                    Text { text: "Heat source (K/s)"; color: rgb(140, 167, 185); font-size: 10px; } LineEdit { text <=> root.thermal-source; }
+                                    HorizontalLayout {
+                                        ComboBox { model: ["Left", "Right", "Bottom", "Top"]; current-index <=> root.thermal-face-index; }
+                                        ComboBox { model: ["Adiabatic", "Fixed temperature"]; current-index <=> root.thermal-boundary-kind-index; }
+                                    }
+                                    HorizontalLayout { LineEdit { text <=> root.thermal-boundary-value; } Button { text: "APPLY THERMAL BC"; clicked => { root.apply-thermal-boundary(); } } }
+                                    Rectangle { height: 1px; background: rgb(47, 74, 91); }
+                                    Text { text: "Buoyancy model"; color: rgb(140, 167, 185); font-size: 11px; }
+                                    ComboBox { model: ["Off", "Boussinesq"]; current-index <=> root.buoyancy-model-index; }
+                                    HorizontalLayout { LineEdit { text <=> root.reference-temperature; } LineEdit { text <=> root.thermal-expansion; } }
+                                    HorizontalLayout { LineEdit { text <=> root.gravity-x; } LineEdit { text <=> root.gravity-y; } }
+                                    Text { text: "Tref (K) · beta (1/K) · gx / gy (m/s²). The solver validates Fourier and CFL limits before it starts."; color: rgb(126, 153, 170); font-size: 10px; wrap: word-wrap; }
+                                } }
+                                Card { horizontal-stretch: 1; VerticalLayout { padding: 18px; spacing: 10px;
+                                    Text { text: "BOUNDARY & VOLUME VIEW"; color: rgb(240, 195, 109); font-size: 11px; font-weight: 700; }
+                                    InteractiveGeometryPreview { vertical-stretch: 1; preview-image: root.visualization-image; orbit(x, y, pressed-x, pressed-y) => { root.geometry-drag(x, y, pressed-x, pressed-y); } zoom(delta) => { root.geometry-zoom(delta); } reset-view => { root.reset-geometry-view(); } pick-boundary(x, y, w, h) => { root.pick-boundary(x, y, w, h); } }
+                                    Text { text: "Cyan: left · Gold: right · Green: top · Magenta: bottom"; color: rgb(163, 188, 203); font-size: 11px; }
+                                    HorizontalLayout { Button { text: "SHOW 3D"; clicked => { root.show-geometry-3d(); } } Button { text: "ROTATE"; clicked => { root.rotate-geometry-3d(); } } }
+                                } }
+                            }
+                        }
+                    }
+
+                    if root.current-step == 3 : Rectangle {
+                        width: parent.width; height: parent.height;
+                        VerticalLayout {
+                            padding: 26px; spacing: 16px;
+                            SectionTitle { text: "04  Run"; }
+                            SectionHint { text: "Choose the numerical method, start the worker, and follow convergence without blocking the interface."; }
+                            HorizontalLayout {
+                                spacing: 16px;
+                                Card { width: 400px; VerticalLayout { padding: 18px; spacing: 10px;
+                                    Text { text: "SOLVER CONTROLS"; color: rgb(240, 195, 109); font-size: 11px; font-weight: 700; }
+                                    Text { text: "Coupling"; color: rgb(140, 167, 185); font-size: 11px; } ComboBox { model: ["SIMPLE-style steady", "Projection transient"]; current-index <=> root.coupling-index; }
+                                    Text { text: "Pressure solver"; color: rgb(140, 167, 185); font-size: 11px; } ComboBox { model: ["PCG + Jacobi", "SOR"]; current-index <=> root.pressure-solver-index; }
+                                    Text { text: "Pseudo-time step"; color: rgb(140, 167, 185); font-size: 11px; } LineEdit { text <=> root.dt-text; }
+                                    Text { text: "Iterations"; color: rgb(140, 167, 185); font-size: 11px; } SpinBox { value <=> root.iterations; minimum: 1; maximum: 10000000; }
+                                    Text { text: "CPU threads (0 = auto)"; color: rgb(140, 167, 185); font-size: 11px; } SpinBox { value <=> root.threads; minimum: 0; maximum: 256; }
+                                    Text { text: "Update / history / frame interval (iterations)"; color: rgb(140, 167, 185); font-size: 11px; }
+                                    HorizontalLayout {
+                                        VerticalLayout { Text { text: "GUI"; color: rgb(126, 153, 170); font-size: 10px; } SpinBox { value <=> root.gui-update-every; minimum: 1; maximum: 1000000; } }
+                                        VerticalLayout { Text { text: "CSV"; color: rgb(126, 153, 170); font-size: 10px; } SpinBox { value <=> root.history-every; minimum: 1; maximum: 1000000; } }
+                                        VerticalLayout { Text { text: "FRAME"; color: rgb(126, 153, 170); font-size: 10px; } SpinBox { value <=> root.frame-every; minimum: 1; maximum: 1000000; } }
+                                    }
+                                    Text { text: "GUI refreshes at the selected cadence. CSV history and PPM frames are saved in results/gui-run."; color: rgb(126, 153, 170); font-size: 10px; wrap: word-wrap; }
+                                    HorizontalLayout { Button { text: "VALIDATE CASE"; clicked => { root.validate-case(); } } Button { text: "START"; clicked => { root.start(); } } Button { text: "PAUSE"; clicked => { root.pause(); } } Button { text: "RESUME"; clicked => { root.resume(); } } Button { text: "STOP"; clicked => { root.stop(); } } }
+                                    Text { text: root.preflight-summary; color: rgb(180, 202, 214); font-family: "monospace"; font-size: 10px; wrap: word-wrap; }
+                                } }
+                                Card { horizontal-stretch: 1; VerticalLayout { padding: 18px; spacing: 10px;
+                                    Text { text: "LIVE CONVERGENCE"; color: rgb(240, 195, 109); font-size: 11px; font-weight: 700; }
+                                    Rectangle { vertical-stretch: 1; background: rgb(9, 16, 22); border-color: rgb(40, 66, 82); border-width: 1px; Image { source: root.residual-image; width: parent.width; height: parent.height; image-fit: contain; } }
+                                    HorizontalLayout { MetricCard { label: "STATUS"; value: root.status; } MetricCard { label: "ITERATIONS"; value: root.iterations; } MetricCard { label: "WORKERS"; value: root.threads == 0 ? "AUTO" : root.threads; } }
+                                } }
+                            }
+                        }
+                    }
+
+                    if root.current-step == 4 : Rectangle {
+                        width: parent.width; height: parent.height;
+                        VerticalLayout {
+                            padding: 26px; spacing: 16px;
+                            SectionTitle { text: "05  Results"; }
+                            SectionHint { text: "Inspect generated field snapshots, animate sampled results, and review the run log."; }
+                            HorizontalLayout {
+                                spacing: 16px;
+                                Card { horizontal-stretch: 1; VerticalLayout { padding: 18px; spacing: 10px;
+                                    Text { text: root.visualization-title; color: rgb(240, 195, 109); font-size: 11px; font-weight: 700; }
+                                    Rectangle { vertical-stretch: 1; background: rgb(9, 16, 22); border-color: rgb(40, 66, 82); border-width: 1px; Image { source: root.visualization-image; width: parent.width; height: parent.height; image-fit: contain; } }
+                                    Text { text: root.animation-status; color: rgb(163, 188, 203); font-size: 11px; }
+                                    HorizontalLayout { Button { text: "SPEED"; clicked => { root.select-result-field(0); } } Button { text: "PRESSURE"; clicked => { root.select-result-field(1); } } Button { text: "VORTICITY"; clicked => { root.select-result-field(2); } } Button { text: "TEMPERATURE"; clicked => { root.select-result-field(3); } } }
+                                    HorizontalLayout { Button { text: "FIELD"; clicked => { root.show-field(); } } Button { text: "MESH"; clicked => { root.show-mesh(); } } Button { text: "PLAY / PAUSE"; clicked => { root.animation-play-pause(); } } Button { text: "NEXT"; clicked => { root.animation-next(); } } }
+                                } }
+                                Card { width: 390px; VerticalLayout { padding: 18px; spacing: 10px;
+                                    Text { text: "RUN SUMMARY"; color: rgb(240, 195, 109); font-size: 11px; font-weight: 700; }
+                                    Text { text: root.residual-summary; color: rgb(213, 227, 236); font-family: "monospace"; font-size: 12px; }
+                                    Text { text: root.force-summary; color: rgb(213, 227, 236); font-family: "monospace"; font-size: 12px; }
+                                    Text { text: root.field-summary; color: rgb(140, 167, 185); font-size: 11px; wrap: word-wrap; }
+                                    Text { text: "SOLVER LOG"; color: rgb(240, 195, 109); font-size: 11px; font-weight: 700; }
+                                    TextEdit { text: root.log-text; read-only: true; vertical-stretch: 1; }
+                                } }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
