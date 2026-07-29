@@ -50,6 +50,7 @@ slint::slint! {
         callback orbit(float, float, float, float);
         callback zoom(float);
         callback reset-view();
+        callback pick-boundary(float, float, float, float);
         background: rgb(9, 16, 22);
         border-color: rgb(40, 66, 82);
         border-width: 1px;
@@ -68,6 +69,7 @@ slint::slint! {
             }
             scroll-event(event) => { root.zoom(event.delta-y / 1px); accept }
             double-clicked => { root.reset-view(); }
+            clicked => { root.pick-boundary(self.mouse-x / 1px, self.mouse-y / 1px, root.width / 1px, root.height / 1px); }
         }
     }
 
@@ -130,6 +132,8 @@ slint::slint! {
         in-out property <int> boundary-face-index: 0;
         in-out property <int> boundary-kind-index: 0;
         in-out property <string> boundary-value: "0.0";
+        in-out property <string> boundary-summary: "No boundary summary available.";
+        in-out property <string> preflight-summary: "Run validation before starting the solver.";
         in-out property <int> energy-model-index: 0;
         in-out property <string> initial-temperature: "293.15";
         in-out property <string> thermal-diffusivity: "0.000022";
@@ -155,13 +159,14 @@ slint::slint! {
         in-out property <string> animation-status: "Frame 0 / 0";
         in-out property <string> log-text: "FLURSYS Slint workbench ready.";
 
-        callback start(); callback pause(); callback resume(); callback stop();
+        callback start(); callback pause(); callback resume(); callback stop(); callback validate-case();
         callback load-project(); callback save-project(); callback show-mesh(); callback show-field();
         callback animation-play-pause(); callback animation-next(); callback show-geometry-3d();
         callback rotate-geometry-3d(); callback apply-boundary(); callback show-boundary-face(); callback select-step(int);
         callback select-case(); callback add-part(); callback remove-last-part();
         callback apply-thermal-boundary(); callback select-result-field(int);
         callback geometry-drag(float, float, float, float); callback geometry-zoom(float); callback reset-geometry-view();
+        callback pick-boundary(float, float, float, float);
 
         VerticalLayout {
             spacing: 0px;
@@ -273,7 +278,7 @@ slint::slint! {
                                         padding: 18px; spacing: 10px;
                                         Text { text: "GEOMETRY PREVIEW"; color: rgb(240, 195, 109); font-size: 11px; font-weight: 700; }
                                         Text { text: root.case-name + " · " + root.geometry-parts-summary; color: rgb(229, 239, 246); font-size: 13px; font-weight: 700; wrap: word-wrap; }
-                                        InteractiveGeometryPreview { vertical-stretch: 1; preview-image: root.visualization-image; orbit(x, y, pressed-x, pressed-y) => { root.geometry-drag(x, y, pressed-x, pressed-y); } zoom(delta) => { root.geometry-zoom(delta); } reset-view => { root.reset-geometry-view(); } }
+                                        InteractiveGeometryPreview { vertical-stretch: 1; preview-image: root.visualization-image; orbit(x, y, pressed-x, pressed-y) => { root.geometry-drag(x, y, pressed-x, pressed-y); } zoom(delta) => { root.geometry-zoom(delta); } reset-view => { root.reset-geometry-view(); } pick-boundary(x, y, w, h) => { root.pick-boundary(x, y, w, h); } }
                                         HorizontalLayout { Button { text: "3D PREVIEW"; clicked => { root.show-geometry-3d(); } } Button { text: "ROTATE"; clicked => { root.rotate-geometry-3d(); } } Button { text: "FIT VIEW"; clicked => { root.reset-geometry-view(); } } }
                                     }
                                 }
@@ -303,7 +308,7 @@ slint::slint! {
                                 Card { horizontal-stretch: 1; VerticalLayout { padding: 18px; spacing: 10px;
                                     Text { text: "MESH INSPECTION"; color: rgb(240, 195, 109); font-size: 11px; font-weight: 700; }
                                     Text { text: root.mesh-inspection; color: rgb(180, 202, 214); font-family: "monospace"; font-size: 11px; wrap: word-wrap; }
-                                    InteractiveGeometryPreview { vertical-stretch: 1; preview-image: root.visualization-image; orbit(x, y, pressed-x, pressed-y) => { root.geometry-drag(x, y, pressed-x, pressed-y); } zoom(delta) => { root.geometry-zoom(delta); } reset-view => { root.reset-geometry-view(); } }
+                                    InteractiveGeometryPreview { vertical-stretch: 1; preview-image: root.visualization-image; orbit(x, y, pressed-x, pressed-y) => { root.geometry-drag(x, y, pressed-x, pressed-y); } zoom(delta) => { root.geometry-zoom(delta); } reset-view => { root.reset-geometry-view(); } pick-boundary(x, y, w, h) => { root.pick-boundary(x, y, w, h); } }
                                     Text { text: root.visualization-title + " · " + root.animation-status; color: rgb(163, 188, 203); font-size: 11px; }
                                     HorizontalLayout { Button { text: "2D GRID"; clicked => { root.show-mesh(); } } Button { text: "3D VOLUME"; clicked => { root.show-geometry-3d(); } } }
                                 } }
@@ -329,6 +334,8 @@ slint::slint! {
                                     LineEdit { text <=> root.boundary-value; }
                                     HorizontalLayout { Button { text: "APPLY"; clicked => { root.apply-boundary(); } } Button { text: "SHOW FACE"; clicked => { root.show-boundary-face(); } } }
                                     Rectangle { height: 1px; background: rgb(47, 74, 91); }
+                                    Text { text: "BOUNDARY SUMMARY"; color: rgb(240, 195, 109); font-size: 10px; font-weight: 700; }
+                                    Text { text: root.boundary-summary; color: rgb(180, 202, 214); font-family: "monospace"; font-size: 10px; wrap: word-wrap; }
                                     Text { text: "Front and back are retained for the future 3D solver. The active 2D solver accepts a pressure outlet on the right face."; color: rgb(126, 153, 170); font-size: 11px; wrap: word-wrap; }
                                 } }
                                 Card { width: 410px; VerticalLayout { padding: 18px; spacing: 8px;
@@ -354,7 +361,7 @@ slint::slint! {
                                 } }
                                 Card { horizontal-stretch: 1; VerticalLayout { padding: 18px; spacing: 10px;
                                     Text { text: "BOUNDARY & VOLUME VIEW"; color: rgb(240, 195, 109); font-size: 11px; font-weight: 700; }
-                                    InteractiveGeometryPreview { vertical-stretch: 1; preview-image: root.visualization-image; orbit(x, y, pressed-x, pressed-y) => { root.geometry-drag(x, y, pressed-x, pressed-y); } zoom(delta) => { root.geometry-zoom(delta); } reset-view => { root.reset-geometry-view(); } }
+                                    InteractiveGeometryPreview { vertical-stretch: 1; preview-image: root.visualization-image; orbit(x, y, pressed-x, pressed-y) => { root.geometry-drag(x, y, pressed-x, pressed-y); } zoom(delta) => { root.geometry-zoom(delta); } reset-view => { root.reset-geometry-view(); } pick-boundary(x, y, w, h) => { root.pick-boundary(x, y, w, h); } }
                                     Text { text: "Cyan: left · Gold: right · Green: top · Magenta: bottom"; color: rgb(163, 188, 203); font-size: 11px; }
                                     HorizontalLayout { Button { text: "SHOW 3D"; clicked => { root.show-geometry-3d(); } } Button { text: "ROTATE"; clicked => { root.rotate-geometry-3d(); } } }
                                 } }
@@ -377,7 +384,8 @@ slint::slint! {
                                     Text { text: "Pseudo-time step"; color: rgb(140, 167, 185); font-size: 11px; } LineEdit { text <=> root.dt-text; }
                                     Text { text: "Iterations"; color: rgb(140, 167, 185); font-size: 11px; } SpinBox { value <=> root.iterations; minimum: 1; maximum: 10000000; }
                                     Text { text: "CPU threads (0 = auto)"; color: rgb(140, 167, 185); font-size: 11px; } SpinBox { value <=> root.threads; minimum: 0; maximum: 256; }
-                                    HorizontalLayout { Button { text: "START"; clicked => { root.start(); } } Button { text: "PAUSE"; clicked => { root.pause(); } } Button { text: "RESUME"; clicked => { root.resume(); } } Button { text: "STOP"; clicked => { root.stop(); } } }
+                                    HorizontalLayout { Button { text: "VALIDATE CASE"; clicked => { root.validate-case(); } } Button { text: "START"; clicked => { root.start(); } } Button { text: "PAUSE"; clicked => { root.pause(); } } Button { text: "RESUME"; clicked => { root.resume(); } } Button { text: "STOP"; clicked => { root.stop(); } } }
+                                    Text { text: root.preflight-summary; color: rgb(180, 202, 214); font-family: "monospace"; font-size: 10px; wrap: word-wrap; }
                                 } }
                                 Card { horizontal-stretch: 1; VerticalLayout { padding: 18px; spacing: 10px;
                                     Text { text: "LIVE CONVERGENCE"; color: rgb(240, 195, 109); font-size: 11px; font-weight: 700; }
@@ -436,6 +444,7 @@ struct AppState {
     geometry_zoom: f32,
     geometry_drag_anchor: Option<(f32, f32, f32, f32)>,
     selected_boundary_face: BoundaryFace,
+    preflight_summary: String,
     last_animation_tick: std::time::Instant,
 }
 
@@ -464,6 +473,7 @@ impl AppState {
             geometry_zoom: 1.0,
             geometry_drag_anchor: None,
             selected_boundary_face: BoundaryFace::Left,
+            preflight_summary: "Run validation before starting the solver.".to_string(),
             last_animation_tick: std::time::Instant::now(),
         }
     }
@@ -643,6 +653,15 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
         };
         let mut state = start_state.borrow_mut();
         sync_project_from_ui(&ui, &mut state.project);
+        match preflight_report(&state.project) {
+            Ok(report) => state.preflight_summary = report,
+            Err(error) => {
+                state.preflight_summary = format!("BLOCKED\n{error}");
+                state.log(error);
+                refresh_ui(&ui, &state);
+                return;
+            }
+        }
         state.residual_history.clear();
         state.frames.clear();
         state.frame_index = 0;
@@ -656,6 +675,27 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
                 Err(error) => state.log(error),
             },
             Err(error) => state.log(error),
+        }
+        refresh_ui(&ui, &state);
+    });
+
+    let weak_ui = ui.as_weak();
+    let validate_state = state.clone();
+    ui.on_validate_case(move || {
+        let Some(ui) = weak_ui.upgrade() else {
+            return;
+        };
+        let mut state = validate_state.borrow_mut();
+        sync_project_from_ui(&ui, &mut state.project);
+        match preflight_report(&state.project) {
+            Ok(report) => {
+                state.preflight_summary = report;
+                state.log("Case validation passed.");
+            }
+            Err(error) => {
+                state.preflight_summary = format!("BLOCKED\n{error}");
+                state.log(error);
+            }
         }
         refresh_ui(&ui, &state);
     });
@@ -942,6 +982,37 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
         let label = state.selected_boundary_face.label();
         state.log(format!("Highlighted {label} boundary in the mesh preview."));
         refresh_ui(&ui, &state);
+    });
+
+    let weak_ui = ui.as_weak();
+    let pick_boundary_state = state.clone();
+    ui.on_pick_boundary(move |x, y, preview_width, preview_height| {
+        let Some(ui) = weak_ui.upgrade() else {
+            return;
+        };
+        let Some(point) = preview_image_point(x, y, preview_width, preview_height) else {
+            return;
+        };
+        let mut state = pick_boundary_state.borrow_mut();
+        let selected = if state.show_mesh {
+            pick_boundary_2d(&state.project, point)
+        } else if state.show_geometry_3d {
+            pick_boundary_3d(
+                &state.project,
+                state.geometry_yaw,
+                state.geometry_pitch,
+                state.geometry_zoom,
+                point,
+            )
+        } else {
+            None
+        };
+        if let Some(face) = selected {
+            state.selected_boundary_face = face;
+            write_boundary_to_ui(&ui, &state.project, face);
+            state.log(format!("Selected {} boundary from preview.", face.label()));
+            refresh_ui(&ui, &state);
+        }
     });
 
     let weak_ui = ui.as_weak();
@@ -1256,6 +1327,8 @@ fn boundary_face_index(face: BoundaryFace) -> i32 {
 
 fn refresh_ui(ui: &MainWindow, state: &AppState) {
     ui.set_geometry_parts_summary(SharedString::from(geometry_parts_summary(&state.project)));
+    ui.set_boundary_summary(SharedString::from(boundary_summary(&state.project)));
+    ui.set_preflight_summary(SharedString::from(state.preflight_summary.as_str()));
     let update = state.last_update.as_ref();
     let solver_state = update.map_or(SolverState::Idle, |update| update.state);
     ui.set_status(SharedString::from(format!("{:?}", solver_state)));
@@ -1585,6 +1658,71 @@ fn mesh_inspection(project: &Project) -> String {
     )
 }
 
+fn preflight_report(project: &Project) -> Result<String, String> {
+    project.validate()?;
+    let (length, height) = project_case_domain(&project.case);
+    let base = StructuredMesh2D::new(project.solver.nx, project.solver.ny, length, height)?;
+    let mesh = ExtrudedMesh3D::new(
+        base,
+        project.preprocessing.mesh.cells_z,
+        project.preprocessing.geometry.extrusion_depth,
+    )?;
+    let mut notices = vec![format!(
+        "READY\n{} × {} flow cells\n{} preview cells",
+        base.nx,
+        base.ny,
+        mesh.cell_count()
+    )];
+    if base.aspect_ratio() > 10.0 {
+        notices.push(format!(
+            "WARNING: 2D aspect ratio {:.2}",
+            base.aspect_ratio()
+        ));
+    }
+    if mesh.aspect_ratio() > 20.0 {
+        notices.push(format!(
+            "WARNING: 3D preview aspect ratio {:.2}",
+            mesh.aspect_ratio()
+        ));
+    }
+    if project.physics.thermal.model == EnergyModel::ConstantProperties {
+        notices.push("Energy: explicit CFL/Fourier checks active".to_string());
+    }
+    Ok(notices.join("\n"))
+}
+
+fn boundary_summary(project: &Project) -> String {
+    [
+        BoundaryFace::Left,
+        BoundaryFace::Right,
+        BoundaryFace::Bottom,
+        BoundaryFace::Top,
+        BoundaryFace::Front,
+        BoundaryFace::Back,
+    ]
+    .into_iter()
+    .map(|face| {
+        let kind = project
+            .preprocessing
+            .boundary(face)
+            .map(|boundary| boundary_kind_label(&boundary.kind))
+            .unwrap_or("missing");
+        format!("{:<6} {kind}", face.label())
+    })
+    .collect::<Vec<_>>()
+    .join("\n")
+}
+
+fn boundary_kind_label(kind: &BoundaryConditionKind) -> &'static str {
+    match kind {
+        BoundaryConditionKind::CaseDefault => "case default",
+        BoundaryConditionKind::Velocity { .. } => "velocity",
+        BoundaryConditionKind::PressureOutlet { .. } => "pressure outlet",
+        BoundaryConditionKind::Wall { .. } => "wall",
+        BoundaryConditionKind::Symmetry => "symmetry",
+    }
+}
+
 fn sampled_indices(count: usize, maximum_lines: usize) -> Vec<usize> {
     if count <= maximum_lines {
         return (0..=count).collect();
@@ -1716,7 +1854,28 @@ fn draw_boundaries_3d(
     camera: MeshCamera,
     selected: Option<BoundaryFace>,
 ) {
-    let faces = [
+    for (face, corners) in boundary_face_nodes(mesh) {
+        let color = if selected == Some(face) {
+            [255, 255, 255, 255]
+        } else {
+            boundary_color(face)
+        };
+        let points = corners.map(|(i, j, k)| camera.project(mesh.node(i, j, k)));
+        for index in 0..4 {
+            draw_line(
+                pixels,
+                width,
+                height,
+                points[index],
+                points[(index + 1) % 4],
+                color,
+            );
+        }
+    }
+}
+
+fn boundary_face_nodes(mesh: &ExtrudedMesh3D) -> [(BoundaryFace, [(usize, usize, usize); 4]); 6] {
+    [
         (
             BoundaryFace::Left,
             [
@@ -1771,25 +1930,117 @@ fn draw_boundaries_3d(
                 (0, mesh.base.ny, mesh.nz),
             ],
         ),
-    ];
-    for (face, corners) in faces {
-        let color = if selected == Some(face) {
-            [255, 255, 255, 255]
-        } else {
-            boundary_color(face)
-        };
-        let points = corners.map(|(i, j, k)| camera.project(mesh.node(i, j, k)));
-        for index in 0..4 {
-            draw_line(
-                pixels,
-                width,
-                height,
-                points[index],
-                points[(index + 1) % 4],
-                color,
-            );
-        }
+    ]
+}
+
+fn preview_image_point(x: f32, y: f32, width: f32, height: f32) -> Option<(f64, f64)> {
+    if width <= 0.0 || height <= 0.0 {
+        return None;
     }
+    let scale = (width / PREVIEW_WIDTH as f32).min(height / PREVIEW_HEIGHT as f32);
+    let offset_x = 0.5 * (width - PREVIEW_WIDTH as f32 * scale);
+    let offset_y = 0.5 * (height - PREVIEW_HEIGHT as f32 * scale);
+    let px = (x - offset_x) / scale;
+    let py = (y - offset_y) / scale;
+    ((0.0..=PREVIEW_WIDTH as f32).contains(&px) && (0.0..=PREVIEW_HEIGHT as f32).contains(&py))
+        .then_some((f64::from(px), f64::from(py)))
+}
+
+fn pick_boundary_2d(project: &Project, point: (f64, f64)) -> Option<BoundaryFace> {
+    let (length, domain_height) = project_case_domain(&project.case);
+    let mesh =
+        StructuredMesh2D::new(project.solver.nx, project.solver.ny, length, domain_height).ok()?;
+    let scale = (f64::from(PREVIEW_WIDTH - 50) / mesh.length)
+        .min(f64::from(PREVIEW_HEIGHT - 50) / mesh.height);
+    let draw_width = mesh.length * scale;
+    let draw_height = mesh.height * scale;
+    let origin_x = (f64::from(PREVIEW_WIDTH) - draw_width) * 0.5;
+    let origin_y = (f64::from(PREVIEW_HEIGHT) + draw_height) * 0.5;
+    let edges = [
+        (
+            BoundaryFace::Bottom,
+            (origin_x, origin_y),
+            (origin_x + draw_width, origin_y),
+        ),
+        (
+            BoundaryFace::Right,
+            (origin_x + draw_width, origin_y),
+            (origin_x + draw_width, origin_y - draw_height),
+        ),
+        (
+            BoundaryFace::Top,
+            (origin_x + draw_width, origin_y - draw_height),
+            (origin_x, origin_y - draw_height),
+        ),
+        (
+            BoundaryFace::Left,
+            (origin_x, origin_y - draw_height),
+            (origin_x, origin_y),
+        ),
+    ];
+    nearest_boundary(
+        point,
+        edges
+            .into_iter()
+            .map(|(face, start, end)| (face, distance_to_segment(point, start, end))),
+        14.0,
+    )
+}
+
+fn pick_boundary_3d(
+    project: &Project,
+    yaw: f32,
+    pitch: f32,
+    zoom: f32,
+    point: (f64, f64),
+) -> Option<BoundaryFace> {
+    let (length, height) = project_case_domain(&project.case);
+    let base = StructuredMesh2D::new(project.solver.nx, project.solver.ny, length, height).ok()?;
+    let mesh = ExtrudedMesh3D::new(
+        base,
+        project.preprocessing.mesh.cells_z,
+        project.preprocessing.geometry.extrusion_depth,
+    )
+    .ok()?;
+    let camera = MeshCamera::fit(&mesh, yaw, pitch, zoom);
+    let candidates = boundary_face_nodes(&mesh)
+        .into_iter()
+        .map(|(face, corners)| {
+            let points = corners.map(|node| {
+                let point = camera.project(mesh.node(node.0, node.1, node.2));
+                (f64::from(point.0), f64::from(point.1))
+            });
+            let distance = (0..4)
+                .map(|index| distance_to_segment(point, points[index], points[(index + 1) % 4]))
+                .fold(f64::INFINITY, f64::min);
+            (face, distance)
+        });
+    nearest_boundary(point, candidates, 18.0)
+}
+
+fn nearest_boundary(
+    _point: (f64, f64),
+    candidates: impl Iterator<Item = (BoundaryFace, f64)>,
+    tolerance: f64,
+) -> Option<BoundaryFace> {
+    candidates
+        .min_by(|(_, left), (_, right)| {
+            left.partial_cmp(right).unwrap_or(std::cmp::Ordering::Equal)
+        })
+        .and_then(|(face, distance)| (distance <= tolerance).then_some(face))
+}
+
+fn distance_to_segment(point: (f64, f64), start: (f64, f64), end: (f64, f64)) -> f64 {
+    let dx = end.0 - start.0;
+    let dy = end.1 - start.1;
+    let denominator = dx * dx + dy * dy;
+    if denominator <= f64::EPSILON {
+        return ((point.0 - start.0).powi(2) + (point.1 - start.1).powi(2)).sqrt();
+    }
+    let fraction =
+        (((point.0 - start.0) * dx + (point.1 - start.1) * dy) / denominator).clamp(0.0, 1.0);
+    let closest = (start.0 + fraction * dx, start.1 + fraction * dy);
+    ((point.0 - closest.0).powi(2) + (point.1 - closest.1).powi(2)).sqrt()
 }
 
 fn draw_case_solid_3d(
@@ -2575,5 +2826,22 @@ mod tests {
         let summary = mesh_inspection(&Project::default());
         assert!(summary.contains("2D cells"));
         assert!(summary.contains("dx / dy / dz"));
+    }
+
+    #[test]
+    fn preflight_accepts_the_default_case() {
+        assert!(preflight_report(&Project::default())
+            .expect("the default case should be runnable")
+            .contains("READY"));
+    }
+
+    #[test]
+    fn boundary_summary_and_2d_picker_use_the_project_faces() {
+        let project = Project::default();
+        assert!(boundary_summary(&project).contains("Left"));
+        assert_eq!(
+            pick_boundary_2d(&project, (125.0, 160.0)),
+            Some(BoundaryFace::Left)
+        );
     }
 }
