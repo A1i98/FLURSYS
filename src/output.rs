@@ -9,6 +9,7 @@ pub struct VtkFields<'a> {
     pub u: &'a Field2D,
     pub v: &'a Field2D,
     pub vorticity: &'a Field2D,
+    pub temperature: Option<&'a Field2D>,
 }
 
 pub fn ensure_output_tree(root: &Path) -> Result<(), String> {
@@ -26,14 +27,19 @@ pub fn write_field_csv(
     u: &Field2D,
     v: &Field2D,
     vorticity: &Field2D,
+    temperature: Option<&Field2D>,
 ) -> Result<(), String> {
     let file = File::create(path).map_err(|e| format!("Cannot create {}: {e}", path.display()))?;
     let mut w = BufWriter::new(file);
-    writeln!(w, "i,j,x,y,solid,p,u,v,speed,vorticity").map_err(io_err)?;
+    if temperature.is_some() {
+        writeln!(w, "i,j,x,y,solid,p,u,v,speed,vorticity,temperature").map_err(io_err)?;
+    } else {
+        writeln!(w, "i,j,x,y,solid,p,u,v,speed,vorticity").map_err(io_err)?;
+    }
     for j in 0..grid.ny {
         for i in 0..grid.nx {
             let speed = (u[(i, j)].powi(2) + v[(i, j)].powi(2)).sqrt();
-            writeln!(
+            write!(
                 w,
                 "{i},{j},{:.12},{:.12},{},{:.12e},{:.12e},{:.12e},{:.12e},{:.12e}",
                 grid.cell_x(i),
@@ -46,6 +52,10 @@ pub fn write_field_csv(
                 vorticity[(i, j)]
             )
             .map_err(io_err)?;
+            if let Some(temperature) = temperature {
+                write!(w, ",{:.12e}", temperature[(i, j)]).map_err(io_err)?;
+            }
+            writeln!(w).map_err(io_err)?;
         }
     }
     Ok(())
@@ -85,6 +95,12 @@ pub fn write_legacy_vtk(
     writeln!(w, "SCALARS vorticity double 1").map_err(io_err)?;
     writeln!(w, "LOOKUP_TABLE default").map_err(io_err)?;
     write_scalar_field(&mut w, fields.vorticity)?;
+
+    if let Some(temperature) = fields.temperature {
+        writeln!(w, "SCALARS temperature double 1").map_err(io_err)?;
+        writeln!(w, "LOOKUP_TABLE default").map_err(io_err)?;
+        write_scalar_field(&mut w, temperature)?;
+    }
 
     writeln!(w, "SCALARS solid int 1").map_err(io_err)?;
     writeln!(w, "LOOKUP_TABLE default").map_err(io_err)?;

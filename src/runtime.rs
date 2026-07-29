@@ -310,6 +310,7 @@ mod tests {
             minimum_steps: 100,
             threads: 1,
             boundary_overrides: SolverBoundaryOverrides::default(),
+            physics: Default::default(),
             output_dir: PathBuf::from("target/runtime-test"),
         }
     }

@@ -6,7 +6,8 @@
 use crate::cases::{BackwardStepCase, CavityCase, CylinderCase};
 use crate::{
     BoundaryCondition, BoundaryConditionKind, BoundaryFace, Case, ConvectionScheme,
-    PreprocessingModel, PressureSolverKind, PressureVelocityCoupling, SimulationConfig,
+    PhysicsSettings, PreprocessingModel, PressureSolverKind, PressureVelocityCoupling,
+    SimulationConfig,
 };
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -26,6 +27,9 @@ pub struct Project {
     /// projects remain importable.
     #[serde(default)]
     pub preprocessing: PreprocessingModel,
+    /// Executable flow/thermal physics. Missing in v1 projects defaults to flow only.
+    #[serde(default)]
+    pub physics: PhysicsSettings,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -99,6 +103,7 @@ impl Default for Project {
             format_version: PROJECT_FORMAT_VERSION,
             name: "Lid-driven cavity".to_string(),
             preprocessing: default_preprocessing(&case),
+            physics: PhysicsSettings::default(),
             case,
             solver: ProjectSolver::default(),
         }
@@ -185,6 +190,7 @@ impl Project {
             minimum_steps: 100,
             threads: solver.threads,
             boundary_overrides: self.preprocessing.solver_overrides(),
+            physics: self.physics.clone(),
             output_dir: output_dir.into(),
         })
     }
@@ -262,6 +268,7 @@ impl Project {
             minimum_steps: 100,
             threads: solver.threads,
             boundary_overrides: self.preprocessing.solver_overrides(),
+            physics: self.physics.clone(),
             output_dir,
         }
     }
@@ -443,6 +450,20 @@ mod tests {
         let project = Project::load(path).unwrap();
         assert_eq!(project.name, "Lid-driven cavity Re=100");
         project.simulation_config("target/import-test").unwrap();
+    }
+
+    #[test]
+    fn thermal_buoyancy_example_is_importable() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("examples/thermal-buoyancy-cavity.flursys.json");
+        let project = Project::load(path).unwrap();
+        assert!(matches!(
+            project.physics.buoyancy,
+            crate::BuoyancyModel::Boussinesq { .. }
+        ));
+        project
+            .simulation_config("target/thermal-project-test")
+            .unwrap();
     }
 
     #[test]

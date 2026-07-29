@@ -8,12 +8,16 @@ pub mod cases;
 pub mod field;
 pub mod grid;
 pub mod output;
+pub mod physics;
 pub mod preprocess;
 pub mod project;
 pub mod runtime;
 pub mod solver;
 
 pub use cases::{Case, CaseKind};
+pub use physics::{
+    BuoyancyModel, EnergyModel, PhysicsSettings, ThermalBoundaryCondition, ThermalSettings,
+};
 pub use preprocess::{
     BoundaryCondition, BoundaryConditionKind, BoundaryFace, GeometryDimension, GeometryModel,
     GeometryPart, GeometryPartKind, MeshSettings, MeshTopology, PreprocessingModel,

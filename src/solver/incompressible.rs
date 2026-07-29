@@ -2,6 +2,7 @@ use crate::cases::{BoundaryKind, Case, CaseKind, Side};
 use crate::field::{Field2D, Mask2D};
 use crate::grid::UniformGrid2D;
 use crate::output;
+use crate::physics::{BuoyancyModel, EnergyModel, PhysicsSettings, ThermalBoundaryCondition};
 use crate::preprocess::SolverBoundaryOverrides;
 use rayon::prelude::*;
 use rayon::{ThreadPool, ThreadPoolBuilder};
@@ -59,6 +60,8 @@ pub struct SimulationConfig {
     /// Explicit project-boundary overrides. Empty overrides preserve the
     /// selected case's analytical boundary profiles.
     pub boundary_overrides: SolverBoundaryOverrides,
+    /// Physics models assembled by this solver.  Defaults to flow-only.
+    pub physics: PhysicsSettings,
     pub output_dir: PathBuf,
 }
 
@@ -111,6 +114,9 @@ impl SimulationConfig {
         if self.print_every == 0 || self.output_every == 0 || self.frame_every == 0 {
             return Err("Output intervals must be positive".to_string());
         }
+        let (length, height) = self.case.domain();
+        self.physics
+            .validate(self.dt, length / self.nx as f64, height / self.ny as f64)?;
         Ok(())
     }
 
@@ -155,6 +161,7 @@ pub struct FieldUpdate {
     pub pressure: Vec<f64>,
     pub speed: Vec<f64>,
     pub solid: Vec<bool>,
+    pub temperature: Option<Vec<f64>>,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -183,6 +190,7 @@ pub struct IncompressibleSolver {
     v_cell: Field2D,
     speed: Field2D,
     vorticity: Field2D,
+    temperature: Option<Field2D>,
     step: usize,
     time: f64,
     frame_index: usize,
@@ -219,6 +227,8 @@ impl IncompressibleSolver {
             v_cell: Field2D::new(cfg.nx, cfg.ny, 0.0),
             speed: Field2D::new(cfg.nx, cfg.ny, 0.0),
             vorticity: Field2D::new(cfg.nx, cfg.ny, 0.0),
+            temperature: (cfg.physics.thermal.model == EnergyModel::ConstantProperties)
+                .then(|| Field2D::new(cfg.nx, cfg.ny, cfg.physics.thermal.initial_temperature)),
             cfg,
             grid,
             solid,
@@ -381,6 +391,10 @@ impl IncompressibleSolver {
             pressure: self.p.as_slice().to_vec(),
             speed: self.speed.as_slice().to_vec(),
             solid: self.solid.as_slice().to_vec(),
+            temperature: self
+                .temperature
+                .as_ref()
+                .map(|field| field.as_slice().to_vec()),
         }
     }
 
@@ -469,6 +483,7 @@ impl IncompressibleSolver {
         self.step += 1;
         self.time = self.step as f64 * self.cfg.dt;
         self.compute_cell_fields();
+        self.advance_temperature()?;
         self.ensure_finite()?;
 
         let max_divergence = self.max_divergence();
@@ -501,6 +516,7 @@ impl IncompressibleSolver {
             p,
             u,
             v,
+            temperature,
             u_star,
             v_star,
             ..
@@ -521,6 +537,15 @@ impl IncompressibleSolver {
         } else {
             1.0
         };
+        let buoyancy = cfg.physics.buoyancy;
+        let reference_temperature = match buoyancy {
+            BuoyancyModel::Boussinesq {
+                reference_temperature,
+                ..
+            } => reference_temperature,
+            BuoyancyModel::Off => 0.0,
+        };
+        let temperature_values = temperature.as_ref().map(|field| field.as_slice());
         let stencil = MomentumStencil {
             solid,
             case: &cfg.case,
@@ -564,10 +589,28 @@ impl IncompressibleSolver {
                         } else {
                             0.0
                         };
+                        let buoyancy_x = match (buoyancy, temperature_values) {
+                            (
+                                BuoyancyModel::Boussinesq {
+                                    thermal_expansion,
+                                    gravity_x,
+                                    ..
+                                },
+                                Some(t),
+                            ) => {
+                                let left = t[i - 1 + nx * j];
+                                let right = t[i + nx * j];
+                                gravity_x
+                                    * thermal_expansion
+                                    * (0.5 * (left + right) - reference_temperature)
+                            }
+                            _ => 0.0,
+                        };
                         row[i] = up
                             + velocity_relaxation
                                 * dt
-                                * (-convection + nu * diffusion - pressure_gradient / rho);
+                                * (-convection + nu * diffusion - pressure_gradient / rho
+                                    + buoyancy_x);
                     }
                 });
 
@@ -611,10 +654,28 @@ impl IncompressibleSolver {
                         } else {
                             0.0
                         };
+                        let buoyancy_y = match (buoyancy, temperature_values) {
+                            (
+                                BuoyancyModel::Boussinesq {
+                                    thermal_expansion,
+                                    gravity_y,
+                                    ..
+                                },
+                                Some(t),
+                            ) => {
+                                let below = t[i + nx * (j - 1)];
+                                let above = t[i + nx * j];
+                                gravity_y
+                                    * thermal_expansion
+                                    * (0.5 * (below + above) - reference_temperature)
+                            }
+                            _ => 0.0,
+                        };
                         row[i] = vp
                             + velocity_relaxation
                                 * dt
-                                * (-convection + nu * diffusion - pressure_gradient / rho);
+                                * (-convection + nu * diffusion - pressure_gradient / rho
+                                    + buoyancy_y);
                     }
                 });
         });
@@ -1119,6 +1180,97 @@ impl IncompressibleSolver {
         });
     }
 
+    /// Advances rho*cp*(dT/dt + u.grad(T)) = k*laplacian(T) + q using an
+    /// explicit, conservative cell-centred finite-volume update.  The
+    /// configuration validation enforces the diffusion limit; this method also
+    /// enforces the velocity-dependent CFL condition at runtime.
+    fn advance_temperature(&mut self) -> Result<(), String> {
+        let Some(old) = self.temperature.as_ref().cloned() else {
+            return Ok(());
+        };
+        let max_u = self.u_cell.max_abs();
+        let max_v = self.v_cell.max_abs();
+        let cfl = self.cfg.dt * (max_u / self.grid.dx + max_v / self.grid.dy);
+        if cfl > 1.0 {
+            return Err(format!(
+                "explicit thermal advection is unstable at step {}: CFL={cfl:.3e} exceeds 1",
+                self.step
+            ));
+        }
+
+        let mut next = old.clone();
+        let alpha = self.cfg.physics.thermal.thermal_diffusivity;
+        let source = self.cfg.physics.thermal.source_temperature_rate;
+        for j in 0..self.grid.ny {
+            for i in 0..self.grid.nx {
+                if self.solid[(i, j)] {
+                    next[(i, j)] = old[(i, j)];
+                    continue;
+                }
+                let center = old[(i, j)];
+                let east = self.temperature_neighbor(&old, i, j, 1, 0, center);
+                let west = self.temperature_neighbor(&old, i, j, -1, 0, center);
+                let north = self.temperature_neighbor(&old, i, j, 0, 1, center);
+                let south = self.temperature_neighbor(&old, i, j, 0, -1, center);
+                let ue = self.u[(i + 1, j)];
+                let uw = self.u[(i, j)];
+                let vn = self.v[(i, j + 1)];
+                let vs = self.v[(i, j)];
+                let flux_e = ue * upwind_value(ue, center, east);
+                let flux_w = uw * upwind_value(uw, west, center);
+                let flux_n = vn * upwind_value(vn, center, north);
+                let flux_s = vs * upwind_value(vs, south, center);
+                let convection =
+                    (flux_e - flux_w) / self.grid.dx + (flux_n - flux_s) / self.grid.dy;
+                let diffusion = (east - 2.0 * center + west) / self.grid.dx.powi(2)
+                    + (north - 2.0 * center + south) / self.grid.dy.powi(2);
+                next[(i, j)] = center + self.cfg.dt * (-convection + alpha * diffusion + source);
+            }
+        }
+        *self
+            .temperature
+            .as_mut()
+            .expect("temperature state checked above") = next;
+        Ok(())
+    }
+
+    fn temperature_neighbor(
+        &self,
+        field: &Field2D,
+        i: usize,
+        j: usize,
+        di: isize,
+        dj: isize,
+        center: f64,
+    ) -> f64 {
+        let ni = i as isize + di;
+        let nj = j as isize + dj;
+        if ni >= 0 && ni < self.grid.nx as isize && nj >= 0 && nj < self.grid.ny as isize {
+            let ni = ni as usize;
+            let nj = nj as usize;
+            return if self.solid[(ni, nj)] {
+                center
+            } else {
+                field[(ni, nj)]
+            };
+        }
+        let boundary = if ni < 0 {
+            self.cfg.physics.thermal.left
+        } else if ni >= self.grid.nx as isize {
+            self.cfg.physics.thermal.right
+        } else if nj < 0 {
+            self.cfg.physics.thermal.bottom
+        } else {
+            self.cfg.physics.thermal.top
+        };
+        match boundary {
+            ThermalBoundaryCondition::Adiabatic => center,
+            ThermalBoundaryCondition::FixedTemperature { temperature } => {
+                2.0 * temperature - center
+            }
+        }
+    }
+
     fn pressure_residual(&self) -> f64 {
         let idx2 = 1.0 / (self.grid.dx * self.grid.dx);
         let idy2 = 1.0 / (self.grid.dy * self.grid.dy);
@@ -1314,6 +1466,20 @@ impl IncompressibleSolver {
                 ));
             }
         }
+        if let Some(temperature) = &self.temperature {
+            if let Some((index, value)) = temperature
+                .as_slice()
+                .iter()
+                .copied()
+                .enumerate()
+                .find(|(_, value)| !value.is_finite())
+            {
+                return Err(format!(
+                    "Non-finite temperature value at flat index {index}: {value} (step {})",
+                    self.step
+                ));
+            }
+        }
         Ok(())
     }
 
@@ -1346,6 +1512,17 @@ impl IncompressibleSolver {
         let vort_path = frame_dir.join(format!("vorticity_{:05}.ppm", self.frame_index));
         output::write_ppm_frame(&speed_path, &self.grid, &self.solid, &self.speed, false)?;
         output::write_ppm_frame(&vort_path, &self.grid, &self.solid, &self.vorticity, true)?;
+        if let Some(temperature) = &self.temperature {
+            let temperature_path =
+                frame_dir.join(format!("temperature_{:05}.ppm", self.frame_index));
+            output::write_ppm_frame(
+                &temperature_path,
+                &self.grid,
+                &self.solid,
+                temperature,
+                false,
+            )?;
+        }
         self.frame_index += 1;
         Ok(())
     }
@@ -1359,6 +1536,7 @@ impl IncompressibleSolver {
             &self.u_cell,
             &self.v_cell,
             &self.vorticity,
+            self.temperature.as_ref(),
         )?;
         output::write_legacy_vtk(
             &self.cfg.output_dir.join("field.vtk"),
@@ -1370,6 +1548,7 @@ impl IncompressibleSolver {
                 u: &self.u_cell,
                 v: &self.v_cell,
                 vorticity: &self.vorticity,
+                temperature: self.temperature.as_ref(),
             },
         )?;
         self.write_case_specific_profiles()?;
@@ -1489,6 +1668,10 @@ impl IncompressibleSolver {
         writeln!(w, "velocity_relaxation: {}", self.cfg.velocity_relaxation)
             .map_err(|e| e.to_string())?;
         writeln!(w, "pressure_relaxation: {}", self.cfg.pressure_relaxation)
+            .map_err(|e| e.to_string())?;
+        writeln!(w, "energy_model: {:?}", self.cfg.physics.thermal.model)
+            .map_err(|e| e.to_string())?;
+        writeln!(w, "buoyancy_model: {:?}", self.cfg.physics.buoyancy)
             .map_err(|e| e.to_string())?;
         Ok(())
     }
@@ -1727,6 +1910,19 @@ fn transported(scheme: ConvectionScheme, face_velocity: f64, left: f64, right: f
     }
 }
 
+#[inline]
+fn upwind_value(
+    face_velocity: f64,
+    upstream_when_positive: f64,
+    upstream_when_negative: f64,
+) -> f64 {
+    if face_velocity >= 0.0 {
+        upstream_when_positive
+    } else {
+        upstream_when_negative
+    }
+}
+
 fn derivative_x_slice(
     values: &[f64],
     solid: &Mask2D,
@@ -1839,7 +2035,10 @@ fn project_zero_mean<F>(
 mod tests {
     use super::*;
     use crate::cases::CavityCase;
-    use crate::{BoundaryConditionKind, BoundaryFace, Project};
+    use crate::{
+        BoundaryConditionKind, BoundaryFace, BuoyancyModel, EnergyModel, Project,
+        ThermalBoundaryCondition,
+    };
 
     #[test]
     fn cavity_configuration_builds() {
@@ -1865,6 +2064,7 @@ mod tests {
             minimum_steps: 1,
             threads: 1,
             boundary_overrides: SolverBoundaryOverrides::default(),
+            physics: Default::default(),
             output_dir: PathBuf::from("target/test-output"),
         };
         let solver = IncompressibleSolver::new(cfg);
@@ -1888,5 +2088,82 @@ mod tests {
             .unwrap();
         let solver = IncompressibleSolver::new(config).unwrap();
         assert_eq!(solver.u[(0, solver.grid.ny / 2)], 1.75);
+    }
+
+    #[test]
+    fn fixed_temperature_boundary_diffuses_into_the_domain() {
+        let mut cfg = SimulationConfig {
+            case: Case::LidDrivenCavity(CavityCase::default()),
+            nx: 16,
+            ny: 16,
+            dt: 1.0e-4,
+            max_steps: 2,
+            t_end: 2.0e-4,
+            convection: ConvectionScheme::FirstOrderUpwind,
+            coupling: PressureVelocityCoupling::Projection,
+            pressure_solver: PressureSolverKind::Pcg,
+            pressure_max_iters: 50,
+            pressure_tolerance: 1.0e-4,
+            pressure_omega: 1.5,
+            velocity_relaxation: 0.7,
+            pressure_relaxation: 0.3,
+            print_every: 1,
+            output_every: 1,
+            frame_every: 1,
+            steady_tolerance: 1.0e-8,
+            minimum_steps: 1,
+            threads: 1,
+            boundary_overrides: SolverBoundaryOverrides::default(),
+            physics: Default::default(),
+            output_dir: PathBuf::from("target/thermal-boundary-test"),
+        };
+        cfg.physics.thermal.model = EnergyModel::ConstantProperties;
+        cfg.physics.thermal.initial_temperature = 300.0;
+        cfg.physics.thermal.thermal_diffusivity = 1.0e-3;
+        cfg.physics.thermal.bottom =
+            ThermalBoundaryCondition::FixedTemperature { temperature: 400.0 };
+
+        let mut solver = IncompressibleSolver::new(cfg).unwrap();
+        solver.advance().unwrap();
+        let temperature = solver.temperature.as_ref().unwrap();
+        assert!(temperature[(8, 0)] > 300.0);
+        assert!((temperature[(8, 8)] - 300.0).abs() < 1.0e-9);
+    }
+
+    #[test]
+    fn buoyancy_cannot_be_enabled_without_energy_transport() {
+        let mut cfg = SimulationConfig {
+            case: Case::LidDrivenCavity(CavityCase::default()),
+            nx: 16,
+            ny: 16,
+            dt: 1.0e-3,
+            max_steps: 2,
+            t_end: 0.002,
+            convection: ConvectionScheme::FirstOrderUpwind,
+            coupling: PressureVelocityCoupling::Projection,
+            pressure_solver: PressureSolverKind::Pcg,
+            pressure_max_iters: 10,
+            pressure_tolerance: 1.0e-4,
+            pressure_omega: 1.5,
+            velocity_relaxation: 0.7,
+            pressure_relaxation: 0.3,
+            print_every: 1,
+            output_every: 1,
+            frame_every: 1,
+            steady_tolerance: 1.0e-8,
+            minimum_steps: 1,
+            threads: 1,
+            boundary_overrides: SolverBoundaryOverrides::default(),
+            physics: Default::default(),
+            output_dir: PathBuf::from("target/buoyancy-validation-test"),
+        };
+        cfg.physics.buoyancy = BuoyancyModel::Boussinesq {
+            reference_temperature: 293.15,
+            thermal_expansion: 3.4e-3,
+            gravity_x: 0.0,
+            gravity_y: -9.81,
+        };
+        let error = IncompressibleSolver::new(cfg).err().unwrap();
+        assert!(error.contains("requires the constant-property energy equation"));
     }
 }

@@ -1,0 +1,45 @@
+{
+  "format_version": 1,
+  "name": "Heated lid-driven cavity with Boussinesq buoyancy",
+  "case": {
+    "kind": "lid-driven-cavity",
+    "length": 1.0,
+    "height": 1.0,
+    "density": 1.0,
+    "lid_velocity": 0.1,
+    "reynolds": 100.0
+  },
+  "solver": {
+    "nx": 48,
+    "ny": 48,
+    "dt": 0.0001,
+    "max_iterations": 20000,
+    "coupling": "projection",
+    "pressure_solver": "pcg",
+    "pressure_tolerance": 0.000001,
+    "pressure_iterations": 1200,
+    "velocity_relaxation": 0.7,
+    "pressure_relaxation": 0.3,
+    "steady_tolerance": 0.0000001,
+    "threads": 0
+  },
+  "physics": {
+    "thermal": {
+      "model": "constant-properties",
+      "initial_temperature": 293.15,
+      "thermal_diffusivity": 0.00002,
+      "source_temperature_rate": 0.0,
+      "left": { "kind": "fixed-temperature", "temperature": 303.15 },
+      "right": { "kind": "fixed-temperature", "temperature": 283.15 },
+      "bottom": { "kind": "adiabatic" },
+      "top": { "kind": "adiabatic" }
+    },
+    "buoyancy": {
+      "kind": "boussinesq",
+      "reference_temperature": 293.15,
+      "thermal_expansion": 0.0034,
+      "gravity_x": 0.0,
+      "gravity_y": -9.81
+    }
+  }
+}

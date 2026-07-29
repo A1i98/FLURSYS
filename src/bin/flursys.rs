@@ -213,6 +213,7 @@ fn common_config(
         minimum_steps: value(options, "minimum-steps", 2_000_usize)?,
         threads: value(options, "threads", 0_usize)?,
         boundary_overrides: SolverBoundaryOverrides::default(),
+        physics: Default::default(),
         output_dir: PathBuf::from(
             options
                 .get("out")
