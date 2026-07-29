@@ -14,17 +14,14 @@ pub enum EnergyModel {
     ConstantProperties,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum ThermalBoundaryCondition {
+    #[default]
     Adiabatic,
-    FixedTemperature { temperature: f64 },
-}
-
-impl Default for ThermalBoundaryCondition {
-    fn default() -> Self {
-        Self::Adiabatic
-    }
+    FixedTemperature {
+        temperature: f64,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

@@ -12,6 +12,14 @@ pub struct VtkFields<'a> {
     pub temperature: Option<&'a Field2D>,
 }
 
+pub struct CsvFields<'a> {
+    pub pressure: &'a Field2D,
+    pub u: &'a Field2D,
+    pub v: &'a Field2D,
+    pub vorticity: &'a Field2D,
+    pub temperature: Option<&'a Field2D>,
+}
+
 pub fn ensure_output_tree(root: &Path) -> Result<(), String> {
     create_dir_all(root).map_err(|e| format!("Cannot create {}: {e}", root.display()))?;
     create_dir_all(root.join("frames"))
@@ -23,36 +31,32 @@ pub fn write_field_csv(
     path: &Path,
     grid: &UniformGrid2D,
     solid: &Mask2D,
-    p: &Field2D,
-    u: &Field2D,
-    v: &Field2D,
-    vorticity: &Field2D,
-    temperature: Option<&Field2D>,
+    fields: CsvFields<'_>,
 ) -> Result<(), String> {
     let file = File::create(path).map_err(|e| format!("Cannot create {}: {e}", path.display()))?;
     let mut w = BufWriter::new(file);
-    if temperature.is_some() {
+    if fields.temperature.is_some() {
         writeln!(w, "i,j,x,y,solid,p,u,v,speed,vorticity,temperature").map_err(io_err)?;
     } else {
         writeln!(w, "i,j,x,y,solid,p,u,v,speed,vorticity").map_err(io_err)?;
     }
     for j in 0..grid.ny {
         for i in 0..grid.nx {
-            let speed = (u[(i, j)].powi(2) + v[(i, j)].powi(2)).sqrt();
+            let speed = (fields.u[(i, j)].powi(2) + fields.v[(i, j)].powi(2)).sqrt();
             write!(
                 w,
                 "{i},{j},{:.12},{:.12},{},{:.12e},{:.12e},{:.12e},{:.12e},{:.12e}",
                 grid.cell_x(i),
                 grid.cell_y(j),
                 if solid[(i, j)] { 1 } else { 0 },
-                p[(i, j)],
-                u[(i, j)],
-                v[(i, j)],
+                fields.pressure[(i, j)],
+                fields.u[(i, j)],
+                fields.v[(i, j)],
                 speed,
-                vorticity[(i, j)]
+                fields.vorticity[(i, j)]
             )
             .map_err(io_err)?;
-            if let Some(temperature) = temperature {
+            if let Some(temperature) = fields.temperature {
                 write!(w, ",{:.12e}", temperature[(i, j)]).map_err(io_err)?;
             }
             writeln!(w).map_err(io_err)?;

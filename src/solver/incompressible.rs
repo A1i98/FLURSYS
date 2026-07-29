@@ -871,12 +871,6 @@ impl IncompressibleSolver {
                 ref mut direction,
                 ref mut q,
             } = &mut workspace;
-            let mut x = x;
-            let mut b = b;
-            let mut r = r;
-            let mut z = z;
-            let mut direction = direction;
-            let mut q = q;
             x.copy_from_slice(self.p.as_slice());
             (|| {
                 let nx = self.grid.nx;
@@ -912,11 +906,11 @@ impl IncompressibleSolver {
                 });
 
                 if self.pressure_reference_required() {
-                    self.project_pressure_zero_mean(&mut x);
-                    self.project_pressure_zero_mean(&mut b);
+                    self.project_pressure_zero_mean(x);
+                    self.project_pressure_zero_mean(b);
                 }
 
-                self.apply_pressure_operator(&x, &mut q);
+                self.apply_pressure_operator(x, q);
                 self.pool.install(|| {
                     r.par_iter_mut()
                         .zip(b.par_iter())
@@ -924,27 +918,27 @@ impl IncompressibleSolver {
                         .for_each(|((r_value, &b_value), &q_value)| *r_value = b_value - q_value);
                 });
                 if self.pressure_reference_required() {
-                    self.project_pressure_zero_mean(&mut r);
+                    self.project_pressure_zero_mean(r);
                 }
 
-                let mut residual = self.parallel_max_abs(&r);
+                let mut residual = self.parallel_max_abs(r);
                 if residual < self.cfg.pressure_tolerance {
-                    self.p.as_mut_slice().copy_from_slice(&x);
+                    self.p.as_mut_slice().copy_from_slice(x);
                     return Ok((residual, 0));
                 }
 
-                self.apply_jacobi_preconditioner(&r, &mut z);
+                self.apply_jacobi_preconditioner(r, z);
                 if self.pressure_reference_required() {
-                    self.project_pressure_zero_mean(&mut z);
+                    self.project_pressure_zero_mean(z);
                 }
-                direction.copy_from_slice(&z);
-                let mut rz_old = self.parallel_dot(&r, &z);
+                direction.copy_from_slice(z);
+                let mut rz_old = self.parallel_dot(r, z);
 
                 let mut iterations = 0_usize;
                 for iteration in 0..self.cfg.pressure_max_iters {
                     iterations = iteration + 1;
-                    self.apply_pressure_operator(&direction, &mut q);
-                    let denominator = self.parallel_dot(&direction, &q);
+                    self.apply_pressure_operator(direction, q);
+                    let denominator = self.parallel_dot(direction, q);
                     if denominator.abs() < 1.0e-30 || !denominator.is_finite() {
                         return Err(
                             "PCG pressure solver encountered a singular search direction"
@@ -968,11 +962,11 @@ impl IncompressibleSolver {
                             });
                     });
                     if self.pressure_reference_required() {
-                        self.project_pressure_zero_mean(&mut x);
-                        self.project_pressure_zero_mean(&mut r);
+                        self.project_pressure_zero_mean(x);
+                        self.project_pressure_zero_mean(r);
                     }
 
-                    residual = self.parallel_max_abs(&r);
+                    residual = self.parallel_max_abs(r);
                     if !residual.is_finite() {
                         return Err(
                             "PCG pressure solver produced a non-finite residual".to_string()
@@ -982,11 +976,11 @@ impl IncompressibleSolver {
                         break;
                     }
 
-                    self.apply_jacobi_preconditioner(&r, &mut z);
+                    self.apply_jacobi_preconditioner(r, z);
                     if self.pressure_reference_required() {
-                        self.project_pressure_zero_mean(&mut z);
+                        self.project_pressure_zero_mean(z);
                     }
-                    let rz_new = self.parallel_dot(&r, &z);
+                    let rz_new = self.parallel_dot(r, z);
                     if rz_old.abs() < 1.0e-30 {
                         break;
                     }
@@ -999,7 +993,7 @@ impl IncompressibleSolver {
                         );
                     });
                     if self.pressure_reference_required() {
-                        self.project_pressure_zero_mean(&mut direction);
+                        self.project_pressure_zero_mean(direction);
                     }
                     rz_old = rz_new;
                 }
@@ -1609,11 +1603,13 @@ impl IncompressibleSolver {
             &self.cfg.output_dir.join("field.csv"),
             &self.grid,
             &self.solid,
-            &self.p,
-            &self.u_cell,
-            &self.v_cell,
-            &self.vorticity,
-            self.temperature.as_ref(),
+            output::CsvFields {
+                pressure: &self.p,
+                u: &self.u_cell,
+                v: &self.v_cell,
+                vorticity: &self.vorticity,
+                temperature: self.temperature.as_ref(),
+            },
         )?;
         output::write_legacy_vtk(
             &self.cfg.output_dir.join("field.vtk"),

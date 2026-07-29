@@ -6,6 +6,9 @@ use flursys::{
 use slint::{Image, Rgba8Pixel, SharedPixelBuffer};
 use std::collections::VecDeque;
 
+type MeshNode = (usize, usize, usize);
+type BoundaryFaceNodes = (BoundaryFace, [MeshNode; 4]);
+
 pub(super) fn render_empty_image() -> Image {
     let mut pixels = vec![0_u8; (PREVIEW_WIDTH * PREVIEW_HEIGHT * 4) as usize];
     fill(&mut pixels, [11, 18, 24, 255]);
@@ -412,9 +415,7 @@ pub(super) fn draw_boundaries_3d(
     }
 }
 
-pub(super) fn boundary_face_nodes(
-    mesh: &ExtrudedMesh3D,
-) -> [(BoundaryFace, [(usize, usize, usize); 4]); 6] {
+pub(super) fn boundary_face_nodes(mesh: &ExtrudedMesh3D) -> [BoundaryFaceNodes; 6] {
     [
         (
             BoundaryFace::Left,

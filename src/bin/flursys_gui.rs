@@ -454,7 +454,7 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
             return;
         };
         let mut state = orbit_state.borrow_mut();
-        let new_gesture = state.geometry_drag_anchor.map_or(true, |(x, y, _, _)| {
+        let new_gesture = state.geometry_drag_anchor.is_none_or(|(x, y, _, _)| {
             (x - pressed_x).abs() > f32::EPSILON || (y - pressed_y).abs() > f32::EPSILON
         });
         if new_gesture {
