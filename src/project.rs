@@ -80,6 +80,12 @@ pub struct ProjectSolver {
     pub pressure_relaxation: f64,
     pub steady_tolerance: f64,
     pub threads: usize,
+    /// Iteration cadence for publishing convergence data to an interactive client.
+    pub gui_update_every: usize,
+    /// Iteration cadence for appending residual and force history to disk.
+    pub history_every: usize,
+    /// Iteration cadence for writing field frames to disk and the GUI animation.
+    pub frame_every: usize,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
@@ -125,6 +131,9 @@ impl Default for ProjectSolver {
             pressure_relaxation: 0.3,
             steady_tolerance: 1.0e-7,
             threads: 0,
+            gui_update_every: 10,
+            history_every: 10,
+            frame_every: 100,
         }
     }
 }
@@ -183,9 +192,9 @@ impl Project {
             pressure_omega: 1.7,
             velocity_relaxation: solver.velocity_relaxation,
             pressure_relaxation: solver.pressure_relaxation,
-            print_every: 100,
-            output_every: 100,
-            frame_every: 500,
+            print_every: solver.gui_update_every,
+            output_every: solver.history_every,
+            frame_every: solver.frame_every,
             steady_tolerance: solver.steady_tolerance,
             minimum_steps: 100,
             threads: solver.threads,
@@ -261,9 +270,9 @@ impl Project {
             pressure_omega: 1.7,
             velocity_relaxation: solver.velocity_relaxation,
             pressure_relaxation: solver.pressure_relaxation,
-            print_every: 100,
-            output_every: 100,
-            frame_every: 500,
+            print_every: solver.gui_update_every,
+            output_every: solver.history_every,
+            frame_every: solver.frame_every,
             steady_tolerance: solver.steady_tolerance,
             minimum_steps: 100,
             threads: solver.threads,
@@ -442,6 +451,20 @@ mod tests {
         let json = serde_json::to_string(&project).unwrap();
         let restored: Project = serde_json::from_str(&json).unwrap();
         restored.validate().unwrap();
+    }
+
+    #[test]
+    fn project_persists_interactive_output_cadence() {
+        let mut project = Project::default();
+        project.solver.gui_update_every = 7;
+        project.solver.history_every = 11;
+        project.solver.frame_every = 29;
+        let json = serde_json::to_string(&project).unwrap();
+        let restored: Project = serde_json::from_str(&json).unwrap();
+        let config = restored.simulation_config("target/cadence-test").unwrap();
+        assert_eq!(config.print_every, 7);
+        assert_eq!(config.output_every, 11);
+        assert_eq!(config.frame_every, 29);
     }
 
     #[test]

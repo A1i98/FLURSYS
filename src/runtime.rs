@@ -127,9 +127,9 @@ impl Drop for SolverController {
 struct ActiveSolver {
     solver: IncompressibleSolver,
     max_iterations: usize,
+    update_every: usize,
+    frame_every: usize,
     started: Instant,
-    last_update: Instant,
-    last_field_update: Instant,
     paused: bool,
 }
 
@@ -167,14 +167,22 @@ fn worker_loop(commands: Receiver<SolverCommand>, updates: Sender<SolverUpdate>)
         match run.solver.advance() {
             Ok(step) => {
                 let completed = step.converged || step.iteration >= run.max_iterations;
-                let now = Instant::now();
-                let publish_update =
-                    completed || now.duration_since(run.last_update) >= Duration::from_millis(16);
+                let publish_update = completed || step.iteration.is_multiple_of(run.update_every);
                 if !publish_update {
                     continue;
                 }
-                let snapshot = completed
-                    || now.duration_since(run.last_field_update) >= Duration::from_millis(100);
+                let snapshot = completed || step.iteration.is_multiple_of(run.frame_every);
+                if completed {
+                    if let Err(error) = run.solver.finalize_output() {
+                        publish(
+                            &updates,
+                            SolverUpdate::status(SolverState::Failed, Some(error)),
+                        );
+                        active = None;
+                        last_state = SolverState::Failed;
+                        continue;
+                    }
+                }
                 let update = SolverUpdate::from_step(
                     if completed {
                         SolverState::Completed
@@ -186,10 +194,6 @@ fn worker_loop(commands: Receiver<SolverCommand>, updates: Sender<SolverUpdate>)
                     snapshot.then(|| run.solver.field_update()),
                 );
                 publish(&updates, update);
-                run.last_update = now;
-                if snapshot {
-                    run.last_field_update = now;
-                }
                 if completed {
                     active = None;
                     last_state = SolverState::Completed;
@@ -216,13 +220,21 @@ fn handle_command(
 ) -> bool {
     match command {
         SolverCommand::Start(config) => match IncompressibleSolver::new((*config).clone()) {
-            Ok(solver) => {
+            Ok(mut solver) => {
+                if let Err(error) = solver.prepare_output() {
+                    *last_state = SolverState::Failed;
+                    publish(
+                        updates,
+                        SolverUpdate::status(SolverState::Failed, Some(error)),
+                    );
+                    return true;
+                }
                 *active = Some(ActiveSolver {
                     solver,
                     max_iterations: config.max_steps,
+                    update_every: config.print_every,
+                    frame_every: config.frame_every,
                     started: Instant::now(),
-                    last_update: Instant::now(),
-                    last_field_update: Instant::now(),
                     paused: false,
                 });
                 *last_state = SolverState::Running;

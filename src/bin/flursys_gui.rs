@@ -122,6 +122,9 @@ slint::slint! {
         in-out property <string> dt-text: "0.001";
         in-out property <int> iterations: 10000;
         in-out property <int> threads: 0;
+        in-out property <int> gui-update-every: 10;
+        in-out property <int> history-every: 10;
+        in-out property <int> frame-every: 100;
         in-out property <int> coupling-index: 0;
         in-out property <int> pressure-solver-index: 0;
         in-out property <string> velocity-relaxation: "0.7";
@@ -384,6 +387,13 @@ slint::slint! {
                                     Text { text: "Pseudo-time step"; color: rgb(140, 167, 185); font-size: 11px; } LineEdit { text <=> root.dt-text; }
                                     Text { text: "Iterations"; color: rgb(140, 167, 185); font-size: 11px; } SpinBox { value <=> root.iterations; minimum: 1; maximum: 10000000; }
                                     Text { text: "CPU threads (0 = auto)"; color: rgb(140, 167, 185); font-size: 11px; } SpinBox { value <=> root.threads; minimum: 0; maximum: 256; }
+                                    Text { text: "Update / history / frame interval (iterations)"; color: rgb(140, 167, 185); font-size: 11px; }
+                                    HorizontalLayout {
+                                        VerticalLayout { Text { text: "GUI"; color: rgb(126, 153, 170); font-size: 10px; } SpinBox { value <=> root.gui-update-every; minimum: 1; maximum: 1000000; } }
+                                        VerticalLayout { Text { text: "CSV"; color: rgb(126, 153, 170); font-size: 10px; } SpinBox { value <=> root.history-every; minimum: 1; maximum: 1000000; } }
+                                        VerticalLayout { Text { text: "FRAME"; color: rgb(126, 153, 170); font-size: 10px; } SpinBox { value <=> root.frame-every; minimum: 1; maximum: 1000000; } }
+                                    }
+                                    Text { text: "GUI refreshes at the selected cadence. CSV history and PPM frames are saved in results/gui-run."; color: rgb(126, 153, 170); font-size: 10px; wrap: word-wrap; }
                                     HorizontalLayout { Button { text: "VALIDATE CASE"; clicked => { root.validate-case(); } } Button { text: "START"; clicked => { root.start(); } } Button { text: "PAUSE"; clicked => { root.pause(); } } Button { text: "RESUME"; clicked => { root.resume(); } } Button { text: "STOP"; clicked => { root.stop(); } } }
                                     Text { text: root.preflight-summary; color: rgb(180, 202, 214); font-family: "monospace"; font-size: 10px; wrap: word-wrap; }
                                 } }
@@ -1064,6 +1074,9 @@ fn sync_project_from_ui(ui: &MainWindow, project: &mut Project) {
     project.solver.dt = parse_number(ui.get_dt_text().as_str(), project.solver.dt);
     project.solver.max_iterations = ui.get_iterations().max(1) as usize;
     project.solver.threads = ui.get_threads().max(0) as usize;
+    project.solver.gui_update_every = ui.get_gui_update_every().max(1) as usize;
+    project.solver.history_every = ui.get_history_every().max(1) as usize;
+    project.solver.frame_every = ui.get_frame_every().max(1) as usize;
     project.solver.coupling = if ui.get_coupling_index() == 0 {
         ProjectCoupling::Simple
     } else {
@@ -1128,6 +1141,9 @@ fn write_project_to_ui(ui: &MainWindow, project: &Project) {
     ui.set_dt_text(SharedString::from(format!("{:.6}", project.solver.dt)));
     ui.set_iterations(project.solver.max_iterations as i32);
     ui.set_threads(project.solver.threads as i32);
+    ui.set_gui_update_every(project.solver.gui_update_every as i32);
+    ui.set_history_every(project.solver.history_every as i32);
+    ui.set_frame_every(project.solver.frame_every as i32);
     ui.set_coupling_index(match project.solver.coupling {
         ProjectCoupling::Simple => 0,
         ProjectCoupling::Projection => 1,
@@ -1688,6 +1704,10 @@ fn preflight_report(project: &Project) -> Result<String, String> {
     if project.physics.thermal.model == EnergyModel::ConstantProperties {
         notices.push("Energy: explicit CFL/Fourier checks active".to_string());
     }
+    notices.push(format!(
+        "GUI / CSV / frame: {} / {} / {} iterations",
+        project.solver.gui_update_every, project.solver.history_every, project.solver.frame_every,
+    ));
     Ok(notices.join("\n"))
 }
 

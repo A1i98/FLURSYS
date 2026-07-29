@@ -195,6 +195,7 @@ pub struct IncompressibleSolver {
     step: usize,
     time: f64,
     frame_index: usize,
+    outputs_prepared: bool,
     last_diag: Diagnostics,
     pool: ThreadPool,
 }
@@ -236,6 +237,7 @@ impl IncompressibleSolver {
             step: 0,
             time: 0.0,
             frame_index: 0,
+            outputs_prepared: false,
             last_diag: Diagnostics::default(),
             pool,
         };
@@ -245,9 +247,7 @@ impl IncompressibleSolver {
     }
 
     pub fn run(&mut self) -> Result<RunSummary, String> {
-        output::ensure_output_tree(&self.cfg.output_dir)?;
-        self.write_case_summary()?;
-        self.write_snapshot()?;
+        self.prepare_output()?;
         let started = Instant::now();
         let mut converged = false;
 
@@ -360,12 +360,38 @@ impl IncompressibleSolver {
         })
     }
 
-    /// Advance the numerical state by one iteration without performing file output.
-    ///
-    /// This is the integration point for interactive frontends and worker threads.
+    /// Prepare persistent output for an interactive run.
+    pub fn prepare_output(&mut self) -> Result<(), String> {
+        if self.outputs_prepared {
+            return Ok(());
+        }
+        output::ensure_output_tree(&self.cfg.output_dir)?;
+        self.write_case_summary()?;
+        self.write_snapshot()?;
+        self.outputs_prepared = true;
+        Ok(())
+    }
+
+    /// Persist the final state for an interactive run, including a final frame.
+    pub fn finalize_output(&mut self) -> Result<(), String> {
+        self.prepare_output()?;
+        self.write_snapshot()?;
+        self.compute_cell_fields();
+        self.write_final_outputs()
+    }
+
+    /// Advance the numerical state by one iteration, preserving the configured
+    /// history and frame cadence for interactive frontends.
     pub fn advance(&mut self) -> Result<SolverStep, String> {
+        self.prepare_output()?;
         let diag = self.advance_one_step()?;
         self.last_diag = diag;
+        if self.step.is_multiple_of(self.cfg.output_every) {
+            self.append_histories(diag)?;
+        }
+        if self.step.is_multiple_of(self.cfg.frame_every) {
+            self.write_snapshot()?;
+        }
         let converged = self.cfg.case.kind() != CaseKind::CylinderRe100
             && self.step >= self.cfg.minimum_steps
             && diag.velocity_change < self.cfg.steady_tolerance
