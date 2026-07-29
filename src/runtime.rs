@@ -35,9 +35,11 @@ pub struct SolverUpdate {
     pub continuity_residual: f64,
     pub momentum_residual: f64,
     pub pressure_residual: f64,
+    pub pressure_iterations: usize,
     pub drag_coefficient: f64,
     pub lift_coefficient: f64,
     pub elapsed_seconds: f64,
+    pub iteration_seconds: f64,
     pub converged: bool,
     pub field_update: Option<FieldUpdate>,
     pub message: Option<String>,
@@ -51,9 +53,11 @@ impl SolverUpdate {
             continuity_residual: 0.0,
             momentum_residual: 0.0,
             pressure_residual: 0.0,
+            pressure_iterations: 0,
             drag_coefficient: 0.0,
             lift_coefficient: 0.0,
             elapsed_seconds: 0.0,
+            iteration_seconds: 0.0,
             converged: false,
             field_update: None,
             message,
@@ -64,6 +68,7 @@ impl SolverUpdate {
         state: SolverState,
         step: SolverStep,
         elapsed_seconds: f64,
+        iteration_seconds: f64,
         field_update: Option<FieldUpdate>,
     ) -> Self {
         Self {
@@ -72,9 +77,11 @@ impl SolverUpdate {
             continuity_residual: step.continuity_residual,
             momentum_residual: step.momentum_residual,
             pressure_residual: step.pressure_residual,
+            pressure_iterations: step.pressure_iterations,
             drag_coefficient: step.drag_coefficient,
             lift_coefficient: step.lift_coefficient,
             elapsed_seconds,
+            iteration_seconds,
             converged: step.converged,
             field_update,
             message: None,
@@ -164,6 +171,7 @@ fn worker_loop(commands: Receiver<SolverCommand>, updates: Sender<SolverUpdate>)
             continue;
         }
 
+        let iteration_started = Instant::now();
         match run.solver.advance() {
             Ok(step) => {
                 let completed = step.converged || step.iteration >= run.max_iterations;
@@ -191,6 +199,7 @@ fn worker_loop(commands: Receiver<SolverCommand>, updates: Sender<SolverUpdate>)
                     },
                     step,
                     run.started.elapsed().as_secs_f64(),
+                    iteration_started.elapsed().as_secs_f64(),
                     snapshot.then(|| run.solver.field_update()),
                 );
                 publish(&updates, update);

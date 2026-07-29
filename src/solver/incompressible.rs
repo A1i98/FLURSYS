@@ -177,6 +177,29 @@ struct Diagnostics {
     reattachment: f64,
 }
 
+/// Reusable vectors for the pressure PCG solve. Keeping these allocations alive
+/// avoids allocator churn on every outer SIMPLE/projection iteration.
+#[derive(Default)]
+struct PcgWorkspace {
+    x: Vec<f64>,
+    b: Vec<f64>,
+    r: Vec<f64>,
+    z: Vec<f64>,
+    direction: Vec<f64>,
+    q: Vec<f64>,
+}
+
+impl PcgWorkspace {
+    fn resize(&mut self, len: usize) {
+        self.x.resize(len, 0.0);
+        self.b.resize(len, 0.0);
+        self.r.resize(len, 0.0);
+        self.z.resize(len, 0.0);
+        self.direction.resize(len, 0.0);
+        self.q.resize(len, 0.0);
+    }
+}
+
 pub struct IncompressibleSolver {
     cfg: SimulationConfig,
     grid: UniformGrid2D,
@@ -196,6 +219,7 @@ pub struct IncompressibleSolver {
     time: f64,
     frame_index: usize,
     outputs_prepared: bool,
+    pcg_workspace: PcgWorkspace,
     last_diag: Diagnostics,
     pool: ThreadPool,
 }
@@ -238,6 +262,7 @@ impl IncompressibleSolver {
             time: 0.0,
             frame_index: 0,
             outputs_prepared: false,
+            pcg_workspace: PcgWorkspace::default(),
             last_diag: Diagnostics::default(),
             pool,
         };
@@ -835,152 +860,176 @@ impl IncompressibleSolver {
 
     fn solve_pressure_pcg(&mut self) -> Result<(f64, usize), String> {
         let n = self.grid.nx * self.grid.ny;
-        let mut x = self.p.as_slice().to_vec();
-        let mut b = vec![0.0_f64; n];
-        let mut r = vec![0.0_f64; n];
-        let mut z = vec![0.0_f64; n];
-        let mut direction = vec![0.0_f64; n];
-        let mut q = vec![0.0_f64; n];
-
-        let nx = self.grid.nx;
-        let solid = &self.solid;
-        let case = &self.cfg.case;
-        let boundaries = &self.cfg.boundary_overrides;
-        let rhs = self.rhs.as_slice();
-        let outlet_pressure = self.outlet_pressure();
-        self.pool.install(|| {
-            x.par_chunks_mut(nx)
-                .zip(b.par_chunks_mut(nx))
-                .enumerate()
-                .for_each(|(j, (x_row, b_row))| {
-                    for i in 0..nx {
-                        let k = i + nx * j;
-                        if solid[(i, j)] || pressure_outlet_cell(case, boundaries, solid, nx, i, j)
-                        {
-                            let value = if pressure_outlet_cell(case, boundaries, solid, nx, i, j) {
-                                outlet_pressure
-                            } else {
-                                0.0
-                            };
-                            x_row[i] = value;
-                            b_row[i] = value;
-                        } else {
-                            b_row[i] = -rhs[k];
-                        }
-                    }
+        let mut workspace = std::mem::take(&mut self.pcg_workspace);
+        workspace.resize(n);
+        let result = {
+            let PcgWorkspace {
+                ref mut x,
+                ref mut b,
+                ref mut r,
+                ref mut z,
+                ref mut direction,
+                ref mut q,
+            } = &mut workspace;
+            let mut x = x;
+            let mut b = b;
+            let mut r = r;
+            let mut z = z;
+            let mut direction = direction;
+            let mut q = q;
+            x.copy_from_slice(self.p.as_slice());
+            (|| {
+                let nx = self.grid.nx;
+                let solid = &self.solid;
+                let case = &self.cfg.case;
+                let boundaries = &self.cfg.boundary_overrides;
+                let rhs = self.rhs.as_slice();
+                let outlet_pressure = self.outlet_pressure();
+                self.pool.install(|| {
+                    x.par_chunks_mut(nx)
+                        .zip(b.par_chunks_mut(nx))
+                        .enumerate()
+                        .for_each(|(j, (x_row, b_row))| {
+                            for i in 0..nx {
+                                let k = i + nx * j;
+                                if solid[(i, j)]
+                                    || pressure_outlet_cell(case, boundaries, solid, nx, i, j)
+                                {
+                                    let value = if pressure_outlet_cell(
+                                        case, boundaries, solid, nx, i, j,
+                                    ) {
+                                        outlet_pressure
+                                    } else {
+                                        0.0
+                                    };
+                                    x_row[i] = value;
+                                    b_row[i] = value;
+                                } else {
+                                    b_row[i] = -rhs[k];
+                                }
+                            }
+                        });
                 });
-        });
 
-        if self.pressure_reference_required() {
-            self.project_pressure_zero_mean(&mut x);
-            self.project_pressure_zero_mean(&mut b);
-        }
+                if self.pressure_reference_required() {
+                    self.project_pressure_zero_mean(&mut x);
+                    self.project_pressure_zero_mean(&mut b);
+                }
 
-        self.apply_pressure_operator(&x, &mut q);
-        self.pool.install(|| {
-            r.par_iter_mut()
-                .zip(b.par_iter())
-                .zip(q.par_iter())
-                .for_each(|((r_value, &b_value), &q_value)| *r_value = b_value - q_value);
-        });
-        if self.pressure_reference_required() {
-            self.project_pressure_zero_mean(&mut r);
-        }
+                self.apply_pressure_operator(&x, &mut q);
+                self.pool.install(|| {
+                    r.par_iter_mut()
+                        .zip(b.par_iter())
+                        .zip(q.par_iter())
+                        .for_each(|((r_value, &b_value), &q_value)| *r_value = b_value - q_value);
+                });
+                if self.pressure_reference_required() {
+                    self.project_pressure_zero_mean(&mut r);
+                }
 
-        let mut residual = self.parallel_max_abs(&r);
-        if residual < self.cfg.pressure_tolerance {
-            self.p.as_mut_slice().copy_from_slice(&x);
-            return Ok((residual, 0));
-        }
+                let mut residual = self.parallel_max_abs(&r);
+                if residual < self.cfg.pressure_tolerance {
+                    self.p.as_mut_slice().copy_from_slice(&x);
+                    return Ok((residual, 0));
+                }
 
-        self.apply_jacobi_preconditioner(&r, &mut z);
-        if self.pressure_reference_required() {
-            self.project_pressure_zero_mean(&mut z);
-        }
-        direction.copy_from_slice(&z);
-        let mut rz_old = self.parallel_dot(&r, &z);
+                self.apply_jacobi_preconditioner(&r, &mut z);
+                if self.pressure_reference_required() {
+                    self.project_pressure_zero_mean(&mut z);
+                }
+                direction.copy_from_slice(&z);
+                let mut rz_old = self.parallel_dot(&r, &z);
 
-        let mut iterations = 0_usize;
-        for iteration in 0..self.cfg.pressure_max_iters {
-            iterations = iteration + 1;
-            self.apply_pressure_operator(&direction, &mut q);
-            let denominator = self.parallel_dot(&direction, &q);
-            if denominator.abs() < 1.0e-30 || !denominator.is_finite() {
-                return Err(
-                    "PCG pressure solver encountered a singular search direction".to_string(),
-                );
-            }
-            let alpha = rz_old / denominator;
-            if !alpha.is_finite() {
-                return Err("PCG pressure solver produced a non-finite step length".to_string());
-            }
-            self.pool.install(|| {
-                x.par_iter_mut()
-                    .zip(r.par_iter_mut())
-                    .zip(direction.par_iter())
-                    .zip(q.par_iter())
-                    .for_each(|(((x_value, r_value), &direction_value), &q_value)| {
-                        *x_value += alpha * direction_value;
-                        *r_value -= alpha * q_value;
+                let mut iterations = 0_usize;
+                for iteration in 0..self.cfg.pressure_max_iters {
+                    iterations = iteration + 1;
+                    self.apply_pressure_operator(&direction, &mut q);
+                    let denominator = self.parallel_dot(&direction, &q);
+                    if denominator.abs() < 1.0e-30 || !denominator.is_finite() {
+                        return Err(
+                            "PCG pressure solver encountered a singular search direction"
+                                .to_string(),
+                        );
+                    }
+                    let alpha = rz_old / denominator;
+                    if !alpha.is_finite() {
+                        return Err(
+                            "PCG pressure solver produced a non-finite step length".to_string()
+                        );
+                    }
+                    self.pool.install(|| {
+                        x.par_iter_mut()
+                            .zip(r.par_iter_mut())
+                            .zip(direction.par_iter())
+                            .zip(q.par_iter())
+                            .for_each(|(((x_value, r_value), &direction_value), &q_value)| {
+                                *x_value += alpha * direction_value;
+                                *r_value -= alpha * q_value;
+                            });
                     });
-            });
-            if self.pressure_reference_required() {
-                self.project_pressure_zero_mean(&mut x);
-                self.project_pressure_zero_mean(&mut r);
-            }
-
-            residual = self.parallel_max_abs(&r);
-            if !residual.is_finite() {
-                return Err("PCG pressure solver produced a non-finite residual".to_string());
-            }
-            if residual < self.cfg.pressure_tolerance {
-                break;
-            }
-
-            self.apply_jacobi_preconditioner(&r, &mut z);
-            if self.pressure_reference_required() {
-                self.project_pressure_zero_mean(&mut z);
-            }
-            let rz_new = self.parallel_dot(&r, &z);
-            if rz_old.abs() < 1.0e-30 {
-                break;
-            }
-            let beta = rz_new / rz_old;
-            self.pool.install(|| {
-                direction.par_iter_mut().zip(z.par_iter()).for_each(
-                    |(direction_value, &z_value)| {
-                        *direction_value = z_value + beta * *direction_value;
-                    },
-                );
-            });
-            if self.pressure_reference_required() {
-                self.project_pressure_zero_mean(&mut direction);
-            }
-            rz_old = rz_new;
-        }
-
-        let case = &self.cfg.case;
-        let boundaries = &self.cfg.boundary_overrides;
-        let solid = &self.solid;
-        let outlet_pressure = self.outlet_pressure();
-        self.pool.install(|| {
-            self.p
-                .as_mut_slice()
-                .par_chunks_mut(nx)
-                .enumerate()
-                .for_each(|(j, row)| {
-                    for i in 0..nx {
-                        row[i] = if solid[(i, j)] {
-                            0.0
-                        } else if pressure_outlet_cell(case, boundaries, solid, nx, i, j) {
-                            outlet_pressure
-                        } else {
-                            x[i + nx * j]
-                        };
+                    if self.pressure_reference_required() {
+                        self.project_pressure_zero_mean(&mut x);
+                        self.project_pressure_zero_mean(&mut r);
                     }
+
+                    residual = self.parallel_max_abs(&r);
+                    if !residual.is_finite() {
+                        return Err(
+                            "PCG pressure solver produced a non-finite residual".to_string()
+                        );
+                    }
+                    if residual < self.cfg.pressure_tolerance {
+                        break;
+                    }
+
+                    self.apply_jacobi_preconditioner(&r, &mut z);
+                    if self.pressure_reference_required() {
+                        self.project_pressure_zero_mean(&mut z);
+                    }
+                    let rz_new = self.parallel_dot(&r, &z);
+                    if rz_old.abs() < 1.0e-30 {
+                        break;
+                    }
+                    let beta = rz_new / rz_old;
+                    self.pool.install(|| {
+                        direction.par_iter_mut().zip(z.par_iter()).for_each(
+                            |(direction_value, &z_value)| {
+                                *direction_value = z_value + beta * *direction_value;
+                            },
+                        );
+                    });
+                    if self.pressure_reference_required() {
+                        self.project_pressure_zero_mean(&mut direction);
+                    }
+                    rz_old = rz_new;
+                }
+
+                let case = &self.cfg.case;
+                let boundaries = &self.cfg.boundary_overrides;
+                let solid = &self.solid;
+                let outlet_pressure = self.outlet_pressure();
+                self.pool.install(|| {
+                    self.p
+                        .as_mut_slice()
+                        .par_chunks_mut(nx)
+                        .enumerate()
+                        .for_each(|(j, row)| {
+                            for i in 0..nx {
+                                row[i] = if solid[(i, j)] {
+                                    0.0
+                                } else if pressure_outlet_cell(case, boundaries, solid, nx, i, j) {
+                                    outlet_pressure
+                                } else {
+                                    x[i + nx * j]
+                                };
+                            }
+                        });
                 });
-        });
-        Ok((residual, iterations))
+                Ok((residual, iterations))
+            })()
+        };
+        self.pcg_workspace = workspace;
+        result
     }
 
     fn apply_pressure_operator(&self, x: &[f64], result: &mut [f64]) {

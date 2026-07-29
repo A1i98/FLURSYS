@@ -1350,9 +1350,11 @@ fn refresh_ui(ui: &MainWindow, state: &AppState) {
     ui.set_status(SharedString::from(format!("{:?}", solver_state)));
     if let Some(update) = update {
         ui.set_residual_summary(SharedString::from(format!(
-            "Iteration        {:>10}\nElapsed          {:>10.3} s\nContinuity       {:>10.3e}\nMomentum         {:>10.3e}\nPressure         {:>10.3e}\nConverged        {}",
+            "Iteration        {:>10}\nElapsed          {:>10.3} s\nLast iteration   {:>10.3} ms\nPressure PCG     {:>10} iters\nContinuity       {:>10.3e}\nMomentum         {:>10.3e}\nPressure         {:>10.3e}\nConverged        {}",
             update.iteration,
             update.elapsed_seconds,
+            update.iteration_seconds * 1_000.0,
+            update.pressure_iterations,
             update.continuity_residual,
             update.momentum_residual,
             update.pressure_residual,
