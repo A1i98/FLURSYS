@@ -160,6 +160,7 @@ pub struct FieldUpdate {
     pub ny: usize,
     pub pressure: Vec<f64>,
     pub speed: Vec<f64>,
+    pub vorticity: Vec<f64>,
     pub solid: Vec<bool>,
     pub temperature: Option<Vec<f64>>,
 }
@@ -390,6 +391,7 @@ impl IncompressibleSolver {
             ny: self.grid.ny,
             pressure: self.p.as_slice().to_vec(),
             speed: self.speed.as_slice().to_vec(),
+            vorticity: self.vorticity.as_slice().to_vec(),
             solid: self.solid.as_slice().to_vec(),
             temperature: self
                 .temperature

@@ -1,8 +1,9 @@
 use flursys::cases::{BackwardStepCase, CavityCase, CylinderCase};
 use flursys::runtime::{SolverCommand, SolverController, SolverState, SolverUpdate};
 use flursys::{
-    BoundaryConditionKind, BoundaryFace, FieldUpdate, GeometryPart, GeometryPartKind, Project,
-    ProjectCase, ProjectCoupling, ProjectPressureSolver,
+    BoundaryConditionKind, BoundaryFace, BuoyancyModel, EnergyModel, ExtrudedMesh3D, FieldUpdate,
+    GeometryPart, GeometryPartKind, Project, ProjectCase, ProjectCoupling, ProjectPressureSolver,
+    StructuredMesh2D, ThermalBoundaryCondition,
 };
 use slint::{
     ComponentHandle, Image, Rgba8Pixel, SharedPixelBuffer, SharedString, Timer, TimerMode,
@@ -41,6 +42,32 @@ slint::slint! {
             padding: 12px;
             Text { text: root.label; color: rgb(135, 160, 178); font-size: 11px; }
             Text { text: root.value; color: rgb(240, 195, 109); font-size: 20px; font-weight: 700; }
+        }
+    }
+
+    component InteractiveGeometryPreview inherits Rectangle {
+        in property <image> preview-image;
+        callback orbit(float, float, float, float);
+        callback zoom(float);
+        callback reset-view();
+        background: rgb(9, 16, 22);
+        border-color: rgb(40, 66, 82);
+        border-width: 1px;
+
+        Image { source: root.preview-image; width: parent.width; height: parent.height; image-fit: contain; }
+        Text {
+            x: 10px; y: parent.height - self.height - 8px;
+            text: "DRAG: ORBIT  ·  WHEEL: ZOOM  ·  DOUBLE-CLICK: RESET";
+            color: rgb(145, 174, 190); font-size: 10px; font-weight: 700;
+        }
+        TouchArea {
+            mouse-cursor: self.pressed ? grabbing : grab;
+            moved => {
+                root.orbit(self.mouse-x / 1px, self.mouse-y / 1px,
+                    self.pressed-x / 1px, self.pressed-y / 1px);
+            }
+            scroll-event(event) => { root.zoom(event.delta-y / 1px); accept }
+            double-clicked => { root.reset-view(); }
         }
     }
 
@@ -99,9 +126,23 @@ slint::slint! {
         in-out property <string> pressure-relaxation: "0.3";
         in-out property <string> extrusion-depth: "0.25";
         in-out property <int> mesh-nz: 8;
+        in-out property <string> mesh-inspection: "Mesh inspection is waiting for a valid grid.";
         in-out property <int> boundary-face-index: 0;
         in-out property <int> boundary-kind-index: 0;
         in-out property <string> boundary-value: "0.0";
+        in-out property <int> energy-model-index: 0;
+        in-out property <string> initial-temperature: "293.15";
+        in-out property <string> thermal-diffusivity: "0.000022";
+        in-out property <string> thermal-source: "0.0";
+        in-out property <int> thermal-face-index: 0;
+        in-out property <int> thermal-boundary-kind-index: 0;
+        in-out property <string> thermal-boundary-value: "293.15";
+        in-out property <int> buoyancy-model-index: 0;
+        in-out property <string> reference-temperature: "293.15";
+        in-out property <string> thermal-expansion: "0.0034";
+        in-out property <string> gravity-x: "0.0";
+        in-out property <string> gravity-y: "-9.81";
+        in-out property <int> result-field-index: 0;
         in-out property <string> residual-summary: "Waiting for a solver run.";
         in-out property <image> residual-image;
         in-out property <float> continuity-level: 0.0;
@@ -119,6 +160,8 @@ slint::slint! {
         callback animation-play-pause(); callback animation-next(); callback show-geometry-3d();
         callback rotate-geometry-3d(); callback apply-boundary(); callback select-step(int);
         callback select-case(); callback add-part(); callback remove-last-part();
+        callback apply-thermal-boundary(); callback select-result-field(int);
+        callback geometry-drag(float, float, float, float); callback geometry-zoom(float); callback reset-geometry-view();
 
         VerticalLayout {
             spacing: 0px;
@@ -194,26 +237,29 @@ slint::slint! {
                                     }
                                 }
                                 Card {
-                                    width: 355px;
+                                    width: 365px;
                                     VerticalLayout {
                                         padding: 18px; spacing: 8px;
                                         Text { text: "3D PART DESIGNER"; color: rgb(240, 195, 109); font-size: 11px; font-weight: 700; }
                                         Text { text: "Create parametric solids"; color: rgb(226, 237, 245); font-size: 16px; font-weight: 700; }
                                         ComboBox { model: ["Box", "Cylinder"]; current-index <=> root.part-kind-index; }
+                                        Text { text: root.part-kind-index == 0 ? "Box: length × width × height" : "Cylinder: radius × height"; color: rgb(126, 153, 170); font-size: 10px; }
                                         Text { text: "Part name"; color: rgb(140, 167, 185); font-size: 11px; }
                                         LineEdit { text <=> root.part-name; }
-                                        Text { text: "Dimensions  (X / Y / Z; cylinder uses radius / radius / height)"; color: rgb(140, 167, 185); font-size: 10px; }
+                                        Text { text: "Dimensions"; color: rgb(140, 167, 185); font-size: 10px; }
                                         HorizontalLayout {
-                                            LineEdit { text <=> root.part-size-x; }
-                                            LineEdit { text <=> root.part-size-y; }
-                                            LineEdit { text <=> root.part-size-z; }
+                                            VerticalLayout { Text { text: root.part-kind-index == 0 ? "X / length" : "Radius"; color: rgb(126, 153, 170); font-size: 10px; } LineEdit { text <=> root.part-size-x; } }
+                                            VerticalLayout { Text { text: root.part-kind-index == 0 ? "Y / width" : "Reference radius"; color: rgb(126, 153, 170); font-size: 10px; } LineEdit { text <=> root.part-size-y; } }
                                         }
-                                        Text { text: "Centre position  (X / Y / Z)"; color: rgb(140, 167, 185); font-size: 10px; }
+                                        Text { text: "Z / height"; color: rgb(126, 153, 170); font-size: 10px; }
+                                        LineEdit { text <=> root.part-size-z; }
+                                        Text { text: "Centre position"; color: rgb(140, 167, 185); font-size: 10px; }
                                         HorizontalLayout {
-                                            LineEdit { text <=> root.part-pos-x; }
-                                            LineEdit { text <=> root.part-pos-y; }
-                                            LineEdit { text <=> root.part-pos-z; }
+                                            VerticalLayout { Text { text: "X"; color: rgb(126, 153, 170); font-size: 10px; } LineEdit { text <=> root.part-pos-x; } }
+                                            VerticalLayout { Text { text: "Y"; color: rgb(126, 153, 170); font-size: 10px; } LineEdit { text <=> root.part-pos-y; } }
                                         }
+                                        Text { text: "Z"; color: rgb(126, 153, 170); font-size: 10px; }
+                                        LineEdit { text <=> root.part-pos-z; }
                                         HorizontalLayout {
                                             Button { text: "ADD SOLID"; clicked => { root.add-part(); } }
                                             Button { text: "REMOVE LAST"; clicked => { root.remove-last-part(); } }
@@ -227,8 +273,8 @@ slint::slint! {
                                         padding: 18px; spacing: 10px;
                                         Text { text: "GEOMETRY PREVIEW"; color: rgb(240, 195, 109); font-size: 11px; font-weight: 700; }
                                         Text { text: root.case-name + " · " + root.geometry-parts-summary; color: rgb(229, 239, 246); font-size: 13px; font-weight: 700; wrap: word-wrap; }
-                                        Rectangle { vertical-stretch: 1; background: rgb(9, 16, 22); border-color: rgb(40, 66, 82); border-width: 1px; Image { source: root.visualization-image; width: parent.width; height: parent.height; image-fit: contain; } }
-                                        HorizontalLayout { Button { text: "3D PREVIEW"; clicked => { root.show-geometry-3d(); } } Button { text: "ROTATE"; clicked => { root.rotate-geometry-3d(); } } }
+                                        InteractiveGeometryPreview { vertical-stretch: 1; preview-image: root.visualization-image; orbit(x, y, pressed-x, pressed-y) => { root.geometry-drag(x, y, pressed-x, pressed-y); } zoom(delta) => { root.geometry-zoom(delta); } reset-view => { root.reset-geometry-view(); } }
+                                        HorizontalLayout { Button { text: "3D PREVIEW"; clicked => { root.show-geometry-3d(); } } Button { text: "ROTATE"; clicked => { root.rotate-geometry-3d(); } } Button { text: "FIT VIEW"; clicked => { root.reset-geometry-view(); } } }
                                     }
                                 }
                             }
@@ -256,7 +302,8 @@ slint::slint! {
                                 } }
                                 Card { horizontal-stretch: 1; VerticalLayout { padding: 18px; spacing: 10px;
                                     Text { text: "MESH INSPECTION"; color: rgb(240, 195, 109); font-size: 11px; font-weight: 700; }
-                                    Rectangle { vertical-stretch: 1; background: rgb(9, 16, 22); border-color: rgb(40, 66, 82); border-width: 1px; Image { source: root.visualization-image; width: parent.width; height: parent.height; image-fit: contain; } }
+                                    Text { text: root.mesh-inspection; color: rgb(180, 202, 214); font-family: "monospace"; font-size: 11px; wrap: word-wrap; }
+                                    InteractiveGeometryPreview { vertical-stretch: 1; preview-image: root.visualization-image; orbit(x, y, pressed-x, pressed-y) => { root.geometry-drag(x, y, pressed-x, pressed-y); } zoom(delta) => { root.geometry-zoom(delta); } reset-view => { root.reset-geometry-view(); } }
                                     Text { text: root.visualization-title + " · " + root.animation-status; color: rgb(163, 188, 203); font-size: 11px; }
                                     HorizontalLayout { Button { text: "2D GRID"; clicked => { root.show-mesh(); } } Button { text: "3D VOLUME"; clicked => { root.show-geometry-3d(); } } }
                                 } }
@@ -269,7 +316,7 @@ slint::slint! {
                         VerticalLayout {
                             padding: 26px; spacing: 16px;
                             SectionTitle { text: "03  Setup"; }
-                            SectionHint { text: "Assign boundary conditions to named faces. Changes are saved in the project and supported planar conditions reach the solver."; }
+                            SectionHint { text: "Assign flow and thermal boundary conditions. Executable energy and Boussinesq controls are saved with the project."; }
                             HorizontalLayout {
                                 spacing: 16px;
                                 Card { width: 420px; VerticalLayout { padding: 18px; spacing: 10px;
@@ -284,9 +331,30 @@ slint::slint! {
                                     Rectangle { height: 1px; background: rgb(47, 74, 91); }
                                     Text { text: "Front and back are retained for the future 3D solver. The active 2D solver accepts a pressure outlet on the right face."; color: rgb(126, 153, 170); font-size: 11px; wrap: word-wrap; }
                                 } }
+                                Card { width: 410px; VerticalLayout { padding: 18px; spacing: 8px;
+                                    Text { text: "ENERGY & BUOYANCY"; color: rgb(240, 195, 109); font-size: 11px; font-weight: 700; }
+                                    Text { text: "Energy model"; color: rgb(140, 167, 185); font-size: 11px; }
+                                    ComboBox { model: ["Flow only", "Constant-property energy"]; current-index <=> root.energy-model-index; }
+                                    HorizontalLayout {
+                                        VerticalLayout { Text { text: "Initial T (K)"; color: rgb(140, 167, 185); font-size: 10px; } LineEdit { text <=> root.initial-temperature; } }
+                                        VerticalLayout { Text { text: "Thermal diffusivity"; color: rgb(140, 167, 185); font-size: 10px; } LineEdit { text <=> root.thermal-diffusivity; } }
+                                    }
+                                    Text { text: "Heat source (K/s)"; color: rgb(140, 167, 185); font-size: 10px; } LineEdit { text <=> root.thermal-source; }
+                                    HorizontalLayout {
+                                        ComboBox { model: ["Left", "Right", "Bottom", "Top"]; current-index <=> root.thermal-face-index; }
+                                        ComboBox { model: ["Adiabatic", "Fixed temperature"]; current-index <=> root.thermal-boundary-kind-index; }
+                                    }
+                                    HorizontalLayout { LineEdit { text <=> root.thermal-boundary-value; } Button { text: "APPLY THERMAL BC"; clicked => { root.apply-thermal-boundary(); } } }
+                                    Rectangle { height: 1px; background: rgb(47, 74, 91); }
+                                    Text { text: "Buoyancy model"; color: rgb(140, 167, 185); font-size: 11px; }
+                                    ComboBox { model: ["Off", "Boussinesq"]; current-index <=> root.buoyancy-model-index; }
+                                    HorizontalLayout { LineEdit { text <=> root.reference-temperature; } LineEdit { text <=> root.thermal-expansion; } }
+                                    HorizontalLayout { LineEdit { text <=> root.gravity-x; } LineEdit { text <=> root.gravity-y; } }
+                                    Text { text: "Tref (K) · beta (1/K) · gx / gy (m/s²). The solver validates Fourier and CFL limits before it starts."; color: rgb(126, 153, 170); font-size: 10px; wrap: word-wrap; }
+                                } }
                                 Card { horizontal-stretch: 1; VerticalLayout { padding: 18px; spacing: 10px;
                                     Text { text: "BOUNDARY & VOLUME VIEW"; color: rgb(240, 195, 109); font-size: 11px; font-weight: 700; }
-                                    Rectangle { vertical-stretch: 1; background: rgb(9, 16, 22); border-color: rgb(40, 66, 82); border-width: 1px; Image { source: root.visualization-image; width: parent.width; height: parent.height; image-fit: contain; } }
+                                    InteractiveGeometryPreview { vertical-stretch: 1; preview-image: root.visualization-image; orbit(x, y, pressed-x, pressed-y) => { root.geometry-drag(x, y, pressed-x, pressed-y); } zoom(delta) => { root.geometry-zoom(delta); } reset-view => { root.reset-geometry-view(); } }
                                     Text { text: "Cyan: left · Gold: right · Green: top · Magenta: bottom"; color: rgb(163, 188, 203); font-size: 11px; }
                                     HorizontalLayout { Button { text: "SHOW 3D"; clicked => { root.show-geometry-3d(); } } Button { text: "ROTATE"; clicked => { root.rotate-geometry-3d(); } } }
                                 } }
@@ -332,6 +400,7 @@ slint::slint! {
                                     Text { text: root.visualization-title; color: rgb(240, 195, 109); font-size: 11px; font-weight: 700; }
                                     Rectangle { vertical-stretch: 1; background: rgb(9, 16, 22); border-color: rgb(40, 66, 82); border-width: 1px; Image { source: root.visualization-image; width: parent.width; height: parent.height; image-fit: contain; } }
                                     Text { text: root.animation-status; color: rgb(163, 188, 203); font-size: 11px; }
+                                    HorizontalLayout { Button { text: "SPEED"; clicked => { root.select-result-field(0); } } Button { text: "PRESSURE"; clicked => { root.select-result-field(1); } } Button { text: "VORTICITY"; clicked => { root.select-result-field(2); } } Button { text: "TEMPERATURE"; clicked => { root.select-result-field(3); } } }
                                     HorizontalLayout { Button { text: "FIELD"; clicked => { root.show-field(); } } Button { text: "MESH"; clicked => { root.show-mesh(); } } Button { text: "PLAY / PAUSE"; clicked => { root.animation-play-pause(); } } Button { text: "NEXT"; clicked => { root.animation-next(); } } }
                                 } }
                                 Card { width: 390px; VerticalLayout { padding: 18px; spacing: 10px;
@@ -362,7 +431,10 @@ struct AppState {
     animation_playing: bool,
     show_mesh: bool,
     show_geometry_3d: bool,
-    geometry_rotation: f32,
+    geometry_yaw: f32,
+    geometry_pitch: f32,
+    geometry_zoom: f32,
+    geometry_drag_anchor: Option<(f32, f32, f32, f32)>,
     last_animation_tick: std::time::Instant,
 }
 
@@ -386,7 +458,10 @@ impl AppState {
             animation_playing: false,
             show_mesh: false,
             show_geometry_3d: true,
-            geometry_rotation: 0.0,
+            geometry_yaw: 0.0,
+            geometry_pitch: 0.0,
+            geometry_zoom: 1.0,
+            geometry_drag_anchor: None,
             last_animation_tick: std::time::Instant::now(),
         }
     }
@@ -743,7 +818,65 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
         state.show_geometry_3d = true;
         state.show_mesh = false;
         state.animation_playing = false;
-        state.geometry_rotation = (state.geometry_rotation + 0.45) % std::f32::consts::TAU;
+        state.geometry_yaw = (state.geometry_yaw + 0.45) % std::f32::consts::TAU;
+        state.geometry_drag_anchor = None;
+        refresh_ui(&ui, &state);
+    });
+
+    let weak_ui = ui.as_weak();
+    let orbit_state = state.clone();
+    ui.on_geometry_drag(move |mouse_x, mouse_y, pressed_x, pressed_y| {
+        let Some(ui) = weak_ui.upgrade() else {
+            return;
+        };
+        let mut state = orbit_state.borrow_mut();
+        let new_gesture = state.geometry_drag_anchor.map_or(true, |(x, y, _, _)| {
+            (x - pressed_x).abs() > f32::EPSILON || (y - pressed_y).abs() > f32::EPSILON
+        });
+        if new_gesture {
+            state.geometry_drag_anchor = Some((
+                pressed_x,
+                pressed_y,
+                state.geometry_yaw,
+                state.geometry_pitch,
+            ));
+        }
+        if let Some((start_x, start_y, start_yaw, start_pitch)) = state.geometry_drag_anchor {
+            state.geometry_yaw = start_yaw + (mouse_x - start_x) * 0.012;
+            state.geometry_pitch = (start_pitch + (mouse_y - start_y) * 0.008).clamp(-0.85, 0.85);
+        }
+        state.show_geometry_3d = true;
+        state.show_mesh = false;
+        refresh_ui(&ui, &state);
+    });
+
+    let weak_ui = ui.as_weak();
+    let zoom_state = state.clone();
+    ui.on_geometry_zoom(move |delta_y| {
+        let Some(ui) = weak_ui.upgrade() else {
+            return;
+        };
+        let mut state = zoom_state.borrow_mut();
+        state.geometry_zoom = (state.geometry_zoom * (-delta_y * 0.0015).exp()).clamp(0.62, 1.28);
+        state.show_geometry_3d = true;
+        state.show_mesh = false;
+        refresh_ui(&ui, &state);
+    });
+
+    let weak_ui = ui.as_weak();
+    let reset_geometry_state = state.clone();
+    ui.on_reset_geometry_view(move || {
+        let Some(ui) = weak_ui.upgrade() else {
+            return;
+        };
+        let mut state = reset_geometry_state.borrow_mut();
+        state.geometry_yaw = 0.0;
+        state.geometry_pitch = 0.0;
+        state.geometry_zoom = 1.0;
+        state.geometry_drag_anchor = None;
+        state.show_geometry_3d = true;
+        state.show_mesh = false;
+        state.log("Geometry camera reset.");
         refresh_ui(&ui, &state);
     });
 
@@ -790,6 +923,47 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
         state.show_mesh = false;
         refresh_ui(&ui, &state);
     });
+
+    let weak_ui = ui.as_weak();
+    let thermal_state = state.clone();
+    ui.on_apply_thermal_boundary(move || {
+        let Some(ui) = weak_ui.upgrade() else {
+            return;
+        };
+        let mut state = thermal_state.borrow_mut();
+        sync_project_from_ui(&ui, &mut state.project);
+        let temperature = parse_number(
+            ui.get_thermal_boundary_value().as_str(),
+            state.project.physics.thermal.initial_temperature,
+        );
+        let boundary = if ui.get_thermal_boundary_kind_index() == 0 {
+            ThermalBoundaryCondition::Adiabatic
+        } else {
+            ThermalBoundaryCondition::FixedTemperature { temperature }
+        };
+        match ui.get_thermal_face_index() {
+            1 => state.project.physics.thermal.right = boundary,
+            2 => state.project.physics.thermal.bottom = boundary,
+            3 => state.project.physics.thermal.top = boundary,
+            _ => state.project.physics.thermal.left = boundary,
+        }
+        state.log("Thermal boundary condition updated.");
+        refresh_ui(&ui, &state);
+    });
+
+    let weak_ui = ui.as_weak();
+    let results_state = state.clone();
+    ui.on_select_result_field(move |index| {
+        let Some(ui) = weak_ui.upgrade() else {
+            return;
+        };
+        ui.set_result_field_index(index.clamp(0, 3));
+        let mut state = results_state.borrow_mut();
+        state.show_mesh = false;
+        state.show_geometry_3d = false;
+        state.animation_playing = false;
+        refresh_ui(&ui, &state);
+    });
 }
 
 fn sync_project_from_ui(ui: &MainWindow, project: &mut Project) {
@@ -822,6 +996,36 @@ fn sync_project_from_ui(ui: &MainWindow, project: &mut Project) {
         project.preprocessing.geometry.extrusion_depth,
     );
     project.preprocessing.mesh.cells_z = ui.get_mesh_nz().max(1) as usize;
+    project.physics.thermal.model = if ui.get_energy_model_index() == 1 {
+        EnergyModel::ConstantProperties
+    } else {
+        EnergyModel::Off
+    };
+    project.physics.thermal.initial_temperature = parse_number(
+        ui.get_initial_temperature().as_str(),
+        project.physics.thermal.initial_temperature,
+    );
+    project.physics.thermal.thermal_diffusivity = parse_number(
+        ui.get_thermal_diffusivity().as_str(),
+        project.physics.thermal.thermal_diffusivity,
+    );
+    project.physics.thermal.source_temperature_rate = parse_number(
+        ui.get_thermal_source().as_str(),
+        project.physics.thermal.source_temperature_rate,
+    );
+    project.physics.buoyancy = if ui.get_buoyancy_model_index() == 1 {
+        BuoyancyModel::Boussinesq {
+            reference_temperature: parse_number(
+                ui.get_reference_temperature().as_str(),
+                project.physics.thermal.initial_temperature,
+            ),
+            thermal_expansion: parse_number(ui.get_thermal_expansion().as_str(), 0.0),
+            gravity_x: parse_number(ui.get_gravity_x().as_str(), 0.0),
+            gravity_y: parse_number(ui.get_gravity_y().as_str(), -9.81),
+        }
+    } else {
+        BuoyancyModel::Off
+    };
 }
 
 fn write_project_to_ui(ui: &MainWindow, project: &Project) {
@@ -854,6 +1058,38 @@ fn write_project_to_ui(ui: &MainWindow, project: &Project) {
         project.preprocessing.geometry.extrusion_depth
     )));
     ui.set_mesh_nz(project.preprocessing.mesh.cells_z as i32);
+    ui.set_energy_model_index(match project.physics.thermal.model {
+        EnergyModel::Off => 0,
+        EnergyModel::ConstantProperties => 1,
+    });
+    ui.set_initial_temperature(SharedString::from(format!(
+        "{:.4}",
+        project.physics.thermal.initial_temperature
+    )));
+    ui.set_thermal_diffusivity(SharedString::from(format!(
+        "{:.6e}",
+        project.physics.thermal.thermal_diffusivity
+    )));
+    ui.set_thermal_source(SharedString::from(format!(
+        "{:.6e}",
+        project.physics.thermal.source_temperature_rate
+    )));
+    write_thermal_boundary_to_ui(ui, project, 0);
+    match project.physics.buoyancy {
+        BuoyancyModel::Off => ui.set_buoyancy_model_index(0),
+        BuoyancyModel::Boussinesq {
+            reference_temperature,
+            thermal_expansion,
+            gravity_x,
+            gravity_y,
+        } => {
+            ui.set_buoyancy_model_index(1);
+            ui.set_reference_temperature(SharedString::from(format!("{reference_temperature:.4}")));
+            ui.set_thermal_expansion(SharedString::from(format!("{thermal_expansion:.6e}")));
+            ui.set_gravity_x(SharedString::from(format!("{gravity_x:.4}")));
+            ui.set_gravity_y(SharedString::from(format!("{gravity_y:.4}")));
+        }
+    }
     ui.set_geometry_parts_summary(SharedString::from(geometry_parts_summary(project)));
     ui.set_part_name(SharedString::from(format!(
         "Part {}",
@@ -953,6 +1189,29 @@ fn write_boundary_to_ui(ui: &MainWindow, project: &Project, face: BoundaryFace) 
     ui.set_boundary_value(SharedString::from(format!("{value:.6}")));
 }
 
+fn write_thermal_boundary_to_ui(ui: &MainWindow, project: &Project, face_index: i32) {
+    ui.set_thermal_face_index(face_index);
+    let boundary = match face_index {
+        1 => project.physics.thermal.right,
+        2 => project.physics.thermal.bottom,
+        3 => project.physics.thermal.top,
+        _ => project.physics.thermal.left,
+    };
+    match boundary {
+        ThermalBoundaryCondition::Adiabatic => {
+            ui.set_thermal_boundary_kind_index(0);
+            ui.set_thermal_boundary_value(SharedString::from(format!(
+                "{:.4}",
+                project.physics.thermal.initial_temperature
+            )));
+        }
+        ThermalBoundaryCondition::FixedTemperature { temperature } => {
+            ui.set_thermal_boundary_kind_index(1);
+            ui.set_thermal_boundary_value(SharedString::from(format!("{temperature:.4}")));
+        }
+    }
+}
+
 fn boundary_face_from_index(index: i32) -> BoundaryFace {
     match index {
         1 => BoundaryFace::Right,
@@ -1000,11 +1259,13 @@ fn refresh_ui(ui: &MainWindow, state: &AppState) {
         if let Some(field) = &update.field_update {
             let max_speed = field.speed.iter().copied().fold(0.0_f64, f64::max);
             ui.set_field_summary(SharedString::from(format!(
-                "Cell-centred field snapshot\nGrid: {} × {}\nMax speed: {:.6}\nPressure samples: {}\nSolid cells: {}",
+                "Cell-centred field snapshot\nGrid: {} × {}\nMax speed: {:.6}\nPressure / vorticity samples: {} / {}\nTemperature: {}\nSolid cells: {}",
                 field.nx,
                 field.ny,
                 max_speed,
                 field.pressure.len(),
+                field.vorticity.len(),
+                if field.temperature.is_some() { "available" } else { "off" },
                 field.solid.iter().filter(|solid| **solid).count()
             )));
         }
@@ -1013,36 +1274,96 @@ fn refresh_ui(ui: &MainWindow, state: &AppState) {
         state.logs.iter().cloned().collect::<Vec<_>>().join("\n"),
     ));
     ui.set_residual_image(render_residual_chart(&state.residual_history));
+    ui.set_mesh_inspection(SharedString::from(mesh_inspection(&state.project)));
     if state.show_geometry_3d {
         ui.set_visualization_title(SharedString::from("3D GEOMETRY & MESH"));
-        ui.set_animation_status(SharedString::from(format!(
-            "{} layers · boundary setup retained in project",
-            state.project.preprocessing.mesh.cells_z
-        )));
-        ui.set_visualization_image(render_geometry_3d(&state.project, state.geometry_rotation));
-    } else if state.show_mesh {
-        ui.set_visualization_title(SharedString::from("MESH PREVIEW"));
-        ui.set_animation_status(SharedString::from(format!(
-            "{} × {} structured grid",
-            state.project.solver.nx, state.project.solver.ny
-        )));
-        ui.set_visualization_image(render_mesh(
+        let (length, height) = project_case_domain(&state.project.case);
+        let base = StructuredMesh2D::new(
             state.project.solver.nx,
             state.project.solver.ny,
-        ));
-    } else if let Some(field) = state.frames.get(state.frame_index) {
-        ui.set_visualization_title(SharedString::from("SPEED FIELD"));
+            length,
+            height,
+        )
+        .expect("project domain and UI grid are validated before rendering");
+        let mesh = ExtrudedMesh3D::new(
+            base,
+            state.project.preprocessing.mesh.cells_z,
+            state.project.preprocessing.geometry.extrusion_depth,
+        )
+        .expect("project extrusion settings are validated before rendering");
+        let z_exaggeration = preview_z_exaggeration(&mesh);
         ui.set_animation_status(SharedString::from(format!(
-            "Frame {} / {}{}",
+            "{} cells · {} layers · visual Z ×{:.1} · preview samples ≤28 × 28 × 16 · yaw {:.0}° · pitch {:.0}° · zoom {:.0}%",
+            mesh.cell_count(),
+            mesh.nz,
+            z_exaggeration,
+            state.geometry_yaw.to_degrees(),
+            state.geometry_pitch.to_degrees(),
+            state.geometry_zoom * 100.0,
+        )));
+        ui.set_visualization_image(render_geometry_3d(
+            &state.project,
+            state.geometry_yaw,
+            state.geometry_pitch,
+            state.geometry_zoom,
+        ));
+    } else if state.show_mesh {
+        ui.set_visualization_title(SharedString::from("MESH PREVIEW"));
+        let (length, height) = project_case_domain(&state.project.case);
+        let mesh = StructuredMesh2D::new(
+            state.project.solver.nx,
+            state.project.solver.ny,
+            length,
+            height,
+        )
+        .expect("project domain and UI grid are validated before rendering");
+        ui.set_animation_status(SharedString::from(format!(
+            "{} × {} · {} cells · dx {:.3e} · dy {:.3e} · aspect {:.3}",
+            mesh.nx,
+            mesh.ny,
+            mesh.cell_count(),
+            mesh.dx,
+            mesh.dy,
+            mesh.dx.max(mesh.dy) / mesh.dx.min(mesh.dy),
+        )));
+        ui.set_visualization_image(render_mesh(&state.project));
+    } else if let Some(field) = state.frames.get(state.frame_index) {
+        let selected = ui.get_result_field_index();
+        let (title, image) = match selected {
+            1 => (
+                "PRESSURE FIELD",
+                render_scalar_field(field, &field.pressure, true),
+            ),
+            2 => (
+                "VORTICITY FIELD",
+                render_scalar_field(field, &field.vorticity, true),
+            ),
+            3 => match &field.temperature {
+                Some(temperature) => (
+                    "TEMPERATURE FIELD",
+                    render_scalar_field(field, temperature, false),
+                ),
+                None => ("TEMPERATURE UNAVAILABLE", render_empty_image()),
+            },
+            _ => ("SPEED FIELD", render_speed_field(field)),
+        };
+        ui.set_visualization_title(SharedString::from(title));
+        ui.set_animation_status(SharedString::from(format!(
+            "Frame {} / {}{}{}",
             state.frame_index + 1,
             state.frames.len(),
             if state.animation_playing {
                 " · playing"
             } else {
                 ""
+            },
+            if selected == 3 && field.temperature.is_none() {
+                " · enable Energy in Setup"
+            } else {
+                ""
             }
         )));
-        ui.set_visualization_image(render_speed_field(field));
+        ui.set_visualization_image(image);
     } else {
         ui.set_visualization_title(SharedString::from("SPEED FIELD"));
         ui.set_animation_status(SharedString::from("Frame 0 / 0"));
@@ -1059,37 +1380,453 @@ fn render_empty_image() -> Image {
     image_from_rgba(PREVIEW_WIDTH, PREVIEW_HEIGHT, pixels)
 }
 
-fn render_mesh(nx: usize, ny: usize) -> Image {
+fn render_mesh(project: &Project) -> Image {
     let width = PREVIEW_WIDTH;
     let height = PREVIEW_HEIGHT;
     let mut pixels = vec![0_u8; (width * height * 4) as usize];
     fill(&mut pixels, [11, 18, 24, 255]);
-    let columns = nx.clamp(4, 80);
-    let rows = ny.clamp(4, 80);
-    for x in 0..width {
-        let line = x % (width / columns as u32).max(1) == 0;
-        for y in 0..height {
-            if line || y % (height / rows as u32).max(1) == 0 {
-                set_pixel(&mut pixels, width, height, x, y, [52, 87, 106, 255]);
+    let (length, domain_height) = project_case_domain(&project.case);
+    let Ok(mesh) =
+        StructuredMesh2D::new(project.solver.nx, project.solver.ny, length, domain_height)
+    else {
+        return image_from_rgba(width, height, pixels);
+    };
+    let scale = (f64::from(width - 50) / mesh.length).min(f64::from(height - 50) / mesh.height);
+    let draw_width = mesh.length * scale;
+    let draw_height = mesh.height * scale;
+    let origin_x = (f64::from(width) - draw_width) * 0.5;
+    let origin_y = (f64::from(height) + draw_height) * 0.5;
+    // Rasterise the analytical case obstacle before drawing edges so the
+    // displayed structured cells match the active 2D flow domain.
+    for py in 0..height {
+        let y = (origin_y - f64::from(py)) / scale;
+        if !(0.0..=mesh.height).contains(&y) {
+            continue;
+        }
+        for px in 0..width {
+            let x = (f64::from(px) - origin_x) / scale;
+            if (0.0..=mesh.length).contains(&x) && project_case_is_solid(&project.case, x, y) {
+                set_pixel(&mut pixels, width, height, px, py, [28, 31, 35, 255]);
             }
+        }
+    }
+    let columns = sampled_indices(mesh.nx, 96);
+    let rows = sampled_indices(mesh.ny, 96);
+    for &i in &columns {
+        let (x, _) = mesh.node(i, 0);
+        let x = (origin_x + x * scale) as i32;
+        draw_line(
+            &mut pixels,
+            width,
+            height,
+            (x, origin_y as i32),
+            (x, (origin_y - draw_height) as i32),
+            [52, 87, 106, 255],
+        );
+    }
+    for &j in &rows {
+        let (_, y) = mesh.node(0, j);
+        let y = (origin_y - y * scale) as i32;
+        draw_line(
+            &mut pixels,
+            width,
+            height,
+            (origin_x as i32, y),
+            ((origin_x + draw_width) as i32, y),
+            [52, 87, 106, 255],
+        );
+    }
+    draw_line(
+        &mut pixels,
+        width,
+        height,
+        (origin_x as i32, origin_y as i32),
+        ((origin_x + draw_width) as i32, origin_y as i32),
+        [205, 115, 175, 255],
+    );
+    draw_line(
+        &mut pixels,
+        width,
+        height,
+        ((origin_x + draw_width) as i32, origin_y as i32),
+        (
+            (origin_x + draw_width) as i32,
+            (origin_y - draw_height) as i32,
+        ),
+        [240, 195, 109, 255],
+    );
+    draw_line(
+        &mut pixels,
+        width,
+        height,
+        (
+            (origin_x + draw_width) as i32,
+            (origin_y - draw_height) as i32,
+        ),
+        (origin_x as i32, (origin_y - draw_height) as i32),
+        [116, 189, 135, 255],
+    );
+    draw_line(
+        &mut pixels,
+        width,
+        height,
+        (origin_x as i32, (origin_y - draw_height) as i32),
+        (origin_x as i32, origin_y as i32),
+        [77, 168, 184, 255],
+    );
+    image_from_rgba(width, height, pixels)
+}
+
+fn project_case_domain(case: &ProjectCase) -> (f64, f64) {
+    match case {
+        ProjectCase::LidDrivenCavity { length, height, .. }
+        | ProjectCase::Cylinder { length, height, .. }
+        | ProjectCase::BackwardFacingStep { length, height, .. } => (*length, *height),
+    }
+}
+
+fn project_case_is_solid(case: &ProjectCase, x: f64, y: f64) -> bool {
+    match case {
+        ProjectCase::Cylinder {
+            diameter,
+            center_x,
+            center_y,
+            ..
+        } => (x - center_x).powi(2) + (y - center_y).powi(2) <= (0.5 * diameter).powi(2),
+        ProjectCase::BackwardFacingStep {
+            step_x,
+            step_height,
+            ..
+        } => x < *step_x && y < *step_height,
+        ProjectCase::LidDrivenCavity { .. } => false,
+    }
+}
+
+fn mesh_inspection(project: &Project) -> String {
+    let (length, height) = project_case_domain(&project.case);
+    let Ok(base) = StructuredMesh2D::new(project.solver.nx, project.solver.ny, length, height)
+    else {
+        return "Invalid planar mesh settings.".to_string();
+    };
+    let Ok(mesh) = ExtrudedMesh3D::new(
+        base,
+        project.preprocessing.mesh.cells_z,
+        project.preprocessing.geometry.extrusion_depth,
+    ) else {
+        return "Invalid extrusion settings.".to_string();
+    };
+    format!(
+        "2D cells      {:>10}\n3D preview    {:>10}\nNodes         {:>10}\ndx / dy / dz  {:.3e} / {:.3e} / {:.3e}\nCell volume   {:.3e}\nAspect ratio  {:.3}",
+        base.cell_count(),
+        mesh.cell_count(),
+        mesh.node_count(),
+        base.dx,
+        base.dy,
+        mesh.dz,
+        mesh.cell_volume(),
+        mesh.aspect_ratio(),
+    )
+}
+
+fn sampled_indices(count: usize, maximum_lines: usize) -> Vec<usize> {
+    if count <= maximum_lines {
+        return (0..=count).collect();
+    }
+    let stride = (count as f64 / maximum_lines as f64).ceil() as usize;
+    let mut indices: Vec<_> = (0..=count).step_by(stride).collect();
+    if indices.last().copied() != Some(count) {
+        indices.push(count);
+    }
+    indices
+}
+
+fn render_geometry_3d(project: &Project, yaw: f32, pitch: f32, zoom: f32) -> Image {
+    let width = PREVIEW_WIDTH;
+    let height = PREVIEW_HEIGHT;
+    let mut pixels = vec![0_u8; (width * height * 4) as usize];
+    fill(&mut pixels, [11, 18, 24, 255]);
+    let (length, domain_height) = project_case_domain(&project.case);
+    let Ok(base) =
+        StructuredMesh2D::new(project.solver.nx, project.solver.ny, length, domain_height)
+    else {
+        return image_from_rgba(width, height, pixels);
+    };
+    let Ok(mesh) = ExtrudedMesh3D::new(
+        base,
+        project.preprocessing.mesh.cells_z,
+        project.preprocessing.geometry.extrusion_depth,
+    ) else {
+        return image_from_rgba(width, height, pixels);
+    };
+    let camera = MeshCamera::fit(&mesh, yaw, pitch, zoom);
+    let xs = sampled_indices(mesh.base.nx, 28);
+    let ys = sampled_indices(mesh.base.ny, 28);
+    let zs = sampled_indices(mesh.nz, 16);
+    for &k in &zs {
+        let color = if k == 0 || k == mesh.nz {
+            [94, 126, 143, 255]
+        } else {
+            [37, 65, 82, 255]
+        };
+        for &i in &xs {
+            draw_line(
+                &mut pixels,
+                width,
+                height,
+                camera.project(mesh.node(i, 0, k)),
+                camera.project(mesh.node(i, mesh.base.ny, k)),
+                color,
+            );
+        }
+        for &j in &ys {
+            draw_line(
+                &mut pixels,
+                width,
+                height,
+                camera.project(mesh.node(0, j, k)),
+                camera.project(mesh.node(mesh.base.nx, j, k)),
+                color,
+            );
+        }
+    }
+    for &i in &xs {
+        for &j in &ys {
+            draw_line(
+                &mut pixels,
+                width,
+                height,
+                camera.project(mesh.node(i, j, 0)),
+                camera.project(mesh.node(i, j, mesh.nz)),
+                [45, 82, 103, 255],
+            );
+        }
+    }
+    draw_case_solid_3d(&mut pixels, width, height, &project.case, &mesh, camera);
+    // Parametric workbench parts remain an overlay until they can be converted
+    // into conformal CFD cells by a CAD/meshing kernel.
+    let part_scale = geometry_scene_scale(&project.preprocessing.geometry.parts) * f64::from(zoom);
+    for (index, part) in project.preprocessing.geometry.parts.iter().enumerate() {
+        let color = part_color(index);
+        match &part.kind {
+            GeometryPartKind::Box {
+                length,
+                width: part_width,
+                height: part_height,
+            } => draw_part_box(
+                &mut pixels,
+                width,
+                height,
+                part,
+                *length,
+                *part_width,
+                *part_height,
+                yaw,
+                part_scale,
+                color,
+            ),
+            GeometryPartKind::Cylinder {
+                radius,
+                height: part_height,
+                ..
+            } => draw_part_cylinder(
+                &mut pixels,
+                width,
+                height,
+                part,
+                *radius,
+                *part_height,
+                yaw,
+                part_scale,
+                color,
+            ),
         }
     }
     image_from_rgba(width, height, pixels)
 }
 
-fn render_geometry_3d(project: &Project, rotation: f32) -> Image {
+fn draw_case_solid_3d(
+    pixels: &mut [u8],
+    width: u32,
+    height: u32,
+    case: &ProjectCase,
+    mesh: &ExtrudedMesh3D,
+    camera: MeshCamera,
+) {
+    const COLOR: [u8; 4] = [240, 195, 109, 255];
+    match case {
+        ProjectCase::Cylinder {
+            diameter,
+            center_x,
+            center_y,
+            ..
+        } => {
+            let radius = 0.5 * *diameter;
+            let mut previous_bottom = None;
+            let mut previous_top = None;
+            for step in 0..=48 {
+                let angle = step as f64 * std::f64::consts::TAU / 48.0;
+                let x = *center_x + radius * angle.cos();
+                let y = *center_y + radius * angle.sin();
+                let bottom = camera.project((x, y, 0.0));
+                let top = camera.project((x, y, mesh.depth));
+                if let Some(previous) = previous_bottom {
+                    draw_line(pixels, width, height, previous, bottom, COLOR);
+                }
+                if let Some(previous) = previous_top {
+                    draw_line(pixels, width, height, previous, top, COLOR);
+                }
+                if step % 8 == 0 {
+                    draw_line(pixels, width, height, bottom, top, COLOR);
+                }
+                previous_bottom = Some(bottom);
+                previous_top = Some(top);
+            }
+        }
+        ProjectCase::BackwardFacingStep {
+            step_x,
+            step_height,
+            ..
+        } => draw_case_box(
+            pixels,
+            width,
+            height,
+            camera,
+            (0.0, 0.0, 0.0),
+            (*step_x, *step_height, mesh.depth),
+            COLOR,
+        ),
+        ProjectCase::LidDrivenCavity { .. } => {}
+    }
+}
+
+fn draw_case_box(
+    pixels: &mut [u8],
+    width: u32,
+    height: u32,
+    camera: MeshCamera,
+    min: (f64, f64, f64),
+    max: (f64, f64, f64),
+    color: [u8; 4],
+) {
+    let corners = [
+        (min.0, min.1, min.2),
+        (max.0, min.1, min.2),
+        (max.0, max.1, min.2),
+        (min.0, max.1, min.2),
+        (min.0, min.1, max.2),
+        (max.0, min.1, max.2),
+        (max.0, max.1, max.2),
+        (min.0, max.1, max.2),
+    ]
+    .map(|point| camera.project(point));
+    for (from, to) in [
+        (0, 1),
+        (1, 2),
+        (2, 3),
+        (3, 0),
+        (4, 5),
+        (5, 6),
+        (6, 7),
+        (7, 4),
+        (0, 4),
+        (1, 5),
+        (2, 6),
+        (3, 7),
+    ] {
+        draw_line(pixels, width, height, corners[from], corners[to], color);
+    }
+}
+
+#[derive(Clone, Copy)]
+struct MeshCamera {
+    length: f64,
+    height: f64,
+    depth: f64,
+    yaw: f64,
+    pitch: f64,
+    scale: f64,
+    z_exaggeration: f64,
+}
+
+impl MeshCamera {
+    fn fit(mesh: &ExtrudedMesh3D, yaw: f32, pitch: f32, zoom: f32) -> Self {
+        let mut camera = Self {
+            length: mesh.base.length,
+            height: mesh.base.height,
+            depth: mesh.depth,
+            yaw: f64::from(yaw),
+            pitch: f64::from(pitch),
+            scale: 1.0,
+            z_exaggeration: preview_z_exaggeration(mesh),
+        };
+        let corners = [
+            (0.0, 0.0, 0.0),
+            (mesh.base.length, 0.0, 0.0),
+            (0.0, mesh.base.height, 0.0),
+            (mesh.base.length, mesh.base.height, 0.0),
+            (0.0, 0.0, mesh.depth),
+            (mesh.base.length, 0.0, mesh.depth),
+            (0.0, mesh.base.height, mesh.depth),
+            (mesh.base.length, mesh.base.height, mesh.depth),
+        ];
+        let projected: Vec<_> = corners
+            .into_iter()
+            .map(|point| camera.project_unscaled(point))
+            .collect();
+        let (min_x, max_x) = projected
+            .iter()
+            .fold((f64::INFINITY, f64::NEG_INFINITY), |(min, max), &(x, _)| {
+                (min.min(x), max.max(x))
+            });
+        let (min_y, max_y) = projected
+            .iter()
+            .fold((f64::INFINITY, f64::NEG_INFINITY), |(min, max), &(_, y)| {
+                (min.min(y), max.max(y))
+            });
+        camera.scale = (460.0 / (max_x - min_x).max(1.0e-9))
+            .min(280.0 / (max_y - min_y).max(1.0e-9))
+            * f64::from(zoom);
+        camera
+    }
+
+    fn project_unscaled(&self, (x, y, z): (f64, f64, f64)) -> (f64, f64) {
+        let x = x - 0.5 * self.length;
+        let y = y - 0.5 * self.height;
+        let z = (z - 0.5 * self.depth) * self.z_exaggeration;
+        let horizontal = x * self.yaw.cos() - y * self.yaw.sin();
+        let depth = x * self.yaw.sin() + y * self.yaw.cos();
+        (horizontal, z * self.pitch.cos() + depth * self.pitch.sin())
+    }
+
+    fn project(&self, point: (f64, f64, f64)) -> (i32, i32) {
+        let (x, y) = self.project_unscaled(point);
+        (
+            (260.0 + x * self.scale) as i32,
+            (160.0 - y * self.scale) as i32,
+        )
+    }
+}
+
+fn preview_z_exaggeration(mesh: &ExtrudedMesh3D) -> f64 {
+    (0.16 * mesh.base.length.max(mesh.base.height) / mesh.depth).clamp(1.0, 12.0)
+}
+
+#[allow(dead_code)]
+fn render_geometry_3d_legacy(project: &Project, yaw: f32, pitch: f32, zoom: f32) -> Image {
     let width = PREVIEW_WIDTH;
     let height = PREVIEW_HEIGHT;
     let mut pixels = vec![0_u8; (width * height * 4) as usize];
     fill(&mut pixels, [11, 18, 24, 255]);
 
-    let front_left = 74_i32;
-    let front_right = 360_i32;
-    let front_top = 62_i32;
-    let front_bottom = 264_i32;
-    let depth = 62.0;
-    let offset_x = (rotation.cos() * depth) as i32;
-    let offset_y = (-42.0 - rotation.sin().abs() * 14.0) as i32;
+    let front_width = (286.0 * zoom) as i32;
+    let front_height = (202.0 * zoom) as i32;
+    let front_left = 218 - front_width / 2;
+    let front_right = front_left + front_width;
+    let front_top = 164 - front_height / 2;
+    let front_bottom = front_top + front_height;
+    let depth = 62.0 * zoom;
+    let offset_x = (yaw.cos() * depth) as i32;
+    let offset_y = (-0.68 * depth + pitch.sin() * depth * 0.82) as i32;
     let front = [
         (front_left, front_bottom),
         (front_right, front_bottom),
@@ -1249,8 +1986,8 @@ fn render_geometry_3d(project: &Project, rotation: f32) -> Image {
                     *length,
                     *width,
                     *height,
-                    rotation,
-                    scale,
+                    yaw,
+                    scale * f64::from(zoom),
                     color,
                 ),
                 GeometryPartKind::Cylinder { radius, height, .. } => draw_part_cylinder(
@@ -1260,8 +1997,8 @@ fn render_geometry_3d(project: &Project, rotation: f32) -> Image {
                     part,
                     *radius,
                     *height,
-                    rotation,
-                    scale,
+                    yaw,
+                    scale * f64::from(zoom),
                     color,
                 ),
             }
@@ -1419,10 +2156,24 @@ fn draw_ellipse(
     }
 }
 
-fn render_speed_field(field: &FieldUpdate) -> Image {
+fn render_scalar_field(field: &FieldUpdate, values: &[f64], symmetric: bool) -> Image {
     let width = PREVIEW_WIDTH;
     let height = PREVIEW_HEIGHT;
-    let max_speed = field.speed.iter().copied().fold(1.0e-12_f64, f64::max);
+    let (mut min_value, mut max_value) = values
+        .iter()
+        .copied()
+        .filter(|value| value.is_finite())
+        .fold((f64::INFINITY, f64::NEG_INFINITY), |(min, max), value| {
+            (min.min(value), max.max(value))
+        });
+    if symmetric {
+        let bound = min_value.abs().max(max_value.abs()).max(1.0e-12);
+        min_value = -bound;
+        max_value = bound;
+    } else if !min_value.is_finite() || max_value <= min_value {
+        min_value = 0.0;
+        max_value = 1.0;
+    }
     let mut pixels = vec![0_u8; (width * height * 4) as usize];
     for y in 0..height {
         let j = ((height - 1 - y) as usize * field.ny / height as usize).min(field.ny - 1);
@@ -1432,12 +2183,22 @@ fn render_speed_field(field: &FieldUpdate) -> Image {
             let color = if field.solid[index] {
                 [22, 25, 29, 255]
             } else {
-                speed_color((field.speed[index] / max_speed).clamp(0.0, 1.0) as f32)
+                let normalized =
+                    ((values[index] - min_value) / (max_value - min_value)).clamp(0.0, 1.0) as f32;
+                if symmetric {
+                    diverging_color(normalized)
+                } else {
+                    speed_color(normalized)
+                }
             };
             set_pixel(&mut pixels, width, height, x, y, color);
         }
     }
     image_from_rgba(width, height, pixels)
+}
+
+fn render_speed_field(field: &FieldUpdate) -> Image {
+    render_scalar_field(field, &field.speed, false)
 }
 
 fn render_residual_chart(history: &VecDeque<ResidualSample>) -> Image {
@@ -1542,6 +2303,26 @@ fn speed_color(value: f32) -> [u8; 4] {
     [r, g, b, 255]
 }
 
+fn diverging_color(value: f32) -> [u8; 4] {
+    if value < 0.5 {
+        let blend = value * 2.0;
+        [
+            (64.0 + 191.0 * blend) as u8,
+            (112.0 + 133.0 * blend) as u8,
+            255,
+            255,
+        ]
+    } else {
+        let blend = (value - 0.5) * 2.0;
+        [
+            255,
+            (245.0 * (1.0 - blend)) as u8,
+            (255.0 * (1.0 - blend)) as u8,
+            255,
+        ]
+    }
+}
+
 fn fill(pixels: &mut [u8], color: [u8; 4]) {
     for pixel in pixels.chunks_exact_mut(4) {
         pixel.copy_from_slice(&color);
@@ -1603,14 +2384,16 @@ mod tests {
             ny: 2,
             pressure: vec![0.0; 4],
             speed: vec![0.0, 0.5, 1.0, 0.25],
+            vorticity: vec![0.0; 4],
             solid: vec![false, false, false, true],
+            temperature: None,
         };
         let _image = render_speed_field(&field);
     }
 
     #[test]
     fn geometry_preview_accepts_a_project_mesh() {
-        let _image = render_geometry_3d(&Project::default(), 0.0);
+        let _image = render_geometry_3d(&Project::default(), 0.0, 0.0, 1.0);
     }
 
     #[test]
@@ -1627,6 +2410,22 @@ mod tests {
             y: 0.0,
             z: 0.5,
         });
-        let _image = render_geometry_3d(&project, 0.35);
+        let _image = render_geometry_3d(&project, 0.35, -0.2, 1.1);
+    }
+
+    #[test]
+    fn case_obstacle_classification_matches_the_builtin_geometry() {
+        let cylinder = ProjectCase::from(CylinderCase::default());
+        assert!(project_case_is_solid(&cylinder, 5.0, 5.0));
+        assert!(!project_case_is_solid(&cylinder, 0.1, 0.1));
+        let step = ProjectCase::from(BackwardStepCase::default());
+        assert!(project_case_is_solid(&step, 0.1, 0.1));
+    }
+
+    #[test]
+    fn mesh_inspection_reports_real_structured_metrics() {
+        let summary = mesh_inspection(&Project::default());
+        assert!(summary.contains("2D cells"));
+        assert!(summary.contains("dx / dy / dz"));
     }
 }
