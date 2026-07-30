@@ -1,7 +1,7 @@
 use flursys::cases::{BackwardStepCase, CavityCase, ChannelCase, CylinderCase};
 use flursys::{
-    Case, ConvectionScheme, IncompressibleSolver, PressureSolverKind, PressureVelocityCoupling,
-    SimulationConfig, SolverBoundaryOverrides,
+    Case, ConvectionScheme, IncompressibleSolver, LidDrivenCavity3DConfig, LidDrivenCavity3DSolver,
+    PressureSolverKind, PressureVelocityCoupling, SimulationConfig, SolverBoundaryOverrides,
 };
 use std::path::PathBuf;
 
@@ -106,6 +106,25 @@ fn channel_advances_one_step() {
     let summary = solver.run().unwrap();
     assert!(summary.max_divergence.is_finite());
     assert!(summary.max_divergence < 1.0e-5);
+}
+
+#[test]
+fn cavity_3d_advances_divergence_free_flow() {
+    let cfg = LidDrivenCavity3DConfig {
+        nx: 8,
+        ny: 8,
+        nz: 8,
+        max_steps: 2,
+        dt: 5.0e-4,
+        output_dir: PathBuf::from("target/smoke-tests/cavity-3d"),
+        ..Default::default()
+    };
+    let summary = LidDrivenCavity3DSolver::new(cfg).unwrap().run().unwrap();
+    assert_eq!(summary.steps, 2);
+    assert!(summary.max_divergence.is_finite());
+    assert!(summary.max_divergence < 1.0e-5);
+    assert!(summary.max_speed > 0.0);
+    assert!(PathBuf::from("target/smoke-tests/cavity-3d/field.vtk").is_file());
 }
 
 #[test]

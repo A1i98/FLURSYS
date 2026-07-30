@@ -5,9 +5,10 @@
 
 use crate::cases::{BackwardStepCase, CavityCase, ChannelCase, CylinderCase};
 use crate::{
-    BoundaryCondition, BoundaryConditionKind, BoundaryFace, Case, ConvectionScheme,
-    PhysicsSettings, PreprocessingModel, PressureSolverKind, PressureVelocityCoupling,
-    SimulationConfig,
+    AnalysisDimension, BoundaryCondition, BoundaryConditionKind, BoundaryFace, Case,
+    ConvectionScheme, ExecutionPlan, LidDrivenCavity3DConfig, MeshTopology, PhysicsSettings,
+    PreprocessingModel, PressureSolverKind, PressureVelocityCoupling, SimulationConfig,
+    WorkbenchAnalysis,
 };
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -30,6 +31,9 @@ pub struct Project {
     /// Executable flow/thermal physics. Missing in v1 projects defaults to flow only.
     #[serde(default)]
     pub physics: PhysicsSettings,
+    /// Solver-independent intent used to select an executable backend.
+    #[serde(default)]
+    pub workbench: WorkbenchAnalysis,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -117,6 +121,7 @@ impl Default for Project {
             name: "Lid-driven cavity".to_string(),
             preprocessing: default_preprocessing(&case),
             physics: PhysicsSettings::default(),
+            workbench: WorkbenchAnalysis::default(),
             case,
             solver: ProjectSolver::default(),
         }
@@ -208,6 +213,89 @@ impl Project {
             boundary_overrides: self.preprocessing.solver_overrides(),
             physics: self.physics.clone(),
             output_dir: output_dir.into(),
+        })
+    }
+
+    /// Select a concrete solver only after validating the project's declared
+    /// dimension, geometry, meshing intent, and physics against its backend.
+    pub fn execution_plan(&self, output_dir: impl Into<PathBuf>) -> Result<ExecutionPlan, String> {
+        self.validate()?;
+        self.workbench.validate()?;
+        let output_dir = output_dir.into();
+        match self.workbench.dimension {
+            AnalysisDimension::TwoD => Ok(ExecutionPlan::StructuredIncompressible2D(Box::new(
+                self.simulation_config(output_dir)?,
+            ))),
+            AnalysisDimension::ThreeD => Ok(ExecutionPlan::StructuredCavity3D(
+                self.cavity_3d_config(output_dir)?,
+            )),
+        }
+    }
+
+    fn cavity_3d_config(&self, output_dir: PathBuf) -> Result<LidDrivenCavity3DConfig, String> {
+        let ProjectCase::LidDrivenCavity {
+            length,
+            height,
+            density,
+            lid_velocity,
+            reynolds,
+        } = &self.case
+        else {
+            return Err(
+                "the current 3D backend supports only a lid-driven cavity case".to_string(),
+            );
+        };
+        if self.preprocessing.mesh.topology != MeshTopology::Structured {
+            return Err("the current 3D backend requires a structured mesh".to_string());
+        }
+        if !self.preprocessing.geometry.parts.is_empty()
+            || !self.preprocessing.geometry.sketches.is_empty()
+            || !self.preprocessing.geometry.features.is_empty()
+        {
+            return Err(
+                "the current 3D backend cannot yet mesh CAD geometry; remove geometry parts, sketches, and features"
+                    .to_string(),
+            );
+        }
+        if self.physics != PhysicsSettings::default() {
+            return Err(
+                "the current 3D backend supports constant-property flow only; thermal and buoyancy models are not available"
+                    .to_string(),
+            );
+        }
+        for boundary in &self.preprocessing.boundaries {
+            let supported = match boundary.face {
+                BoundaryFace::Left
+                | BoundaryFace::Right
+                | BoundaryFace::Bottom
+                | BoundaryFace::Top => matches!(boundary.kind, BoundaryConditionKind::CaseDefault),
+                BoundaryFace::Front | BoundaryFace::Back => {
+                    matches!(boundary.kind, BoundaryConditionKind::Symmetry)
+                }
+            };
+            if !supported {
+                return Err(format!(
+                    "the current 3D cavity backend does not support the configured {} boundary; use the case defaults",
+                    boundary.face.label()
+                ));
+            }
+        }
+        Ok(LidDrivenCavity3DConfig {
+            nx: self.solver.nx,
+            ny: self.solver.ny,
+            nz: self.preprocessing.mesh.cells_z,
+            length: *length,
+            height: *height,
+            depth: self.preprocessing.geometry.extrusion_depth,
+            density: *density,
+            lid_velocity: *lid_velocity,
+            reynolds: *reynolds,
+            dt: self.solver.dt,
+            max_steps: self.solver.max_iterations,
+            pressure_max_iters: self.solver.pressure_iterations,
+            pressure_tolerance: self.solver.pressure_tolerance,
+            pressure_omega: 1.7,
+            output_dir,
         })
     }
 
@@ -470,8 +558,8 @@ mod tests {
     use super::*;
     use crate::cases::{BoundaryKind, Side};
     use crate::{
-        GeometryFeatureKind, GeometryPart, GeometryPartKind, GeometrySketch, SketchPlane,
-        SketchProfileKind,
+        AnalysisDimension, GeometryFeatureKind, GeometryPart, GeometryPartKind, GeometrySketch,
+        SketchPlane, SketchProfileKind, SolverBackend,
     };
 
     #[test]
@@ -479,6 +567,36 @@ mod tests {
         Project::default()
             .simulation_config("target/project-test")
             .unwrap();
+    }
+
+    #[test]
+    fn three_d_cavity_execution_plan_selects_the_3d_backend() {
+        let mut project = Project::default();
+        project.workbench.dimension = AnalysisDimension::ThreeD;
+        let plan = project.execution_plan("target/project-3d-test").unwrap();
+        assert_eq!(plan.backend(), SolverBackend::StructuredCavity3D);
+        assert!(plan.capability_summary().contains("3D lid-driven cavity"));
+    }
+
+    #[test]
+    fn three_d_execution_rejects_cad_geometry_until_meshing_is_available() {
+        let mut project = Project::default();
+        project.workbench.dimension = AnalysisDimension::ThreeD;
+        project.preprocessing.geometry.parts.push(GeometryPart {
+            name: "future-solid".to_string(),
+            kind: GeometryPartKind::Box {
+                length: 0.2,
+                width: 0.2,
+                height: 0.2,
+            },
+            x: 0.5,
+            y: 0.5,
+            z: 0.5,
+        });
+        assert!(project
+            .execution_plan("target/project-3d-reject")
+            .unwrap_err()
+            .contains("cannot yet mesh CAD geometry"));
     }
 
     #[test]
@@ -520,6 +638,16 @@ mod tests {
         project
             .simulation_config("target/channel-import-test")
             .unwrap();
+    }
+
+    #[test]
+    fn bundled_three_d_cavity_file_selects_the_three_d_backend() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/cavity-3d.flursys.json");
+        let project = Project::load(path).unwrap();
+        let plan = project
+            .execution_plan("target/three-d-project-import-test")
+            .unwrap();
+        assert_eq!(plan.backend(), SolverBackend::StructuredCavity3D);
     }
 
     #[test]
@@ -581,6 +709,7 @@ mod tests {
         project.ensure_preprocessing_defaults();
         project.validate().unwrap();
         assert_eq!(project.preprocessing.boundaries.len(), 6);
+        assert_eq!(project.workbench.dimension, AnalysisDimension::TwoD);
     }
 
     #[test]

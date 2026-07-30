@@ -8,15 +8,18 @@ pub mod cases;
 pub mod field;
 pub mod grid;
 pub mod mesh;
+pub mod mesh_artifact;
 pub mod output;
 pub mod physics;
 pub mod preprocess;
 pub mod project;
 pub mod runtime;
 pub mod solver;
+pub mod workbench;
 
 pub use cases::{Case, CaseKind};
 pub use mesh::{ExtrudedMesh3D, StructuredMesh2D};
+pub use mesh_artifact::{MeshQualityReport, StructuredMeshArtifact};
 pub use physics::{
     BuoyancyModel, EnergyModel, PhysicsSettings, ThermalBoundaryCondition, ThermalSettings,
 };
@@ -29,6 +32,10 @@ pub use preprocess::{
 };
 pub use project::{Project, ProjectCase, ProjectCoupling, ProjectPressureSolver, ProjectSolver};
 pub use solver::{
-    ConvectionScheme, FieldUpdate, IncompressibleSolver, PressureSolverKind,
-    PressureVelocityCoupling, RunSummary, SimulationConfig, SolverStep,
+    ConvectionScheme, FieldUpdate, IncompressibleSolver, LidDrivenCavity3DConfig,
+    LidDrivenCavity3DSolver, PressureSolverKind, PressureVelocityCoupling, RunSummary,
+    RunSummary3D, SimulationConfig, SolverStep,
+};
+pub use workbench::{
+    AnalysisDimension, AnalysisKind, ExecutionPlan, SolverBackend, WorkbenchAnalysis,
 };

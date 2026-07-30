@@ -1,7 +1,8 @@
 use flursys::cases::{BackwardStepCase, CavityCase, ChannelCase, CylinderCase};
 use flursys::{
-    Case, ConvectionScheme, IncompressibleSolver, PressureSolverKind, PressureVelocityCoupling,
-    Project, SimulationConfig, SolverBoundaryOverrides,
+    Case, ConvectionScheme, ExecutionPlan, IncompressibleSolver, LidDrivenCavity3DConfig,
+    LidDrivenCavity3DSolver, PressureSolverKind, PressureVelocityCoupling, Project,
+    SimulationConfig, SolverBoundaryOverrides,
 };
 use std::collections::HashMap;
 use std::env;
@@ -26,6 +27,7 @@ fn run_cli() -> Result<(), String> {
         println!("  cylinder       cylinder flow at Re=100");
         println!("  backward-step  backward-facing step flow");
         println!("  channel        plane Poiseuille channel flow");
+        println!("  cavity-3d      three-dimensional lid-driven cavity");
         return Ok(());
     }
     if args[0] == "--project" {
@@ -39,7 +41,7 @@ fn run_cli() -> Result<(), String> {
         };
         let project = Project::load(path)?;
         println!("Project: {}", project.name);
-        return run_solver(project.simulation_config(output_dir)?);
+        return run_execution_plan(project.execution_plan(output_dir)?);
     }
 
     let case_slug = args[0].as_str();
@@ -47,6 +49,9 @@ fn run_cli() -> Result<(), String> {
     if options.contains_key("help") {
         print_case_help(case_slug);
         return Ok(());
+    }
+    if case_slug == "cavity-3d" {
+        return run_3d_solver(cavity_3d_config(&options)?);
     }
 
     let config = match case_slug {
@@ -71,6 +76,26 @@ fn run_solver(config: SimulationConfig) -> Result<(), String> {
     println!("pressure residual: {:.6e}", summary.pressure_residual);
     println!("elapsed: {:.3} s", summary.elapsed.as_secs_f64());
     println!("steady convergence detected: {}", summary.converged);
+    Ok(())
+}
+
+fn run_execution_plan(plan: ExecutionPlan) -> Result<(), String> {
+    match plan {
+        ExecutionPlan::StructuredIncompressible2D(config) => run_solver(*config),
+        ExecutionPlan::StructuredCavity3D(config) => run_3d_solver(config),
+    }
+}
+
+fn run_3d_solver(config: LidDrivenCavity3DConfig) -> Result<(), String> {
+    let summary = LidDrivenCavity3DSolver::new(config)?.run()?;
+    println!();
+    println!("Completed: 3D lid-driven cavity");
+    println!("steps: {}", summary.steps);
+    println!("final time: {:.6}", summary.final_time);
+    println!("max divergence: {:.6e}", summary.max_divergence);
+    println!("pressure residual: {:.6e}", summary.pressure_residual);
+    println!("max speed: {:.6e}", summary.max_speed);
+    println!("elapsed: {:.3} s", summary.elapsed.as_secs_f64());
     Ok(())
 }
 
@@ -171,6 +196,31 @@ fn channel_config(options: &HashMap<String, String>) -> Result<SimulationConfig,
             output_dir: "results/channel",
         },
     )
+}
+
+fn cavity_3d_config(options: &HashMap<String, String>) -> Result<LidDrivenCavity3DConfig, String> {
+    let mut cfg = LidDrivenCavity3DConfig::default();
+    cfg.nx = value(options, "nx", cfg.nx)?;
+    cfg.ny = value(options, "ny", cfg.ny)?;
+    cfg.nz = value(options, "nz", cfg.nz)?;
+    cfg.length = value(options, "length", cfg.length)?;
+    cfg.height = value(options, "height", cfg.height)?;
+    cfg.depth = value(options, "depth", cfg.depth)?;
+    cfg.density = value(options, "rho", cfg.density)?;
+    cfg.lid_velocity = value(options, "u-lid", cfg.lid_velocity)?;
+    cfg.reynolds = value(options, "re", cfg.reynolds)?;
+    cfg.dt = value(options, "dt", cfg.dt)?;
+    cfg.max_steps = value(options, "max-steps", cfg.max_steps)?;
+    cfg.pressure_max_iters = value(options, "pressure-iters", cfg.pressure_max_iters)?;
+    cfg.pressure_tolerance = value(options, "pressure-tol", cfg.pressure_tolerance)?;
+    cfg.pressure_omega = value(options, "pressure-omega", cfg.pressure_omega)?;
+    cfg.output_dir = PathBuf::from(
+        options
+            .get("out")
+            .cloned()
+            .unwrap_or_else(|| "results/cavity-3d".to_string()),
+    );
+    Ok(cfg)
 }
 
 #[derive(Clone, Copy)]
@@ -293,6 +343,7 @@ fn print_help() {
     println!("  flursys cylinder [options]");
     println!("  flursys backward-step [options]");
     println!("  flursys channel [options]");
+    println!("  flursys cavity-3d [options]");
     println!("  flursys --project CASE.flursys.json [--out PATH]");
     println!();
     println!("Run `flursys <case> --help` for available options.");
@@ -328,6 +379,12 @@ fn print_case_help(case: &str) {
         }
         "channel" => {
             println!("Physical options: --length L --height H --rho RHO --u-mean U --re RE");
+        }
+        "cavity-3d" => {
+            println!(
+                "Physical options: --length L --height H --depth D --rho RHO --u-lid U --re RE"
+            );
+            println!("Grid options: --nx N --ny N --nz N");
         }
         _ => println!("Unknown case."),
     }

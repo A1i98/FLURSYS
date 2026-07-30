@@ -111,6 +111,7 @@ impl ExtrudedMesh3D {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::StructuredMeshArtifact;
 
     #[test]
     fn structured_mesh_coordinates_follow_the_domain() {
@@ -127,5 +128,17 @@ mod tests {
         assert_eq!(mesh.cell_count(), 24);
         assert_eq!(mesh.node_count(), 60);
         assert!((mesh.cell_volume() - 0.2).abs() < 1.0e-12);
+    }
+
+    #[test]
+    fn structured_mesh_artifact_reports_quality_and_provenance() {
+        let mesh =
+            ExtrudedMesh3D::new(StructuredMesh2D::new(4, 2, 2.0, 1.0).unwrap(), 5, 0.5).unwrap();
+        let artifact = StructuredMeshArtifact::from_extruded(mesh, "geometry-rev-7").unwrap();
+        assert_eq!(artifact.cell_count(), 40);
+        assert_eq!(artifact.node_count(), 90);
+        assert_eq!(artifact.source_revision, "geometry-rev-7");
+        assert!((artifact.quality.cell_volume_min - 0.025).abs() < 1.0e-12);
+        assert!(artifact.quality.max_aspect_ratio >= 1.0);
     }
 }

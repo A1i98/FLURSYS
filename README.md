@@ -21,6 +21,8 @@ cargo test
 cargo run --release --bin flursys -- list
 cargo run --release --bin flursys -- cavity --threads 4
 cargo run --release --bin flursys -- cavity --coupling simple --max-steps 10000
+cargo run --release --bin flursys -- cavity-3d --nx 32 --ny 32 --nz 32
+cargo run --release --bin flursys -- --project examples/cavity-3d.flursys.json
 cargo run --release --features gui --bin flursys-gui
 cargo run --release --bin flursys -- --project examples/cavity.flursys.json
 ```
@@ -35,10 +37,13 @@ residual, force, and field updates.
 Simulation projects use versioned `.flursys.json` files, so supported cases can be created,
 shared, imported, and run after compilation from either the GUI or CLI.
 
-The workbench also stores named boundary conditions, extrusion depth, and mesh-layer settings in
-each project. Its 3D view is an engineering pre-processing preview of the structured 2D domain;
-the current numerical kernel remains a 2D structured finite-volume solver. True 3D solving and
-unstructured mesh generation are intentionally separate future solver milestones.
+The workbench persists named boundary conditions, CAD/sketch feature data, mesh intent, and
+solver-independent analysis intent in each project. Before a run, FLURSYS creates a capability
+checked execution plan rather than silently applying an incompatible solver. The supported
+backends are structured 2D incompressible flow and an initial real 3D lid-driven-cavity solver
+using a staggered MAC grid and pressure projection. CAD solids are retained as project data but
+are not yet meshed or solved; unstructured meshing and general 3D boundary workflows remain
+future milestones.
 
 ## License
 

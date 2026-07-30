@@ -1,5 +1,5 @@
-use crate::field::{Field2D, Mask2D};
-use crate::grid::UniformGrid2D;
+use crate::field::{Field2D, Field3D, Mask2D};
+use crate::grid::{UniformGrid2D, UniformGrid3D};
 use std::fs::{create_dir_all, File, OpenOptions};
 use std::io::{BufWriter, Write};
 use std::path::Path;
@@ -118,6 +118,56 @@ pub fn write_legacy_vtk(
     for j in 0..grid.ny {
         for i in 0..grid.nx {
             writeln!(w, "{:.12e} {:.12e} 0", fields.u[(i, j)], fields.v[(i, j)]).map_err(io_err)?;
+        }
+    }
+    Ok(())
+}
+
+pub fn write_legacy_vtk_3d(
+    path: &Path,
+    title: &str,
+    grid: &UniformGrid3D,
+    pressure: &Field3D,
+    u: &Field3D,
+    v: &Field3D,
+    w: &Field3D,
+) -> Result<(), String> {
+    let file = File::create(path).map_err(|e| format!("Cannot create {}: {e}", path.display()))?;
+    let mut writer = BufWriter::new(file);
+    writeln!(writer, "# vtk DataFile Version 3.0").map_err(io_err)?;
+    writeln!(writer, "{title}").map_err(io_err)?;
+    writeln!(writer, "ASCII").map_err(io_err)?;
+    writeln!(writer, "DATASET STRUCTURED_POINTS").map_err(io_err)?;
+    writeln!(writer, "DIMENSIONS {} {} {}", grid.nx, grid.ny, grid.nz).map_err(io_err)?;
+    writeln!(
+        writer,
+        "ORIGIN {:.12} {:.12} {:.12}",
+        0.5 * grid.dx,
+        0.5 * grid.dy,
+        0.5 * grid.dz
+    )
+    .map_err(io_err)?;
+    writeln!(
+        writer,
+        "SPACING {:.12} {:.12} {:.12}",
+        grid.dx, grid.dy, grid.dz
+    )
+    .map_err(io_err)?;
+    writeln!(writer, "POINT_DATA {}", grid.nx * grid.ny * grid.nz).map_err(io_err)?;
+    writeln!(writer, "SCALARS pressure double 1").map_err(io_err)?;
+    writeln!(writer, "LOOKUP_TABLE default").map_err(io_err)?;
+    for value in pressure.as_slice() {
+        writeln!(writer, "{value:.12e}").map_err(io_err)?;
+    }
+    writeln!(writer, "VECTORS velocity double").map_err(io_err)?;
+    for k in 0..grid.nz {
+        for j in 0..grid.ny {
+            for i in 0..grid.nx {
+                let uc = 0.5 * (u[(i, j, k)] + u[(i + 1, j, k)]);
+                let vc = 0.5 * (v[(i, j, k)] + v[(i, j + 1, k)]);
+                let wc = 0.5 * (w[(i, j, k)] + w[(i, j, k + 1)]);
+                writeln!(writer, "{uc:.12e} {vc:.12e} {wc:.12e}").map_err(io_err)?;
+            }
         }
     }
     Ok(())

@@ -79,6 +79,68 @@ impl IndexMut<(usize, usize)> for Field2D {
 }
 
 #[derive(Clone, Debug)]
+pub struct Field3D {
+    nx: usize,
+    ny: usize,
+    nz: usize,
+    data: Vec<f64>,
+}
+
+impl Field3D {
+    pub fn new(nx: usize, ny: usize, nz: usize, value: f64) -> Self {
+        assert!(
+            nx > 0 && ny > 0 && nz > 0,
+            "Field dimensions must be positive"
+        );
+        Self {
+            nx,
+            ny,
+            nz,
+            data: vec![value; nx * ny * nz],
+        }
+    }
+
+    #[inline]
+    pub fn idx(&self, i: usize, j: usize, k: usize) -> usize {
+        debug_assert!(i < self.nx && j < self.ny && k < self.nz);
+        i + self.nx * (j + self.ny * k)
+    }
+
+    pub fn fill(&mut self, value: f64) {
+        self.data.fill(value);
+    }
+
+    pub fn as_slice(&self) -> &[f64] {
+        &self.data
+    }
+
+    pub fn as_mut_slice(&mut self) -> &mut [f64] {
+        &mut self.data
+    }
+
+    pub fn max_abs(&self) -> f64 {
+        self.data.iter().fold(0.0_f64, |m, &x| m.max(x.abs()))
+    }
+}
+
+impl Index<(usize, usize, usize)> for Field3D {
+    type Output = f64;
+
+    #[inline]
+    fn index(&self, index: (usize, usize, usize)) -> &Self::Output {
+        &self.data[self.idx(index.0, index.1, index.2)]
+    }
+}
+
+impl IndexMut<(usize, usize, usize)> for Field3D {
+    #[inline]
+    fn index_mut(&mut self, index: (usize, usize, usize)) -> &mut Self::Output {
+        let offset = self.idx(index.0, index.1, index.2);
+        &mut self.data[offset]
+    }
+}
+
+#[derive(Clone, Debug)]
 pub struct Mask2D {
     nx: usize,
     ny: usize,
