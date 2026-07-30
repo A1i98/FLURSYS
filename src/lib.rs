@@ -21,8 +21,10 @@ pub use physics::{
     BuoyancyModel, EnergyModel, PhysicsSettings, ThermalBoundaryCondition, ThermalSettings,
 };
 pub use preprocess::{
-    BoundaryCondition, BoundaryConditionKind, BoundaryFace, GeometryDimension, GeometryModel,
-    GeometryPart, GeometryPartKind, MeshSettings, MeshTopology, PreprocessingModel,
+    BoundaryCondition, BoundaryConditionKind, BoundaryFace, GeometryDimension, GeometryFeature,
+    GeometryFeatureKind, GeometryModel, GeometryPart, GeometryPartKind, GeometrySketch,
+    MeshSettings, MeshTopology, PreprocessingModel, SketchAxis, SketchDimension,
+    SketchDimensionKind, SketchEntity, SketchEntityKind, SketchPlane, SketchProfileKind,
     SolverBoundaryOverrides,
 };
 pub use project::{Project, ProjectCase, ProjectCoupling, ProjectPressureSolver, ProjectSolver};

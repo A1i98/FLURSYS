@@ -1,7 +1,8 @@
 use super::{residual_level, ResidualSample, PREVIEW_HEIGHT, PREVIEW_WIDTH};
 use flursys::{
     BoundaryConditionKind, BoundaryFace, EnergyModel, ExtrudedMesh3D, FieldUpdate, GeometryPart,
-    GeometryPartKind, Project, ProjectCase, StructuredMesh2D,
+    GeometryPartKind, GeometrySketch, Project, ProjectCase, SketchAxis, SketchEntityKind,
+    StructuredMesh2D,
 };
 use slint::{Image, Rgba8Pixel, SharedPixelBuffer};
 use std::collections::VecDeque;
@@ -382,9 +383,171 @@ pub(super) fn render_geometry_3d(
                 part_scale,
                 color,
             ),
+            GeometryPartKind::Cone {
+                radius,
+                height: part_height,
+                ..
+            } => draw_part_cone(
+                &mut pixels,
+                width,
+                height,
+                part,
+                *radius,
+                *part_height,
+                yaw,
+                part_scale,
+                color,
+            ),
+            GeometryPartKind::Sphere { radius, .. } => draw_part_sphere(
+                &mut pixels,
+                width,
+                height,
+                part,
+                *radius,
+                yaw,
+                part_scale,
+                color,
+            ),
+            GeometryPartKind::Torus {
+                major_radius,
+                minor_radius,
+                ..
+            } => draw_part_torus(
+                &mut pixels,
+                width,
+                height,
+                part,
+                *major_radius,
+                *minor_radius,
+                yaw,
+                part_scale,
+                color,
+            ),
         }
     }
     image_from_rgba(width, height, pixels)
+}
+
+pub(super) fn render_empty_preview() -> Image {
+    let mut pixels = vec![0_u8; (PREVIEW_WIDTH * PREVIEW_HEIGHT * 4) as usize];
+    fill(&mut pixels, [9, 16, 22, 255]);
+    image_from_rgba(PREVIEW_WIDTH, PREVIEW_HEIGHT, pixels)
+}
+
+pub(super) fn render_sketch_2d(sketch: &GeometrySketch) -> Image {
+    let width = PREVIEW_WIDTH;
+    let height = PREVIEW_HEIGHT;
+    let mut pixels = vec![0_u8; (width * height * 4) as usize];
+    fill(&mut pixels, [9, 16, 22, 255]);
+    let center = (width as i32 / 2, height as i32 / 2);
+    let scale = 140.0_f64;
+    for index in -8..=8 {
+        let x = center.0 + (f64::from(index) * scale / 2.0) as i32;
+        let y = center.1 + (f64::from(index) * scale / 2.0) as i32;
+        draw_line(
+            &mut pixels,
+            width,
+            height,
+            (x, 0),
+            (x, height as i32),
+            [25, 44, 56, 255],
+        );
+        draw_line(
+            &mut pixels,
+            width,
+            height,
+            (0, y),
+            (width as i32, y),
+            [25, 44, 56, 255],
+        );
+    }
+    let horizontal = if sketch.selected_axis == SketchAxis::Horizontal {
+        [240, 195, 109, 255]
+    } else {
+        [81, 143, 176, 255]
+    };
+    let vertical = if sketch.selected_axis == SketchAxis::Vertical {
+        [240, 195, 109, 255]
+    } else {
+        [81, 143, 176, 255]
+    };
+    draw_line(
+        &mut pixels,
+        width,
+        height,
+        (0, center.1),
+        (width as i32, center.1),
+        horizontal,
+    );
+    draw_line(
+        &mut pixels,
+        width,
+        height,
+        (center.0, 0),
+        (center.0, height as i32),
+        vertical,
+    );
+    for entity in &sketch.entities {
+        let color = if sketch.selected_entity == Some(entity.id) {
+            [240, 195, 109, 255]
+        } else {
+            [104, 222, 237, 255]
+        };
+        match entity.kind {
+            SketchEntityKind::Line { x1, y1, x2, y2 } => draw_line(
+                &mut pixels,
+                width,
+                height,
+                sketch_point(center, scale, x1, y1),
+                sketch_point(center, scale, x2, y2),
+                color,
+            ),
+            SketchEntityKind::Circle {
+                center_x,
+                center_y,
+                radius,
+            } => draw_ellipse(
+                &mut pixels,
+                width,
+                height,
+                sketch_point(center, scale, center_x, center_y),
+                (radius * scale) as i32,
+                (radius * scale) as i32,
+                color,
+            ),
+        }
+    }
+    for dimension in &sketch.dimensions {
+        let start = sketch_point(center, scale, dimension.x1, dimension.y1);
+        let end = sketch_point(center, scale, dimension.x2, dimension.y2);
+        draw_line(&mut pixels, width, height, start, end, [240, 195, 109, 255]);
+        draw_marker(&mut pixels, width, height, start, [240, 195, 109, 255]);
+        draw_marker(&mut pixels, width, height, end, [240, 195, 109, 255]);
+    }
+    image_from_rgba(width, height, pixels)
+}
+
+fn sketch_point(center: (i32, i32), scale: f64, x: f64, y: f64) -> (i32, i32) {
+    (center.0 + (x * scale) as i32, center.1 - (y * scale) as i32)
+}
+
+fn draw_marker(pixels: &mut [u8], width: u32, height: u32, center: (i32, i32), color: [u8; 4]) {
+    draw_line(
+        pixels,
+        width,
+        height,
+        (center.0 - 4, center.1),
+        (center.0 + 4, center.1),
+        color,
+    );
+    draw_line(
+        pixels,
+        width,
+        height,
+        (center.0, center.1 - 4),
+        (center.0, center.1 + 4),
+        color,
+    );
 }
 
 pub(super) fn draw_boundaries_3d(
@@ -946,6 +1109,42 @@ pub(super) fn render_geometry_3d_legacy(
                     scale * f64::from(zoom),
                     color,
                 ),
+                GeometryPartKind::Cone { radius, height, .. } => draw_part_cone(
+                    &mut pixels,
+                    PREVIEW_WIDTH,
+                    PREVIEW_HEIGHT,
+                    part,
+                    *radius,
+                    *height,
+                    yaw,
+                    scale * f64::from(zoom),
+                    color,
+                ),
+                GeometryPartKind::Sphere { radius, .. } => draw_part_sphere(
+                    &mut pixels,
+                    PREVIEW_WIDTH,
+                    PREVIEW_HEIGHT,
+                    part,
+                    *radius,
+                    yaw,
+                    scale * f64::from(zoom),
+                    color,
+                ),
+                GeometryPartKind::Torus {
+                    major_radius,
+                    minor_radius,
+                    ..
+                } => draw_part_torus(
+                    &mut pixels,
+                    PREVIEW_WIDTH,
+                    PREVIEW_HEIGHT,
+                    part,
+                    *major_radius,
+                    *minor_radius,
+                    yaw,
+                    scale * f64::from(zoom),
+                    color,
+                ),
             }
         }
     }
@@ -961,7 +1160,14 @@ pub(super) fn geometry_scene_scale(parts: &[GeometryPart]) -> f64 {
                 width,
                 height,
             } => 0.5 * length.max(*width).max(*height),
-            GeometryPartKind::Cylinder { radius, height, .. } => radius.max(0.5 * height),
+            GeometryPartKind::Cylinder { radius, height, .. }
+            | GeometryPartKind::Cone { radius, height, .. } => radius.max(0.5 * height),
+            GeometryPartKind::Sphere { radius, .. } => *radius,
+            GeometryPartKind::Torus {
+                major_radius,
+                minor_radius,
+                ..
+            } => major_radius + minor_radius,
         };
         extent
             .max(part.x.abs() + size)
@@ -1075,6 +1281,155 @@ pub(super) fn draw_part_cylinder(
         }
         previous_bottom = Some(bottom);
         previous_top = Some(top);
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn draw_part_cone(
+    pixels: &mut [u8],
+    image_width: u32,
+    image_height: u32,
+    part: &GeometryPart,
+    radius: f64,
+    height: f64,
+    rotation: f32,
+    scale: f64,
+    color: [u8; 4],
+) {
+    let apex = scene_point(part.x, part.y, part.z + 0.5 * height, rotation, scale);
+    let mut previous = None;
+    for step in 0..=32 {
+        let angle = step as f64 * std::f64::consts::TAU / 32.0;
+        let point = scene_point(
+            part.x + radius * angle.cos(),
+            part.y + radius * angle.sin(),
+            part.z - 0.5 * height,
+            rotation,
+            scale,
+        );
+        if let Some(last) = previous {
+            draw_line(pixels, image_width, image_height, last, point, color);
+        }
+        if step % 8 == 0 {
+            draw_line(pixels, image_width, image_height, point, apex, color);
+        }
+        previous = Some(point);
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn draw_part_sphere(
+    pixels: &mut [u8],
+    image_width: u32,
+    image_height: u32,
+    part: &GeometryPart,
+    radius: f64,
+    rotation: f32,
+    scale: f64,
+    color: [u8; 4],
+) {
+    for latitude in [-0.75_f64, -0.35, 0.0, 0.35, 0.75] {
+        let z = radius * latitude;
+        let ring = (radius * radius - z * z).sqrt();
+        draw_ring(
+            pixels,
+            image_width,
+            image_height,
+            part,
+            ring,
+            z,
+            rotation,
+            scale,
+            color,
+        );
+    }
+    for angle in [
+        0.0_f64,
+        std::f64::consts::FRAC_PI_2,
+        std::f64::consts::PI * 0.25,
+        std::f64::consts::PI * 0.75,
+    ] {
+        let mut previous = None;
+        for step in 0..=32 {
+            let phi = -std::f64::consts::FRAC_PI_2 + step as f64 * std::f64::consts::PI / 32.0;
+            let point = scene_point(
+                part.x + radius * phi.cos() * angle.cos(),
+                part.y + radius * phi.cos() * angle.sin(),
+                part.z + radius * phi.sin(),
+                rotation,
+                scale,
+            );
+            if let Some(last) = previous {
+                draw_line(pixels, image_width, image_height, last, point, color);
+            }
+            previous = Some(point);
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn draw_part_torus(
+    pixels: &mut [u8],
+    image_width: u32,
+    image_height: u32,
+    part: &GeometryPart,
+    major_radius: f64,
+    minor_radius: f64,
+    rotation: f32,
+    scale: f64,
+    color: [u8; 4],
+) {
+    for tube_angle in [
+        0.0_f64,
+        std::f64::consts::FRAC_PI_2,
+        std::f64::consts::PI,
+        std::f64::consts::PI * 1.5,
+    ] {
+        let mut previous = None;
+        for step in 0..=40 {
+            let ring_angle = step as f64 * std::f64::consts::TAU / 40.0;
+            let radial = major_radius + minor_radius * tube_angle.cos();
+            let point = scene_point(
+                part.x + radial * ring_angle.cos(),
+                part.y + radial * ring_angle.sin(),
+                part.z + minor_radius * tube_angle.sin(),
+                rotation,
+                scale,
+            );
+            if let Some(last) = previous {
+                draw_line(pixels, image_width, image_height, last, point, color);
+            }
+            previous = Some(point);
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_ring(
+    pixels: &mut [u8],
+    image_width: u32,
+    image_height: u32,
+    part: &GeometryPart,
+    radius: f64,
+    z_offset: f64,
+    rotation: f32,
+    scale: f64,
+    color: [u8; 4],
+) {
+    let mut previous = None;
+    for step in 0..=32 {
+        let angle = step as f64 * std::f64::consts::TAU / 32.0;
+        let point = scene_point(
+            part.x + radius * angle.cos(),
+            part.y + radius * angle.sin(),
+            part.z + z_offset,
+            rotation,
+            scale,
+        );
+        if let Some(last) = previous {
+            draw_line(pixels, image_width, image_height, last, point, color);
+        }
+        previous = Some(point);
     }
 }
 

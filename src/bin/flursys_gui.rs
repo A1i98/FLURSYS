@@ -1,7 +1,7 @@
 use flursys::runtime::{SolverCommand, SolverController, SolverState, SolverUpdate};
 use flursys::{
-    BoundaryConditionKind, BoundaryFace, ExtrudedMesh3D, FieldUpdate, Project, StructuredMesh2D,
-    ThermalBoundaryCondition,
+    BoundaryConditionKind, BoundaryFace, ExtrudedMesh3D, FieldUpdate, GeometrySketch, Project,
+    SketchAxis, SketchProfileKind, StructuredMesh2D, ThermalBoundaryCondition,
 };
 use slint::{ComponentHandle, SharedString, Timer, TimerMode};
 use std::cell::RefCell;
@@ -13,6 +13,7 @@ slint::include_modules!();
 struct AppState {
     controller: SolverController,
     project: Project,
+    project_loaded: bool,
     logs: VecDeque<String>,
     last_update: Option<SolverUpdate>,
     residual_history: VecDeque<ResidualSample>,
@@ -28,6 +29,23 @@ struct AppState {
     selected_boundary_face: BoundaryFace,
     preflight_summary: String,
     last_animation_tick: std::time::Instant,
+    draft_sketch: Option<GeometrySketch>,
+    show_sketch_editor: bool,
+    sketch_tool: SketchTool,
+    sketch_points: Vec<(f64, f64)>,
+    sketch_undo: Vec<GeometrySketch>,
+    sketch_redo: Vec<GeometrySketch>,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum SketchTool {
+    Select,
+    Line,
+    Rectangle,
+    Square,
+    Circle,
+    Dimension,
+    Trim,
 }
 
 #[derive(Clone, Copy)]
@@ -42,6 +60,7 @@ impl AppState {
         Self {
             controller: SolverController::spawn(),
             project: Project::default(),
+            project_loaded: false,
             logs: VecDeque::from(["FLURSYS Slint workbench ready.".to_string()]),
             last_update: None,
             residual_history: VecDeque::new(),
@@ -57,6 +76,12 @@ impl AppState {
             selected_boundary_face: BoundaryFace::Left,
             preflight_summary: "Run validation before starting the solver.".to_string(),
             last_animation_tick: std::time::Instant::now(),
+            draft_sketch: None,
+            show_sketch_editor: false,
+            sketch_tool: SketchTool::Select,
+            sketch_points: Vec::new(),
+            sketch_undo: Vec::new(),
+            sketch_redo: Vec::new(),
         }
     }
 
@@ -96,10 +121,19 @@ fn push_bounded<T>(values: &mut VecDeque<T>, value: T, limit: usize) {
     values.push_back(value);
 }
 
+fn require_project(state: &mut AppState) -> bool {
+    if state.project_loaded {
+        true
+    } else {
+        state.log("Open or create a project before editing geometry.");
+        false
+    }
+}
+
 fn main() -> Result<(), slint::PlatformError> {
     let ui = MainWindow::new()?;
     let state = Rc::new(RefCell::new(AppState::new()));
-    write_project_to_ui(&ui, &state.borrow().project);
+    write_empty_project_to_ui(&ui);
     refresh_ui(&ui, &state.borrow());
 
     bind_callbacks(&ui, &state);
@@ -179,6 +213,7 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
         sync_project_from_ui(&ui, &mut state.project);
         state.project.case = project_case_from_index(ui.get_case_index());
         state.project.ensure_preprocessing_defaults();
+        state.project_loaded = true;
         let selected_case = case_name(&state.project.case);
         state.project.name = selected_case.to_string();
         state.show_geometry_3d = true;
@@ -196,6 +231,10 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
             return;
         };
         let mut state = parts_state.borrow_mut();
+        if !require_project(&mut state) {
+            refresh_ui(&ui, &state);
+            return;
+        }
         sync_project_from_ui(&ui, &mut state.project);
         match geometry_part_from_ui(&ui) {
             Ok(part) if state.project.preprocessing.geometry.parts.len() < 128 => {
@@ -211,13 +250,249 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
     });
 
     let weak_ui = ui.as_weak();
+    let feature_state = state.clone();
+    ui.on_build_feature(move || {
+        let Some(ui) = weak_ui.upgrade() else {
+            return;
+        };
+        let mut state = feature_state.borrow_mut();
+        if !require_project(&mut state) {
+            refresh_ui(&ui, &state);
+            return;
+        }
+        sync_project_from_ui(&ui, &mut state.project);
+        let sketch = state
+            .draft_sketch
+            .take()
+            .map(Ok)
+            .unwrap_or_else(|| sketch_from_ui(&ui));
+        match sketch.and_then(|sketch| {
+            feature_from_ui(&ui).and_then(|(name, feature)| {
+                state
+                    .project
+                    .preprocessing
+                    .geometry
+                    .add_sketch_feature(sketch, name, feature)
+            })
+        }) {
+            Ok(output) => {
+                state.log(format!("Built CAD feature output: {output}."));
+                state.show_geometry_3d = true;
+                state.show_mesh = false;
+                state.show_sketch_editor = false;
+                write_project_to_ui(&ui, &state.project);
+            }
+            Err(error) => state.log(error),
+        }
+        refresh_ui(&ui, &state);
+    });
+
+    let weak_ui = ui.as_weak();
+    let sketch_state = state.clone();
+    ui.on_start_sketch(move || {
+        let Some(ui) = weak_ui.upgrade() else {
+            return;
+        };
+        let mut state = sketch_state.borrow_mut();
+        if !require_project(&mut state) {
+            refresh_ui(&ui, &state);
+            return;
+        }
+        match sketch_from_ui(&ui) {
+            Ok(mut sketch) => {
+                sketch.entities.clear();
+                sketch.dimensions.clear();
+                state.draft_sketch = Some(sketch);
+                state.show_sketch_editor = true;
+                state.sketch_tool = SketchTool::Select;
+                state.sketch_points.clear();
+                state.sketch_undo.clear();
+                state.sketch_redo.clear();
+                state.log("Started an editable 2D sketch on the XY plane.");
+            }
+            Err(error) => state.log(error),
+        }
+        refresh_ui(&ui, &state);
+    });
+
+    let weak_ui = ui.as_weak();
+    let sketch_state = state.clone();
+    ui.on_select_sketch_tool(move |tool| {
+        let Some(ui) = weak_ui.upgrade() else {
+            return;
+        };
+        let mut state = sketch_state.borrow_mut();
+        state.sketch_points.clear();
+        state.sketch_tool = match tool {
+            8 => SketchTool::Line,
+            1 => SketchTool::Rectangle,
+            2 => SketchTool::Square,
+            3 => SketchTool::Circle,
+            4 => SketchTool::Dimension,
+            5 => SketchTool::Trim,
+            6 => {
+                if let Some(sketch) = &mut state.draft_sketch {
+                    sketch.selected_axis = SketchAxis::Horizontal;
+                }
+                SketchTool::Select
+            }
+            7 => {
+                if let Some(sketch) = &mut state.draft_sketch {
+                    sketch.selected_axis = SketchAxis::Vertical;
+                }
+                SketchTool::Select
+            }
+            _ => SketchTool::Select,
+        };
+        state.show_sketch_editor = state.draft_sketch.is_some();
+        refresh_ui(&ui, &state);
+    });
+
+    let weak_ui = ui.as_weak();
+    let sketch_state = state.clone();
+    ui.on_sketch_click(move |mouse_x, mouse_y, width, height| {
+        let Some(ui) = weak_ui.upgrade() else {
+            return;
+        };
+        let mut state = sketch_state.borrow_mut();
+        let point = snap_sketch_point(sketch_canvas_point(mouse_x, mouse_y, width, height));
+        let before = state.draft_sketch.clone();
+        let result = apply_sketch_click(&mut state, point);
+        if result.is_ok() && state.draft_sketch != before {
+            if let Some(before) = before {
+                state.sketch_undo.push(before);
+                state.sketch_redo.clear();
+            }
+        }
+        if let Err(error) = result {
+            state.log(error);
+        }
+        refresh_ui(&ui, &state);
+    });
+
+    let weak_ui = ui.as_weak();
+    let sketch_state = state.clone();
+    ui.on_sketch_undo(move || {
+        let Some(ui) = weak_ui.upgrade() else {
+            return;
+        };
+        let mut state = sketch_state.borrow_mut();
+        if let (Some(previous), Some(current)) =
+            (state.sketch_undo.pop(), state.draft_sketch.take())
+        {
+            state.sketch_redo.push(current);
+            state.draft_sketch = Some(previous);
+            state.log("Sketch undo.");
+        }
+        refresh_ui(&ui, &state);
+    });
+
+    let weak_ui = ui.as_weak();
+    let sketch_state = state.clone();
+    ui.on_sketch_redo(move || {
+        let Some(ui) = weak_ui.upgrade() else {
+            return;
+        };
+        let mut state = sketch_state.borrow_mut();
+        if let (Some(next), Some(current)) = (state.sketch_redo.pop(), state.draft_sketch.take()) {
+            state.sketch_undo.push(current);
+            state.draft_sketch = Some(next);
+            state.log("Sketch redo.");
+        }
+        refresh_ui(&ui, &state);
+    });
+
+    let weak_ui = ui.as_weak();
+    let sketch_state = state.clone();
+    ui.on_apply_driving_dimension(move || {
+        let Some(ui) = weak_ui.upgrade() else {
+            return;
+        };
+        let mut state = sketch_state.borrow_mut();
+        let before = state.draft_sketch.clone();
+        let result = match &mut state.draft_sketch {
+            Some(sketch) => {
+                parse_positive(ui.get_driving_dimension().as_str(), "driving dimension")
+                    .and_then(|value| sketch.set_selected_dimension(value))
+            }
+            None => Err("start a sketch and select an entity first".to_string()),
+        };
+        if result.is_ok() {
+            if let Some(before) = before {
+                state.sketch_undo.push(before);
+                state.sketch_redo.clear();
+            }
+        } else if let Err(error) = result {
+            state.log(error);
+        }
+        refresh_ui(&ui, &state);
+    });
+
+    let weak_ui = ui.as_weak();
+    let parts_state = state.clone();
+    ui.on_duplicate_last_part(move || {
+        let Some(ui) = weak_ui.upgrade() else {
+            return;
+        };
+        let mut state = parts_state.borrow_mut();
+        if !require_project(&mut state) {
+            refresh_ui(&ui, &state);
+            return;
+        }
+        if state.project.preprocessing.geometry.parts.len() >= 128 {
+            state.log("A project can contain at most 128 geometry parts.");
+        } else if let Some(source) = state.project.preprocessing.geometry.parts.last().cloned() {
+            let mut duplicate = source.clone();
+            duplicate.name =
+                next_copy_name(&source.name, &state.project.preprocessing.geometry.parts);
+            // A small offset makes a duplicate visible and immediately editable.
+            duplicate.x += 0.1;
+            duplicate.y += 0.1;
+            state.project.preprocessing.geometry.parts.push(duplicate);
+            state.log(format!("Duplicated 3D solid: {}.", source.name));
+        } else {
+            state.log("There is no custom 3D solid to duplicate.");
+        }
+        state.show_geometry_3d = true;
+        state.show_mesh = false;
+        refresh_ui(&ui, &state);
+    });
+
+    let weak_ui = ui.as_weak();
     let parts_state = state.clone();
     ui.on_remove_last_part(move || {
         let Some(ui) = weak_ui.upgrade() else {
             return;
         };
         let mut state = parts_state.borrow_mut();
+        if !require_project(&mut state) {
+            refresh_ui(&ui, &state);
+            return;
+        }
         if let Some(part) = state.project.preprocessing.geometry.parts.pop() {
+            if let Some(feature) = state
+                .project
+                .preprocessing
+                .geometry
+                .features
+                .pop_if(|feature| feature.output_part == part.name)
+            {
+                if let Some(sketch_index) = state
+                    .project
+                    .preprocessing
+                    .geometry
+                    .sketches
+                    .iter()
+                    .position(|sketch| sketch.name == feature.sketch)
+                {
+                    state
+                        .project
+                        .preprocessing
+                        .geometry
+                        .sketches
+                        .remove(sketch_index);
+                }
+            }
             state.log(format!("Removed 3D solid: {}.", part.name));
         } else {
             state.log("There is no custom 3D solid to remove.");
@@ -234,6 +509,10 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
             return;
         };
         let mut state = start_state.borrow_mut();
+        if !require_project(&mut state) {
+            refresh_ui(&ui, &state);
+            return;
+        }
         sync_project_from_ui(&ui, &mut state.project);
         match preflight_report(&state.project) {
             Ok(report) => state.preflight_summary = report,
@@ -268,6 +547,10 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
             return;
         };
         let mut state = validate_state.borrow_mut();
+        if !require_project(&mut state) {
+            refresh_ui(&ui, &state);
+            return;
+        }
         sync_project_from_ui(&ui, &mut state.project);
         match preflight_report(&state.project) {
             Ok(report) => {
@@ -331,6 +614,7 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
             Ok(project) => {
                 let mut state = load_state.borrow_mut();
                 state.project = project;
+                state.project_loaded = true;
                 state.log("Project loaded.");
                 write_project_to_ui(&ui, &state.project);
                 refresh_ui(&ui, &state);
@@ -350,6 +634,10 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
             return;
         };
         let mut state = save_state.borrow_mut();
+        if !require_project(&mut state) {
+            refresh_ui(&ui, &state);
+            return;
+        }
         sync_project_from_ui(&ui, &mut state.project);
         match state.project.save(ui.get_project_path().as_str()) {
             Ok(()) => state.log("Project saved."),
@@ -365,6 +653,10 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
             return;
         };
         let mut state = mesh_state.borrow_mut();
+        if !require_project(&mut state) {
+            refresh_ui(&ui, &state);
+            return;
+        }
         state.show_mesh = true;
         state.show_geometry_3d = false;
         state.animation_playing = false;
@@ -423,9 +715,14 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
             return;
         };
         let mut state = geometry_state.borrow_mut();
+        if !require_project(&mut state) {
+            refresh_ui(&ui, &state);
+            return;
+        }
         sync_project_from_ui(&ui, &mut state.project);
         state.show_geometry_3d = true;
         state.show_mesh = false;
+        state.show_sketch_editor = false;
         state.animation_playing = false;
         state.log("Showing the saved geometry and mesh extrusion preview.");
         refresh_ui(&ui, &state);
@@ -639,10 +936,145 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
     });
 }
 
+fn next_copy_name(source: &str, parts: &[flursys::GeometryPart]) -> String {
+    for copy_index in 1..=128 {
+        let candidate = format!("{source} copy {copy_index}");
+        if !parts.iter().any(|part| part.name == candidate) {
+            return candidate;
+        }
+    }
+    format!("{source} copy")
+}
+
+fn sketch_canvas_point(mouse_x: f32, mouse_y: f32, width: f32, height: f32) -> (f64, f64) {
+    let scale = 140.0_f64;
+    (
+        (f64::from(mouse_x) - f64::from(width) * 0.5) / scale,
+        (f64::from(height) * 0.5 - f64::from(mouse_y)) / scale,
+    )
+}
+
+fn snap_sketch_point((x, y): (f64, f64)) -> (f64, f64) {
+    const GRID: f64 = 0.1;
+    ((x / GRID).round() * GRID, (y / GRID).round() * GRID)
+}
+
+fn apply_sketch_click(state: &mut AppState, point: (f64, f64)) -> Result<(), String> {
+    let Some(sketch) = &mut state.draft_sketch else {
+        return Err("start a sketch before using sketch tools".to_string());
+    };
+    match state.sketch_tool {
+        SketchTool::Select => {
+            sketch.select_entity_near(point.0, point.1, 0.15);
+            Ok(())
+        }
+        SketchTool::Trim => sketch.trim_line_near(point.0, point.1),
+        SketchTool::Line
+        | SketchTool::Rectangle
+        | SketchTool::Square
+        | SketchTool::Circle
+        | SketchTool::Dimension => {
+            state.sketch_points.push(point);
+            if state.sketch_points.len() < 2 {
+                return Ok(());
+            }
+            let (start, end) = (state.sketch_points[0], state.sketch_points[1]);
+            state.sketch_points.clear();
+            match state.sketch_tool {
+                SketchTool::Line => sketch.add_line(start.0, start.1, end.0, end.1)?,
+                SketchTool::Rectangle => {
+                    let width = (end.0 - start.0).abs();
+                    let height = (end.1 - start.1).abs();
+                    sketch.add_rectangle(
+                        (start.0 + end.0) * 0.5,
+                        (start.1 + end.1) * 0.5,
+                        width,
+                        height,
+                    )?;
+                    sketch.profile = SketchProfileKind::Rectangle { width, height };
+                }
+                SketchTool::Square => {
+                    let side = (end.0 - start.0).abs().max((end.1 - start.1).abs());
+                    sketch.add_rectangle(
+                        (start.0 + end.0) * 0.5,
+                        (start.1 + end.1) * 0.5,
+                        side,
+                        side,
+                    )?;
+                    sketch.profile = SketchProfileKind::Rectangle {
+                        width: side,
+                        height: side,
+                    };
+                }
+                SketchTool::Circle => {
+                    let radius = (end.0 - start.0).hypot(end.1 - start.1);
+                    sketch.add_circle(start.0, start.1, radius)?;
+                    sketch.profile = SketchProfileKind::Circle { radius };
+                }
+                SketchTool::Dimension => {
+                    sketch.add_distance_dimension(start.0, start.1, end.0, end.1)?
+                }
+                SketchTool::Select | SketchTool::Trim => unreachable!("handled above"),
+            }
+            Ok(())
+        }
+    }
+}
+
+fn sketch_tool_label(tool: SketchTool) -> &'static str {
+    match tool {
+        SketchTool::Select => "Select",
+        SketchTool::Line => "Line: pick start then end",
+        SketchTool::Rectangle => "Rectangle: pick two corners",
+        SketchTool::Square => "Square: pick two opposite corners",
+        SketchTool::Circle => "Circle: pick centre then radius",
+        SketchTool::Dimension => "Dimension: pick two points",
+        SketchTool::Trim => "Trim: click a line near an intersection",
+    }
+}
+
 #[path = "flursys_gui/bindings.rs"]
 mod bindings;
 use bindings::*;
 fn refresh_ui(ui: &MainWindow, state: &AppState) {
+    ui.set_project_loaded(state.project_loaded);
+    if !state.project_loaded {
+        ui.set_geometry_parts_summary(SharedString::from(
+            "No project is open. Choose a domain or load a .flursys.json project.",
+        ));
+        ui.set_visualization_title(SharedString::from("NO ACTIVE PROJECT"));
+        ui.set_animation_status(SharedString::from(
+            "Choose a domain or load a project before creating geometry.",
+        ));
+        ui.set_visualization_image(render_empty_preview());
+        ui.set_log_text(SharedString::from(
+            state.logs.iter().cloned().collect::<Vec<_>>().join("\n"),
+        ));
+        return;
+    }
+    ui.set_sketch_editing(state.show_sketch_editor && state.draft_sketch.is_some());
+    if let Some(sketch) = &state.draft_sketch {
+        let dimensions = sketch
+            .dimensions
+            .iter()
+            .map(|dimension| format!("{}={:.3} mm", dimension.name, dimension.value))
+            .collect::<Vec<_>>()
+            .join(" · ");
+        ui.set_sketch_image(render_sketch_2d(sketch));
+        ui.set_sketch_status(SharedString::from(format!(
+            "{} · {} entities · active axis: {:?}{}",
+            sketch_tool_label(state.sketch_tool),
+            sketch.entities.len(),
+            sketch.selected_axis,
+            if dimensions.is_empty() {
+                String::new()
+            } else {
+                format!(" · {dimensions}")
+            },
+        )));
+    } else {
+        ui.set_sketch_status(SharedString::from("Start a sketch to edit a 2D profile."));
+    }
     ui.set_geometry_parts_summary(SharedString::from(geometry_parts_summary(&state.project)));
     ui.set_boundary_summary(SharedString::from(boundary_summary(&state.project)));
     ui.set_preflight_summary(SharedString::from(state.preflight_summary.as_str()));
@@ -821,13 +1253,21 @@ fn residual_level(residual: f64) -> f32 {
 mod tests {
     use super::*;
     use flursys::cases::{BackwardStepCase, CylinderCase};
-    use flursys::{GeometryPart, GeometryPartKind, ProjectCase};
+    use flursys::{
+        GeometryPart, GeometryPartKind, GeometrySketch, ProjectCase, SketchPlane, SketchProfileKind,
+    };
 
     #[test]
     fn residual_indicators_are_bounded() {
         assert_eq!(residual_level(f64::NAN), 0.0);
         assert_eq!(residual_level(1.0), 0.0);
         assert_eq!(residual_level(1.0e-10), 1.0);
+    }
+
+    #[test]
+    fn gui_starts_without_an_active_project() {
+        let state = AppState::new();
+        assert!(!state.project_loaded);
     }
 
     #[test]
@@ -864,6 +1304,58 @@ mod tests {
             z: 0.5,
         });
         let _image = render_geometry_3d(&project, 0.35, -0.2, 1.1, Some(BoundaryFace::Top));
+    }
+
+    #[test]
+    fn geometry_preview_accepts_advanced_primitives() {
+        let mut project = Project::default();
+        for (name, kind) in [
+            (
+                "cone",
+                GeometryPartKind::Cone {
+                    radius: 0.4,
+                    height: 1.0,
+                    segments: 32,
+                },
+            ),
+            (
+                "sphere",
+                GeometryPartKind::Sphere {
+                    radius: 0.4,
+                    segments: 24,
+                },
+            ),
+            (
+                "torus",
+                GeometryPartKind::Torus {
+                    major_radius: 0.6,
+                    minor_radius: 0.2,
+                    segments: 32,
+                },
+            ),
+        ] {
+            project.preprocessing.geometry.parts.push(GeometryPart {
+                name: name.to_string(),
+                kind,
+                x: project.preprocessing.geometry.parts.len() as f64,
+                y: 0.0,
+                z: 0.5,
+            });
+        }
+        let _image = render_geometry_3d(&project, 0.35, -0.2, 1.1, None);
+    }
+
+    #[test]
+    fn sketch_canvas_renders_axes_and_construction_geometry() {
+        let sketch = GeometrySketch::from_profile(
+            "canvas".to_string(),
+            SketchPlane::Xy,
+            SketchProfileKind::Circle { radius: 0.5 },
+            0.0,
+            0.0,
+            0.0,
+        );
+        let _image = render_sketch_2d(&sketch);
     }
 
     #[test]

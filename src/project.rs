@@ -436,7 +436,10 @@ fn default_preprocessing(_case: &ProjectCase) -> PreprocessingModel {
 mod tests {
     use super::*;
     use crate::cases::{BoundaryKind, Side};
-    use crate::{GeometryPart, GeometryPartKind};
+    use crate::{
+        GeometryFeatureKind, GeometryPart, GeometryPartKind, GeometrySketch, SketchPlane,
+        SketchProfileKind,
+    };
 
     #[test]
     fn default_project_converts_to_a_valid_simulation() {
@@ -577,5 +580,169 @@ mod tests {
         project.preprocessing.geometry.parts.push(part.clone());
         project.preprocessing.geometry.parts.push(part);
         assert!(project.validate().unwrap_err().contains("not unique"));
+    }
+
+    #[test]
+    fn advanced_parametric_primitives_round_trip_and_validate() {
+        let mut project = Project::default();
+        project.preprocessing.geometry.parts = vec![
+            GeometryPart {
+                name: "fairing".to_string(),
+                kind: GeometryPartKind::Cone {
+                    radius: 0.5,
+                    height: 1.2,
+                    segments: 32,
+                },
+                x: 0.0,
+                y: 0.0,
+                z: 0.6,
+            },
+            GeometryPart {
+                name: "plenum".to_string(),
+                kind: GeometryPartKind::Torus {
+                    major_radius: 1.0,
+                    minor_radius: 0.2,
+                    segments: 32,
+                },
+                x: 2.0,
+                y: 0.0,
+                z: 0.0,
+            },
+        ];
+        let json = serde_json::to_string(&project).unwrap();
+        let restored: Project = serde_json::from_str(&json).unwrap();
+        restored.validate().unwrap();
+        assert!(matches!(
+            restored.preprocessing.geometry.parts[1].kind,
+            GeometryPartKind::Torus { .. }
+        ));
+    }
+
+    #[test]
+    fn torus_requires_a_clear_major_radius() {
+        let mut project = Project::default();
+        project.preprocessing.geometry.parts.push(GeometryPart {
+            name: "invalid-torus".to_string(),
+            kind: GeometryPartKind::Torus {
+                major_radius: 0.5,
+                minor_radius: 0.5,
+                segments: 32,
+            },
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        });
+        assert!(project.validate().unwrap_err().contains("major radius"));
+    }
+
+    #[test]
+    fn sketch_extrude_persists_its_source_and_generated_solid() {
+        let mut project = Project::default();
+        let output = project
+            .preprocessing
+            .geometry
+            .add_sketch_feature(
+                GeometrySketch::from_profile(
+                    "inlet-profile".to_string(),
+                    SketchPlane::Xy,
+                    SketchProfileKind::Rectangle {
+                        width: 2.0,
+                        height: 1.0,
+                    },
+                    0.0,
+                    0.0,
+                    0.0,
+                ),
+                "inlet-extrude".to_string(),
+                GeometryFeatureKind::Extrude { depth: 0.5 },
+            )
+            .unwrap();
+        assert_eq!(output, "inlet-extrude solid");
+        project.validate().unwrap();
+        let restored: Project =
+            serde_json::from_str(&serde_json::to_string(&project).unwrap()).unwrap();
+        assert_eq!(restored.preprocessing.geometry.sketches.len(), 1);
+        assert_eq!(restored.preprocessing.geometry.features.len(), 1);
+        assert!(matches!(
+            restored.preprocessing.geometry.parts[0].kind,
+            GeometryPartKind::Box { .. }
+        ));
+    }
+
+    #[test]
+    fn circle_revolve_materializes_a_torus_but_rectangle_is_rejected() {
+        let sketch = GeometrySketch::from_profile(
+            "seal-profile".to_string(),
+            SketchPlane::Xy,
+            SketchProfileKind::Circle { radius: 0.2 },
+            0.0,
+            0.0,
+            0.0,
+        );
+        let mut geometry = crate::GeometryModel::default();
+        geometry
+            .add_sketch_feature(
+                sketch,
+                "seal-revolve".to_string(),
+                GeometryFeatureKind::Revolve {
+                    axis_offset: 1.0,
+                    angle_degrees: 360.0,
+                },
+            )
+            .unwrap();
+        assert!(matches!(
+            geometry.parts[0].kind,
+            GeometryPartKind::Torus { .. }
+        ));
+        let error = geometry
+            .add_sketch_feature(
+                GeometrySketch::from_profile(
+                    "rect-profile".to_string(),
+                    SketchPlane::Xy,
+                    SketchProfileKind::Rectangle {
+                        width: 1.0,
+                        height: 1.0,
+                    },
+                    0.0,
+                    0.0,
+                    0.0,
+                ),
+                "invalid-revolve".to_string(),
+                GeometryFeatureKind::Revolve {
+                    axis_offset: 1.0,
+                    angle_degrees: 360.0,
+                },
+            )
+            .unwrap_err();
+        assert!(error.contains("circular 2D profile"));
+    }
+
+    #[test]
+    fn editable_sketch_supports_square_dimension_axis_and_trim() {
+        let mut sketch = GeometrySketch::from_profile(
+            "editable".to_string(),
+            SketchPlane::Xy,
+            SketchProfileKind::Rectangle {
+                width: 1.0,
+                height: 1.0,
+            },
+            0.0,
+            0.0,
+            0.0,
+        );
+        sketch.entities.clear();
+        sketch.add_rectangle(0.0, 0.0, 2.0, 2.0).unwrap();
+        sketch.add_line(-2.0, 0.0, 2.0, 0.0).unwrap();
+        sketch
+            .add_distance_dimension(-1.0, -1.0, 1.0, -1.0)
+            .unwrap();
+        sketch.selected_axis = crate::SketchAxis::Vertical;
+        assert!(sketch.select_entity_near(0.0, -1.0, 0.1).is_some());
+        sketch.set_selected_dimension(3.0).unwrap();
+        sketch.trim_line_near(-1.8, 0.0).unwrap();
+        assert_eq!(sketch.entities.len(), 5);
+        assert_eq!(sketch.dimensions[0].value, 2.0);
+        assert_eq!(sketch.dimensions[1].value, 3.0);
+        assert_eq!(sketch.selected_axis, crate::SketchAxis::Vertical);
     }
 }

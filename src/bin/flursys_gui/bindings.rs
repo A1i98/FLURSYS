@@ -1,11 +1,20 @@
 use super::{case_name, parse_number, MainWindow};
 use flursys::cases::{BackwardStepCase, CavityCase, CylinderCase};
 use flursys::{
-    BoundaryConditionKind, BoundaryFace, BuoyancyModel, EnergyModel, GeometryPart,
-    GeometryPartKind, Project, ProjectCase, ProjectCoupling, ProjectPressureSolver,
-    ThermalBoundaryCondition,
+    BoundaryConditionKind, BoundaryFace, BuoyancyModel, EnergyModel, GeometryFeatureKind,
+    GeometryPart, GeometryPartKind, GeometrySketch, Project, ProjectCase, ProjectCoupling,
+    ProjectPressureSolver, SketchPlane, SketchProfileKind, ThermalBoundaryCondition,
 };
 use slint::SharedString;
+
+pub(super) fn write_empty_project_to_ui(ui: &MainWindow) {
+    ui.set_project_loaded(false);
+    ui.set_project_name(SharedString::from("No project loaded"));
+    ui.set_case_name(SharedString::from("No active domain"));
+    ui.set_geometry_parts_summary(SharedString::from(
+        "No project is open. Choose a domain or load a .flursys.json project.",
+    ));
+}
 
 pub(super) fn sync_project_from_ui(ui: &MainWindow, project: &mut Project) {
     project.name = ui.get_project_name().to_string();
@@ -73,6 +82,7 @@ pub(super) fn sync_project_from_ui(ui: &MainWindow, project: &mut Project) {
 }
 
 pub(super) fn write_project_to_ui(ui: &MainWindow, project: &Project) {
+    ui.set_project_loaded(true);
     ui.set_project_name(SharedString::from(project.name.as_str()));
     ui.set_case_name(SharedString::from(case_name(&project.case)));
     ui.set_case_index(project_case_index(&project.case));
@@ -142,7 +152,62 @@ pub(super) fn write_project_to_ui(ui: &MainWindow, project: &Project) {
         "Part {}",
         project.preprocessing.geometry.parts.len() + 1
     )));
+    ui.set_sketch_name(SharedString::from(format!(
+        "Sketch {}",
+        project.preprocessing.geometry.sketches.len() + 1
+    )));
+    ui.set_feature_name(SharedString::from(format!(
+        "Extrude {}",
+        project.preprocessing.geometry.features.len() + 1
+    )));
     write_boundary_to_ui(ui, project, BoundaryFace::Left);
+}
+
+pub(super) fn sketch_from_ui(ui: &MainWindow) -> Result<GeometrySketch, String> {
+    let sketch_name = ui.get_sketch_name().trim().to_string();
+    if sketch_name.is_empty() {
+        return Err("sketch name cannot be empty".to_string());
+    }
+    let size_x = parse_positive(ui.get_sketch_size_x().as_str(), "profile width/radius")?;
+    let size_y = parse_positive(ui.get_sketch_size_y().as_str(), "profile height")?;
+    let profile = if ui.get_sketch_kind_index() == 1 {
+        SketchProfileKind::Circle { radius: size_x }
+    } else {
+        SketchProfileKind::Rectangle {
+            width: size_x,
+            height: size_y,
+        }
+    };
+    let sketch = GeometrySketch::from_profile(
+        sketch_name,
+        SketchPlane::Xy,
+        profile,
+        parse_finite(ui.get_sketch_pos_x().as_str(), "sketch origin X")?,
+        parse_finite(ui.get_sketch_pos_y().as_str(), "sketch origin Y")?,
+        parse_finite(ui.get_sketch_pos_z().as_str(), "sketch origin Z")?,
+    );
+    Ok(sketch)
+}
+
+pub(super) fn feature_from_ui(ui: &MainWindow) -> Result<(String, GeometryFeatureKind), String> {
+    let feature_name = ui.get_feature_name().trim().to_string();
+    if feature_name.is_empty() {
+        return Err("feature name cannot be empty".to_string());
+    }
+    let feature = if ui.get_feature_kind_index() == 1 {
+        GeometryFeatureKind::Revolve {
+            axis_offset: parse_positive(
+                ui.get_revolve_axis_offset().as_str(),
+                "revolve axis offset",
+            )?,
+            angle_degrees: 360.0,
+        }
+    } else {
+        GeometryFeatureKind::Extrude {
+            depth: parse_positive(ui.get_feature_depth().as_str(), "extrude depth")?,
+        }
+    };
+    Ok((feature_name, feature))
 }
 
 pub(super) fn geometry_part_from_ui(ui: &MainWindow) -> Result<GeometryPart, String> {
@@ -156,18 +221,31 @@ pub(super) fn geometry_part_from_ui(ui: &MainWindow) -> Result<GeometryPart, Str
     let x = parse_finite(ui.get_part_pos_x().as_str(), "position X")?;
     let y = parse_finite(ui.get_part_pos_y().as_str(), "position Y")?;
     let z = parse_finite(ui.get_part_pos_z().as_str(), "position Z")?;
-    let kind = if ui.get_part_kind_index() == 1 {
-        GeometryPartKind::Cylinder {
+    let kind = match ui.get_part_kind_index() {
+        1 => GeometryPartKind::Cylinder {
             radius: x_size,
             height: z_size,
             segments: 32,
-        }
-    } else {
-        GeometryPartKind::Box {
+        },
+        2 => GeometryPartKind::Cone {
+            radius: x_size,
+            height: z_size,
+            segments: 32,
+        },
+        3 => GeometryPartKind::Sphere {
+            radius: x_size,
+            segments: 24,
+        },
+        4 => GeometryPartKind::Torus {
+            major_radius: x_size,
+            minor_radius: y_size,
+            segments: 32,
+        },
+        _ => GeometryPartKind::Box {
             length: x_size,
             width: y_size,
             height: z_size,
-        }
+        },
     };
     Ok(GeometryPart {
         name,
@@ -197,10 +275,18 @@ pub(super) fn parse_finite(value: &str, label: &str) -> Result<f64, String> {
 
 pub(super) fn geometry_parts_summary(project: &Project) -> String {
     let parts = &project.preprocessing.geometry.parts;
+    let design = format!(
+        "{} sketches · {} features",
+        project.preprocessing.geometry.sketches.len(),
+        project.preprocessing.geometry.features.len()
+    );
     match parts.len() {
-        0 => "No custom solids in this project.".to_string(),
-        1 => format!("1 solid: {}", parts[0].summary()),
-        count => format!("{count} solids · latest: {}", parts[count - 1].summary()),
+        0 => format!("{design} · no custom solids."),
+        1 => format!("{design} · 1 solid: {}", parts[0].summary()),
+        count => format!(
+            "{design} · {count} solids · latest: {}",
+            parts[count - 1].summary()
+        ),
     }
 }
 
