@@ -25,7 +25,8 @@ cargo run --release --features gui --bin flursys-gui
 cargo run --release --bin flursys -- --project examples/cavity.flursys.json
 ```
 
-Available cases include a lid-driven cavity, cylinder flow, and backward-facing step. Results are
+Available cases include a lid-driven cavity, cylinder flow, backward-facing step, and plane
+Poiseuille channel flow. Results are
 written to the selected output directory in CSV, VTK, and PPM formats. The current solver supports
 transient projection and a steady SIMPLE-style coupling for laminar incompressible flow.
 The optional Slint desktop interface keeps the solver on a separate worker thread and shows live

@@ -1231,6 +1231,7 @@ fn case_name(case: &flursys::ProjectCase) -> &'static str {
         flursys::ProjectCase::LidDrivenCavity { .. } => "Lid-driven cavity",
         flursys::ProjectCase::Cylinder { .. } => "Cylinder flow",
         flursys::ProjectCase::BackwardFacingStep { .. } => "Backward-facing step",
+        flursys::ProjectCase::Channel { .. } => "Channel (Poiseuille)",
     }
 }
 

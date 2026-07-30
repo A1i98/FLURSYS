@@ -3,7 +3,7 @@
 //! A project is data, not compiled application code. This lets users define,
 //! exchange, import, and run supported cases after FLURSYS itself is built.
 
-use crate::cases::{BackwardStepCase, CavityCase, CylinderCase};
+use crate::cases::{BackwardStepCase, CavityCase, ChannelCase, CylinderCase};
 use crate::{
     BoundaryCondition, BoundaryConditionKind, BoundaryFace, Case, ConvectionScheme,
     PhysicsSettings, PreprocessingModel, PressureSolverKind, PressureVelocityCoupling,
@@ -59,6 +59,13 @@ pub enum ProjectCase {
         height: f64,
         step_height: f64,
         step_x: f64,
+        density: f64,
+        mean_velocity: f64,
+        reynolds: f64,
+    },
+    Channel {
+        length: f64,
+        height: f64,
         density: f64,
         mean_velocity: f64,
         reynolds: f64,
@@ -344,6 +351,20 @@ impl ProjectCase {
                 reynolds: *reynolds,
                 nu: mean_velocity * step_height / reynolds,
             }),
+            Self::Channel {
+                length,
+                height,
+                density,
+                mean_velocity,
+                reynolds,
+            } => Case::Channel(ChannelCase {
+                length: *length,
+                height: *height,
+                rho: *density,
+                u_mean: *mean_velocity,
+                reynolds: *reynolds,
+                nu: mean_velocity * height / reynolds,
+            }),
         }
     }
 }
@@ -383,6 +404,18 @@ impl From<BackwardStepCase> for ProjectCase {
             height: case.height,
             step_height: case.step_height,
             step_x: case.step_x,
+            density: case.rho,
+            mean_velocity: case.u_mean,
+            reynolds: case.reynolds,
+        }
+    }
+}
+
+impl From<ChannelCase> for ProjectCase {
+    fn from(case: ChannelCase) -> Self {
+        Self::Channel {
+            length: case.length,
+            height: case.height,
             density: case.rho,
             mean_velocity: case.u_mean,
             reynolds: case.reynolds,
@@ -476,6 +509,17 @@ mod tests {
         let project = Project::load(path).unwrap();
         assert_eq!(project.name, "Lid-driven cavity Re=100");
         project.simulation_config("target/import-test").unwrap();
+    }
+
+    #[test]
+    fn bundled_channel_file_is_importable() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/channel.flursys.json");
+        let project = Project::load(path).unwrap();
+        assert_eq!(project.name, "Plane Poiseuille channel Re=100");
+        assert!(matches!(project.case, ProjectCase::Channel { .. }));
+        project
+            .simulation_config("target/channel-import-test")
+            .unwrap();
     }
 
     #[test]

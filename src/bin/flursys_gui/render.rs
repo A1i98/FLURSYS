@@ -149,7 +149,8 @@ pub(super) fn project_case_domain(case: &ProjectCase) -> (f64, f64) {
     match case {
         ProjectCase::LidDrivenCavity { length, height, .. }
         | ProjectCase::Cylinder { length, height, .. }
-        | ProjectCase::BackwardFacingStep { length, height, .. } => (*length, *height),
+        | ProjectCase::BackwardFacingStep { length, height, .. }
+        | ProjectCase::Channel { length, height, .. } => (*length, *height),
     }
 }
 
@@ -166,7 +167,7 @@ pub(super) fn project_case_is_solid(case: &ProjectCase, x: f64, y: f64) -> bool 
             step_height,
             ..
         } => x < *step_x && y < *step_height,
-        ProjectCase::LidDrivenCavity { .. } => false,
+        ProjectCase::LidDrivenCavity { .. } | ProjectCase::Channel { .. } => false,
     }
 }
 
@@ -798,7 +799,7 @@ pub(super) fn draw_case_solid_3d(
             (*step_x, *step_height, mesh.depth),
             COLOR,
         ),
-        ProjectCase::LidDrivenCavity { .. } => {}
+        ProjectCase::LidDrivenCavity { .. } | ProjectCase::Channel { .. } => {}
     }
 }
 
@@ -1075,7 +1076,7 @@ pub(super) fn render_geometry_3d_legacy(
                     [240, 195, 109, 255],
                 );
             }
-            ProjectCase::LidDrivenCavity { .. } => {}
+            ProjectCase::LidDrivenCavity { .. } | ProjectCase::Channel { .. } => {}
         }
     } else {
         let scale = geometry_scene_scale(&project.preprocessing.geometry.parts);

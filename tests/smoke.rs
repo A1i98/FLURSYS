@@ -1,4 +1,4 @@
-use flursys::cases::{BackwardStepCase, CavityCase, CylinderCase};
+use flursys::cases::{BackwardStepCase, CavityCase, ChannelCase, CylinderCase};
 use flursys::{
     Case, ConvectionScheme, IncompressibleSolver, PressureSolverKind, PressureVelocityCoupling,
     SimulationConfig, SolverBoundaryOverrides,
@@ -87,6 +87,20 @@ fn backward_step_advances_one_step() {
         70,
         8,
         "backward-step",
+    ))
+    .unwrap();
+    let summary = solver.run().unwrap();
+    assert!(summary.max_divergence.is_finite());
+    assert!(summary.max_divergence < 1.0e-5);
+}
+
+#[test]
+fn channel_advances_one_step() {
+    let mut solver = IncompressibleSolver::new(config(
+        Case::Channel(ChannelCase::default()),
+        80,
+        16,
+        "channel",
     ))
     .unwrap();
     let summary = solver.run().unwrap();

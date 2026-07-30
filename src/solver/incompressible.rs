@@ -1699,6 +1699,25 @@ impl IncompressibleSolver {
                     }
                 }
             }
+            CaseKind::Channel => {
+                let mut file = BufWriter::new(
+                    File::create(self.cfg.output_dir.join("outlet_velocity_profile.csv"))
+                        .map_err(|e| e.to_string())?,
+                );
+                writeln!(file, "y,u,v,p").map_err(|e| e.to_string())?;
+                let i = self.grid.nx - 1;
+                for j in 0..self.grid.ny {
+                    writeln!(
+                        file,
+                        "{:.12},{:.12e},{:.12e},{:.12e}",
+                        self.grid.cell_y(j),
+                        self.u_cell[(i, j)],
+                        self.v_cell[(i, j)],
+                        self.p[(i, j)]
+                    )
+                    .map_err(|e| e.to_string())?;
+                }
+            }
         }
         Ok(())
     }

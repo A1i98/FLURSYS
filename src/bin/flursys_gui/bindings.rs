@@ -1,5 +1,5 @@
 use super::{case_name, parse_number, MainWindow};
-use flursys::cases::{BackwardStepCase, CavityCase, CylinderCase};
+use flursys::cases::{BackwardStepCase, CavityCase, ChannelCase, CylinderCase};
 use flursys::{
     BoundaryConditionKind, BoundaryFace, BuoyancyModel, EnergyModel, GeometryFeatureKind,
     GeometryPart, GeometryPartKind, GeometrySketch, Project, ProjectCase, ProjectCoupling,
@@ -294,6 +294,7 @@ pub(super) fn project_case_from_index(index: i32) -> ProjectCase {
     match index {
         1 => ProjectCase::from(CylinderCase::default()),
         2 => ProjectCase::from(BackwardStepCase::default()),
+        3 => ProjectCase::from(ChannelCase::default()),
         _ => ProjectCase::from(CavityCase::default()),
     }
 }
@@ -303,6 +304,7 @@ pub(super) fn project_case_index(case: &ProjectCase) -> i32 {
         ProjectCase::LidDrivenCavity { .. } => 0,
         ProjectCase::Cylinder { .. } => 1,
         ProjectCase::BackwardFacingStep { .. } => 2,
+        ProjectCase::Channel { .. } => 3,
     }
 }
 

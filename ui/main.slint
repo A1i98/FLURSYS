@@ -208,7 +208,7 @@ import { SectionTitle, SectionHint, Card, MetricCard, InteractiveGeometryPreview
                                         }
                                         if root.geometry-sidebar-tab == 1 : VerticalLayout {
                                             Text { text: "CASE / DOMAIN"; color: rgb(240, 195, 109); font-size: 11px; font-weight: 800; }
-                                            ComboBox { model: ["Lid-driven cavity", "Cylinder flow Re=100", "Backward-facing step"]; current-index <=> root.case-index; }
+                                            ComboBox { model: ["Lid-driven cavity", "Cylinder flow Re=100", "Backward-facing step", "Channel flow (Poiseuille)"]; current-index <=> root.case-index; }
                                             Button { text: "SET ACTIVE DOMAIN"; clicked => { root.select-case(); } }
                                             Text { text: "Project"; color: rgb(140, 167, 185); font-size: 10px; }
                                             LineEdit { text <=> root.project-name; }

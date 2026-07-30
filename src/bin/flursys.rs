@@ -1,4 +1,4 @@
-use flursys::cases::{BackwardStepCase, CavityCase, CylinderCase};
+use flursys::cases::{BackwardStepCase, CavityCase, ChannelCase, CylinderCase};
 use flursys::{
     Case, ConvectionScheme, IncompressibleSolver, PressureSolverKind, PressureVelocityCoupling,
     Project, SimulationConfig, SolverBoundaryOverrides,
@@ -25,6 +25,7 @@ fn run_cli() -> Result<(), String> {
         println!("  cavity         lid-driven cavity");
         println!("  cylinder       cylinder flow at Re=100");
         println!("  backward-step  backward-facing step flow");
+        println!("  channel        plane Poiseuille channel flow");
         return Ok(());
     }
     if args[0] == "--project" {
@@ -52,6 +53,7 @@ fn run_cli() -> Result<(), String> {
         "cavity" => cavity_config(&options)?,
         "cylinder" => cylinder_config(&options)?,
         "backward-step" | "bfs" => backward_step_config(&options)?,
+        "channel" => channel_config(&options)?,
         other => return Err(format!("Unknown case '{other}'. Run `flursys list`.")),
     };
 
@@ -144,6 +146,29 @@ fn backward_step_config(options: &HashMap<String, String>) -> Result<SimulationC
             t_end: 100.0,
             max_steps: 40_000,
             output_dir: "results/backward-facing-step",
+        },
+    )
+}
+
+fn channel_config(options: &HashMap<String, String>) -> Result<SimulationConfig, String> {
+    let mut case = ChannelCase::default();
+    case.length = value(options, "length", case.length)?;
+    case.height = value(options, "height", case.height)?;
+    case.rho = value(options, "rho", case.rho)?;
+    case.u_mean = value(options, "u-mean", case.u_mean)?;
+    case.reynolds = value(options, "re", case.reynolds)?;
+    case.nu = case.u_mean * case.height / case.reynolds;
+
+    common_config(
+        Case::Channel(case),
+        options,
+        Defaults {
+            nx: 200,
+            ny: 40,
+            dt: 0.002,
+            t_end: 100.0,
+            max_steps: 40_000,
+            output_dir: "results/channel",
         },
     )
 }
@@ -267,6 +292,7 @@ fn print_help() {
     println!("  flursys cavity [options]");
     println!("  flursys cylinder [options]");
     println!("  flursys backward-step [options]");
+    println!("  flursys channel [options]");
     println!("  flursys --project CASE.flursys.json [--out PATH]");
     println!();
     println!("Run `flursys <case> --help` for available options.");
@@ -299,6 +325,9 @@ fn print_case_help(case: &str) {
         "backward-step" | "bfs" => {
             println!("Physical options: --length L --height H --step-height Hs --step-x Xs");
             println!("                  --rho RHO --u-mean U --re RE");
+        }
+        "channel" => {
+            println!("Physical options: --length L --height H --rho RHO --u-mean U --re RE");
         }
         _ => println!("Unknown case."),
     }

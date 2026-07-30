@@ -1,9 +1,11 @@
 mod backward_step;
 mod cavity;
+mod channel;
 mod cylinder;
 
 pub use backward_step::BackwardStepCase;
 pub use cavity::CavityCase;
+pub use channel::ChannelCase;
 pub use cylinder::CylinderCase;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -11,6 +13,7 @@ pub enum CaseKind {
     LidDrivenCavity,
     CylinderRe100,
     BackwardFacingStep,
+    Channel,
 }
 
 impl CaseKind {
@@ -19,6 +22,7 @@ impl CaseKind {
             Self::LidDrivenCavity => "cavity",
             Self::CylinderRe100 => "cylinder",
             Self::BackwardFacingStep => "backward-step",
+            Self::Channel => "channel",
         }
     }
 }
@@ -46,6 +50,7 @@ pub enum Case {
     LidDrivenCavity(CavityCase),
     CylinderRe100(CylinderCase),
     BackwardFacingStep(BackwardStepCase),
+    Channel(ChannelCase),
 }
 
 impl Case {
@@ -54,6 +59,7 @@ impl Case {
             Self::LidDrivenCavity(_) => CaseKind::LidDrivenCavity,
             Self::CylinderRe100(_) => CaseKind::CylinderRe100,
             Self::BackwardFacingStep(_) => CaseKind::BackwardFacingStep,
+            Self::Channel(_) => CaseKind::Channel,
         }
     }
 
@@ -62,6 +68,7 @@ impl Case {
             Self::LidDrivenCavity(_) => "Lid-Driven Cavity",
             Self::CylinderRe100(_) => "Cylinder Flow Re=100",
             Self::BackwardFacingStep(_) => "Backward-Facing Step Flow",
+            Self::Channel(_) => "Plane Poiseuille Channel Flow",
         }
     }
 
@@ -70,6 +77,7 @@ impl Case {
             Self::LidDrivenCavity(c) => c.rho,
             Self::CylinderRe100(c) => c.rho,
             Self::BackwardFacingStep(c) => c.rho,
+            Self::Channel(c) => c.rho,
         }
     }
 
@@ -78,6 +86,7 @@ impl Case {
             Self::LidDrivenCavity(c) => c.nu,
             Self::CylinderRe100(c) => c.nu,
             Self::BackwardFacingStep(c) => c.nu,
+            Self::Channel(c) => c.nu,
         }
     }
 
@@ -86,6 +95,7 @@ impl Case {
             Self::LidDrivenCavity(c) => c.lid_velocity,
             Self::CylinderRe100(c) => c.u_inf,
             Self::BackwardFacingStep(c) => c.u_mean,
+            Self::Channel(c) => c.u_mean,
         }
     }
 
@@ -94,6 +104,7 @@ impl Case {
             Self::LidDrivenCavity(c) => c.length,
             Self::CylinderRe100(c) => c.diameter,
             Self::BackwardFacingStep(c) => c.step_height,
+            Self::Channel(c) => c.height,
         }
     }
 
@@ -102,6 +113,7 @@ impl Case {
             Self::LidDrivenCavity(c) => (c.length, c.height),
             Self::CylinderRe100(c) => (c.length, c.height),
             Self::BackwardFacingStep(c) => (c.length, c.height),
+            Self::Channel(c) => (c.length, c.height),
         }
     }
 
@@ -114,6 +126,11 @@ impl Case {
                 Side::Bottom | Side::Top => BoundaryKind::Symmetry,
             },
             Self::BackwardFacingStep(_) => match side {
+                Side::Left => BoundaryKind::Velocity,
+                Side::Right => BoundaryKind::PressureOutlet { pressure: 0.0 },
+                Side::Bottom | Side::Top => BoundaryKind::Velocity,
+            },
+            Self::Channel(_) => match side {
                 Side::Left => BoundaryKind::Velocity,
                 Side::Right => BoundaryKind::PressureOutlet { pressure: 0.0 },
                 Side::Bottom | Side::Top => BoundaryKind::Velocity,
@@ -142,6 +159,14 @@ impl Case {
                         let eta = ((y - c.step_height) / inlet_height).clamp(0.0, 1.0);
                         (6.0 * c.u_mean * eta * (1.0 - eta), 0.0)
                     }
+                }
+                Side::Right => (c.u_mean, 0.0),
+                Side::Bottom | Side::Top => (0.0, 0.0),
+            },
+            Self::Channel(c) => match side {
+                Side::Left => {
+                    let eta = (y / c.height).clamp(0.0, 1.0);
+                    (6.0 * c.u_mean * eta * (1.0 - eta), 0.0)
                 }
                 Side::Right => (c.u_mean, 0.0),
                 Side::Bottom | Side::Top => (0.0, 0.0),
@@ -183,6 +208,10 @@ impl Case {
                     (c.u_mean, 0.0)
                 }
             }
+            Self::Channel(c) => {
+                let eta = (y / c.height).clamp(0.0, 1.0);
+                (6.0 * c.u_mean * eta * (1.0 - eta), 0.0)
+            }
         }
     }
 
@@ -193,6 +222,7 @@ impl Case {
                 (x - c.xc).powi(2) + (y - c.yc).powi(2) <= (0.5 * c.diameter).powi(2)
             }
             Self::BackwardFacingStep(c) => x < c.step_x && y < c.step_height,
+            Self::Channel(_) => false,
         }
     }
 
