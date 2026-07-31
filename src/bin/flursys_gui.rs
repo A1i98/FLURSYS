@@ -934,6 +934,25 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
         state.animation_playing = false;
         refresh_ui(&ui, &state);
     });
+
+    let weak_ui = ui.as_weak();
+    let results_state = state.clone();
+    ui.on_apply_result_style(move || {
+        let Some(ui) = weak_ui.upgrade() else {
+            return;
+        };
+        let mut state = results_state.borrow_mut();
+        state.show_mesh = false;
+        state.show_geometry_3d = false;
+        state.animation_playing = false;
+        state.log(format!(
+            "Applied result style: {} / {} / {} levels.",
+            result_plot_label(ui.get_result_plot_index()),
+            result_colormap_label(ui.get_result_colormap_index()),
+            ui.get_result_contour_levels().clamp(3, 32),
+        ));
+        refresh_ui(&ui, &state);
+    });
 }
 
 fn next_copy_name(source: &str, parts: &[flursys::GeometryPart]) -> String {
@@ -1178,29 +1197,45 @@ fn refresh_ui(ui: &MainWindow, state: &AppState) {
         ));
     } else if let Some(field) = state.frames.get(state.frame_index) {
         let selected = ui.get_result_field_index();
+        let plot = ui.get_result_plot_index().clamp(0, 3);
+        let colormap = ui.get_result_colormap_index().clamp(0, 3);
+        let contour_levels = ui.get_result_contour_levels().clamp(3, 32) as usize;
         let (title, image) = match selected {
             1 => (
                 "PRESSURE FIELD",
-                render_scalar_field(field, &field.pressure, true),
+                render_scalar_field(field, &field.pressure, true, colormap, plot, contour_levels),
             ),
             2 => (
                 "VORTICITY FIELD",
-                render_scalar_field(field, &field.vorticity, true),
+                render_scalar_field(
+                    field,
+                    &field.vorticity,
+                    true,
+                    colormap,
+                    plot,
+                    contour_levels,
+                ),
             ),
             3 => match &field.temperature {
                 Some(temperature) => (
                     "TEMPERATURE FIELD",
-                    render_scalar_field(field, temperature, false),
+                    render_scalar_field(field, temperature, false, colormap, plot, contour_levels),
                 ),
                 None => ("TEMPERATURE UNAVAILABLE", render_empty_image()),
             },
-            _ => ("SPEED FIELD", render_speed_field(field)),
+            _ => (
+                "SPEED FIELD",
+                render_scalar_field(field, &field.speed, false, colormap, plot, contour_levels),
+            ),
         };
         ui.set_visualization_title(SharedString::from(title));
         ui.set_animation_status(SharedString::from(format!(
-            "Frame {} / {}{}{}",
+            "Frame {} / {} · {} · {} · {} levels{}{}",
             state.frame_index + 1,
             state.frames.len(),
+            result_plot_label(plot),
+            result_colormap_label(colormap),
+            contour_levels,
             if state.animation_playing {
                 " · playing"
             } else {
@@ -1250,6 +1285,24 @@ fn residual_level(residual: f64) -> f32 {
     ((-residual.log10()).clamp(0.0, 10.0) / 10.0) as f32
 }
 
+fn result_plot_label(index: i32) -> &'static str {
+    match index {
+        1 => "contours",
+        2 => "contours + vectors",
+        3 => "vectors",
+        _ => "filled field",
+    }
+}
+
+fn result_colormap_label(index: i32) -> &'static str {
+    match index {
+        1 => "Viridis",
+        2 => "Plasma",
+        3 => "Blue-red",
+        _ => "Turbo",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1278,11 +1331,15 @@ mod tests {
             ny: 2,
             pressure: vec![0.0; 4],
             speed: vec![0.0, 0.5, 1.0, 0.25],
+            velocity_x: vec![0.0, 0.5, 1.0, 0.25],
+            velocity_y: vec![0.0; 4],
             vorticity: vec![0.0; 4],
             solid: vec![false, false, false, true],
             temperature: None,
         };
-        let _image = render_speed_field(&field);
+        for (colormap, plot) in [(0, 0), (1, 1), (2, 2), (3, 3)] {
+            let _image = render_scalar_field(&field, &field.speed, false, colormap, plot, 8);
+        }
     }
 
     #[test]

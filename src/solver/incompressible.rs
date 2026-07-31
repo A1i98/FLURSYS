@@ -160,6 +160,9 @@ pub struct FieldUpdate {
     pub ny: usize,
     pub pressure: Vec<f64>,
     pub speed: Vec<f64>,
+    /// Cell-centred velocity reconstructed from the staggered faces for vector plots.
+    pub velocity_x: Vec<f64>,
+    pub velocity_y: Vec<f64>,
     pub vorticity: Vec<f64>,
     pub solid: Vec<bool>,
     pub temperature: Option<Vec<f64>>,
@@ -437,11 +440,21 @@ impl IncompressibleSolver {
     }
 
     pub fn field_update(&self) -> FieldUpdate {
+        let mut velocity_x = Vec::with_capacity(self.grid.nx * self.grid.ny);
+        let mut velocity_y = Vec::with_capacity(self.grid.nx * self.grid.ny);
+        for j in 0..self.grid.ny {
+            for i in 0..self.grid.nx {
+                velocity_x.push(0.5 * (self.u[(i, j)] + self.u[(i + 1, j)]));
+                velocity_y.push(0.5 * (self.v[(i, j)] + self.v[(i, j + 1)]));
+            }
+        }
         FieldUpdate {
             nx: self.grid.nx,
             ny: self.grid.ny,
             pressure: self.p.as_slice().to_vec(),
             speed: self.speed.as_slice().to_vec(),
+            velocity_x,
+            velocity_y,
             vorticity: self.vorticity.as_slice().to_vec(),
             solid: self.solid.as_slice().to_vec(),
             temperature: self

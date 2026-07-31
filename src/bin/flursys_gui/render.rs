@@ -1457,9 +1457,61 @@ pub(super) fn draw_ellipse(
     }
 }
 
-pub(super) fn render_scalar_field(field: &FieldUpdate, values: &[f64], symmetric: bool) -> Image {
+pub(super) fn render_scalar_field(
+    field: &FieldUpdate,
+    values: &[f64],
+    symmetric: bool,
+    colormap: i32,
+    plot: i32,
+    contour_levels: usize,
+) -> Image {
     let width = PREVIEW_WIDTH;
     let height = PREVIEW_HEIGHT;
+    let (min_value, max_value) = scalar_range(values, symmetric);
+    let mut pixels = vec![0_u8; (width * height * 4) as usize];
+    fill(&mut pixels, [11, 18, 24, 255]);
+    if plot != 3 {
+        for y in 0..height {
+            let j = ((height - 1 - y) as usize * field.ny / height as usize).min(field.ny - 1);
+            for x in 0..width {
+                let i = (x as usize * field.nx / width as usize).min(field.nx - 1);
+                let index = i + field.nx * j;
+                let color = if field.solid.get(index).copied().unwrap_or(true) {
+                    [22, 25, 29, 255]
+                } else {
+                    scalar_color(
+                        normalize(
+                            values.get(index).copied().unwrap_or(0.0),
+                            min_value,
+                            max_value,
+                        ),
+                        colormap,
+                    )
+                };
+                set_pixel(&mut pixels, width, height, x, y, color);
+            }
+        }
+        draw_colormap_legend(&mut pixels, width, height, colormap);
+    }
+    if matches!(plot, 1 | 2) {
+        draw_contours(
+            &mut pixels,
+            width,
+            height,
+            field,
+            values,
+            min_value,
+            max_value,
+            contour_levels,
+        );
+    }
+    if matches!(plot, 2 | 3) {
+        draw_velocity_vectors(&mut pixels, width, height, field);
+    }
+    image_from_rgba(width, height, pixels)
+}
+
+fn scalar_range(values: &[f64], symmetric: bool) -> (f64, f64) {
     let (mut min_value, mut max_value) = values
         .iter()
         .copied()
@@ -1475,31 +1527,179 @@ pub(super) fn render_scalar_field(field: &FieldUpdate, values: &[f64], symmetric
         min_value = 0.0;
         max_value = 1.0;
     }
-    let mut pixels = vec![0_u8; (width * height * 4) as usize];
-    for y in 0..height {
-        let j = ((height - 1 - y) as usize * field.ny / height as usize).min(field.ny - 1);
-        for x in 0..width {
-            let i = (x as usize * field.nx / width as usize).min(field.nx - 1);
-            let index = i + field.nx * j;
-            let color = if field.solid[index] {
-                [22, 25, 29, 255]
-            } else {
-                let normalized =
-                    ((values[index] - min_value) / (max_value - min_value)).clamp(0.0, 1.0) as f32;
-                if symmetric {
-                    diverging_color(normalized)
-                } else {
-                    speed_color(normalized)
-                }
-            };
-            set_pixel(&mut pixels, width, height, x, y, color);
-        }
-    }
-    image_from_rgba(width, height, pixels)
+    (min_value, max_value)
 }
 
-pub(super) fn render_speed_field(field: &FieldUpdate) -> Image {
-    render_scalar_field(field, &field.speed, false)
+fn normalize(value: f64, min_value: f64, max_value: f64) -> f32 {
+    ((value - min_value) / (max_value - min_value)).clamp(0.0, 1.0) as f32
+}
+
+fn draw_colormap_legend(pixels: &mut [u8], width: u32, height: u32, colormap: i32) {
+    let left = width.saturating_sub(18);
+    for y in 12..height.saturating_sub(12) {
+        let t = 1.0 - (y - 12) as f32 / (height.saturating_sub(24)) as f32;
+        let color = scalar_color(t, colormap);
+        for x in left..width.saturating_sub(8) {
+            set_pixel(pixels, width, height, x, y, color);
+        }
+    }
+    for x in left.saturating_sub(1)..width.saturating_sub(7) {
+        set_pixel(pixels, width, height, x, 11, [220, 230, 236, 255]);
+        set_pixel(
+            pixels,
+            width,
+            height,
+            x,
+            height.saturating_sub(12),
+            [220, 230, 236, 255],
+        );
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_contours(
+    pixels: &mut [u8],
+    width: u32,
+    height: u32,
+    field: &FieldUpdate,
+    values: &[f64],
+    min_value: f64,
+    max_value: f64,
+    levels: usize,
+) {
+    if field.nx < 2 || field.ny < 2 || values.len() != field.nx * field.ny {
+        return;
+    }
+    let color = [235, 242, 245, 235];
+    for level_index in 1..levels {
+        let level = min_value + (max_value - min_value) * level_index as f64 / levels as f64;
+        for j in 0..field.ny - 1 {
+            for i in 0..field.nx - 1 {
+                let indices = [
+                    i + field.nx * j,
+                    i + 1 + field.nx * j,
+                    i + 1 + field.nx * (j + 1),
+                    i + field.nx * (j + 1),
+                ];
+                if indices
+                    .iter()
+                    .any(|&index| field.solid.get(index).copied().unwrap_or(true))
+                {
+                    continue;
+                }
+                let points = [
+                    (
+                        (i as f64 + 0.5) * width as f64 / field.nx as f64,
+                        height as f64 - (j as f64 + 0.5) * height as f64 / field.ny as f64,
+                    ),
+                    (
+                        (i as f64 + 1.5) * width as f64 / field.nx as f64,
+                        height as f64 - (j as f64 + 0.5) * height as f64 / field.ny as f64,
+                    ),
+                    (
+                        (i as f64 + 1.5) * width as f64 / field.nx as f64,
+                        height as f64 - (j as f64 + 1.5) * height as f64 / field.ny as f64,
+                    ),
+                    (
+                        (i as f64 + 0.5) * width as f64 / field.nx as f64,
+                        height as f64 - (j as f64 + 1.5) * height as f64 / field.ny as f64,
+                    ),
+                ];
+                let mut crossings = Vec::with_capacity(4);
+                for (start, end) in [(0, 1), (1, 2), (2, 3), (3, 0)] {
+                    let a = values[indices[start]];
+                    let b = values[indices[end]];
+                    if (a < level) != (b < level) {
+                        let fraction = (level - a) / (b - a);
+                        crossings.push((
+                            points[start].0 + fraction * (points[end].0 - points[start].0),
+                            points[start].1 + fraction * (points[end].1 - points[start].1),
+                        ));
+                    }
+                }
+                for pair in crossings.chunks_exact(2) {
+                    draw_line(
+                        pixels,
+                        width,
+                        height,
+                        (pair[0].0 as i32, pair[0].1 as i32),
+                        (pair[1].0 as i32, pair[1].1 as i32),
+                        color,
+                    );
+                }
+            }
+        }
+    }
+}
+
+fn draw_velocity_vectors(pixels: &mut [u8], width: u32, height: u32, field: &FieldUpdate) {
+    if field.velocity_x.len() != field.nx * field.ny
+        || field.velocity_y.len() != field.nx * field.ny
+    {
+        return;
+    }
+    let max_speed = field
+        .velocity_x
+        .iter()
+        .zip(&field.velocity_y)
+        .map(|(u, v)| u.hypot(*v))
+        .filter(|speed| speed.is_finite())
+        .fold(0.0_f64, f64::max);
+    if max_speed <= f64::EPSILON {
+        return;
+    }
+    let stride_x = (field.nx / 22).max(1);
+    let stride_y = (field.ny / 14).max(1);
+    let arrow_scale = 0.42
+        * ((stride_x * width as usize / field.nx).min(stride_y * height as usize / field.ny))
+            as f64;
+    for j in (0..field.ny).step_by(stride_y) {
+        for i in (0..field.nx).step_by(stride_x) {
+            let index = i + field.nx * j;
+            if field.solid.get(index).copied().unwrap_or(true) {
+                continue;
+            }
+            let u = field.velocity_x[index];
+            let v = field.velocity_y[index];
+            let magnitude = u.hypot(v);
+            if !magnitude.is_finite() || magnitude <= max_speed * 0.015 {
+                continue;
+            }
+            let start = (
+                (i as f64 + 0.5) * width as f64 / field.nx as f64,
+                height as f64 - (j as f64 + 0.5) * height as f64 / field.ny as f64,
+            );
+            let length = arrow_scale * (magnitude / max_speed).sqrt();
+            let end = (
+                start.0 + length * u / magnitude,
+                start.1 - length * v / magnitude,
+            );
+            let color = [245, 248, 250, 255];
+            draw_line(
+                pixels,
+                width,
+                height,
+                (start.0 as i32, start.1 as i32),
+                (end.0 as i32, end.1 as i32),
+                color,
+            );
+            let angle = (start.1 - end.1).atan2(end.0 - start.0);
+            for offset in [-2.6_f64, 2.6] {
+                let head = (
+                    end.0 - 5.0 * (angle + offset).cos(),
+                    end.1 + 5.0 * (angle + offset).sin(),
+                );
+                draw_line(
+                    pixels,
+                    width,
+                    height,
+                    (end.0 as i32, end.1 as i32),
+                    (head.0 as i32, head.1 as i32),
+                    color,
+                );
+            }
+        }
+    }
 }
 
 pub(super) fn render_residual_chart(history: &VecDeque<ResidualSample>) -> Image {
@@ -1597,31 +1797,52 @@ pub(super) fn draw_line(
     }
 }
 
-pub(super) fn speed_color(value: f32) -> [u8; 4] {
-    let r = (255.0 * value.sqrt()) as u8;
-    let g = (255.0 * (1.0 - (2.0 * value - 1.0).abs())) as u8;
-    let b = (255.0 * (1.0 - value).sqrt()) as u8;
-    [r, g, b, 255]
-}
-
-pub(super) fn diverging_color(value: f32) -> [u8; 4] {
-    if value < 0.5 {
-        let blend = value * 2.0;
-        [
-            (64.0 + 191.0 * blend) as u8,
-            (112.0 + 133.0 * blend) as u8,
-            255,
-            255,
-        ]
-    } else {
-        let blend = (value - 0.5) * 2.0;
-        [
-            255,
-            (245.0 * (1.0 - blend)) as u8,
-            (255.0 * (1.0 - blend)) as u8,
-            255,
-        ]
-    }
+fn scalar_color(value: f32, colormap: i32) -> [u8; 4] {
+    const TURBO: [[u8; 3]; 5] = [
+        [48, 18, 59],
+        [46, 91, 195],
+        [34, 196, 173],
+        [239, 220, 70],
+        [199, 44, 46],
+    ];
+    const VIRIDIS: [[u8; 3]; 5] = [
+        [68, 1, 84],
+        [59, 82, 139],
+        [33, 145, 140],
+        [94, 201, 98],
+        [253, 231, 37],
+    ];
+    const PLASMA: [[u8; 3]; 5] = [
+        [13, 8, 135],
+        [126, 3, 168],
+        [204, 71, 120],
+        [248, 149, 64],
+        [240, 249, 33],
+    ];
+    const BLUE_RED: [[u8; 3]; 5] = [
+        [49, 54, 149],
+        [116, 173, 209],
+        [247, 247, 247],
+        [244, 109, 67],
+        [165, 0, 38],
+    ];
+    let stops = match colormap {
+        1 => &VIRIDIS,
+        2 => &PLASMA,
+        3 => &BLUE_RED,
+        _ => &TURBO,
+    };
+    let scaled = value.clamp(0.0, 1.0) * (stops.len() - 1) as f32;
+    let index = scaled.floor() as usize;
+    let blend = scaled - index as f32;
+    let lower = stops[index];
+    let upper = stops[(index + 1).min(stops.len() - 1)];
+    [
+        (lower[0] as f32 + blend * (upper[0] as f32 - lower[0] as f32)) as u8,
+        (lower[1] as f32 + blend * (upper[1] as f32 - lower[1] as f32)) as u8,
+        (lower[2] as f32 + blend * (upper[2] as f32 - lower[2] as f32)) as u8,
+        255,
+    ]
 }
 
 pub(super) fn fill(pixels: &mut [u8], color: [u8; 4]) {

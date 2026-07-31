@@ -69,6 +69,9 @@ import { SectionTitle, SectionHint, Card, MetricCard, InteractiveGeometryPreview
         in-out property <string> gravity-x: "0.0";
         in-out property <string> gravity-y: "-9.81";
         in-out property <int> result-field-index: 0;
+        in-out property <int> result-plot-index: 2;
+        in-out property <int> result-colormap-index: 0;
+        in-out property <int> result-contour-levels: 12;
         in-out property <string> residual-summary: "Waiting for a solver run.";
         in-out property <image> residual-image;
         in-out property <float> continuity-level: 0.0;
@@ -89,7 +92,7 @@ import { SectionTitle, SectionHint, Card, MetricCard, InteractiveGeometryPreview
         callback animation-play-pause(); callback animation-next(); callback show-geometry-3d();
         callback rotate-geometry-3d(); callback apply-boundary(); callback show-boundary-face(); callback select-step(int);
         callback select-case(); callback add-part(); callback build-feature(); callback duplicate-last-part(); callback remove-last-part();
-        callback apply-thermal-boundary(); callback select-result-field(int);
+        callback apply-thermal-boundary(); callback select-result-field(int); callback apply-result-style();
         callback geometry-drag(float, float, float, float); callback geometry-zoom(float); callback reset-geometry-view();
         callback pick-boundary(float, float, float, float);
         callback start-sketch(); callback select-sketch-tool(int); callback sketch-click(float, float, float, float); callback sketch-undo(); callback sketch-redo(); callback apply-driving-dimension();
@@ -403,7 +406,7 @@ import { SectionTitle, SectionHint, Card, MetricCard, InteractiveGeometryPreview
                         VerticalLayout {
                             padding: 26px; spacing: 16px;
                             SectionTitle { text: "05  Results"; }
-                            SectionHint { text: "Inspect generated field snapshots, animate sampled results, and review the run log."; }
+                            SectionHint { text: "Inspect scalar fields with configurable palettes, isolines, and cell-centred velocity vectors from sampled solver snapshots."; }
                             HorizontalLayout {
                                 spacing: 16px;
                                 Card { horizontal-stretch: 1; VerticalLayout { padding: 18px; spacing: 10px;
@@ -411,6 +414,14 @@ import { SectionTitle, SectionHint, Card, MetricCard, InteractiveGeometryPreview
                                     Rectangle { vertical-stretch: 1; background: rgb(9, 16, 22); border-color: rgb(40, 66, 82); border-width: 1px; Image { source: root.visualization-image; width: parent.width; height: parent.height; image-fit: contain; } }
                                     Text { text: root.animation-status; color: rgb(163, 188, 203); font-size: 11px; }
                                     HorizontalLayout { Button { text: "SPEED"; clicked => { root.select-result-field(0); } } Button { text: "PRESSURE"; clicked => { root.select-result-field(1); } } Button { text: "VORTICITY"; clicked => { root.select-result-field(2); } } Button { text: "TEMPERATURE"; clicked => { root.select-result-field(3); } } }
+                                    Rectangle { height: 1px; background: rgb(47, 74, 91); }
+                                    Text { text: "POST-PROCESSING STYLE"; color: rgb(240, 195, 109); font-size: 10px; font-weight: 700; }
+                                    HorizontalLayout {
+                                        VerticalLayout { Text { text: "Plot"; color: rgb(140, 167, 185); font-size: 10px; } ComboBox { model: ["Filled field", "Contours", "Contours + vectors", "Vectors only"]; current-index <=> root.result-plot-index; } }
+                                        VerticalLayout { Text { text: "Color map"; color: rgb(140, 167, 185); font-size: 10px; } ComboBox { model: ["Turbo", "Viridis", "Plasma", "Blue–red"]; current-index <=> root.result-colormap-index; } }
+                                        VerticalLayout { Text { text: "Levels"; color: rgb(140, 167, 185); font-size: 10px; } SpinBox { value <=> root.result-contour-levels; minimum: 3; maximum: 32; } }
+                                    }
+                                    HorizontalLayout { Button { text: "APPLY STYLE"; clicked => { root.apply-result-style(); } } Text { text: "Vectors use cell-centred velocity; arrows are adaptively sampled for readability."; color: rgb(126, 153, 170); font-size: 10px; wrap: word-wrap; vertical-stretch: 1; } }
                                     HorizontalLayout { Button { text: "FIELD"; clicked => { root.show-field(); } } Button { text: "MESH"; clicked => { root.show-mesh(); } } Button { text: "PLAY / PAUSE"; clicked => { root.animation-play-pause(); } } Button { text: "NEXT"; clicked => { root.animation-next(); } } }
                                 } }
                                 Card { width: 390px; VerticalLayout { padding: 18px; spacing: 10px;
