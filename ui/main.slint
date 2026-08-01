@@ -30,6 +30,7 @@ import { SectionTitle, SectionHint, Card, MetricCard, InteractiveGeometryPreview
         in-out property <string> part-pos-y: "0.0";
         in-out property <string> part-pos-z: "0.0";
         in-out property <string> geometry-parts-summary: "No custom solids in this project.";
+        in-out property <string> geometry-model-tree: "▾ Geometry\n   ▾ Sketches (0)\n      — None\n   ▾ Features (0)\n      — None\n   ▾ Solids (0)\n      — None";
         in-out property <bool> project-loaded: false;
         in-out property <int> geometry-sidebar-tab: 0;
         in-out property <string> status: "Idle";
@@ -87,7 +88,7 @@ import { SectionTitle, SectionHint, Card, MetricCard, InteractiveGeometryPreview
         in-out property <string> animation-status: "Frame 0 / 0";
         in-out property <string> log-text: "FLURSYS Slint workbench ready.";
 
-        callback start(); callback pause(); callback resume(); callback stop(); callback validate-case();
+        callback new-project(); callback start(); callback pause(); callback resume(); callback stop(); callback validate-case();
         callback load-project(); callback save-project(); callback show-mesh(); callback show-field();
         callback animation-play-pause(); callback animation-next(); callback show-geometry-3d();
         callback rotate-geometry-3d(); callback apply-boundary(); callback show-boundary-face(); callback select-step(int);
@@ -110,6 +111,7 @@ import { SectionTitle, SectionHint, Card, MetricCard, InteractiveGeometryPreview
                     Text { text: "FLURSYS"; color: rgb(233, 242, 248); font-size: 23px; font-weight: 800; }
                     Rectangle { width: 1px; background: rgb(65, 94, 112); }
                     Text { text: "CFD WORKBENCH"; color: rgb(136, 164, 182); font-size: 12px; }
+                    Button { text: "NEW PROJECT"; clicked => { root.new-project(); } }
                     Rectangle { horizontal-stretch: 1; }
                     Text { text: "PROJECT"; color: rgb(136, 164, 182); font-size: 10px; }
                     Text { text: root.project-loaded ? root.project-name : "No project loaded"; color: rgb(215, 229, 238); font-size: 12px; }
@@ -176,12 +178,19 @@ import { SectionTitle, SectionHint, Card, MetricCard, InteractiveGeometryPreview
                                     HorizontalLayout {
                                         spacing: 5px;
                                         Text { text: "SKETCH"; color: rgb(132, 161, 180); font-size: 10px; vertical-alignment: center; }
-                                        Button { text: "H AXIS"; clicked => { root.select-sketch-tool(6); } }
-                                        Button { text: "V AXIS"; clicked => { root.select-sketch-tool(7); } }
+                                        Button { text: "HORIZONTAL"; clicked => { root.select-sketch-tool(6); } }
+                                        Button { text: "VERTICAL"; clicked => { root.select-sketch-tool(7); } }
                                         Rectangle { width: 1px; background: rgb(58, 85, 102); }
                                         Button { text: "EXTRUDE"; clicked => { root.feature-kind-index = 0; } }
                                         Button { text: "REVOLVE"; clicked => { root.feature-kind-index = 1; } }
                                         Button { text: "BUILD FEATURE"; clicked => { root.build-feature(); } }
+                                        Rectangle { width: 1px; background: rgb(58, 85, 102); }
+                                        Button { text: "BOX"; clicked => { root.part-kind-index = 0; } }
+                                        Button { text: "CYL"; clicked => { root.part-kind-index = 1; } }
+                                        Button { text: "CONE"; clicked => { root.part-kind-index = 2; } }
+                                        Button { text: "SPHERE"; clicked => { root.part-kind-index = 3; } }
+                                        Button { text: "TORUS"; clicked => { root.part-kind-index = 4; } }
+                                        Button { text: "ADD SOLID"; clicked => { root.add-part(); } }
                                         Button { text: "DUPLICATE"; clicked => { root.duplicate-last-part(); } }
                                         Button { text: "DELETE"; clicked => { root.remove-last-part(); } }
                                         Rectangle { horizontal-stretch: 1; }
@@ -193,20 +202,37 @@ import { SectionTitle, SectionHint, Card, MetricCard, InteractiveGeometryPreview
                             HorizontalLayout {
                                 spacing: 8px;
                                 Card {
-                                    width: 215px;
+                                    width: 275px;
                                     VerticalLayout {
                                         padding: 14px; spacing: 8px;
-                                        HorizontalLayout { Button { text: "MODEL"; clicked => { root.geometry-sidebar-tab = 0; } } Button { text: "PROJECT"; clicked => { root.geometry-sidebar-tab = 1; } } }
+                                        HorizontalLayout {
+                                            Button { text: "MODEL"; clicked => { root.geometry-sidebar-tab = 0; } }
+                                            Button { text: "PROJECT"; clicked => { root.geometry-sidebar-tab = 1; } }
+                                            Button { text: "INSPECTOR"; clicked => { root.geometry-sidebar-tab = 2; } }
+                                        }
                                         if root.geometry-sidebar-tab == 0 : VerticalLayout {
                                             Text { text: "MODEL TREE"; color: rgb(240, 195, 109); font-size: 11px; font-weight: 800; }
                                             Text { text: "▾  " + root.project-name; color: rgb(226, 237, 245); font-size: 13px; font-weight: 700; }
-                                            Text { text: "   ▾  Geometry"; color: rgb(184, 207, 219); font-size: 12px; }
-                                            Text { text: "      ▸  Reference planes"; color: rgb(127, 156, 173); font-size: 11px; }
-                                            Text { text: "      ▸  Sketches"; color: rgb(127, 156, 173); font-size: 11px; }
-                                            Text { text: "      ▸  Features"; color: rgb(127, 156, 173); font-size: 11px; }
+                                            Text { text: root.geometry-model-tree; color: rgb(184, 207, 219); font-family: "monospace"; font-size: 10px; wrap: word-wrap; }
                                             Rectangle { height: 1px; background: rgb(47, 74, 91); }
                                             Text { text: "ACTIVE BODY"; color: rgb(132, 161, 180); font-size: 10px; font-weight: 700; }
                                             Text { text: root.geometry-parts-summary; color: rgb(198, 215, 224); font-size: 11px; wrap: word-wrap; }
+                                            Rectangle { height: 1px; background: rgb(47, 74, 91); }
+                                            Text { text: "PRIMITIVE"; color: rgb(140, 167, 185); font-size: 10px; font-weight: 700; }
+                                            ComboBox { model: ["Box", "Cylinder", "Cone", "Sphere", "Torus"]; current-index <=> root.part-kind-index; }
+                                            LineEdit { text <=> root.part-name; placeholder-text: "Solid name"; }
+                                            HorizontalLayout {
+                                                LineEdit { text <=> root.part-size-x; placeholder-text: "X / R"; }
+                                                LineEdit { text <=> root.part-size-y; placeholder-text: "Y"; }
+                                                LineEdit { text <=> root.part-size-z; placeholder-text: "Z / H"; }
+                                            }
+                                            Text { text: "POSITION (mm)"; color: rgb(126, 153, 170); font-size: 10px; font-weight: 700; }
+                                            HorizontalLayout {
+                                                LineEdit { text <=> root.part-pos-x; placeholder-text: "X"; }
+                                                LineEdit { text <=> root.part-pos-y; placeholder-text: "Y"; }
+                                                LineEdit { text <=> root.part-pos-z; placeholder-text: "Z"; }
+                                            }
+                                            Button { text: "ADD SOLID"; clicked => { root.add-part(); } }
                                             Rectangle { vertical-stretch: 1; }
                                         }
                                         if root.geometry-sidebar-tab == 1 : VerticalLayout {
@@ -218,6 +244,39 @@ import { SectionTitle, SectionHint, Card, MetricCard, InteractiveGeometryPreview
                                             Text { text: "File"; color: rgb(140, 167, 185); font-size: 10px; }
                                             LineEdit { text <=> root.project-path; }
                                             HorizontalLayout { Button { text: "LOAD"; clicked => { root.load-project(); } } Button { text: "SAVE"; clicked => { root.save-project(); } } }
+                                            Rectangle { vertical-stretch: 1; }
+                                        }
+                                        if root.geometry-sidebar-tab == 2 : VerticalLayout {
+                                            Text { text: "INSPECTOR"; color: rgb(240, 195, 109); font-size: 11px; font-weight: 800; }
+                                            Text { text: "SKETCH"; color: rgb(140, 167, 185); font-size: 10px; font-weight: 700; }
+                                            ComboBox { model: ["Rectangle", "Circle"]; current-index <=> root.sketch-kind-index; }
+                                            LineEdit { text <=> root.sketch-name; placeholder-text: "Sketch name"; }
+                                            Text { text: "PROFILE SIZE (mm)"; color: rgb(140, 167, 185); font-size: 10px; font-weight: 700; }
+                                            HorizontalLayout {
+                                                LineEdit { text <=> root.sketch-size-x; placeholder-text: root.sketch-kind-index == 0 ? "Width" : "Radius"; }
+                                                LineEdit { text <=> root.sketch-size-y; placeholder-text: root.sketch-kind-index == 0 ? "Height" : "Reference"; }
+                                            }
+                                            Text { text: "ORIGIN (mm)"; color: rgb(140, 167, 185); font-size: 10px; font-weight: 700; }
+                                            HorizontalLayout {
+                                                LineEdit { text <=> root.sketch-pos-x; placeholder-text: "X"; }
+                                                LineEdit { text <=> root.sketch-pos-y; placeholder-text: "Y"; }
+                                                LineEdit { text <=> root.sketch-pos-z; placeholder-text: "Z"; }
+                                            }
+                                            Rectangle { height: 1px; background: rgb(47, 74, 91); }
+                                            Text { text: "DRIVING DIMENSION (select a line/circle, mm)"; color: rgb(240, 195, 109); font-size: 10px; font-weight: 700; wrap: word-wrap; }
+                                            HorizontalLayout { LineEdit { text <=> root.driving-dimension; placeholder-text: "Length / radius"; } Button { text: "APPLY"; clicked => { root.apply-driving-dimension(); } } }
+                                            Text { text: "Selection fills the current value. Applying updates the same persistent driving dimension."; color: rgb(126, 153, 170); font-size: 10px; wrap: word-wrap; }
+                                            Rectangle { height: 1px; background: rgb(47, 74, 91); }
+                                            Text { text: "FEATURE"; color: rgb(140, 167, 185); font-size: 10px; font-weight: 700; }
+                                            ComboBox { model: ["Extrude", "Revolve (360°)"]; current-index <=> root.feature-kind-index; }
+                                            LineEdit { text <=> root.feature-name; placeholder-text: "Feature name"; }
+                                            if root.feature-kind-index == 0 : LineEdit { text <=> root.feature-depth; placeholder-text: "Extrude depth (mm)"; }
+                                            if root.feature-kind-index == 1 : LineEdit { text <=> root.revolve-axis-offset; placeholder-text: "Axis offset (mm)"; }
+                                            HorizontalLayout {
+                                                Button { text: "BUILD"; clicked => { root.build-feature(); } }
+                                                Button { text: "DUPLICATE"; clicked => { root.duplicate-last-part(); } }
+                                                Button { text: "DELETE"; clicked => { root.remove-last-part(); } }
+                                            }
                                             Rectangle { vertical-stretch: 1; }
                                         }
                                     }
@@ -233,53 +292,25 @@ import { SectionTitle, SectionHint, Card, MetricCard, InteractiveGeometryPreview
                                             border-color: rgb(40, 66, 82);
                                             border-width: 1px;
                                             Image { source: root.sketch-image; width: parent.width; height: parent.height; image-fit: contain; }
-                                            Text { x: 10px; y: parent.height - self.height - 8px; text: "CLICK: APPLY ACTIVE SKETCH TOOL  ·  GRID: 0.5 mm"; color: rgb(145, 174, 190); font-size: 10px; font-weight: 700; }
-                                            TouchArea { clicked => { root.sketch-click(self.mouse-x / 1px, self.mouse-y / 1px, root.width / 1px, root.height / 1px); } }
+                                            Text { x: 10px; y: parent.height - self.height - 8px; text: "CLICK: APPLY ACTIVE SKETCH TOOL  ·  GRID: 0.1 mm  ·  ENDPOINT + AXIS SNAP"; color: rgb(145, 174, 190); font-size: 10px; font-weight: 700; }
+                                            TouchArea {
+                                                x: 0px; y: 0px;
+                                                width: parent.width; height: parent.height;
+                                                clicked => {
+                                                    root.sketch-click(
+                                                        self.mouse-x / 1px,
+                                                        self.mouse-y / 1px,
+                                                        self.width / 1px,
+                                                        self.height / 1px,
+                                                    );
+                                                }
+                                            }
                                         }
                                         if !root.sketch-editing : InteractiveGeometryPreview { vertical-stretch: 1; preview-image: root.visualization-image; orbit(x, y, pressed-x, pressed-y) => { root.geometry-drag(x, y, pressed-x, pressed-y); } zoom(delta) => { root.geometry-zoom(delta); } reset-view => { root.reset-geometry-view(); } pick-boundary(x, y, w, h) => { root.pick-boundary(x, y, w, h); } }
                                         HorizontalLayout { Text { text: root.sketch-editing ? root.sketch-status : root.animation-status; color: rgb(163, 188, 203); font-size: 10px; vertical-alignment: center; wrap: word-wrap; } Rectangle { horizontal-stretch: 1; } if root.sketch-editing : Button { text: "FINISH SKETCH"; clicked => { root.show-geometry-3d(); } } if !root.sketch-editing : Button { text: "ORBIT"; clicked => { root.rotate-geometry-3d(); } } Button { text: "FIT VIEW"; clicked => { root.reset-geometry-view(); } } }
                                     }
                                 }
-                                Card {
-                                    width: 255px;
-                                    VerticalLayout {
-                                        padding: 14px; spacing: 8px;
-                                        Text { text: "PROPERTIES"; color: rgb(240, 195, 109); font-size: 11px; font-weight: 800; }
-                                        Text { text: "2D SKETCH"; color: rgb(140, 167, 185); font-size: 10px; font-weight: 700; }
-                                        ComboBox { model: ["Rectangle", "Circle"]; current-index <=> root.sketch-kind-index; }
-                                        Text { text: "Sketch name"; color: rgb(140, 167, 185); font-size: 10px; }
-                                        LineEdit { text <=> root.sketch-name; }
-                                        Text { text: root.sketch-kind-index == 0 ? "Rectangle profile on XY plane" : "Circle profile on XY plane"; color: rgb(126, 153, 170); font-size: 10px; }
-                                        Rectangle { height: 1px; background: rgb(47, 74, 91); }
-                                        Text { text: "PROFILE DIMENSIONS (mm)"; color: rgb(140, 167, 185); font-size: 10px; font-weight: 700; }
-                                        HorizontalLayout {
-                                            VerticalLayout { Text { text: root.sketch-kind-index == 0 ? "Width" : "Radius"; color: rgb(126, 153, 170); font-size: 10px; } LineEdit { text <=> root.sketch-size-x; } }
-                                            VerticalLayout { Text { text: root.sketch-kind-index == 0 ? "Height" : "Reference"; color: rgb(126, 153, 170); font-size: 10px; } LineEdit { text <=> root.sketch-size-y; } }
-                                        }
-                                        Text { text: "SKETCH ORIGIN (mm)"; color: rgb(140, 167, 185); font-size: 10px; font-weight: 700; }
-                                        HorizontalLayout {
-                                            VerticalLayout { Text { text: "X"; color: rgb(126, 153, 170); font-size: 10px; } LineEdit { text <=> root.sketch-pos-x; } }
-                                            VerticalLayout { Text { text: "Y"; color: rgb(126, 153, 170); font-size: 10px; } LineEdit { text <=> root.sketch-pos-y; } }
-                                        }
-                                        Text { text: "Z"; color: rgb(126, 153, 170); font-size: 10px; } LineEdit { text <=> root.sketch-pos-z; }
-                                        Text { text: "DRIVING DIMENSION (selected entity, mm)"; color: rgb(140, 167, 185); font-size: 10px; font-weight: 700; }
-                                        HorizontalLayout { LineEdit { text <=> root.driving-dimension; } Button { text: "APPLY"; clicked => { root.apply-driving-dimension(); } } }
-                                        Rectangle { height: 1px; background: rgb(47, 74, 91); }
-                                        Text { text: "FEATURE"; color: rgb(140, 167, 185); font-size: 10px; font-weight: 700; }
-                                        ComboBox { model: ["Extrude", "Revolve (360°)"]; current-index <=> root.feature-kind-index; }
-                                        Text { text: "Feature name"; color: rgb(140, 167, 185); font-size: 10px; } LineEdit { text <=> root.feature-name; }
-                                        Text { text: root.feature-kind-index == 0 ? "Extrude depth (mm)" : "Axis offset (mm), full 360° revolution"; color: rgb(126, 153, 170); font-size: 10px; }
-                                        if root.feature-kind-index == 0 : LineEdit { text <=> root.feature-depth; }
-                                        if root.feature-kind-index == 1 : LineEdit { text <=> root.revolve-axis-offset; }
-                                        HorizontalLayout {
-                                            Button { text: "BUILD FEATURE"; clicked => { root.build-feature(); } }
-                                            Button { text: "DUPLICATE"; clicked => { root.duplicate-last-part(); } }
-                                        }
-                                        Button { text: "DELETE LAST"; clicked => { root.remove-last-part(); } }
-                                        Rectangle { vertical-stretch: 1; }
-                                        Text { text: "Parametric primitives are saved with the project. B-Rep and face/edge editing require the native CAD kernel."; color: rgb(126, 153, 170); font-size: 10px; wrap: word-wrap; }
-                                    }
-                                }
+
                             }
                         }
                     }

@@ -26,9 +26,9 @@ pub use physics::{
 pub use preprocess::{
     BoundaryCondition, BoundaryConditionKind, BoundaryFace, GeometryDimension, GeometryFeature,
     GeometryFeatureKind, GeometryModel, GeometryPart, GeometryPartKind, GeometrySketch,
-    MeshSettings, MeshTopology, PreprocessingModel, SketchAxis, SketchDimension,
-    SketchDimensionKind, SketchEntity, SketchEntityKind, SketchPlane, SketchProfileKind,
-    SolverBoundaryOverrides,
+    MeshSettings, MeshTopology, PreprocessingModel, SketchAxis, SketchConstraint,
+    SketchConstraintKind, SketchDimension, SketchDimensionKind, SketchEntity, SketchEntityKind,
+    SketchPlane, SketchProfileKind, SolverBoundaryOverrides,
 };
 pub use project::{Project, ProjectCase, ProjectCoupling, ProjectPressureSolver, ProjectSolver};
 pub use solver::{

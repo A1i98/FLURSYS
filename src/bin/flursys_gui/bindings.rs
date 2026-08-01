@@ -7,15 +7,6 @@ use flursys::{
 };
 use slint::SharedString;
 
-pub(super) fn write_empty_project_to_ui(ui: &MainWindow) {
-    ui.set_project_loaded(false);
-    ui.set_project_name(SharedString::from("No project loaded"));
-    ui.set_case_name(SharedString::from("No active domain"));
-    ui.set_geometry_parts_summary(SharedString::from(
-        "No project is open. Choose a domain or load a .flursys.json project.",
-    ));
-}
-
 pub(super) fn sync_project_from_ui(ui: &MainWindow, project: &mut Project) {
     project.name = ui.get_project_name().to_string();
     project.solver.nx = ui.get_nx().max(4) as usize;
@@ -288,6 +279,47 @@ pub(super) fn geometry_parts_summary(project: &Project) -> String {
             parts[count - 1].summary()
         ),
     }
+}
+
+pub(super) fn geometry_model_tree(project: &Project) -> String {
+    let geometry = &project.preprocessing.geometry;
+    let mut lines = vec!["▾ Geometry".to_string()];
+
+    lines.push(format!("   ▾ Sketches ({})", geometry.sketches.len()));
+    if geometry.sketches.is_empty() {
+        lines.push("      — None".to_string());
+    } else {
+        for sketch in &geometry.sketches {
+            lines.push(format!(
+                "      ◇ {} [{}]",
+                sketch.name,
+                sketch.plane.label()
+            ));
+        }
+    }
+
+    lines.push(format!("   ▾ Features ({})", geometry.features.len()));
+    if geometry.features.is_empty() {
+        lines.push("      — None".to_string());
+    } else {
+        for feature in &geometry.features {
+            lines.push(format!(
+                "      ◈ {} [{}]",
+                feature.name,
+                feature.kind.label()
+            ));
+        }
+    }
+
+    lines.push(format!("   ▾ Solids ({})", geometry.parts.len()));
+    if geometry.parts.is_empty() {
+        lines.push("      — None".to_string());
+    } else {
+        for part in &geometry.parts {
+            lines.push(format!("      ◆ {} [{}]", part.name, part.kind.label()));
+        }
+    }
+    lines.join("\n")
 }
 
 pub(super) fn project_case_from_index(index: i32) -> ProjectCase {

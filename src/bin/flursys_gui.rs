@@ -1,7 +1,7 @@
 use flursys::runtime::{SolverCommand, SolverController, SolverState, SolverUpdate};
 use flursys::{
     BoundaryConditionKind, BoundaryFace, ExtrudedMesh3D, FieldUpdate, GeometrySketch, Project,
-    SketchAxis, SketchProfileKind, StructuredMesh2D, ThermalBoundaryCondition,
+    SketchAxis, SketchEntityKind, SketchProfileKind, StructuredMesh2D, ThermalBoundaryCondition,
 };
 use slint::{ComponentHandle, SharedString, Timer, TimerMode};
 use std::cell::RefCell;
@@ -60,8 +60,10 @@ impl AppState {
         Self {
             controller: SolverController::spawn(),
             project: Project::default(),
-            project_loaded: false,
-            logs: VecDeque::from(["FLURSYS Slint workbench ready.".to_string()]),
+            project_loaded: true,
+            logs: VecDeque::from([
+                "New editable project ready. Save it when you are ready to keep it.".to_string(),
+            ]),
             last_update: None,
             residual_history: VecDeque::new(),
             frames: VecDeque::new(),
@@ -130,10 +132,31 @@ fn require_project(state: &mut AppState) -> bool {
     }
 }
 
+fn apply_axis_constraint(state: &mut AppState, axis: SketchAxis) {
+    let before = state.draft_sketch.clone();
+    let result = match &mut state.draft_sketch {
+        Some(sketch) => sketch.apply_selected_axis_constraint(axis),
+        None => Err("start a sketch and select a line first".to_string()),
+    };
+    match result {
+        Ok(()) => {
+            if let Some(before) = before {
+                state.sketch_undo.push(before);
+                state.sketch_redo.clear();
+            }
+            state.log(match axis {
+                SketchAxis::Horizontal => "Applied horizontal constraint.",
+                SketchAxis::Vertical => "Applied vertical constraint.",
+            });
+        }
+        Err(error) => state.log(error),
+    }
+}
+
 fn main() -> Result<(), slint::PlatformError> {
     let ui = MainWindow::new()?;
     let state = Rc::new(RefCell::new(AppState::new()));
-    write_empty_project_to_ui(&ui);
+    write_project_to_ui(&ui, &state.borrow().project);
     refresh_ui(&ui, &state.borrow());
 
     bind_callbacks(&ui, &state);
@@ -172,6 +195,36 @@ fn main() -> Result<(), slint::PlatformError> {
 }
 
 fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
+    let weak_ui = ui.as_weak();
+    let new_project_state = state.clone();
+    ui.on_new_project(move || {
+        let Some(ui) = weak_ui.upgrade() else {
+            return;
+        };
+        let mut state = new_project_state.borrow_mut();
+        if let Err(error) = state.controller.send(SolverCommand::Stop) {
+            state.log(error);
+        }
+        state.project = Project::default();
+        state.project_loaded = true;
+        state.last_update = None;
+        state.residual_history.clear();
+        state.frames.clear();
+        state.frame_index = 0;
+        state.animation_playing = false;
+        state.show_mesh = false;
+        state.show_geometry_3d = true;
+        state.draft_sketch = None;
+        state.show_sketch_editor = false;
+        state.sketch_points.clear();
+        state.sketch_undo.clear();
+        state.sketch_redo.clear();
+        state.preflight_summary = "Run validation before starting the solver.".to_string();
+        state.log("Created a new editable project.");
+        write_project_to_ui(&ui, &state.project);
+        refresh_ui(&ui, &state);
+    });
+
     let weak_ui = ui.as_weak();
     let workflow_state = state.clone();
     ui.on_select_step(move |step| {
@@ -331,15 +384,11 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
             4 => SketchTool::Dimension,
             5 => SketchTool::Trim,
             6 => {
-                if let Some(sketch) = &mut state.draft_sketch {
-                    sketch.selected_axis = SketchAxis::Horizontal;
-                }
+                apply_axis_constraint(&mut state, SketchAxis::Horizontal);
                 SketchTool::Select
             }
             7 => {
-                if let Some(sketch) = &mut state.draft_sketch {
-                    sketch.selected_axis = SketchAxis::Vertical;
-                }
+                apply_axis_constraint(&mut state, SketchAxis::Vertical);
                 SketchTool::Select
             }
             _ => SketchTool::Select,
@@ -355,7 +404,11 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
             return;
         };
         let mut state = sketch_state.borrow_mut();
-        let point = snap_sketch_point(sketch_canvas_point(mouse_x, mouse_y, width, height));
+        let point = snap_to_existing_sketch_geometry(
+            state.draft_sketch.as_ref(),
+            &state.sketch_points,
+            snap_sketch_point(sketch_canvas_point(mouse_x, mouse_y, width, height)),
+        );
         let before = state.draft_sketch.clone();
         let result = apply_sketch_click(&mut state, point);
         if result.is_ok() && state.draft_sketch != before {
@@ -366,6 +419,14 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
         }
         if let Err(error) = result {
             state.log(error);
+        } else if matches!(state.sketch_tool, SketchTool::Select) {
+            if let Some(value) = state
+                .draft_sketch
+                .as_ref()
+                .and_then(selected_entity_dimension)
+            {
+                ui.set_driving_dimension(SharedString::from(format!("{value:.3}")));
+            }
         }
         refresh_ui(&ui, &state);
     });
@@ -978,6 +1039,59 @@ fn snap_sketch_point((x, y): (f64, f64)) -> (f64, f64) {
     ((x / GRID).round() * GRID, (y / GRID).round() * GRID)
 }
 
+fn snap_to_existing_sketch_geometry(
+    sketch: Option<&GeometrySketch>,
+    pending_points: &[(f64, f64)],
+    point: (f64, f64),
+) -> (f64, f64) {
+    const SNAP_DISTANCE: f64 = 0.15;
+    let mut nearest: Option<((f64, f64), f64)> = None;
+    if let Some(sketch) = sketch {
+        for entity in &sketch.entities {
+            let candidates: &[(f64, f64)] = match &entity.kind {
+                SketchEntityKind::Line { x1, y1, x2, y2 } => &[(*x1, *y1), (*x2, *y2)],
+                SketchEntityKind::Circle {
+                    center_x, center_y, ..
+                } => &[(*center_x, *center_y)],
+            };
+            for candidate in candidates {
+                let distance = (candidate.0 - point.0).hypot(candidate.1 - point.1);
+                if distance <= SNAP_DISTANCE
+                    && nearest.is_none_or(|(_, best_distance)| distance < best_distance)
+                {
+                    nearest = Some((*candidate, distance));
+                }
+            }
+        }
+    }
+    if let Some((candidate, _)) = nearest {
+        return candidate;
+    }
+    let Some(&(anchor_x, anchor_y)) = pending_points.first() else {
+        return point;
+    };
+    let x = if (point.0 - anchor_x).abs() <= SNAP_DISTANCE {
+        anchor_x
+    } else {
+        point.0
+    };
+    let y = if (point.1 - anchor_y).abs() <= SNAP_DISTANCE {
+        anchor_y
+    } else {
+        point.1
+    };
+    (x, y)
+}
+
+fn selected_entity_dimension(sketch: &GeometrySketch) -> Option<f64> {
+    let id = sketch.selected_entity?;
+    let entity = sketch.entities.iter().find(|entity| entity.id == id)?;
+    match entity.kind {
+        SketchEntityKind::Line { x1, y1, x2, y2 } => Some((x2 - x1).hypot(y2 - y1)),
+        SketchEntityKind::Circle { radius, .. } => Some(radius),
+    }
+}
+
 fn apply_sketch_click(state: &mut AppState, point: (f64, f64)) -> Result<(), String> {
     let Some(sketch) = &mut state.draft_sketch else {
         return Err("start a sketch before using sketch tools".to_string());
@@ -1081,9 +1195,10 @@ fn refresh_ui(ui: &MainWindow, state: &AppState) {
             .join(" · ");
         ui.set_sketch_image(render_sketch_2d(sketch));
         ui.set_sketch_status(SharedString::from(format!(
-            "{} · {} entities · active axis: {:?}{}",
+            "{} · {} entities · {} constraints · active axis: {:?}{}",
             sketch_tool_label(state.sketch_tool),
             sketch.entities.len(),
+            sketch.constraints.len(),
             sketch.selected_axis,
             if dimensions.is_empty() {
                 String::new()
@@ -1095,6 +1210,7 @@ fn refresh_ui(ui: &MainWindow, state: &AppState) {
         ui.set_sketch_status(SharedString::from("Start a sketch to edit a 2D profile."));
     }
     ui.set_geometry_parts_summary(SharedString::from(geometry_parts_summary(&state.project)));
+    ui.set_geometry_model_tree(SharedString::from(geometry_model_tree(&state.project)));
     ui.set_boundary_summary(SharedString::from(boundary_summary(&state.project)));
     ui.set_preflight_summary(SharedString::from(state.preflight_summary.as_str()));
     let update = state.last_update.as_ref();
@@ -1138,7 +1254,7 @@ fn refresh_ui(ui: &MainWindow, state: &AppState) {
     ));
     ui.set_residual_image(render_residual_chart(&state.residual_history));
     ui.set_mesh_inspection(SharedString::from(mesh_inspection(&state.project)));
-    if state.show_geometry_3d {
+    if state.show_geometry_3d && !state.show_sketch_editor {
         ui.set_visualization_title(SharedString::from("3D GEOMETRY & MESH"));
         let (length, height) = project_case_domain(&state.project.case);
         let base = StructuredMesh2D::new(
@@ -1319,9 +1435,10 @@ mod tests {
     }
 
     #[test]
-    fn gui_starts_without_an_active_project() {
+    fn gui_starts_with_a_new_editable_project() {
         let state = AppState::new();
-        assert!(!state.project_loaded);
+        assert!(state.project_loaded);
+        assert_eq!(state.project.name, "Lid-driven cavity");
     }
 
     #[test]
@@ -1362,6 +1479,39 @@ mod tests {
             z: 0.5,
         });
         let _image = render_geometry_3d(&project, 0.35, -0.2, 1.1, Some(BoundaryFace::Top));
+    }
+
+    #[test]
+    fn geometry_model_tree_lists_sketches_features_and_solids() {
+        let mut project = Project::default();
+        project
+            .preprocessing
+            .geometry
+            .add_sketch_feature(
+                GeometrySketch::from_profile(
+                    "inlet-profile".to_string(),
+                    SketchPlane::Xy,
+                    SketchProfileKind::Rectangle {
+                        width: 2.0,
+                        height: 1.0,
+                    },
+                    0.0,
+                    0.0,
+                    0.0,
+                ),
+                "inlet-extrude".to_string(),
+                flursys::GeometryFeatureKind::Extrude { depth: 0.5 },
+            )
+            .unwrap();
+
+        let tree = geometry_model_tree(&project);
+
+        assert!(tree.contains("Sketches (1)"));
+        assert!(tree.contains("inlet-profile [XY]"));
+        assert!(tree.contains("Features (1)"));
+        assert!(tree.contains("inlet-extrude [Extrude]"));
+        assert!(tree.contains("Solids (1)"));
+        assert!(tree.contains("inlet-extrude solid [Box]"));
     }
 
     #[test]
@@ -1414,6 +1564,67 @@ mod tests {
             0.0,
         );
         let _image = render_sketch_2d(&sketch);
+    }
+
+    #[test]
+    fn line_tool_creates_a_line_after_two_distinct_canvas_clicks() {
+        let mut state = AppState::new();
+        let mut sketch = GeometrySketch::from_profile(
+            "line-test".to_string(),
+            SketchPlane::Xy,
+            SketchProfileKind::Rectangle {
+                width: 1.0,
+                height: 1.0,
+            },
+            0.0,
+            0.0,
+            0.0,
+        );
+        sketch.entities.clear();
+        state.draft_sketch = Some(sketch);
+        state.sketch_tool = SketchTool::Line;
+
+        apply_sketch_click(&mut state, (-1.0, -0.5)).unwrap();
+        apply_sketch_click(&mut state, (1.0, 0.5)).unwrap();
+
+        assert!(matches!(
+            state.draft_sketch.unwrap().entities.as_slice(),
+            [flursys::SketchEntity {
+                kind: flursys::SketchEntityKind::Line {
+                    x1: -1.0,
+                    y1: -0.5,
+                    x2: 1.0,
+                    y2: 0.5,
+                },
+                ..
+            }]
+        ));
+    }
+
+    #[test]
+    fn sketch_snap_prefers_existing_endpoints_then_infers_axis_from_start() {
+        let mut sketch = GeometrySketch::from_profile(
+            "snap-test".to_string(),
+            SketchPlane::Xy,
+            SketchProfileKind::Rectangle {
+                width: 1.0,
+                height: 1.0,
+            },
+            0.0,
+            0.0,
+            0.0,
+        );
+        sketch.entities.clear();
+        sketch.add_line(0.0, 0.0, 2.0, 0.0).unwrap();
+
+        assert_eq!(
+            snap_to_existing_sketch_geometry(Some(&sketch), &[], (2.1, 0.1)),
+            (2.0, 0.0)
+        );
+        assert_eq!(
+            snap_to_existing_sketch_geometry(Some(&sketch), &[(1.0, 1.0)], (1.1, 3.0)),
+            (1.0, 3.0)
+        );
     }
 
     #[test]

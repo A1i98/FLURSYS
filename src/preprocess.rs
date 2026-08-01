@@ -55,6 +55,16 @@ pub enum SketchPlane {
     Yz,
 }
 
+impl SketchPlane {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Xy => "XY",
+            Self::Xz => "XZ",
+            Self::Yz => "YZ",
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "kebab-case")]
 pub enum SketchProfileKind {
@@ -94,6 +104,8 @@ pub struct GeometrySketch {
     #[serde(default)]
     pub dimensions: Vec<SketchDimension>,
     #[serde(default)]
+    pub constraints: Vec<SketchConstraint>,
+    #[serde(default)]
     pub selected_axis: SketchAxis,
     #[serde(default)]
     pub selected_entity: Option<u64>,
@@ -105,6 +117,19 @@ pub enum SketchAxis {
     #[default]
     Horizontal,
     Vertical,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SketchConstraintKind {
+    Horizontal,
+    Vertical,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SketchConstraint {
+    pub entity: u64,
+    pub kind: SketchConstraintKind,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -141,6 +166,10 @@ pub enum SketchDimensionKind {
 pub struct SketchDimension {
     pub name: String,
     pub kind: SketchDimensionKind,
+    /// The geometry controlled by this driving value. Measurement-only
+    /// dimensions leave this empty for backwards-compatible project files.
+    #[serde(default)]
+    pub entity: Option<u64>,
     pub value: f64,
     pub x1: f64,
     pub y1: f64,
@@ -166,6 +195,7 @@ impl GeometrySketch {
             z,
             entities: Vec::new(),
             dimensions: Vec::new(),
+            constraints: Vec::new(),
             selected_axis: SketchAxis::Horizontal,
             selected_entity: None,
         };
@@ -246,6 +276,7 @@ impl GeometrySketch {
         self.dimensions.push(SketchDimension {
             name: format!("D{}", self.dimensions.len() + 1),
             kind: SketchDimensionKind::Distance,
+            entity: None,
             value,
             x1,
             y1,
@@ -278,6 +309,45 @@ impl GeometrySketch {
         selected
     }
 
+    /// Constrains the selected line to the requested axis and records the
+    /// relationship in project data. The line's first endpoint is kept fixed.
+    pub fn apply_selected_axis_constraint(&mut self, axis: SketchAxis) -> Result<(), String> {
+        let Some(id) = self.selected_entity else {
+            return Err("select a line before applying an axis constraint".to_string());
+        };
+        let Some(entity) = self.entities.iter_mut().find(|entity| entity.id == id) else {
+            return Err("selected sketch entity no longer exists".to_string());
+        };
+        let SketchEntityKind::Line { x1, y1, x2, y2 } = &mut entity.kind else {
+            return Err("axis constraints apply only to lines".to_string());
+        };
+        match axis {
+            SketchAxis::Horizontal if (*x2 - *x1).abs() <= f64::EPSILON => {
+                return Err(
+                    "cannot make a vertical line horizontal without collapsing it".to_string(),
+                )
+            }
+            SketchAxis::Vertical if (*y2 - *y1).abs() <= f64::EPSILON => {
+                return Err(
+                    "cannot make a horizontal line vertical without collapsing it".to_string(),
+                )
+            }
+            SketchAxis::Horizontal => *y2 = *y1,
+            SketchAxis::Vertical => *x2 = *x1,
+        }
+        self.constraints
+            .retain(|constraint| constraint.entity != id);
+        self.constraints.push(SketchConstraint {
+            entity: id,
+            kind: match axis {
+                SketchAxis::Horizontal => SketchConstraintKind::Horizontal,
+                SketchAxis::Vertical => SketchConstraintKind::Vertical,
+            },
+        });
+        self.selected_axis = axis;
+        Ok(())
+    }
+
     /// Applies a driving length/radius to the selected entity. Lines preserve
     /// their start point and direction; circles preserve their centre.
     pub fn set_selected_dimension(&mut self, value: f64) -> Result<(), String> {
@@ -303,15 +373,25 @@ impl GeometrySketch {
             }
             SketchEntityKind::Circle { radius, .. } => *radius = value,
         }
-        self.dimensions.push(SketchDimension {
-            name: format!("D{}", self.dimensions.len() + 1),
-            kind: SketchDimensionKind::Distance,
-            value,
-            x1: 0.0,
-            y1: 0.0,
-            x2: value,
-            y2: 0.0,
-        });
+        if let Some(dimension) = self
+            .dimensions
+            .iter_mut()
+            .find(|dimension| dimension.entity == Some(id))
+        {
+            dimension.value = value;
+            dimension.x2 = value;
+        } else {
+            self.dimensions.push(SketchDimension {
+                name: format!("D{}", self.dimensions.len() + 1),
+                kind: SketchDimensionKind::Distance,
+                entity: Some(id),
+                value,
+                x1: 0.0,
+                y1: 0.0,
+                x2: value,
+                y2: 0.0,
+            });
+        }
         Ok(())
     }
 
@@ -415,6 +495,88 @@ impl GeometrySketch {
             .map(|(index, _)| index)
     }
 
+    /// Resolves editable construction geometry to one profile supported by the
+    /// current feature materializer. This makes the feature reflect the drawn
+    /// sketch rather than silently using its initial profile settings.
+    fn materialization_profile(&self) -> Result<(SketchProfileKind, f64, f64), String> {
+        if self.entities.is_empty() {
+            return Ok((self.profile.clone(), 0.0, 0.0));
+        }
+
+        if let [SketchEntity {
+            kind:
+                SketchEntityKind::Circle {
+                    center_x,
+                    center_y,
+                    radius,
+                },
+            ..
+        }] = self.entities.as_slice()
+        {
+            return Ok((
+                SketchProfileKind::Circle { radius: *radius },
+                *center_x,
+                *center_y,
+            ));
+        }
+
+        let lines = self
+            .entities
+            .iter()
+            .map(|entity| match entity.kind {
+                SketchEntityKind::Line { x1, y1, x2, y2 } => Ok((x1, y1, x2, y2)),
+                SketchEntityKind::Circle { .. } => Err(()),
+            })
+            .collect::<Result<Vec<_>, _>>();
+        let Ok(lines) = lines else {
+            return Err("a feature sketch must contain exactly one circle or a closed axis-aligned rectangle".to_string());
+        };
+        if lines.len() != 4 {
+            return Err("a feature sketch must contain exactly one circle or a closed axis-aligned rectangle".to_string());
+        }
+
+        let (min_x, max_x, min_y, max_y) = lines.iter().fold(
+            (
+                f64::INFINITY,
+                f64::NEG_INFINITY,
+                f64::INFINITY,
+                f64::NEG_INFINITY,
+            ),
+            |(min_x, max_x, min_y, max_y), (x1, y1, x2, y2)| {
+                (
+                    min_x.min(*x1).min(*x2),
+                    max_x.max(*x1).max(*x2),
+                    min_y.min(*y1).min(*y2),
+                    max_y.max(*y1).max(*y2),
+                )
+            },
+        );
+        let expected_edges = [
+            (min_x, min_y, max_x, min_y),
+            (max_x, min_y, max_x, max_y),
+            (max_x, max_y, min_x, max_y),
+            (min_x, max_y, min_x, min_y),
+        ];
+        let mut matched = [false; 4];
+        for line in lines {
+            let Some(index) = expected_edges.iter().enumerate().find_map(|(index, edge)| {
+                (!matched[index] && same_line_undirected(line, *edge)).then_some(index)
+            }) else {
+                return Err("a feature sketch must contain exactly one circle or a closed axis-aligned rectangle".to_string());
+            };
+            matched[index] = true;
+        }
+
+        Ok((
+            SketchProfileKind::Rectangle {
+                width: max_x - min_x,
+                height: max_y - min_y,
+            },
+            (min_x + max_x) * 0.5,
+            (min_y + max_y) * 0.5,
+        ))
+    }
+
     fn validate(&self) -> Result<(), String> {
         if self.name.trim().is_empty() {
             return Err("sketch name cannot be empty".to_string());
@@ -441,6 +603,33 @@ impl GeometrySketch {
                 }
             }
         }
+        for constraint in &self.constraints {
+            let Some(entity) = self
+                .entities
+                .iter()
+                .find(|entity| entity.id == constraint.entity)
+            else {
+                return Err(format!(
+                    "sketch {} contains a constraint for a missing entity",
+                    self.name
+                ));
+            };
+            let valid = match (&constraint.kind, &entity.kind) {
+                (SketchConstraintKind::Horizontal, SketchEntityKind::Line { y1, y2, .. }) => {
+                    (*y1 - *y2).abs() <= f64::EPSILON
+                }
+                (SketchConstraintKind::Vertical, SketchEntityKind::Line { x1, x2, .. }) => {
+                    (*x1 - *x2).abs() <= f64::EPSILON
+                }
+                _ => false,
+            };
+            if !valid {
+                return Err(format!(
+                    "sketch {} contains an unsatisfied axis constraint",
+                    self.name
+                ));
+            }
+        }
         for dimension in &self.dimensions {
             if dimension.name.trim().is_empty()
                 || !positive(dimension.value)
@@ -456,6 +645,19 @@ impl GeometrySketch {
         }
         Ok(())
     }
+}
+
+fn same_line_undirected(
+    (x1, y1, x2, y2): (f64, f64, f64, f64),
+    (expected_x1, expected_y1, expected_x2, expected_y2): (f64, f64, f64, f64),
+) -> bool {
+    const TOLERANCE: f64 = 1.0e-9;
+    let same_point = |x: f64, y: f64, expected_x: f64, expected_y: f64| {
+        (x - expected_x).abs() <= TOLERANCE && (y - expected_y).abs() <= TOLERANCE
+    };
+    (same_point(x1, y1, expected_x1, expected_y1) && same_point(x2, y2, expected_x2, expected_y2))
+        || (same_point(x1, y1, expected_x2, expected_y2)
+            && same_point(x2, y2, expected_x1, expected_y1))
 }
 
 fn point_line_distance(x: f64, y: f64, x1: f64, y1: f64, x2: f64, y2: f64) -> f64 {
@@ -503,6 +705,13 @@ pub enum GeometryFeatureKind {
 }
 
 impl GeometryFeatureKind {
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Extrude { .. } => "Extrude",
+            Self::Revolve { .. } => "Revolve",
+        }
+    }
+
     fn validate(&self) -> Result<(), String> {
         match self {
             Self::Extrude { depth } if positive(*depth) => Ok(()),
@@ -534,10 +743,14 @@ impl GeometryModel {
     /// preview solid together so saved projects retain the CAD design intent.
     pub fn add_sketch_feature(
         &mut self,
-        sketch: GeometrySketch,
+        mut sketch: GeometrySketch,
         feature_name: String,
         kind: GeometryFeatureKind,
     ) -> Result<String, String> {
+        let (profile, offset_x, offset_y) = sketch.materialization_profile()?;
+        sketch.profile = profile;
+        sketch.x += offset_x;
+        sketch.y += offset_y;
         sketch.validate()?;
         kind.validate()?;
         if feature_name.trim().is_empty() {

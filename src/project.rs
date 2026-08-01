@@ -843,6 +843,70 @@ mod tests {
     }
 
     #[test]
+    fn sketch_extrude_uses_the_drawn_rectangle_dimensions() {
+        let mut sketch = GeometrySketch::from_profile(
+            "drawn-profile".to_string(),
+            SketchPlane::Xy,
+            SketchProfileKind::Rectangle {
+                width: 1.0,
+                height: 1.0,
+            },
+            0.0,
+            0.0,
+            0.0,
+        );
+        sketch.entities.clear();
+        sketch.add_rectangle(0.0, 0.0, 3.0, 2.0).unwrap();
+
+        let mut geometry = crate::GeometryModel::default();
+        geometry
+            .add_sketch_feature(
+                sketch,
+                "drawn-extrude".to_string(),
+                GeometryFeatureKind::Extrude { depth: 0.5 },
+            )
+            .unwrap();
+
+        assert!(matches!(
+            geometry.parts[0].kind,
+            GeometryPartKind::Box {
+                length: 3.0,
+                width: 2.0,
+                height: 0.5,
+            }
+        ));
+    }
+
+    #[test]
+    fn sketch_extrude_uses_the_drawn_profile_position() {
+        let mut sketch = GeometrySketch::from_profile(
+            "offset-profile".to_string(),
+            SketchPlane::Xy,
+            SketchProfileKind::Rectangle {
+                width: 1.0,
+                height: 1.0,
+            },
+            1.0,
+            2.0,
+            0.0,
+        );
+        sketch.entities.clear();
+        sketch.add_rectangle(4.0, -3.0, 2.0, 2.0).unwrap();
+
+        let mut geometry = crate::GeometryModel::default();
+        geometry
+            .add_sketch_feature(
+                sketch,
+                "offset-extrude".to_string(),
+                GeometryFeatureKind::Extrude { depth: 0.5 },
+            )
+            .unwrap();
+
+        assert_eq!(geometry.parts[0].x, 5.0);
+        assert_eq!(geometry.parts[0].y, -1.0);
+    }
+
+    #[test]
     fn circle_revolve_materializes_a_torus_but_rectangle_is_rejected() {
         let sketch = GeometrySketch::from_profile(
             "seal-profile".to_string(),
@@ -917,5 +981,63 @@ mod tests {
         assert_eq!(sketch.dimensions[0].value, 2.0);
         assert_eq!(sketch.dimensions[1].value, 3.0);
         assert_eq!(sketch.selected_axis, crate::SketchAxis::Vertical);
+    }
+
+    #[test]
+    fn selected_line_accepts_a_horizontal_constraint() {
+        let mut sketch = GeometrySketch::from_profile(
+            "constrained".to_string(),
+            SketchPlane::Xy,
+            SketchProfileKind::Rectangle {
+                width: 1.0,
+                height: 1.0,
+            },
+            0.0,
+            0.0,
+            0.0,
+        );
+        sketch.entities.clear();
+        sketch.add_line(0.0, 0.0, 2.0, 1.0).unwrap();
+        sketch.select_entity_near(1.0, 0.5, 0.1).unwrap();
+
+        sketch
+            .apply_selected_axis_constraint(crate::SketchAxis::Horizontal)
+            .unwrap();
+
+        assert!(matches!(
+            sketch.entities[0].kind,
+            crate::SketchEntityKind::Line {
+                x1: 0.0,
+                y1: 0.0,
+                x2: 2.0,
+                y2: 0.0,
+            }
+        ));
+        assert_eq!(sketch.constraints.len(), 1);
+    }
+
+    #[test]
+    fn selected_dimension_is_a_single_editable_driving_value() {
+        let mut sketch = GeometrySketch::from_profile(
+            "dimension".to_string(),
+            SketchPlane::Xy,
+            SketchProfileKind::Rectangle {
+                width: 2.0,
+                height: 2.0,
+            },
+            0.0,
+            0.0,
+            0.0,
+        );
+        sketch.entities.clear();
+        sketch.add_line(0.0, 0.0, 2.0, 0.0).unwrap();
+        sketch.select_entity_near(1.0, 0.0, 0.1);
+
+        sketch.set_selected_dimension(5.0).unwrap();
+        sketch.set_selected_dimension(7.5).unwrap();
+
+        assert_eq!(sketch.dimensions.len(), 1);
+        assert_eq!(sketch.dimensions[0].entity, sketch.selected_entity);
+        assert_eq!(sketch.dimensions[0].value, 7.5);
     }
 }
