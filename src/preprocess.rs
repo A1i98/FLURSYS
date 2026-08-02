@@ -89,6 +89,8 @@ impl SketchProfileKind {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct GeometrySketch {
+    /// Stable identity used by features.
+    pub id: u64,
     pub name: String,
     pub plane: SketchPlane,
     #[serde(flatten)]
@@ -187,6 +189,7 @@ impl GeometrySketch {
         z: f64,
     ) -> Self {
         let mut sketch = Self {
+            id: 0,
             name,
             plane,
             profile,
@@ -728,14 +731,45 @@ impl GeometryFeatureKind {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum GeometryRegionKind {
+    Bottom,
+    Top,
+    Side,
+    Surface,
+}
+
+impl GeometryRegionKind {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Bottom => "Bottom",
+            Self::Top => "Top",
+            Self::Side => "Side",
+            Self::Surface => "Surface",
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GeometryRegion {
+    pub name: String,
+    pub feature_id: u64,
+    pub kind: GeometryRegionKind,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct GeometryFeature {
+    pub id: u64,
     pub name: String,
-    pub sketch: String,
+    /// Stable source reference.
+    pub sketch_id: u64,
     #[serde(flatten)]
     pub kind: GeometryFeatureKind,
     /// Name of the generated solid in `GeometryModel.parts`.
     pub output_part: String,
+    /// Explicit generated regions available for CFD boundary assignment.
+    pub regions: Vec<GeometryRegion>,
 }
 
 impl GeometryModel {
@@ -748,6 +782,9 @@ impl GeometryModel {
         kind: GeometryFeatureKind,
     ) -> Result<String, String> {
         let (profile, offset_x, offset_y) = sketch.materialization_profile()?;
+        if sketch.id == 0 {
+            sketch.id = self.next_sketch_id();
+        }
         sketch.profile = profile;
         sketch.x += offset_x;
         sketch.y += offset_y;
@@ -770,15 +807,37 @@ impl GeometryModel {
             return Err(format!("geometry part name {output_part} is not unique"));
         }
         let part = materialize_feature(&sketch, &output_part, &kind)?;
+        let feature_id = self.next_feature_id();
+        let regions = feature_regions(&feature_name, feature_id, &sketch.profile, &kind);
         self.sketches.push(sketch.clone());
         self.features.push(GeometryFeature {
+            id: feature_id,
             name: feature_name,
-            sketch: sketch.name,
+            sketch_id: sketch.id,
             kind,
             output_part: output_part.clone(),
+            regions,
         });
         self.parts.push(part);
         Ok(output_part)
+    }
+
+    fn next_sketch_id(&self) -> u64 {
+        self.sketches
+            .iter()
+            .map(|sketch| sketch.id)
+            .max()
+            .unwrap_or(0)
+            + 1
+    }
+
+    fn next_feature_id(&self) -> u64 {
+        self.features
+            .iter()
+            .map(|feature| feature.id)
+            .max()
+            .unwrap_or(0)
+            + 1
     }
 }
 
@@ -824,6 +883,39 @@ fn materialize_feature(
         y: sketch.y,
         z: sketch.z,
     })
+}
+
+fn feature_regions(
+    feature_name: &str,
+    feature_id: u64,
+    profile: &SketchProfileKind,
+    feature: &GeometryFeatureKind,
+) -> Vec<GeometryRegion> {
+    let named = |suffix: String, kind| GeometryRegion {
+        name: format!("{feature_name}:{suffix}"),
+        feature_id,
+        kind,
+    };
+    match (profile, feature) {
+        (SketchProfileKind::Rectangle { .. }, GeometryFeatureKind::Extrude { .. }) => {
+            let mut regions = vec![
+                named("bottom".to_string(), GeometryRegionKind::Bottom),
+                named("top".to_string(), GeometryRegionKind::Top),
+            ];
+            regions.extend(
+                (1..=4).map(|index| named(format!("side-{index}"), GeometryRegionKind::Side)),
+            );
+            regions
+        }
+        (SketchProfileKind::Circle { .. }, GeometryFeatureKind::Extrude { .. }) => vec![
+            named("bottom".to_string(), GeometryRegionKind::Bottom),
+            named("top".to_string(), GeometryRegionKind::Top),
+            named("side".to_string(), GeometryRegionKind::Side),
+        ],
+        (_, GeometryFeatureKind::Revolve { .. }) => {
+            vec![named("surface".to_string(), GeometryRegionKind::Surface)]
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -1115,34 +1207,64 @@ impl PreprocessingModel {
         }
         for (index, sketch) in self.geometry.sketches.iter().enumerate() {
             sketch.validate()?;
+            if sketch.id == 0 {
+                return Err(format!("sketch {} is missing a stable ID", sketch.name));
+            }
             if self.geometry.sketches[..index]
                 .iter()
                 .any(|existing| existing.name == sketch.name)
             {
                 return Err(format!("sketch name {} is not unique", sketch.name));
             }
+            if self.geometry.sketches[..index]
+                .iter()
+                .any(|existing| existing.id == sketch.id)
+            {
+                return Err(format!("sketch ID {} is not unique", sketch.id));
+            }
         }
         for (index, feature) in self.geometry.features.iter().enumerate() {
             if feature.name.trim().is_empty() {
                 return Err("feature name cannot be empty".to_string());
             }
+            if feature.id == 0 {
+                return Err(format!("feature {} is missing a stable ID", feature.name));
+            }
             feature.kind.validate()?;
-            if !self
+            let Some(source_sketch) = self
                 .geometry
                 .sketches
                 .iter()
-                .any(|sketch| sketch.name == feature.sketch)
-            {
+                .find(|sketch| sketch.id == feature.sketch_id)
+            else {
                 return Err(format!(
-                    "feature {} references a missing sketch",
-                    feature.name
+                    "feature {} references missing sketch ID {}",
+                    feature.name, feature.sketch_id
                 ));
-            }
+            };
             if self.geometry.features[..index]
                 .iter()
                 .any(|existing| existing.name == feature.name)
             {
                 return Err(format!("feature name {} is not unique", feature.name));
+            }
+            if self.geometry.features[..index]
+                .iter()
+                .any(|existing| existing.id == feature.id)
+            {
+                return Err(format!("feature ID {} is not unique", feature.id));
+            }
+            let expected_regions = feature_regions(
+                &feature.name,
+                feature.id,
+                &source_sketch.profile,
+                &feature.kind,
+            );
+            if feature.regions != expected_regions {
+                return Err(format!(
+                    "feature {} has stale or incomplete named regions",
+                    feature.name
+                ));
             }
         }
         if self.mesh.cells_z == 0 {
@@ -1276,5 +1398,109 @@ impl SolverBoundaryOverrides {
             Side::Bottom => self.bottom = value,
             Side::Top => self.top = value,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn feature_keeps_its_source_when_sketches_are_reordered() {
+        let mut geometry = GeometryModel::default();
+        geometry
+            .add_sketch_feature(
+                GeometrySketch::from_profile(
+                    "first".to_string(),
+                    SketchPlane::Xy,
+                    SketchProfileKind::Rectangle {
+                        width: 1.0,
+                        height: 0.5,
+                    },
+                    0.0,
+                    0.0,
+                    0.0,
+                ),
+                "first-extrude".to_string(),
+                GeometryFeatureKind::Extrude { depth: 0.25 },
+            )
+            .unwrap();
+        geometry
+            .add_sketch_feature(
+                GeometrySketch::from_profile(
+                    "second".to_string(),
+                    SketchPlane::Xy,
+                    SketchProfileKind::Circle { radius: 0.2 },
+                    1.0,
+                    0.0,
+                    0.0,
+                ),
+                "second-extrude".to_string(),
+                GeometryFeatureKind::Extrude { depth: 0.25 },
+            )
+            .unwrap();
+
+        let source_id = geometry.features[0].sketch_id;
+        geometry.sketches.reverse();
+
+        assert_eq!(
+            geometry
+                .sketches
+                .iter()
+                .find(|sketch| sketch.id == source_id)
+                .map(|sketch| sketch.name.as_str()),
+            Some("first")
+        );
+    }
+
+    #[test]
+    fn feature_deserialization_requires_stable_references_and_regions() {
+        let legacy = serde_json::json!({
+            "name": "missing-contract-fields",
+            "sketch": "old-name-link",
+            "type": "extrude",
+            "depth": 0.25,
+            "output_part": "old-solid"
+        });
+
+        assert!(serde_json::from_value::<GeometryFeature>(legacy).is_err());
+    }
+
+    #[test]
+    fn rectangle_extrude_creates_named_cap_and_side_regions() {
+        let mut geometry = GeometryModel::default();
+        geometry
+            .add_sketch_feature(
+                GeometrySketch::from_profile(
+                    "duct-profile".to_string(),
+                    SketchPlane::Xy,
+                    SketchProfileKind::Rectangle {
+                        width: 1.0,
+                        height: 0.5,
+                    },
+                    0.0,
+                    0.0,
+                    0.0,
+                ),
+                "duct".to_string(),
+                GeometryFeatureKind::Extrude { depth: 0.25 },
+            )
+            .unwrap();
+
+        assert_eq!(
+            geometry.features[0]
+                .regions
+                .iter()
+                .map(|region| region.name.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "duct:bottom",
+                "duct:top",
+                "duct:side-1",
+                "duct:side-2",
+                "duct:side-3",
+                "duct:side-4"
+            ]
+        );
     }
 }

@@ -311,6 +311,20 @@ pub(super) fn geometry_model_tree(project: &Project) -> String {
         }
     }
 
+    let regions = geometry
+        .features
+        .iter()
+        .flat_map(|feature| feature.regions.iter());
+    let regions: Vec<_> = regions.collect();
+    lines.push(format!("   ▾ Regions ({})", regions.len()));
+    if regions.is_empty() {
+        lines.push("      — None".to_string());
+    } else {
+        for region in regions {
+            lines.push(format!("      ◌ {} [{}]", region.name, region.kind.label()));
+        }
+    }
+
     lines.push(format!("   ▾ Solids ({})", geometry.parts.len()));
     if geometry.parts.is_empty() {
         lines.push("      — None".to_string());

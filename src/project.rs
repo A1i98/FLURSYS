@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-pub const PROJECT_FORMAT_VERSION: u32 = 1;
+pub const PROJECT_FORMAT_VERSION: u32 = 2;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Project {
@@ -24,11 +24,9 @@ pub struct Project {
     #[serde(default)]
     pub solver: ProjectSolver,
     /// Geometry, mesh, and named boundary data retained independently from the
-    /// current 2D solver. This is additive to format version 1 so existing
-    /// projects remain importable.
-    #[serde(default)]
+    /// current 2D solver.
     pub preprocessing: PreprocessingModel,
-    /// Executable flow/thermal physics. Missing in v1 projects defaults to flow only.
+    /// Executable flow/thermal physics.
     #[serde(default)]
     pub physics: PhysicsSettings,
     /// Solver-independent intent used to select an executable backend.
@@ -155,9 +153,8 @@ impl Project {
         let path = path.as_ref();
         let text = fs::read_to_string(path)
             .map_err(|error| format!("cannot read project {}: {error}", path.display()))?;
-        let mut project: Self = serde_json::from_str(&text)
+        let project: Self = serde_json::from_str(&text)
             .map_err(|error| format!("invalid FLURSYS project {}: {error}", path.display()))?;
-        project.ensure_preprocessing_defaults();
         project.validate()?;
         Ok(project)
     }
@@ -313,14 +310,6 @@ impl Project {
         self.validate_active_solver_boundaries()?;
         self.simulation_config_unvalidated(PathBuf::from("results/validation"))
             .validate()
-    }
-
-    /// Supplies explicit, named planar boundaries to projects saved before
-    /// pre-processing data was added.
-    pub fn ensure_preprocessing_defaults(&mut self) {
-        if self.preprocessing.boundaries.is_empty() {
-            self.preprocessing = default_preprocessing(&self.case);
-        }
     }
 
     fn validate_active_solver_boundaries(&self) -> Result<(), String> {
@@ -690,11 +679,16 @@ mod tests {
     }
 
     #[test]
-    fn legacy_project_data_receives_named_boundaries() {
-        let mut project: Project = serde_json::from_str(
+    fn project_load_rejects_schema_without_preprocessing() {
+        let path = std::env::temp_dir().join(format!(
+            "flursys-missing-preprocessing-{}.json",
+            std::process::id()
+        ));
+        std::fs::write(
+            &path,
             r#"{
                 "format_version": 1,
-                "name": "Legacy cavity",
+                "name": "missing preprocessing",
                 "case": {
                     "kind": "lid-driven-cavity",
                     "length": 1.0,
@@ -706,10 +700,10 @@ mod tests {
             }"#,
         )
         .unwrap();
-        project.ensure_preprocessing_defaults();
-        project.validate().unwrap();
-        assert_eq!(project.preprocessing.boundaries.len(), 6);
-        assert_eq!(project.workbench.dimension, AnalysisDimension::TwoD);
+        let result = Project::load(&path);
+        std::fs::remove_file(path).unwrap();
+
+        assert!(result.is_err());
     }
 
     #[test]

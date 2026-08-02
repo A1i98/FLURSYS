@@ -270,7 +270,6 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
         let mut state = case_state.borrow_mut();
         sync_project_from_ui(&ui, &mut state.project);
         state.project.case = project_case_from_index(ui.get_case_index());
-        state.project.ensure_preprocessing_defaults();
         state.project_loaded = true;
         let selected_case = case_name(&state.project.case);
         state.project.name = selected_case.to_string();
@@ -579,7 +578,7 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
                     .geometry
                     .sketches
                     .iter()
-                    .position(|sketch| sketch.name == feature.sketch)
+                    .position(|sketch| sketch.id == feature.sketch_id)
                 {
                     state
                         .project
@@ -1717,6 +1716,8 @@ mod tests {
         assert!(tree.contains("inlet-profile [XY]"));
         assert!(tree.contains("Features (1)"));
         assert!(tree.contains("inlet-extrude [Extrude]"));
+        assert!(tree.contains("Regions (6)"));
+        assert!(tree.contains("inlet-extrude:side-4 [Side]"));
         assert!(tree.contains("Solids (1)"));
         assert!(tree.contains("inlet-extrude solid [Box]"));
     }

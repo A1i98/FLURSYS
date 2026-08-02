@@ -1,5 +1,5 @@
 {
-  "format_version": 1,
+  "format_version": 2,
   "name": "3D lid-driven cavity Re=100",
   "case": {
     "kind": "lid-driven-cavity",
