@@ -25,6 +25,7 @@ struct AppState {
     geometry_yaw: f32,
     geometry_pitch: f32,
     geometry_zoom: f32,
+    geometry_view_axis: i32,
     geometry_drag_anchor: Option<(f32, f32, f32, f32)>,
     selected_boundary_face: BoundaryFace,
     preflight_summary: String,
@@ -33,6 +34,7 @@ struct AppState {
     show_sketch_editor: bool,
     sketch_tool: SketchTool,
     sketch_points: Vec<(f64, f64)>,
+    sketch_hover: Option<(f64, f64)>,
     sketch_undo: Vec<GeometrySketch>,
     sketch_redo: Vec<GeometrySketch>,
 }
@@ -71,9 +73,10 @@ impl AppState {
             animation_playing: false,
             show_mesh: false,
             show_geometry_3d: true,
-            geometry_yaw: 0.0,
-            geometry_pitch: 0.0,
+            geometry_yaw: 0.65,
+            geometry_pitch: 0.48,
             geometry_zoom: 1.0,
+            geometry_view_axis: 3,
             geometry_drag_anchor: None,
             selected_boundary_face: BoundaryFace::Left,
             preflight_summary: "Run validation before starting the solver.".to_string(),
@@ -82,6 +85,7 @@ impl AppState {
             show_sketch_editor: false,
             sketch_tool: SketchTool::Select,
             sketch_points: Vec::new(),
+            sketch_hover: None,
             sketch_undo: Vec::new(),
             sketch_redo: Vec::new(),
         }
@@ -217,6 +221,7 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
         state.draft_sketch = None;
         state.show_sketch_editor = false;
         state.sketch_points.clear();
+        state.sketch_hover = None;
         state.sketch_undo.clear();
         state.sketch_redo.clear();
         state.preflight_summary = "Run validation before starting the solver.".to_string();
@@ -359,6 +364,7 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
                 state.show_sketch_editor = true;
                 state.sketch_tool = SketchTool::Select;
                 state.sketch_points.clear();
+                state.sketch_hover = None;
                 state.sketch_undo.clear();
                 state.sketch_redo.clear();
                 state.log("Started an editable 2D sketch on the XY plane.");
@@ -376,6 +382,7 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
         };
         let mut state = sketch_state.borrow_mut();
         state.sketch_points.clear();
+        state.sketch_hover = None;
         state.sketch_tool = match tool {
             8 => SketchTool::Line,
             1 => SketchTool::Rectangle,
@@ -404,12 +411,16 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
             return;
         };
         let mut state = sketch_state.borrow_mut();
+        let Some(canvas_point) = sketch_viewport_point(mouse_x, mouse_y, width, height) else {
+            return;
+        };
         let point = snap_to_existing_sketch_geometry(
             state.draft_sketch.as_ref(),
             &state.sketch_points,
-            snap_sketch_point(sketch_canvas_point(mouse_x, mouse_y, width, height)),
+            snap_sketch_point(canvas_point),
         );
         let before = state.draft_sketch.clone();
+        state.sketch_hover = Some(point);
         let result = apply_sketch_click(&mut state, point);
         if result.is_ok() && state.draft_sketch != before {
             if let Some(before) = before {
@@ -429,6 +440,30 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
             }
         }
         refresh_ui(&ui, &state);
+    });
+
+    let weak_ui = ui.as_weak();
+    let sketch_preview_state = state.clone();
+    ui.on_sketch_preview(move |mouse_x, mouse_y, width, height| {
+        let Some(ui) = weak_ui.upgrade() else {
+            return;
+        };
+        let mut state = sketch_preview_state.borrow_mut();
+        if state.draft_sketch.is_none() || state.sketch_points.is_empty() {
+            return;
+        }
+        let Some(canvas_point) = sketch_viewport_point(mouse_x, mouse_y, width, height) else {
+            return;
+        };
+        let point = snap_to_existing_sketch_geometry(
+            state.draft_sketch.as_ref(),
+            &state.sketch_points,
+            snap_sketch_point(canvas_point),
+        );
+        if state.sketch_hover != Some(point) {
+            state.sketch_hover = Some(point);
+            refresh_ui(&ui, &state);
+        }
     });
 
     let weak_ui = ui.as_weak();
@@ -801,6 +836,7 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
         state.show_mesh = false;
         state.animation_playing = false;
         state.geometry_yaw = (state.geometry_yaw + 0.45) % std::f32::consts::TAU;
+        state.geometry_view_axis = 3;
         state.geometry_drag_anchor = None;
         refresh_ui(&ui, &state);
     });
@@ -826,6 +862,7 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
         if let Some((start_x, start_y, start_yaw, start_pitch)) = state.geometry_drag_anchor {
             state.geometry_yaw = start_yaw + (mouse_x - start_x) * 0.012;
             state.geometry_pitch = (start_pitch + (mouse_y - start_y) * 0.008).clamp(-0.85, 0.85);
+            state.geometry_view_axis = 3;
         }
         state.show_geometry_3d = true;
         state.show_mesh = false;
@@ -846,15 +883,38 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
     });
 
     let weak_ui = ui.as_weak();
+    let view_axis_state = state.clone();
+    ui.on_select_geometry_view_axis(move |axis| {
+        let Some(ui) = weak_ui.upgrade() else {
+            return;
+        };
+        let mut state = view_axis_state.borrow_mut();
+        let axis = axis.clamp(0, 3);
+        let (yaw, pitch) = geometry_view_angles(axis);
+        state.geometry_yaw = yaw;
+        state.geometry_pitch = pitch;
+        state.geometry_view_axis = axis;
+        state.geometry_drag_anchor = None;
+        state.show_geometry_3d = true;
+        state.show_mesh = false;
+        state.animation_playing = false;
+        state.log(format!(
+            "Selected {} geometry view.",
+            geometry_view_label(axis)
+        ));
+        refresh_ui(&ui, &state);
+    });
+
+    let weak_ui = ui.as_weak();
     let reset_geometry_state = state.clone();
     ui.on_reset_geometry_view(move || {
         let Some(ui) = weak_ui.upgrade() else {
             return;
         };
         let mut state = reset_geometry_state.borrow_mut();
-        state.geometry_yaw = 0.0;
-        state.geometry_pitch = 0.0;
+        (state.geometry_yaw, state.geometry_pitch) = geometry_view_angles(3);
         state.geometry_zoom = 1.0;
+        state.geometry_view_axis = 3;
         state.geometry_drag_anchor = None;
         state.show_geometry_3d = true;
         state.show_mesh = false;
@@ -1026,12 +1086,18 @@ fn next_copy_name(source: &str, parts: &[flursys::GeometryPart]) -> String {
     format!("{source} copy")
 }
 
-fn sketch_canvas_point(mouse_x: f32, mouse_y: f32, width: f32, height: f32) -> (f64, f64) {
+fn sketch_viewport_point(
+    mouse_x: f32,
+    mouse_y: f32,
+    width: f32,
+    height: f32,
+) -> Option<(f64, f64)> {
+    let (pixel_x, pixel_y) = preview_image_point(mouse_x, mouse_y, width, height)?;
     let scale = 140.0_f64;
-    (
-        (f64::from(mouse_x) - f64::from(width) * 0.5) / scale,
-        (f64::from(height) * 0.5 - f64::from(mouse_y)) / scale,
-    )
+    Some((
+        (pixel_x - f64::from(PREVIEW_WIDTH) * 0.5) / scale,
+        (f64::from(PREVIEW_HEIGHT) * 0.5 - pixel_y) / scale,
+    ))
 }
 
 fn snap_sketch_point((x, y): (f64, f64)) -> (f64, f64) {
@@ -1186,6 +1252,7 @@ fn refresh_ui(ui: &MainWindow, state: &AppState) {
         return;
     }
     ui.set_sketch_editing(state.show_sketch_editor && state.draft_sketch.is_some());
+    ui.set_geometry_view_axis(state.geometry_view_axis);
     if let Some(sketch) = &state.draft_sketch {
         let dimensions = sketch
             .dimensions
@@ -1193,10 +1260,19 @@ fn refresh_ui(ui: &MainWindow, state: &AppState) {
             .map(|dimension| format!("{}={:.3} mm", dimension.name, dimension.value))
             .collect::<Vec<_>>()
             .join(" · ");
-        ui.set_sketch_image(render_sketch_2d(sketch));
+        ui.set_sketch_image(render_sketch_2d(
+            sketch,
+            state.sketch_points.first().copied().zip(state.sketch_hover),
+        ));
+        let pending_start = state
+            .sketch_points
+            .first()
+            .map(|(x, y)| format!(" · start ({x:.2}, {y:.2}) mm → choose end"))
+            .unwrap_or_default();
         ui.set_sketch_status(SharedString::from(format!(
-            "{} · {} entities · {} constraints · active axis: {:?}{}",
+            "{}{} · {} entities · {} constraints · active axis: {:?}{}",
             sketch_tool_label(state.sketch_tool),
+            pending_start,
             sketch.entities.len(),
             sketch.constraints.len(),
             sketch.selected_axis,
@@ -1401,6 +1477,24 @@ fn residual_level(residual: f64) -> f32 {
     ((-residual.log10()).clamp(0.0, 10.0) / 10.0) as f32
 }
 
+fn geometry_view_angles(axis: i32) -> (f32, f32) {
+    match axis {
+        0 => (std::f32::consts::FRAC_PI_2, 0.0),
+        1 => (0.0, 0.0),
+        2 => (0.0, std::f32::consts::FRAC_PI_2),
+        _ => (0.65, 0.48),
+    }
+}
+
+fn geometry_view_label(axis: i32) -> &'static str {
+    match axis {
+        0 => "X-axis",
+        1 => "Y-axis",
+        2 => "Z-axis",
+        _ => "isometric",
+    }
+}
+
 fn result_plot_label(index: i32) -> &'static str {
     match index {
         1 => "contours",
@@ -1432,6 +1526,23 @@ mod tests {
         assert_eq!(residual_level(f64::NAN), 0.0);
         assert_eq!(residual_level(1.0), 0.0);
         assert_eq!(residual_level(1.0e-10), 1.0);
+    }
+
+    #[test]
+    fn axis_views_map_to_stable_orthographic_camera_angles() {
+        assert_eq!(geometry_view_angles(0), (std::f32::consts::FRAC_PI_2, 0.0));
+        assert_eq!(geometry_view_angles(1), (0.0, 0.0));
+        assert_eq!(geometry_view_angles(2), (0.0, std::f32::consts::FRAC_PI_2));
+        assert_eq!(geometry_view_label(3), "isometric");
+    }
+
+    #[test]
+    fn sketch_viewport_mapping_accounts_for_contain_scale_and_letterboxing() {
+        assert_eq!(
+            sketch_viewport_point(800.0, 320.0, 1040.0, 640.0),
+            Some((1.0, 0.0))
+        );
+        assert_eq!(sketch_viewport_point(260.0, 20.0, 520.0, 520.0), None);
     }
 
     #[test]
@@ -1479,6 +1590,51 @@ mod tests {
             z: 0.5,
         });
         let _image = render_geometry_3d(&project, 0.35, -0.2, 1.1, Some(BoundaryFace::Top));
+    }
+
+    #[test]
+    fn parametric_parts_follow_mesh_camera_pitch() {
+        let project = Project::default();
+        let (length, domain_height) = project_case_domain(&project.case);
+        let mesh = ExtrudedMesh3D::new(
+            StructuredMesh2D::new(project.solver.nx, project.solver.ny, length, domain_height)
+                .unwrap(),
+            project.preprocessing.mesh.cells_z,
+            project.preprocessing.geometry.extrusion_depth,
+        )
+        .unwrap();
+        let part = GeometryPart {
+            name: "camera-part".to_string(),
+            kind: GeometryPartKind::Box {
+                length: 0.4,
+                width: 0.4,
+                height: 0.4,
+            },
+            x: 0.5 * length,
+            y: 0.5 * domain_height,
+            z: 0.5 * mesh.depth,
+        };
+        let mut level = vec![0_u8; (PREVIEW_WIDTH * PREVIEW_HEIGHT * 4) as usize];
+        let mut pitched = level.clone();
+        draw_part_with_camera(
+            &mut level,
+            PREVIEW_WIDTH,
+            PREVIEW_HEIGHT,
+            &part,
+            MeshCamera::fit(&mesh, 0.4, 0.0, 1.0),
+            part_color(0),
+        );
+        draw_part_with_camera(
+            &mut pitched,
+            PREVIEW_WIDTH,
+            PREVIEW_HEIGHT,
+            &part,
+            MeshCamera::fit(&mesh, 0.4, 0.7, 1.0),
+            part_color(0),
+        );
+        assert!(level.chunks_exact(4).any(|pixel| pixel == part_color(0)));
+        assert!(pitched.chunks_exact(4).any(|pixel| pixel == part_color(0)));
+        assert_ne!(level, pitched);
     }
 
     #[test]
@@ -1563,7 +1719,7 @@ mod tests {
             0.0,
             0.0,
         );
-        let _image = render_sketch_2d(&sketch);
+        let _image = render_sketch_2d(&sketch, Some(((0.0, 0.0), (1.0, 0.5))));
     }
 
     #[test]

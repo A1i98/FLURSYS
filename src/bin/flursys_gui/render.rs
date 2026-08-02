@@ -347,84 +347,8 @@ pub(super) fn render_geometry_3d(
     }
     draw_boundaries_3d(&mut pixels, width, height, &mesh, camera, selected_boundary);
     draw_case_solid_3d(&mut pixels, width, height, &project.case, &mesh, camera);
-    // Parametric workbench parts remain an overlay until they can be converted
-    // into conformal CFD cells by a CAD/meshing kernel.
-    let part_scale = geometry_scene_scale(&project.preprocessing.geometry.parts) * f64::from(zoom);
     for (index, part) in project.preprocessing.geometry.parts.iter().enumerate() {
-        let color = part_color(index);
-        match &part.kind {
-            GeometryPartKind::Box {
-                length,
-                width: part_width,
-                height: part_height,
-            } => draw_part_box(
-                &mut pixels,
-                width,
-                height,
-                part,
-                *length,
-                *part_width,
-                *part_height,
-                yaw,
-                part_scale,
-                color,
-            ),
-            GeometryPartKind::Cylinder {
-                radius,
-                height: part_height,
-                ..
-            } => draw_part_cylinder(
-                &mut pixels,
-                width,
-                height,
-                part,
-                *radius,
-                *part_height,
-                yaw,
-                part_scale,
-                color,
-            ),
-            GeometryPartKind::Cone {
-                radius,
-                height: part_height,
-                ..
-            } => draw_part_cone(
-                &mut pixels,
-                width,
-                height,
-                part,
-                *radius,
-                *part_height,
-                yaw,
-                part_scale,
-                color,
-            ),
-            GeometryPartKind::Sphere { radius, .. } => draw_part_sphere(
-                &mut pixels,
-                width,
-                height,
-                part,
-                *radius,
-                yaw,
-                part_scale,
-                color,
-            ),
-            GeometryPartKind::Torus {
-                major_radius,
-                minor_radius,
-                ..
-            } => draw_part_torus(
-                &mut pixels,
-                width,
-                height,
-                part,
-                *major_radius,
-                *minor_radius,
-                yaw,
-                part_scale,
-                color,
-            ),
-        }
+        draw_part_with_camera(&mut pixels, width, height, part, camera, part_color(index));
     }
     image_from_rgba(width, height, pixels)
 }
@@ -435,7 +359,10 @@ pub(super) fn render_empty_preview() -> Image {
     image_from_rgba(PREVIEW_WIDTH, PREVIEW_HEIGHT, pixels)
 }
 
-pub(super) fn render_sketch_2d(sketch: &GeometrySketch) -> Image {
+pub(super) fn render_sketch_2d(
+    sketch: &GeometrySketch,
+    pending_segment: Option<((f64, f64), (f64, f64))>,
+) -> Image {
     let width = PREVIEW_WIDTH;
     let height = PREVIEW_HEIGHT;
     let mut pixels = vec![0_u8; (width * height * 4) as usize];
@@ -488,6 +415,14 @@ pub(super) fn render_sketch_2d(sketch: &GeometrySketch) -> Image {
         (center.0, height as i32),
         vertical,
     );
+    if let Some((start, end)) = pending_segment {
+        let start = sketch_point(center, scale, start.0, start.1);
+        let end = sketch_point(center, scale, end.0, end.1);
+        let preview = [255, 181, 88, 255];
+        draw_line(&mut pixels, width, height, start, end, preview);
+        draw_marker(&mut pixels, width, height, start, preview);
+        draw_marker(&mut pixels, width, height, end, preview);
+    }
     for entity in &sketch.entities {
         let color = if sketch.selected_entity == Some(entity.id) {
             [240, 195, 109, 255]
@@ -495,14 +430,13 @@ pub(super) fn render_sketch_2d(sketch: &GeometrySketch) -> Image {
             [104, 222, 237, 255]
         };
         match entity.kind {
-            SketchEntityKind::Line { x1, y1, x2, y2 } => draw_line(
-                &mut pixels,
-                width,
-                height,
-                sketch_point(center, scale, x1, y1),
-                sketch_point(center, scale, x2, y2),
-                color,
-            ),
+            SketchEntityKind::Line { x1, y1, x2, y2 } => {
+                let start = sketch_point(center, scale, x1, y1);
+                let end = sketch_point(center, scale, x2, y2);
+                draw_line(&mut pixels, width, height, start, end, color);
+                draw_marker(&mut pixels, width, height, start, color);
+                draw_marker(&mut pixels, width, height, end, color);
+            }
             SketchEntityKind::Circle {
                 center_x,
                 center_y,
@@ -841,6 +775,177 @@ pub(super) fn draw_case_box(
     }
 }
 
+pub(super) fn draw_part_with_camera(
+    pixels: &mut [u8],
+    width: u32,
+    height: u32,
+    part: &GeometryPart,
+    camera: MeshCamera,
+    color: [u8; 4],
+) {
+    match part.kind {
+        GeometryPartKind::Box {
+            length,
+            width: part_width,
+            height: part_height,
+        } => draw_case_box(
+            pixels,
+            width,
+            height,
+            camera,
+            (
+                part.x - 0.5 * length,
+                part.y - 0.5 * part_width,
+                part.z - 0.5 * part_height,
+            ),
+            (
+                part.x + 0.5 * length,
+                part.y + 0.5 * part_width,
+                part.z + 0.5 * part_height,
+            ),
+            color,
+        ),
+        GeometryPartKind::Cylinder {
+            radius,
+            height: part_height,
+            ..
+        } => draw_camera_ring_solid(
+            pixels,
+            width,
+            height,
+            part,
+            radius,
+            part_height,
+            camera,
+            color,
+        ),
+        GeometryPartKind::Cone {
+            radius,
+            height: part_height,
+            ..
+        } => {
+            let apex = camera.project((part.x, part.y, part.z + 0.5 * part_height));
+            let mut previous = None;
+            for step in 0..=32 {
+                let angle = step as f64 * std::f64::consts::TAU / 32.0;
+                let point = camera.project((
+                    part.x + radius * angle.cos(),
+                    part.y + radius * angle.sin(),
+                    part.z - 0.5 * part_height,
+                ));
+                if let Some(last) = previous {
+                    draw_line(pixels, width, height, last, point, color);
+                }
+                if step % 8 == 0 {
+                    draw_line(pixels, width, height, point, apex, color);
+                }
+                previous = Some(point);
+            }
+        }
+        GeometryPartKind::Sphere { radius, .. } => {
+            for latitude in [-0.75_f64, -0.35, 0.0, 0.35, 0.75] {
+                let z = radius * latitude;
+                draw_camera_ring(
+                    pixels,
+                    width,
+                    height,
+                    part,
+                    (radius * radius - z * z).sqrt(),
+                    z,
+                    camera,
+                    color,
+                );
+            }
+        }
+        GeometryPartKind::Torus {
+            major_radius,
+            minor_radius,
+            ..
+        } => {
+            for tube_angle in [
+                0.0_f64,
+                std::f64::consts::FRAC_PI_2,
+                std::f64::consts::PI,
+                std::f64::consts::PI * 1.5,
+            ] {
+                let mut previous = None;
+                for step in 0..=40 {
+                    let ring_angle = step as f64 * std::f64::consts::TAU / 40.0;
+                    let radial = major_radius + minor_radius * tube_angle.cos();
+                    let point = camera.project((
+                        part.x + radial * ring_angle.cos(),
+                        part.y + radial * ring_angle.sin(),
+                        part.z + minor_radius * tube_angle.sin(),
+                    ));
+                    if let Some(last) = previous {
+                        draw_line(pixels, width, height, last, point, color);
+                    }
+                    previous = Some(point);
+                }
+            }
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_camera_ring_solid(
+    pixels: &mut [u8],
+    width: u32,
+    height: u32,
+    part: &GeometryPart,
+    radius: f64,
+    part_height: f64,
+    camera: MeshCamera,
+    color: [u8; 4],
+) {
+    let mut previous_bottom = None;
+    let mut previous_top = None;
+    for step in 0..=32 {
+        let angle = step as f64 * std::f64::consts::TAU / 32.0;
+        let x = part.x + radius * angle.cos();
+        let y = part.y + radius * angle.sin();
+        let bottom = camera.project((x, y, part.z - 0.5 * part_height));
+        let top = camera.project((x, y, part.z + 0.5 * part_height));
+        if let Some(last) = previous_bottom {
+            draw_line(pixels, width, height, last, bottom, color);
+        }
+        if let Some(last) = previous_top {
+            draw_line(pixels, width, height, last, top, color);
+        }
+        if step % 8 == 0 {
+            draw_line(pixels, width, height, bottom, top, color);
+        }
+        previous_bottom = Some(bottom);
+        previous_top = Some(top);
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_camera_ring(
+    pixels: &mut [u8],
+    width: u32,
+    height: u32,
+    part: &GeometryPart,
+    radius: f64,
+    z_offset: f64,
+    camera: MeshCamera,
+    color: [u8; 4],
+) {
+    let mut previous = None;
+    for step in 0..=32 {
+        let angle = step as f64 * std::f64::consts::TAU / 32.0;
+        let point = camera.project((
+            part.x + radius * angle.cos(),
+            part.y + radius * angle.sin(),
+            part.z + z_offset,
+        ));
+        if let Some(last) = previous {
+            draw_line(pixels, width, height, last, point, color);
+        }
+        previous = Some(point);
+    }
+}
+
 #[derive(Clone, Copy)]
 pub(super) struct MeshCamera {
     length: f64,
@@ -853,7 +958,7 @@ pub(super) struct MeshCamera {
 }
 
 impl MeshCamera {
-    fn fit(mesh: &ExtrudedMesh3D, yaw: f32, pitch: f32, zoom: f32) -> Self {
+    pub(super) fn fit(mesh: &ExtrudedMesh3D, yaw: f32, pitch: f32, zoom: f32) -> Self {
         let mut camera = Self {
             length: mesh.base.length,
             height: mesh.base.height,

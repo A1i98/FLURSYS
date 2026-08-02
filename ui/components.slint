@@ -31,15 +31,34 @@
 
     export component InteractiveGeometryPreview inherits Rectangle {
         in property <image> preview-image;
+        in property <int> view-axis: 3;
         callback orbit(float, float, float, float);
         callback zoom(float);
         callback reset-view();
+        callback select-view-axis(int);
         callback pick-boundary(float, float, float, float);
         background: rgb(9, 16, 22);
         border-color: rgb(40, 66, 82);
         border-width: 1px;
 
         Image { source: root.preview-image; width: parent.width; height: parent.height; image-fit: contain; }
+        Rectangle {
+            x: parent.width - self.width - 10px;
+            y: 10px;
+            width: 122px;
+            height: 50px;
+            background: rgb(15, 30, 40);
+            border-color: rgb(56, 91, 109);
+            border-width: 1px;
+            Text { x: 8px; y: 5px; text: "VIEW AXIS"; color: rgb(149, 180, 196); font-size: 9px; font-weight: 800; }
+            HorizontalLayout {
+                x: 6px; y: 19px; width: parent.width - 12px; height: 25px; spacing: 4px;
+                Button { text: "X"; enabled: root.view-axis != 0; clicked => { root.select-view-axis(0); } }
+                Button { text: "Y"; enabled: root.view-axis != 1; clicked => { root.select-view-axis(1); } }
+                Button { text: "Z"; enabled: root.view-axis != 2; clicked => { root.select-view-axis(2); } }
+                Button { text: "ISO"; enabled: root.view-axis != 3; clicked => { root.select-view-axis(3); } }
+            }
+        }
         Text {
             x: 10px; y: parent.height - self.height - 8px;
             text: "DRAG: ORBIT  ·  WHEEL: ZOOM  ·  DOUBLE-CLICK: RESET";
@@ -48,8 +67,10 @@
         TouchArea {
             mouse-cursor: self.pressed ? grabbing : grab;
             moved => {
-                root.orbit(self.mouse-x / 1px, self.mouse-y / 1px,
-                    self.pressed-x / 1px, self.pressed-y / 1px);
+                if self.pressed {
+                    root.orbit(self.mouse-x / 1px, self.mouse-y / 1px,
+                        self.pressed-x / 1px, self.pressed-y / 1px);
+                }
             }
             scroll-event(event) => { root.zoom(event.delta-y / 1px); accept }
             double-clicked => { root.reset-view(); }
