@@ -350,6 +350,7 @@ pub(super) fn render_geometry_3d(
     for (index, part) in project.preprocessing.geometry.parts.iter().enumerate() {
         draw_part_with_camera(&mut pixels, width, height, part, camera, part_color(index));
     }
+    draw_orientation_triad(&mut pixels, width, height, camera);
     image_from_rgba(width, height, pixels)
 }
 
@@ -1014,6 +1015,74 @@ impl MeshCamera {
             (160.0 - y * self.scale) as i32,
         )
     }
+
+    fn project_direction(&self, (x, y, z): (f64, f64, f64)) -> (f64, f64) {
+        let horizontal = x * self.yaw.cos() - y * self.yaw.sin();
+        let depth = x * self.yaw.sin() + y * self.yaw.cos();
+        (horizontal, z * self.pitch.cos() + depth * self.pitch.sin())
+    }
+}
+
+const TRIAD_ORIGIN: (i32, i32) = (478, 48);
+const TRIAD_LENGTH: f64 = 25.0;
+const TRIAD_COLORS: [[u8; 4]; 3] = [[235, 91, 91, 255], [91, 210, 125, 255], [91, 144, 235, 255]];
+
+pub(super) fn orientation_triad_endpoints(camera: MeshCamera) -> [(i32, i32); 3] {
+    [(1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0)].map(|direction| {
+        let (x, y) = camera.project_direction(direction);
+        let length = x.hypot(y).max(0.15);
+        (
+            TRIAD_ORIGIN.0 + (x / length * TRIAD_LENGTH) as i32,
+            TRIAD_ORIGIN.1 - (y / length * TRIAD_LENGTH) as i32,
+        )
+    })
+}
+
+pub(super) fn pick_orientation_triad(point: (f64, f64), camera: MeshCamera) -> Option<i32> {
+    orientation_triad_endpoints(camera)
+        .into_iter()
+        .enumerate()
+        .map(|(axis, endpoint)| {
+            (
+                axis as i32,
+                distance_to_segment(
+                    point,
+                    (f64::from(TRIAD_ORIGIN.0), f64::from(TRIAD_ORIGIN.1)),
+                    (f64::from(endpoint.0), f64::from(endpoint.1)),
+                ),
+            )
+        })
+        .min_by(|(_, left), (_, right)| left.total_cmp(right))
+        .and_then(|(axis, distance)| (distance <= 10.0).then_some(axis))
+}
+
+fn draw_orientation_triad(pixels: &mut [u8], width: u32, height: u32, camera: MeshCamera) {
+    draw_marker(pixels, width, height, TRIAD_ORIGIN, [224, 235, 242, 255]);
+    for (endpoint, color) in orientation_triad_endpoints(camera)
+        .into_iter()
+        .zip(TRIAD_COLORS)
+    {
+        draw_line(pixels, width, height, TRIAD_ORIGIN, endpoint, color);
+        draw_marker(pixels, width, height, endpoint, color);
+    }
+}
+
+pub(super) fn pick_orientation_axis_3d(
+    project: &Project,
+    yaw: f32,
+    pitch: f32,
+    zoom: f32,
+    point: (f64, f64),
+) -> Option<i32> {
+    let (length, height) = project_case_domain(&project.case);
+    let base = StructuredMesh2D::new(project.solver.nx, project.solver.ny, length, height).ok()?;
+    let mesh = ExtrudedMesh3D::new(
+        base,
+        project.preprocessing.mesh.cells_z,
+        project.preprocessing.geometry.extrusion_depth,
+    )
+    .ok()?;
+    pick_orientation_triad(point, MeshCamera::fit(&mesh, yaw, pitch, zoom))
 }
 
 pub(super) fn preview_z_exaggeration(mesh: &ExtrudedMesh3D) -> f64 {

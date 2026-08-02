@@ -42,26 +42,9 @@
         border-width: 1px;
 
         Image { source: root.preview-image; width: parent.width; height: parent.height; image-fit: contain; }
-        Rectangle {
-            x: parent.width - self.width - 10px;
-            y: 10px;
-            width: 122px;
-            height: 50px;
-            background: rgb(15, 30, 40);
-            border-color: rgb(56, 91, 109);
-            border-width: 1px;
-            Text { x: 8px; y: 5px; text: "VIEW AXIS"; color: rgb(149, 180, 196); font-size: 9px; font-weight: 800; }
-            HorizontalLayout {
-                x: 6px; y: 19px; width: parent.width - 12px; height: 25px; spacing: 4px;
-                Button { text: "X"; enabled: root.view-axis != 0; clicked => { root.select-view-axis(0); } }
-                Button { text: "Y"; enabled: root.view-axis != 1; clicked => { root.select-view-axis(1); } }
-                Button { text: "Z"; enabled: root.view-axis != 2; clicked => { root.select-view-axis(2); } }
-                Button { text: "ISO"; enabled: root.view-axis != 3; clicked => { root.select-view-axis(3); } }
-            }
-        }
         Text {
             x: 10px; y: parent.height - self.height - 8px;
-            text: "DRAG: ORBIT  ·  WHEEL: ZOOM  ·  DOUBLE-CLICK: RESET";
+            text: "DRAG: ORBIT  ·  WHEEL: ZOOM  ·  CLICK RGB XYZ TRIAD: AXIS VIEW  ·  DOUBLE-CLICK: RESET";
             color: rgb(145, 174, 190); font-size: 10px; font-weight: 700;
         }
         TouchArea {

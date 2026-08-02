@@ -994,6 +994,27 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
             return;
         };
         let mut state = pick_boundary_state.borrow_mut();
+        if state.show_geometry_3d {
+            if let Some(axis) = pick_orientation_axis_3d(
+                &state.project,
+                state.geometry_yaw,
+                state.geometry_pitch,
+                state.geometry_zoom,
+                point,
+            ) {
+                let (yaw, pitch) = geometry_view_angles(axis);
+                state.geometry_yaw = yaw;
+                state.geometry_pitch = pitch;
+                state.geometry_view_axis = axis;
+                state.geometry_drag_anchor = None;
+                state.log(format!(
+                    "Selected {} axis view from triad.",
+                    geometry_view_label(axis)
+                ));
+                refresh_ui(&ui, &state);
+                return;
+            }
+        }
         let selected = if state.show_mesh {
             pick_boundary_2d(&state.project, point)
         } else if state.show_geometry_3d {
@@ -1534,6 +1555,36 @@ mod tests {
         assert_eq!(geometry_view_angles(1), (0.0, 0.0));
         assert_eq!(geometry_view_angles(2), (0.0, std::f32::consts::FRAC_PI_2));
         assert_eq!(geometry_view_label(3), "isometric");
+    }
+
+    #[test]
+    fn orientation_triad_endpoints_select_the_corresponding_axis() {
+        let project = Project::default();
+        let (length, domain_height) = project_case_domain(&project.case);
+        let mesh = ExtrudedMesh3D::new(
+            StructuredMesh2D::new(project.solver.nx, project.solver.ny, length, domain_height)
+                .unwrap(),
+            project.preprocessing.mesh.cells_z,
+            project.preprocessing.geometry.extrusion_depth,
+        )
+        .unwrap();
+        let camera = MeshCamera::fit(&mesh, 0.65, 0.48, 1.0);
+        for (axis, endpoint) in orientation_triad_endpoints(camera).into_iter().enumerate() {
+            assert_eq!(
+                pick_orientation_triad((f64::from(endpoint.0), f64::from(endpoint.1)), camera),
+                Some(axis as i32)
+            );
+            assert_eq!(
+                pick_orientation_axis_3d(
+                    &project,
+                    0.65,
+                    0.48,
+                    1.0,
+                    (f64::from(endpoint.0), f64::from(endpoint.1)),
+                ),
+                Some(axis as i32)
+            );
+        }
     }
 
     #[test]
