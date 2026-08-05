@@ -148,6 +148,8 @@ pub struct SolverStep {
     pub pressure_iterations: usize,
     pub momentum_residual: f64,
     pub max_speed: f64,
+    pub momentum_cfl: f64,
+    pub viscous_diffusion_number: f64,
     pub drag_coefficient: f64,
     pub lift_coefficient: f64,
     pub converged: bool,
@@ -174,6 +176,8 @@ struct Diagnostics {
     pressure_iterations: usize,
     max_divergence: f64,
     max_speed: f64,
+    momentum_cfl: f64,
+    viscous_diffusion_number: f64,
     velocity_change: f64,
     cd: f64,
     cl: f64,
@@ -302,6 +306,10 @@ impl IncompressibleSolver {
             ),
         }
         println!("CPU worker threads: {}", self.pool.current_num_threads());
+        // These are diagnostic reference numbers, not universal stability guarantees.
+        println!(
+            "Momentum stability diagnostics: CFL <= 1 and Dnu <= 0.5 are common explicit reference limits."
+        );
         match self.cfg.coupling {
             PressureVelocityCoupling::Projection => println!("Coupling: transient projection"),
             PressureVelocityCoupling::Simple => println!(
@@ -352,12 +360,14 @@ impl IncompressibleSolver {
                     }
                 };
                 println!(
-                    "{progress} div={:.3e} p_res={:.3e} p_it={:>4} du={:.3e} umax={:.5} Cd={:.5} Cl={:.5} xr/h={:.5} elapsed={:.1}s",
+                    "{progress} div={:.3e} p_res={:.3e} p_it={:>4} du={:.3e} umax={:.5} CFL={:.3e} Dnu={:.3e} Cd={:.5} Cl={:.5} xr/h={:.5} elapsed={:.1}s",
                     diag.max_divergence,
                     diag.pressure_residual,
                     diag.pressure_iterations,
                     diag.velocity_change,
                     diag.max_speed,
+                    diag.momentum_cfl,
+                    diag.viscous_diffusion_number,
                     diag.cd,
                     diag.cl,
                     diag.reattachment,
@@ -433,6 +443,8 @@ impl IncompressibleSolver {
             pressure_iterations: diag.pressure_iterations,
             momentum_residual: diag.velocity_change,
             max_speed: diag.max_speed,
+            momentum_cfl: diag.momentum_cfl,
+            viscous_diffusion_number: diag.viscous_diffusion_number,
             drag_coefficient: diag.cd,
             lift_coefficient: diag.cl,
             converged,
@@ -545,6 +557,16 @@ impl IncompressibleSolver {
             &mut self.u,
             &mut self.v,
         );
+        let max_abs_u = self.u.max_abs();
+        let max_abs_v = self.v.max_abs();
+        let (momentum_cfl, viscous_diffusion_number) = momentum_stability_numbers(
+            self.cfg.dt,
+            self.cfg.case.kinematic_viscosity(),
+            self.grid.dx,
+            self.grid.dy,
+            max_abs_u,
+            max_abs_v,
+        );
 
         self.step += 1;
         self.time = self.step as f64 * self.cfg.dt;
@@ -564,6 +586,8 @@ impl IncompressibleSolver {
             pressure_iterations,
             max_divergence,
             max_speed,
+            momentum_cfl,
+            viscous_diffusion_number,
             velocity_change,
             cd,
             cl,
@@ -1570,7 +1594,7 @@ impl IncompressibleSolver {
     fn append_histories(&self, diag: Diagnostics) -> Result<(), String> {
         let history = self.cfg.output_dir.join("history.csv");
         let row = format!(
-            "{},{:.12},{:.12e},{},{:.12e},{:.12e},{:.12e},{:.12e},{:.12e},{:.12e}",
+            "{},{:.12},{:.12e},{},{:.12e},{:.12e},{:.12e},{:.12e},{:.12e},{:.12e},{:.12e},{:.12e}",
             self.step,
             self.time,
             diag.pressure_residual,
@@ -1580,11 +1604,13 @@ impl IncompressibleSolver {
             diag.max_speed,
             diag.cd,
             diag.cl,
-            diag.reattachment
+            diag.reattachment,
+            diag.momentum_cfl,
+            diag.viscous_diffusion_number
         );
         output::append_history(
             &history,
-            "step,time,pressure_residual,pressure_iterations,max_divergence,velocity_change,max_speed,cd,cl,reattachment_x_over_h",
+            "step,time,pressure_residual,pressure_iterations,max_divergence,velocity_change,max_speed,cd,cl,reattachment_x_over_h,momentum_cfl,viscous_diffusion_number",
             &row,
         )
     }
@@ -2095,6 +2121,20 @@ fn max_field_difference(a: &Field2D, b: &Field2D) -> f64 {
         .fold(0.0_f64, |m, (&x, &y)| m.max((x - y).abs()))
 }
 
+fn momentum_stability_numbers(
+    dt: f64,
+    nu: f64,
+    dx: f64,
+    dy: f64,
+    max_abs_u: f64,
+    max_abs_v: f64,
+) -> (f64, f64) {
+    let momentum_cfl = dt * (max_abs_u / dx + max_abs_v / dy);
+    let viscous_diffusion_number = nu * dt * (1.0 / (dx * dx) + 1.0 / (dy * dy));
+
+    (momentum_cfl, viscous_diffusion_number)
+}
+
 fn project_zero_mean<F>(
     pool: &ThreadPool,
     values: &mut [f64],
@@ -2144,6 +2184,33 @@ mod tests {
         BoundaryConditionKind, BoundaryFace, BuoyancyModel, EnergyModel, Project,
         ThermalBoundaryCondition,
     };
+
+    #[test]
+    fn momentum_stability_numbers_match_known_values() {
+        let (momentum_cfl, viscous_diffusion_number) =
+            momentum_stability_numbers(0.01, 0.1, 0.5, 0.25, 2.0, 1.0);
+
+        assert!((momentum_cfl - 0.08).abs() < 1.0e-12);
+        assert!((viscous_diffusion_number - 0.02).abs() < 1.0e-12);
+    }
+
+    #[test]
+    fn momentum_stability_numbers_report_zero_cfl_at_zero_velocity() {
+        let (momentum_cfl, viscous_diffusion_number) =
+            momentum_stability_numbers(0.1, 0.25, 0.5, 0.25, 0.0, 0.0);
+
+        assert_eq!(momentum_cfl, 0.0);
+        assert!((viscous_diffusion_number - 0.5).abs() < 1.0e-12);
+    }
+
+    #[test]
+    fn momentum_stability_numbers_handle_an_isotropic_grid() {
+        let (momentum_cfl, viscous_diffusion_number) =
+            momentum_stability_numbers(0.2, 0.5, 0.25, 0.25, 0.5, 0.5);
+
+        assert!((momentum_cfl - 0.8).abs() < 1.0e-12);
+        assert!((viscous_diffusion_number - 3.2).abs() < 1.0e-12);
+    }
 
     #[test]
     fn cavity_configuration_builds() {
