@@ -36,6 +36,7 @@ residual, force, and field updates.
 
 Simulation projects use versioned `.flursys.json` files, so supported cases can be created,
 shared, imported, and run after compilation from either the GUI or CLI.
+Their `solver` object supports `"convection": "first-order-upwind"` or `"convection": "central"`.
 
 The workbench persists named boundary conditions, CAD/sketch feature data, mesh intent, and
 solver-independent analysis intent in each project. Before a run, FLURSYS creates a capability

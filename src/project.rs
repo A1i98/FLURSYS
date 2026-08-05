@@ -82,6 +82,7 @@ pub struct ProjectSolver {
     pub dt: f64,
     pub max_iterations: usize,
     pub coupling: ProjectCoupling,
+    pub convection: ProjectConvectionScheme,
     pub pressure_solver: ProjectPressureSolver,
     pub pressure_tolerance: f64,
     pub pressure_iterations: usize,
@@ -102,6 +103,13 @@ pub struct ProjectSolver {
 pub enum ProjectCoupling {
     Projection,
     Simple,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ProjectConvectionScheme {
+    FirstOrderUpwind,
+    Central,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
@@ -134,6 +142,7 @@ impl Default for ProjectSolver {
             dt: 1.0e-3,
             max_iterations: 10_000,
             coupling: ProjectCoupling::Simple,
+            convection: ProjectConvectionScheme::FirstOrderUpwind,
             pressure_solver: ProjectPressureSolver::Pcg,
             pressure_tolerance: 1.0e-5,
             pressure_iterations: 1_200,
@@ -193,7 +202,7 @@ impl Project {
             } else {
                 0.0
             },
-            convection: ConvectionScheme::FirstOrderUpwind,
+            convection: solver.convection.into(),
             coupling,
             pressure_solver,
             pressure_max_iters: solver.pressure_iterations,
@@ -343,7 +352,7 @@ impl Project {
             } else {
                 0.0
             },
-            convection: ConvectionScheme::FirstOrderUpwind,
+            convection: solver.convection.into(),
             coupling,
             pressure_solver: match solver.pressure_solver {
                 ProjectPressureSolver::Pcg => PressureSolverKind::Pcg,
@@ -363,6 +372,22 @@ impl Project {
             boundary_overrides: self.preprocessing.solver_overrides(),
             physics: self.physics.clone(),
             output_dir,
+        }
+    }
+}
+
+#[allow(clippy::derivable_impls)]
+impl Default for ProjectConvectionScheme {
+    fn default() -> Self {
+        Self::FirstOrderUpwind
+    }
+}
+
+impl From<ProjectConvectionScheme> for ConvectionScheme {
+    fn from(value: ProjectConvectionScheme) -> Self {
+        match value {
+            ProjectConvectionScheme::FirstOrderUpwind => ConvectionScheme::FirstOrderUpwind,
+            ProjectConvectionScheme::Central => ConvectionScheme::Central,
         }
     }
 }
@@ -594,6 +619,47 @@ mod tests {
         let json = serde_json::to_string(&project).unwrap();
         let restored: Project = serde_json::from_str(&json).unwrap();
         restored.validate().unwrap();
+    }
+
+    #[test]
+    fn project_json_without_convection_defaults_to_first_order_upwind() {
+        let mut json = serde_json::to_value(Project::default()).unwrap();
+        json["solver"].as_object_mut().unwrap().remove("convection");
+
+        let project: Project = serde_json::from_value(json).unwrap();
+
+        assert_eq!(
+            project.solver.convection,
+            ProjectConvectionScheme::FirstOrderUpwind
+        );
+    }
+
+    #[test]
+    fn central_project_convection_maps_to_the_solver_configuration() {
+        let mut project = Project::default();
+        project.solver.convection = ProjectConvectionScheme::Central;
+
+        let config = project
+            .simulation_config("target/central-convection-test")
+            .unwrap();
+
+        assert_eq!(config.convection, ConvectionScheme::Central);
+        assert_eq!(
+            project
+                .simulation_config_unvalidated(PathBuf::from("target/central-convection-test"))
+                .convection,
+            ConvectionScheme::Central
+        );
+    }
+
+    #[test]
+    fn project_serializes_central_convection() {
+        let mut project = Project::default();
+        project.solver.convection = ProjectConvectionScheme::Central;
+
+        let json = serde_json::to_string(&project).unwrap();
+
+        assert!(json.contains("\"convection\":\"central\""));
     }
 
     #[test]

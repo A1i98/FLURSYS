@@ -30,7 +30,10 @@ pub use preprocess::{
     SketchConstraint, SketchConstraintKind, SketchDimension, SketchDimensionKind, SketchEntity,
     SketchEntityKind, SketchPlane, SketchProfileKind, SolverBoundaryOverrides,
 };
-pub use project::{Project, ProjectCase, ProjectCoupling, ProjectPressureSolver, ProjectSolver};
+pub use project::{
+    Project, ProjectCase, ProjectConvectionScheme, ProjectCoupling, ProjectPressureSolver,
+    ProjectSolver,
+};
 pub use solver::{
     ConvectionScheme, FieldUpdate, IncompressibleSolver, LidDrivenCavity3DConfig,
     LidDrivenCavity3DSolver, PressureSolverKind, PressureVelocityCoupling, RunSummary,
