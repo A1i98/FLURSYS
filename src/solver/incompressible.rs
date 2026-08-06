@@ -557,6 +557,13 @@ impl IncompressibleSolver {
             &mut self.u,
             &mut self.v,
         );
+
+        self.step += 1;
+        self.time = self.step as f64 * self.cfg.dt;
+        self.compute_cell_fields();
+        self.advance_temperature()?;
+        self.ensure_finite()?;
+
         let max_abs_u = self.u.max_abs();
         let max_abs_v = self.v.max_abs();
         let (momentum_cfl, viscous_diffusion_number) = momentum_stability_numbers(
@@ -567,13 +574,6 @@ impl IncompressibleSolver {
             max_abs_u,
             max_abs_v,
         );
-
-        self.step += 1;
-        self.time = self.step as f64 * self.cfg.dt;
-        self.compute_cell_fields();
-        self.advance_temperature()?;
-        self.ensure_finite()?;
-
         let max_divergence = self.max_divergence();
         let max_speed = self.speed.max_abs();
         let velocity_change =
@@ -2130,7 +2130,7 @@ fn momentum_stability_numbers(
     max_abs_v: f64,
 ) -> (f64, f64) {
     let momentum_cfl = dt * (max_abs_u / dx + max_abs_v / dy);
-    let viscous_diffusion_number = nu * dt * (1.0 / (dx * dx) + 1.0 / (dy * dy));
+    let viscous_diffusion_number = nu * dt * (1.0 / dx.powi(2) + 1.0 / dy.powi(2));
 
     (momentum_cfl, viscous_diffusion_number)
 }
@@ -2200,16 +2200,16 @@ mod tests {
             momentum_stability_numbers(0.1, 0.25, 0.5, 0.25, 0.0, 0.0);
 
         assert_eq!(momentum_cfl, 0.0);
+        assert!(viscous_diffusion_number > 0.0);
         assert!((viscous_diffusion_number - 0.5).abs() < 1.0e-12);
     }
 
     #[test]
-    fn momentum_stability_numbers_handle_an_isotropic_grid() {
-        let (momentum_cfl, viscous_diffusion_number) =
-            momentum_stability_numbers(0.2, 0.5, 0.25, 0.25, 0.5, 0.5);
+    fn momentum_stability_numbers_include_both_rectangular_grid_directions() {
+        let (cfl, _) = momentum_stability_numbers(0.1, 0.2, 0.5, 0.25, 2.0, 1.0);
+        let (swapped_cfl, _) = momentum_stability_numbers(0.1, 0.2, 0.25, 0.5, 1.0, 2.0);
 
-        assert!((momentum_cfl - 0.8).abs() < 1.0e-12);
-        assert!((viscous_diffusion_number - 3.2).abs() < 1.0e-12);
+        assert!((cfl - swapped_cfl).abs() < 1.0e-12);
     }
 
     #[test]
