@@ -19,8 +19,6 @@ Thumbs.db
 /.codex/
 /.vscode/
 
-!README.md
 *.md
-/docs/
-/CONTRIBUTING.md
-/CHANGELOG.md
+!README.md
+!NUMERICAL_METHODS.md
