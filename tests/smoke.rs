@@ -2,6 +2,7 @@ use flursys::cases::{BackwardStepCase, CavityCase, ChannelCase, CylinderCase};
 use flursys::{
     Case, ConvectionScheme, IncompressibleSolver, LidDrivenCavity3DConfig, LidDrivenCavity3DSolver,
     PressureSolverKind, PressureVelocityCoupling, SimulationConfig, SolverBoundaryOverrides,
+    TimeStepSettings,
 };
 use std::path::PathBuf;
 
@@ -11,6 +12,7 @@ fn config(case: Case, nx: usize, ny: usize, name: &str) -> SimulationConfig {
         nx,
         ny,
         dt: 1.0e-3,
+        time_step: TimeStepSettings::default(),
         max_steps: 1,
         t_end: 1.0e-3,
         convection: ConvectionScheme::FirstOrderUpwind,

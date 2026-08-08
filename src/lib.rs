@@ -32,12 +32,12 @@ pub use preprocess::{
 };
 pub use project::{
     Project, ProjectCase, ProjectConvectionScheme, ProjectCoupling, ProjectPressureSolver,
-    ProjectSolver,
+    ProjectSolver, ProjectTimeStepSettings,
 };
 pub use solver::{
     ConvectionScheme, FieldUpdate, IncompressibleSolver, LidDrivenCavity3DConfig,
     LidDrivenCavity3DSolver, PressureSolverKind, PressureVelocityCoupling, RunSummary,
-    RunSummary3D, SimulationConfig, SolverStep,
+    RunSummary3D, SimulationConfig, SolverStep, TimeStepSettings,
 };
 pub use workbench::{
     AnalysisDimension, AnalysisKind, ExecutionPlan, SolverBackend, WorkbenchAnalysis,

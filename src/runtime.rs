@@ -304,7 +304,7 @@ mod tests {
     use crate::cases::CavityCase;
     use crate::{
         Case, ConvectionScheme, PressureSolverKind, PressureVelocityCoupling,
-        SolverBoundaryOverrides,
+        SolverBoundaryOverrides, TimeStepSettings,
     };
     use std::path::PathBuf;
 
@@ -314,6 +314,7 @@ mod tests {
             nx: 16,
             ny: 16,
             dt: 1.0e-3,
+            time_step: TimeStepSettings::default(),
             max_steps: 2,
             t_end: 0.0,
             convection: ConvectionScheme::FirstOrderUpwind,

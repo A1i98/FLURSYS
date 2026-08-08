@@ -2,7 +2,7 @@ use flursys::cases::{BackwardStepCase, CavityCase, ChannelCase, CylinderCase};
 use flursys::{
     Case, ConvectionScheme, ExecutionPlan, IncompressibleSolver, LidDrivenCavity3DConfig,
     LidDrivenCavity3DSolver, PressureSolverKind, PressureVelocityCoupling, Project,
-    SimulationConfig, SolverBoundaryOverrides,
+    SimulationConfig, SolverBoundaryOverrides, TimeStepSettings,
 };
 use std::collections::HashMap;
 use std::env;
@@ -271,6 +271,7 @@ fn common_config(
         nx: value(options, "nx", defaults.nx)?,
         ny: value(options, "ny", defaults.ny)?,
         dt: value(options, "dt", defaults.dt)?,
+        time_step: TimeStepSettings::default(),
         t_end: value(options, "t-end", defaults.t_end)?,
         max_steps: value(options, "max-steps", defaults.max_steps)?,
         convection,

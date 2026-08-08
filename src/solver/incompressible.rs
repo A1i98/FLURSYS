@@ -32,12 +32,36 @@ pub enum PressureVelocityCoupling {
     Simple,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TimeStepSettings {
+    pub adaptive: bool,
+    pub min_dt: f64,
+    pub max_dt: f64,
+    pub target_cfl: f64,
+    pub target_diffusion_number: f64,
+    pub max_growth_factor: f64,
+}
+
+impl Default for TimeStepSettings {
+    fn default() -> Self {
+        Self {
+            adaptive: false,
+            min_dt: 1.0e-6,
+            max_dt: 1.0e-2,
+            target_cfl: 0.5,
+            target_diffusion_number: 0.25,
+            max_growth_factor: 1.1,
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct SimulationConfig {
     pub case: Case,
     pub nx: usize,
     pub ny: usize,
     pub dt: f64,
+    pub time_step: TimeStepSettings,
     pub max_steps: usize,
     pub t_end: f64,
     pub convection: ConvectionScheme,
@@ -114,9 +138,55 @@ impl SimulationConfig {
         if self.print_every == 0 || self.output_every == 0 || self.frame_every == 0 {
             return Err("Output intervals must be positive".to_string());
         }
+        if self.time_step.adaptive {
+            if self.coupling != PressureVelocityCoupling::Projection {
+                return Err(
+                    "adaptive time stepping requires transient projection coupling".to_string(),
+                );
+            }
+            let settings = self.time_step;
+            if !settings.min_dt.is_finite() || settings.min_dt <= 0.0 {
+                return Err("adaptive min_dt must be finite and positive".to_string());
+            }
+            if !settings.max_dt.is_finite() || settings.max_dt <= 0.0 {
+                return Err("adaptive max_dt must be finite and positive".to_string());
+            }
+            if settings.min_dt > settings.max_dt {
+                return Err("adaptive min_dt must not exceed max_dt".to_string());
+            }
+            if self.dt < settings.min_dt || self.dt > settings.max_dt {
+                return Err("adaptive initial dt must lie between min_dt and max_dt".to_string());
+            }
+            if !settings.target_cfl.is_finite()
+                || settings.target_cfl <= 0.0
+                || settings.target_cfl > 1.0
+            {
+                return Err("adaptive target_cfl must lie between 0 (exclusive) and 1".to_string());
+            }
+            if !settings.target_diffusion_number.is_finite()
+                || settings.target_diffusion_number <= 0.0
+                || settings.target_diffusion_number > 0.5
+            {
+                return Err(
+                    "adaptive target_diffusion_number must lie between 0 (exclusive) and 0.5"
+                        .to_string(),
+                );
+            }
+            if !settings.max_growth_factor.is_finite() || settings.max_growth_factor < 1.0 {
+                return Err("adaptive max_growth_factor must be finite and at least 1".to_string());
+            }
+        }
         let (length, height) = self.case.domain();
-        self.physics
-            .validate(self.dt, length / self.nx as f64, height / self.ny as f64)?;
+        let thermal_validation_dt = if self.time_step.adaptive {
+            self.time_step.min_dt
+        } else {
+            self.dt
+        };
+        self.physics.validate(
+            thermal_validation_dt,
+            length / self.nx as f64,
+            height / self.ny as f64,
+        )?;
         Ok(())
     }
 
@@ -143,6 +213,7 @@ pub struct RunSummary {
 pub struct SolverStep {
     pub iteration: usize,
     pub time: f64,
+    pub time_step: f64,
     pub continuity_residual: f64,
     pub pressure_residual: f64,
     pub pressure_iterations: usize,
@@ -172,6 +243,7 @@ pub struct FieldUpdate {
 
 #[derive(Clone, Copy, Debug, Default)]
 struct Diagnostics {
+    time_step: f64,
     pressure_residual: f64,
     pressure_iterations: usize,
     max_divergence: f64,
@@ -182,6 +254,16 @@ struct Diagnostics {
     cd: f64,
     cl: f64,
     reattachment: f64,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct AdaptiveTimeStepInputs {
+    max_abs_u: f64,
+    max_abs_v: f64,
+    dx: f64,
+    dy: f64,
+    kinematic_viscosity: f64,
+    thermal_diffusivity: Option<f64>,
 }
 
 /// Reusable vectors for the pressure PCG solve. Keeping these allocations alive
@@ -224,6 +306,7 @@ pub struct IncompressibleSolver {
     temperature: Option<Field2D>,
     step: usize,
     time: f64,
+    current_dt: f64,
     frame_index: usize,
     outputs_prepared: bool,
     pcg_workspace: PcgWorkspace,
@@ -248,6 +331,7 @@ impl IncompressibleSolver {
                 solid[(i, j)] = cfg.case.is_solid(grid.cell_x(i), grid.cell_y(j));
             }
         }
+        let current_dt = cfg.dt;
 
         let mut solver = Self {
             p: Field2D::new(cfg.nx, cfg.ny, 0.0),
@@ -267,6 +351,7 @@ impl IncompressibleSolver {
             solid,
             step: 0,
             time: 0.0,
+            current_dt,
             frame_index: 0,
             outputs_prepared: false,
             pcg_workspace: PcgWorkspace::default(),
@@ -306,6 +391,20 @@ impl IncompressibleSolver {
             ),
         }
         println!("CPU worker threads: {}", self.pool.current_num_threads());
+        if self.cfg.time_step.adaptive {
+            let settings = self.cfg.time_step;
+            println!(
+                "Time stepping: adaptive, initial_dt={:.3e}, min_dt={:.3e}, max_dt={:.3e}, target_cfl={:.3e}, target_diffusion={:.3e}, max_growth={:.3e}",
+                self.cfg.dt,
+                settings.min_dt,
+                settings.max_dt,
+                settings.target_cfl,
+                settings.target_diffusion_number,
+                settings.max_growth_factor
+            );
+        } else {
+            println!("Time stepping: fixed, dt={:.3e}", self.cfg.dt);
+        }
         // These are diagnostic reference numbers, not universal stability guarantees.
         println!(
             "Momentum stability diagnostics: CFL <= 1 and Dnu <= 0.5 are common explicit reference limits."
@@ -360,7 +459,8 @@ impl IncompressibleSolver {
                     }
                 };
                 println!(
-                    "{progress} div={:.3e} p_res={:.3e} p_it={:>4} du={:.3e} umax={:.5} CFL={:.3e} Dnu={:.3e} Cd={:.5} Cl={:.5} xr/h={:.5} elapsed={:.1}s",
+                    "{progress} dt={:.3e} div={:.3e} p_res={:.3e} p_it={:>4} du={:.3e} umax={:.5} CFL={:.3e} Dnu={:.3e} Cd={:.5} Cl={:.5} xr/h={:.5} elapsed={:.1}s",
+                    diag.time_step,
                     diag.max_divergence,
                     diag.pressure_residual,
                     diag.pressure_iterations,
@@ -438,6 +538,7 @@ impl IncompressibleSolver {
         Ok(SolverStep {
             iteration: self.step,
             time: self.time,
+            time_step: diag.time_step,
             continuity_residual: diag.max_divergence,
             pressure_residual: diag.pressure_residual,
             pressure_iterations: diag.pressure_iterations,
@@ -511,17 +612,42 @@ impl IncompressibleSolver {
     }
 
     fn advance_one_step(&mut self) -> Result<Diagnostics, String> {
+        let mut step_dt = self.cfg.dt;
+        if self.cfg.time_step.adaptive {
+            let thermal_diffusivity = (self.cfg.physics.thermal.model
+                == EnergyModel::ConstantProperties)
+                .then_some(self.cfg.physics.thermal.thermal_diffusivity);
+            step_dt = adaptive_time_step(
+                self.current_dt,
+                AdaptiveTimeStepInputs {
+                    max_abs_u: self.u.max_abs(),
+                    max_abs_v: self.v.max_abs(),
+                    dx: self.grid.dx,
+                    dy: self.grid.dy,
+                    kinematic_viscosity: self.cfg.case.kinematic_viscosity(),
+                    thermal_diffusivity,
+                },
+                self.cfg.time_step,
+            )?;
+            let remaining_time = self.cfg.t_end - self.time;
+            // The final step may be below min_dt only to land exactly on t_end.
+            step_dt = step_dt.min(remaining_time);
+            if step_dt <= 0.0 {
+                return Err("adaptive step requires positive remaining simulation time".to_string());
+            }
+            self.current_dt = step_dt;
+        }
         let old_u = self.u.clone();
         let old_v = self.v.clone();
 
         let simple = self.cfg.coupling == PressureVelocityCoupling::Simple;
-        self.predict_momentum(simple);
+        self.predict_momentum(simple, step_dt);
         apply_velocity_boundaries(
             &self.cfg.case,
             &self.cfg.boundary_overrides,
             &self.grid,
             &self.solid,
-            self.time + self.cfg.dt,
+            self.time + step_dt,
             &mut self.u_star,
             &mut self.v_star,
         );
@@ -530,13 +656,16 @@ impl IncompressibleSolver {
             // During SIMPLE the Poisson solve is for p', not the absolute pressure.
             self.p.fill(0.0);
         }
-        self.build_pressure_rhs();
+        self.build_pressure_rhs(step_dt);
         let (pressure_residual, pressure_iterations) = self.solve_pressure_poisson()?;
-        self.correct_velocity(if simple {
-            self.cfg.velocity_relaxation
-        } else {
-            1.0
-        });
+        self.correct_velocity(
+            if simple {
+                self.cfg.velocity_relaxation
+            } else {
+                1.0
+            },
+            step_dt,
+        );
         if let Some(old_pressure) = old_pressure {
             let pressure_relaxation = self.cfg.pressure_relaxation;
             for (pressure, correction) in self
@@ -553,21 +682,25 @@ impl IncompressibleSolver {
             &self.cfg.boundary_overrides,
             &self.grid,
             &self.solid,
-            self.time + self.cfg.dt,
+            self.time + step_dt,
             &mut self.u,
             &mut self.v,
         );
 
         self.step += 1;
-        self.time = self.step as f64 * self.cfg.dt;
+        if self.cfg.time_step.adaptive {
+            self.time += step_dt;
+        } else {
+            self.time = self.step as f64 * self.cfg.dt;
+        }
         self.compute_cell_fields();
-        self.advance_temperature()?;
+        self.advance_temperature(step_dt)?;
         self.ensure_finite()?;
 
         let max_abs_u = self.u.max_abs();
         let max_abs_v = self.v.max_abs();
         let (momentum_cfl, viscous_diffusion_number) = momentum_stability_numbers(
-            self.cfg.dt,
+            step_dt,
             self.cfg.case.kinematic_viscosity(),
             self.grid.dx,
             self.grid.dy,
@@ -582,6 +715,7 @@ impl IncompressibleSolver {
         let reattachment = self.reattachment_length_ratio();
 
         Ok(Diagnostics {
+            time_step: step_dt,
             pressure_residual,
             pressure_iterations,
             max_divergence,
@@ -595,7 +729,7 @@ impl IncompressibleSolver {
         })
     }
 
-    fn predict_momentum(&mut self, include_pressure_gradient: bool) {
+    fn predict_momentum(&mut self, include_pressure_gradient: bool, step_dt: f64) {
         self.u_star.fill(0.0);
         self.v_star.fill(0.0);
         let Self {
@@ -615,7 +749,7 @@ impl IncompressibleSolver {
         let ny = grid.ny;
         let dx = grid.dx;
         let dy = grid.dy;
-        let dt = cfg.dt;
+        let dt = step_dt;
         let nu = cfg.case.kinematic_viscosity();
         let convection_scheme = cfg.convection;
         let u_values = u.as_slice();
@@ -771,7 +905,7 @@ impl IncompressibleSolver {
         });
     }
 
-    fn build_pressure_rhs(&mut self) {
+    fn build_pressure_rhs(&mut self, step_dt: f64) {
         let Self {
             pool,
             cfg,
@@ -788,7 +922,7 @@ impl IncompressibleSolver {
         } else {
             1.0
         };
-        let rho_over_dt = cfg.case.density() / (correction_scale * cfg.dt);
+        let rho_over_dt = cfg.case.density() / (correction_scale * step_dt);
         let u_values = u_star.as_slice();
         let v_values = v_star.as_slice();
         pool.install(|| {
@@ -1169,8 +1303,8 @@ impl IncompressibleSolver {
         })
     }
 
-    fn correct_velocity(&mut self, correction_scale: f64) {
-        let dt_over_rho = correction_scale * self.cfg.dt / self.cfg.case.density();
+    fn correct_velocity(&mut self, correction_scale: f64, step_dt: f64) {
+        let dt_over_rho = correction_scale * step_dt / self.cfg.case.density();
         self.u
             .as_mut_slice()
             .copy_from_slice(self.u_star.as_slice());
@@ -1292,13 +1426,13 @@ impl IncompressibleSolver {
     /// explicit, conservative cell-centred finite-volume update.  The
     /// configuration validation enforces the diffusion limit; this method also
     /// enforces the velocity-dependent CFL condition at runtime.
-    fn advance_temperature(&mut self) -> Result<(), String> {
+    fn advance_temperature(&mut self, step_dt: f64) -> Result<(), String> {
         let Some(old) = self.temperature.as_ref().cloned() else {
             return Ok(());
         };
         let max_u = self.u_cell.max_abs();
         let max_v = self.v_cell.max_abs();
-        let cfl = self.cfg.dt * (max_u / self.grid.dx + max_v / self.grid.dy);
+        let cfl = step_dt * (max_u / self.grid.dx + max_v / self.grid.dy);
         if cfl > 1.0 {
             return Err(format!(
                 "explicit thermal advection is unstable at step {}: CFL={cfl:.3e} exceeds 1",
@@ -1332,7 +1466,7 @@ impl IncompressibleSolver {
                     (flux_e - flux_w) / self.grid.dx + (flux_n - flux_s) / self.grid.dy;
                 let diffusion = (east - 2.0 * center + west) / self.grid.dx.powi(2)
                     + (north - 2.0 * center + south) / self.grid.dy.powi(2);
-                next[(i, j)] = center + self.cfg.dt * (-convection + alpha * diffusion + source);
+                next[(i, j)] = center + step_dt * (-convection + alpha * diffusion + source);
             }
         }
         *self
@@ -1594,7 +1728,7 @@ impl IncompressibleSolver {
     fn append_histories(&self, diag: Diagnostics) -> Result<(), String> {
         let history = self.cfg.output_dir.join("history.csv");
         let row = format!(
-            "{},{:.12},{:.12e},{},{:.12e},{:.12e},{:.12e},{:.12e},{:.12e},{:.12e},{:.12e},{:.12e}",
+            "{},{:.12},{:.12e},{},{:.12e},{:.12e},{:.12e},{:.12e},{:.12e},{:.12e},{:.12e},{:.12e},{:.12e}",
             self.step,
             self.time,
             diag.pressure_residual,
@@ -1606,11 +1740,12 @@ impl IncompressibleSolver {
             diag.cl,
             diag.reattachment,
             diag.momentum_cfl,
-            diag.viscous_diffusion_number
+            diag.viscous_diffusion_number,
+            diag.time_step
         );
         output::append_history(
             &history,
-            "step,time,pressure_residual,pressure_iterations,max_divergence,velocity_change,max_speed,cd,cl,reattachment_x_over_h,momentum_cfl,viscous_diffusion_number",
+            "step,time,pressure_residual,pressure_iterations,max_divergence,velocity_change,max_speed,cd,cl,reattachment_x_over_h,momentum_cfl,viscous_diffusion_number,time_step",
             &row,
         )
     }
@@ -1782,11 +1917,30 @@ impl IncompressibleSolver {
         match self.cfg.coupling {
             PressureVelocityCoupling::Projection => {
                 writeln!(w, "dt: {}", self.cfg.dt).map_err(|e| e.to_string())?;
+                if self.cfg.time_step.adaptive {
+                    let settings = self.cfg.time_step;
+                    writeln!(
+                        w,
+                        "time_stepping: adaptive, initial_dt={}, min_dt={}, max_dt={}, target_cfl={}, target_diffusion={}, max_growth={}",
+                        self.cfg.dt,
+                        settings.min_dt,
+                        settings.max_dt,
+                        settings.target_cfl,
+                        settings.target_diffusion_number,
+                        settings.max_growth_factor
+                    )
+                    .map_err(|e| e.to_string())?;
+                } else {
+                    writeln!(w, "time_stepping: fixed, dt={}", self.cfg.dt)
+                        .map_err(|e| e.to_string())?;
+                }
                 writeln!(w, "t_end: {}", self.cfg.t_end).map_err(|e| e.to_string())?;
                 writeln!(w, "max_steps: {}", self.cfg.max_steps).map_err(|e| e.to_string())?;
             }
             PressureVelocityCoupling::Simple => {
                 writeln!(w, "pseudo_dt: {}", self.cfg.dt).map_err(|e| e.to_string())?;
+                writeln!(w, "time_stepping: fixed, dt={}", self.cfg.dt)
+                    .map_err(|e| e.to_string())?;
                 writeln!(w, "max_iterations: {}", self.cfg.max_steps).map_err(|e| e.to_string())?;
             }
         }
@@ -2135,6 +2289,36 @@ fn momentum_stability_numbers(
     (momentum_cfl, viscous_diffusion_number)
 }
 
+fn adaptive_time_step(
+    current_dt: f64,
+    inputs: AdaptiveTimeStepInputs,
+    settings: TimeStepSettings,
+) -> Result<f64, String> {
+    let advective_rate = inputs.max_abs_u / inputs.dx + inputs.max_abs_v / inputs.dy;
+    let cfl_dt = if advective_rate > f64::EPSILON {
+        settings.target_cfl / advective_rate
+    } else {
+        settings.max_dt
+    };
+    let inverse_spacing_sum = 1.0 / inputs.dx.powi(2) + 1.0 / inputs.dy.powi(2);
+    let effective_diffusivity = inputs
+        .thermal_diffusivity
+        .map(|alpha| alpha.max(inputs.kinematic_viscosity))
+        .unwrap_or(inputs.kinematic_viscosity);
+    let diffusion_dt =
+        settings.target_diffusion_number / (effective_diffusivity * inverse_spacing_sum);
+    let stable_dt = settings.max_dt.min(cfl_dt).min(diffusion_dt);
+    if stable_dt < settings.min_dt {
+        return Err(format!(
+            "required stable time step {stable_dt:.3e} is below configured min_dt {min_dt:.3e}; CFL constraint={cfl_dt:.3e}, diffusion constraint={diffusion_dt:.3e}",
+            min_dt = settings.min_dt
+        ));
+    }
+    let growth_limited_dt = stable_dt.min(current_dt * settings.max_growth_factor);
+
+    Ok(growth_limited_dt.clamp(settings.min_dt, settings.max_dt))
+}
+
 fn project_zero_mean<F>(
     pool: &ThreadPool,
     values: &mut [f64],
@@ -2213,12 +2397,154 @@ mod tests {
     }
 
     #[test]
+    fn adaptive_time_step_is_limited_by_advection() {
+        let settings = TimeStepSettings {
+            adaptive: true,
+            min_dt: 1.0e-3,
+            max_dt: 1.0,
+            target_cfl: 0.5,
+            target_diffusion_number: 0.5,
+            max_growth_factor: 10.0,
+        };
+
+        let dt = adaptive_time_step(
+            0.1,
+            AdaptiveTimeStepInputs {
+                max_abs_u: 2.0,
+                max_abs_v: 1.0,
+                dx: 0.5,
+                dy: 0.25,
+                kinematic_viscosity: 1.0e-3,
+                thermal_diffusivity: None,
+            },
+            settings,
+        )
+        .unwrap();
+
+        assert!((dt - 0.0625).abs() < 1.0e-12);
+    }
+
+    #[test]
+    fn adaptive_time_step_is_limited_by_momentum_diffusion() {
+        let settings = TimeStepSettings {
+            adaptive: true,
+            min_dt: 1.0e-3,
+            max_dt: 1.0,
+            target_cfl: 1.0,
+            target_diffusion_number: 0.25,
+            max_growth_factor: 10.0,
+        };
+
+        let dt = adaptive_time_step(
+            0.5,
+            AdaptiveTimeStepInputs {
+                max_abs_u: 0.0,
+                max_abs_v: 0.0,
+                dx: 0.5,
+                dy: 0.25,
+                kinematic_viscosity: 0.1,
+                thermal_diffusivity: None,
+            },
+            settings,
+        )
+        .unwrap();
+
+        assert!((dt - 0.125).abs() < 1.0e-12);
+    }
+
+    #[test]
+    fn adaptive_time_step_uses_thermal_diffusivity_when_larger() {
+        let settings = TimeStepSettings {
+            adaptive: true,
+            min_dt: 1.0e-3,
+            max_dt: 1.0,
+            target_cfl: 1.0,
+            target_diffusion_number: 0.25,
+            max_growth_factor: 10.0,
+        };
+
+        let dt = adaptive_time_step(
+            0.5,
+            AdaptiveTimeStepInputs {
+                max_abs_u: 0.0,
+                max_abs_v: 0.0,
+                dx: 0.5,
+                dy: 0.25,
+                kinematic_viscosity: 0.1,
+                thermal_diffusivity: Some(0.4),
+            },
+            settings,
+        )
+        .unwrap();
+
+        assert!((dt - 0.03125).abs() < 1.0e-12);
+    }
+
+    #[test]
+    fn adaptive_time_step_limits_growth() {
+        let settings = TimeStepSettings {
+            adaptive: true,
+            min_dt: 1.0e-3,
+            max_dt: 0.8,
+            target_cfl: 1.0,
+            target_diffusion_number: 0.25,
+            max_growth_factor: 1.1,
+        };
+
+        let dt = adaptive_time_step(
+            0.1,
+            AdaptiveTimeStepInputs {
+                max_abs_u: 0.0,
+                max_abs_v: 0.0,
+                dx: 1.0,
+                dy: 1.0,
+                kinematic_viscosity: 1.0e-3,
+                thermal_diffusivity: None,
+            },
+            settings,
+        )
+        .unwrap();
+
+        assert!((dt - 0.11).abs() < 1.0e-12);
+    }
+
+    #[test]
+    fn adaptive_time_step_rejects_an_unstable_minimum() {
+        let settings = TimeStepSettings {
+            adaptive: true,
+            min_dt: 0.2,
+            max_dt: 1.0,
+            target_cfl: 1.0,
+            target_diffusion_number: 0.25,
+            max_growth_factor: 10.0,
+        };
+
+        let error = adaptive_time_step(
+            0.5,
+            AdaptiveTimeStepInputs {
+                max_abs_u: 0.0,
+                max_abs_v: 0.0,
+                dx: 0.5,
+                dy: 0.25,
+                kinematic_viscosity: 0.1,
+                thermal_diffusivity: None,
+            },
+            settings,
+        )
+        .unwrap_err();
+
+        assert!(error.contains("required stable time step"));
+        assert!(error.contains("min_dt"));
+    }
+
+    #[test]
     fn cavity_configuration_builds() {
         let cfg = SimulationConfig {
             case: Case::LidDrivenCavity(CavityCase::default()),
             nx: 16,
             ny: 16,
             dt: 1.0e-3,
+            time_step: TimeStepSettings::default(),
             max_steps: 2,
             t_end: 0.002,
             convection: ConvectionScheme::FirstOrderUpwind,
@@ -2241,6 +2567,56 @@ mod tests {
         };
         let solver = IncompressibleSolver::new(cfg);
         assert!(solver.is_ok());
+    }
+
+    #[test]
+    fn default_time_step_settings_preserve_fixed_step_behavior() {
+        let cfg = SimulationConfig {
+            case: Case::LidDrivenCavity(CavityCase::default()),
+            nx: 8,
+            ny: 8,
+            dt: 1.0e-3,
+            time_step: TimeStepSettings::default(),
+            max_steps: 2,
+            t_end: 0.002,
+            convection: ConvectionScheme::FirstOrderUpwind,
+            coupling: PressureVelocityCoupling::Projection,
+            pressure_solver: PressureSolverKind::Pcg,
+            pressure_max_iters: 20,
+            pressure_tolerance: 1.0e-4,
+            pressure_omega: 1.5,
+            velocity_relaxation: 0.7,
+            pressure_relaxation: 0.3,
+            print_every: 100,
+            output_every: 100,
+            frame_every: 100,
+            steady_tolerance: 1.0e-8,
+            minimum_steps: 1,
+            threads: 1,
+            boundary_overrides: SolverBoundaryOverrides::default(),
+            physics: Default::default(),
+            output_dir: PathBuf::from("target/fixed-time-step-default"),
+        };
+        let mut explicit_cfg = cfg.clone();
+        explicit_cfg.output_dir = PathBuf::from("target/fixed-time-step-explicit");
+        let mut fixed = IncompressibleSolver::new(cfg).unwrap();
+        let mut explicit = IncompressibleSolver::new(explicit_cfg).unwrap();
+
+        let fixed_first = fixed.advance().unwrap();
+        let explicit_first = explicit.advance().unwrap();
+        let fixed_second = fixed.advance().unwrap();
+        let explicit_second = explicit.advance().unwrap();
+
+        assert!(!fixed.cfg.time_step.adaptive);
+        assert!((fixed_first.time - 1.0e-3).abs() < 1.0e-12);
+        assert!((fixed_second.time - 2.0e-3).abs() < 1.0e-12);
+        assert!((fixed_first.time_step - 1.0e-3).abs() < 1.0e-12);
+        assert!((fixed_second.time_step - 1.0e-3).abs() < 1.0e-12);
+        for (left, right) in fixed.u.as_slice().iter().zip(explicit.u.as_slice()) {
+            assert!((left - right).abs() < 1.0e-12);
+        }
+        assert!((explicit_first.time - fixed_first.time).abs() < 1.0e-12);
+        assert!((explicit_second.time - fixed_second.time).abs() < 1.0e-12);
     }
 
     #[test]
@@ -2269,6 +2645,7 @@ mod tests {
             nx: 16,
             ny: 16,
             dt: 1.0e-4,
+            time_step: TimeStepSettings::default(),
             max_steps: 2,
             t_end: 2.0e-4,
             convection: ConvectionScheme::FirstOrderUpwind,
@@ -2309,6 +2686,7 @@ mod tests {
             nx: 16,
             ny: 16,
             dt: 1.0e-3,
+            time_step: TimeStepSettings::default(),
             max_steps: 2,
             t_end: 0.002,
             convection: ConvectionScheme::FirstOrderUpwind,

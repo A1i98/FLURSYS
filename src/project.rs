@@ -8,7 +8,7 @@ use crate::{
     AnalysisDimension, BoundaryCondition, BoundaryConditionKind, BoundaryFace, Case,
     ConvectionScheme, ExecutionPlan, LidDrivenCavity3DConfig, MeshTopology, PhysicsSettings,
     PreprocessingModel, PressureSolverKind, PressureVelocityCoupling, SimulationConfig,
-    WorkbenchAnalysis,
+    TimeStepSettings, WorkbenchAnalysis,
 };
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -80,6 +80,7 @@ pub struct ProjectSolver {
     pub nx: usize,
     pub ny: usize,
     pub dt: f64,
+    pub time_step: ProjectTimeStepSettings,
     pub max_iterations: usize,
     pub coupling: ProjectCoupling,
     pub convection: ProjectConvectionScheme,
@@ -112,6 +113,17 @@ pub enum ProjectConvectionScheme {
     Central,
 }
 
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ProjectTimeStepSettings {
+    pub adaptive: bool,
+    pub min_dt: f64,
+    pub max_dt: f64,
+    pub target_cfl: f64,
+    pub target_diffusion_number: f64,
+    pub max_growth_factor: f64,
+}
+
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ProjectPressureSolver {
@@ -140,6 +152,7 @@ impl Default for ProjectSolver {
             nx: 64,
             ny: 64,
             dt: 1.0e-3,
+            time_step: ProjectTimeStepSettings::default(),
             max_iterations: 10_000,
             coupling: ProjectCoupling::Simple,
             convection: ProjectConvectionScheme::FirstOrderUpwind,
@@ -196,6 +209,7 @@ impl Project {
             nx: solver.nx,
             ny: solver.ny,
             dt: solver.dt,
+            time_step: (&solver.time_step).into(),
             max_steps: solver.max_iterations,
             t_end: if matches!(coupling, PressureVelocityCoupling::Projection) {
                 solver.max_iterations as f64 * solver.dt
@@ -346,6 +360,7 @@ impl Project {
             nx: solver.nx,
             ny: solver.ny,
             dt: solver.dt,
+            time_step: (&solver.time_step).into(),
             max_steps: solver.max_iterations,
             t_end: if matches!(coupling, PressureVelocityCoupling::Projection) {
                 solver.max_iterations as f64 * solver.dt
@@ -380,6 +395,32 @@ impl Project {
 impl Default for ProjectConvectionScheme {
     fn default() -> Self {
         Self::FirstOrderUpwind
+    }
+}
+
+impl Default for ProjectTimeStepSettings {
+    fn default() -> Self {
+        Self {
+            adaptive: false,
+            min_dt: 1.0e-6,
+            max_dt: 1.0e-2,
+            target_cfl: 0.5,
+            target_diffusion_number: 0.25,
+            max_growth_factor: 1.1,
+        }
+    }
+}
+
+impl From<&ProjectTimeStepSettings> for TimeStepSettings {
+    fn from(value: &ProjectTimeStepSettings) -> Self {
+        Self {
+            adaptive: value.adaptive,
+            min_dt: value.min_dt,
+            max_dt: value.max_dt,
+            target_cfl: value.target_cfl,
+            target_diffusion_number: value.target_diffusion_number,
+            max_growth_factor: value.max_growth_factor,
+        }
     }
 }
 
@@ -660,6 +701,76 @@ mod tests {
         let json = serde_json::to_string(&project).unwrap();
 
         assert!(json.contains("\"convection\":\"central\""));
+    }
+
+    #[test]
+    fn project_json_without_time_step_uses_fixed_stepping() {
+        let mut json = serde_json::to_value(Project::default()).unwrap();
+        json["solver"].as_object_mut().unwrap().remove("time_step");
+
+        let project: Project = serde_json::from_value(json).unwrap();
+
+        assert!(!project.solver.time_step.adaptive);
+    }
+
+    #[test]
+    fn adaptive_time_step_settings_map_to_projection_configuration() {
+        let mut json = serde_json::to_value(Project::default()).unwrap();
+        json["solver"]["coupling"] = serde_json::json!("projection");
+        json["solver"]["time_step"] = serde_json::json!({
+            "adaptive": true,
+            "min_dt": 0.00001,
+            "max_dt": 0.001,
+            "target_cfl": 0.5,
+            "target_diffusion_number": 0.25,
+            "max_growth_factor": 1.1
+        });
+        let project: Project = serde_json::from_value(json).unwrap();
+
+        let config = project
+            .simulation_config("target/adaptive-time-step-project-test")
+            .unwrap();
+
+        assert!(config.time_step.adaptive);
+        assert_eq!(config.time_step.min_dt, 1.0e-5);
+        assert_eq!(config.time_step.max_dt, 1.0e-3);
+        assert_eq!(config.time_step.target_cfl, 0.5);
+        assert_eq!(config.time_step.target_diffusion_number, 0.25);
+        assert_eq!(config.time_step.max_growth_factor, 1.1);
+    }
+
+    #[test]
+    fn adaptive_time_stepping_is_rejected_for_simple_coupling() {
+        let mut project = Project::default();
+        project.solver.time_step.adaptive = true;
+
+        assert!(project
+            .validate()
+            .unwrap_err()
+            .contains("adaptive time stepping requires transient projection coupling"));
+    }
+
+    #[test]
+    fn project_serializes_adaptive_time_step_settings() {
+        let mut project = Project::default();
+        project.solver.coupling = ProjectCoupling::Projection;
+        project.solver.time_step = ProjectTimeStepSettings {
+            adaptive: true,
+            min_dt: 1.0e-5,
+            max_dt: 1.0e-3,
+            target_cfl: 0.5,
+            target_diffusion_number: 0.25,
+            max_growth_factor: 1.1,
+        };
+
+        let json = serde_json::to_value(project).unwrap();
+
+        assert_eq!(json["solver"]["time_step"]["adaptive"], true);
+        assert_eq!(json["solver"]["time_step"]["min_dt"], 1.0e-5);
+        assert_eq!(json["solver"]["time_step"]["max_dt"], 1.0e-3);
+        assert_eq!(json["solver"]["time_step"]["target_cfl"], 0.5);
+        assert_eq!(json["solver"]["time_step"]["target_diffusion_number"], 0.25);
+        assert_eq!(json["solver"]["time_step"]["max_growth_factor"], 1.1);
     }
 
     #[test]
