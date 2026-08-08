@@ -34,47 +34,29 @@ The principal source files associated with the methods described here are:
 
 For constant-density incompressible flow,
 
-$$
-\nabla\cdot\mathbf{u}=0,
-$$
+$$ \nabla\cdot\mathbf{u}=0, $$
 
 where, in two dimensions,
 
-$$
-\mathbf{u}=(u,v).
-$$
+$$ \mathbf{u}=(u,v). $$
 
 In Cartesian coordinates,
 
-$$
-\frac{\partial u}{\partial x}+\frac{\partial v}{\partial y}=0.
-$$
+$$ \frac{\partial u}{\partial x}+\frac{\partial v}{\partial y}=0. $$
 
 In the 3D cavity backend,
 
-$$
-\mathbf{u}=(u,v,w),
-$$
+$$ \mathbf{u}=(u,v,w), $$
 
 and continuity becomes
 
-$$
-\frac{\partial u}{\partial x}
-+\frac{\partial v}{\partial y}
-+\frac{\partial w}{\partial z}=0.
-$$
+$$ \frac{\partial u}{\partial x} +\frac{\partial v}{\partial y} +\frac{\partial w}{\partial z}=0. $$
 
 ### 2.2 Momentum equation
 
 The 2D solver advances the incompressible Newtonian momentum equation in kinematic-viscosity form,
 
-$$
-\frac{\partial \mathbf{u}}{\partial t}
-+\nabla\cdot(\mathbf{u}\otimes\mathbf{u})
-=-\frac{1}{\rho}\nabla p
-+\nu\nabla^2\mathbf{u}
-+\mathbf{b},
-$$
+$$ \frac{\partial \mathbf{u}}{\partial t} +\nabla\cdot(\mathbf{u}\otimes\mathbf{u}) =-\frac{1}{\rho}\nabla p +\nu\nabla^2\mathbf{u} +\mathbf{b}, $$
 
 subject to incompressibility. Here
 
@@ -87,35 +69,15 @@ For a divergence-free velocity field, the conservative convective form above is 
 
 In component form,
 
-$$
-\frac{\partial u}{\partial t}
-+\frac{\partial u^2}{\partial x}
-+\frac{\partial uv}{\partial y}
-=-\frac{1}{\rho}\frac{\partial p}{\partial x}
-+\nu\left(
-\frac{\partial^2 u}{\partial x^2}
-+\frac{\partial^2 u}{\partial y^2}
-\right)+b_x,
-$$
+$$ \frac{\partial u}{\partial t} +\frac{\partial u^2}{\partial x} +\frac{\partial uv}{\partial y} =-\frac{1}{\rho}\frac{\partial p}{\partial x} +\nu\left( \frac{\partial^2 u}{\partial x^2} +\frac{\partial^2 u}{\partial y^2} \right)+b_x, $$
 
-$$
-\frac{\partial v}{\partial t}
-+\frac{\partial uv}{\partial x}
-+\frac{\partial v^2}{\partial y}
-=-\frac{1}{\rho}\frac{\partial p}{\partial y}
-+\nu\left(
-\frac{\partial^2 v}{\partial x^2}
-+\frac{\partial^2 v}{\partial y^2}
-\right)+b_y.
-$$
+$$ \frac{\partial v}{\partial t} +\frac{\partial uv}{\partial x} +\frac{\partial v^2}{\partial y} =-\frac{1}{\rho}\frac{\partial p}{\partial y} +\nu\left( \frac{\partial^2 v}{\partial x^2} +\frac{\partial^2 v}{\partial y^2} \right)+b_y. $$
 
 ### 2.3 Reynolds number and viscosity
 
 For project-defined canonical cases, the kinematic viscosity is constructed from the specified Reynolds number and the characteristic velocity and length of that case:
 
-$$
-\mathrm{Re}=\frac{U_{\mathrm{ref}}L_{\mathrm{ref}}}{\nu}.
-$$
+$$ \mathrm{Re}=\frac{U_{\mathrm{ref}}L_{\mathrm{ref}}}{\nu}. $$
 
 The present project conversion uses the following characteristic scales:
 
@@ -128,9 +90,7 @@ The present project conversion uses the following characteristic scales:
 
 Consequently,
 
-$$
-\nu=\frac{U_{\mathrm{ref}}L_{\mathrm{ref}}}{\mathrm{Re}}.
-$$
+$$ \nu=\frac{U_{\mathrm{ref}}L_{\mathrm{ref}}}{\mathrm{Re}}. $$
 
 ---
 
@@ -140,44 +100,25 @@ $$
 
 When the thermal model is enabled, FLURSYS solves a cell-centred temperature transport equation with constant thermal diffusivity:
 
-$$
-\frac{\partial T}{\partial t}
-+\nabla\cdot(\mathbf{u}T)
-=\alpha\nabla^2T+S_T.
-$$
+$$ \frac{\partial T}{\partial t} +\nabla\cdot(\mathbf{u}T) =\alpha\nabla^2T+S_T. $$
 
 For incompressible flow this is equivalent to
 
-$$
-\frac{\partial T}{\partial t}
-+\mathbf{u}\cdot\nabla T
-=\alpha\nabla^2T+S_T.
-$$
+$$ \frac{\partial T}{\partial t} +\mathbf{u}\cdot\nabla T =\alpha\nabla^2T+S_T. $$
 
 The parameter
 
-$$
-\alpha=\frac{k}{\rho c_p}
-$$
+$$ \alpha=\frac{k}{\rho c_p} $$
 
 is supplied directly as the thermal diffusivity. The source $S_T$ is stored as a **temperature rate** with units K/s. Accordingly, the current public thermal configuration does not separately expose $k$, $c_p$, and a volumetric source $q'''$; those quantities are represented through $\alpha$ and $S_T$.
 
 The equivalent dimensional energy equation is
 
-$$
-\rho c_p
-\left(
-\frac{\partial T}{\partial t}
-+\mathbf{u}\cdot\nabla T
-\right)
-=k\nabla^2T+q''',
-$$
+$$ \rho c_p \left( \frac{\partial T}{\partial t} +\mathbf{u}\cdot\nabla T \right) =k\nabla^2T+q''', $$
 
 with
 
-$$
-S_T=\frac{q'''}{\rho c_p}.
-$$
+$$ S_T=\frac{q'''}{\rho c_p}. $$
 
 This latter form is useful for interpretation, but the solver advances the diffusivity/source-rate form.
 
@@ -185,10 +126,7 @@ This latter form is useful for interpretation, but the solver advances the diffu
 
 The optional Boussinesq model adds a temperature-dependent acceleration to momentum:
 
-$$
-\mathbf{b}
-=\mathbf{g}\,\beta\,(T-T_{\mathrm{ref}}),
-$$
+$$ \mathbf{b} =\mathbf{g}\,\beta\,(T-T_{\mathrm{ref}}), $$
 
 where $\beta$ is the thermal expansion coefficient and $\mathbf{g}=(g_x,g_y)$ is the configured gravity vector. The sign of the force therefore follows the sign convention supplied through the gravity components.
 
@@ -204,11 +142,7 @@ The model should be interpreted in the usual small-density-variation sense: dens
 
 The 2D backend uses a uniform Cartesian staggered arrangement. For a domain of length $L$ and height $H$,
 
-$$
-\Delta x=\frac{L}{N_x},
-\qquad
-\Delta y=\frac{H}{N_y}.
-$$
+$$ \Delta x=\frac{L}{N_x}, \qquad \Delta y=\frac{H}{N_y}. $$
 
 Pressure and scalar quantities are stored at cell centres. Velocity components are stored at the faces normal to their respective directions:
 
@@ -218,23 +152,11 @@ Pressure and scalar quantities are stored at cell centres. Velocity components a
 
 The coordinate locations are
 
-$$
-x_{p,i}=\left(i+\frac12\right)\Delta x,
-\qquad
-y_{p,j}=\left(j+\frac12\right)\Delta y,
-$$
+$$ x_{p,i}=\left(i+\frac12\right)\Delta x, \qquad y_{p,j}=\left(j+\frac12\right)\Delta y, $$
 
-$$
-x_{u,i}=i\Delta x,
-\qquad
-y_{u,j}=\left(j+\frac12\right)\Delta y,
-$$
+$$ x_{u,i}=i\Delta x, \qquad y_{u,j}=\left(j+\frac12\right)\Delta y, $$
 
-$$
-x_{v,i}=\left(i+\frac12\right)\Delta x,
-\qquad
-y_{v,j}=j\Delta y.
-$$
+$$ x_{v,i}=\left(i+\frac12\right)\Delta x, \qquad y_{v,j}=j\Delta y. $$
 
 This arrangement provides a compact discrete divergence and pressure-gradient pair and avoids the pressure–velocity decoupling associated with an uncorrected collocated discretization.
 
@@ -257,13 +179,7 @@ The 3D grid is uniform in each coordinate, with $\Delta x=L/N_x$, $\Delta y=H/N_
 
 For an $x$-momentum face, the implementation forms transporting velocities at the neighbouring flux locations and evaluates the conservative convection term as
 
-$$
-\mathcal{C}_u
-\approx
-\frac{u_e\,\phi_e-u_w\,\phi_w}{\Delta x}
-+
-\frac{v_n\,\phi_n-v_s\,\phi_s}{\Delta y},
-$$
+$$ \mathcal{C}_u \approx \frac{u_e\,\phi_e-u_w\,\phi_w}{\Delta x} + \frac{v_n\,\phi_n-v_s\,\phi_s}{\Delta y}, $$
 
 where the transported quantity $\phi$ is the $u$ component. An analogous construction is used for $v$ momentum.
 
@@ -277,13 +193,7 @@ Two face-value rules are currently available for momentum.
 
 For a generic face velocity $U_f$ between left/upstream candidate $\phi_L$ and right/downstream candidate $\phi_R$,
 
-$$
-\phi_f=
-\begin{cases}
-\phi_L, & U_f\ge 0,\\[4pt]
-\phi_R, & U_f<0.
-\end{cases}
-$$
+$$ \phi_f= \begin{cases} \phi_L, & U_f\ge 0,\\[4pt] \phi_R, & U_f<0. \end{cases} $$
 
 This scheme is robust and bounded for the present linear face interpolation, at the cost of first-order numerical diffusion.
 
@@ -291,9 +201,7 @@ This scheme is robust and bounded for the present linear face interpolation, at 
 
 The central option uses
 
-$$
-\phi_f=\frac{\phi_L+\phi_R}{2}.
-$$
+$$ \phi_f=\frac{\phi_L+\phi_R}{2}. $$
 
 On a uniform grid and away from boundaries or masked solids this is nominally second-order in space for smooth fields. It is less dissipative than upwind but does not introduce a nonlinear boundedness mechanism; consequently, adequate resolution and time-step control remain the responsibility of the simulation setup.
 
@@ -303,13 +211,7 @@ Project files can select either `first-order-upwind` or `central` for the moment
 
 For a generic face-centred velocity component $\phi$,
 
-$$
-\nabla^2\phi
-\approx
-\frac{\phi_E-2\phi_P+\phi_W}{\Delta x^2}
-+
-\frac{\phi_N-2\phi_P+\phi_S}{\Delta y^2}.
-$$
+$$ \nabla^2\phi \approx \frac{\phi_E-2\phi_P+\phi_W}{\Delta x^2} + \frac{\phi_N-2\phi_P+\phi_S}{\Delta y^2}. $$
 
 This is the conventional second-order Cartesian Laplacian in an unobstructed interior region.
 
@@ -317,19 +219,11 @@ This is the conventional second-order Cartesian Laplacian in an unobstructed int
 
 Momentum is advanced explicitly with a first-order forward-Euler update. In generic form,
 
-$$
-\phi^*=
-\phi^n
-+\Delta t\,
-\left[-\mathcal{C}(\phi)
-+\nu\nabla_h^2\phi
--\frac{1}{\rho}(\nabla_h p)_\phi
-+b_\phi\right].
-$$
+$$ \phi^*= \phi^n +\Delta t\, \left[-\mathcal{C}(\phi) +\nu\nabla_h^2\phi -\frac{1}{\rho}(\nabla_h p)_\phi +b_\phi\right]. $$
 
 For the transient projection method, the pressure-gradient term is omitted from the predictor and introduced through the subsequent projection. For SIMPLE-style iterations, the current pressure field is included in the momentum predictor.
 
-The current 2D solver uses a fixed configured $\Delta t$. Automatic adaptive time stepping is not yet part of the implementation described here.
+The 2D projection solver uses a fixed configured $\Delta t$ by default. Project files can opt into adaptive stepping, where $\Delta t$ is the initial step and each subsequent step is limited by advective CFL, explicit momentum diffusion, optional thermal diffusion, configured bounds, and a growth limit. SIMPLE pseudo-time iterations and the 3D solver remain fixed-step.
 
 ---
 
@@ -345,54 +239,25 @@ The projection path is a fractional-step method.
 
 An intermediate velocity is computed without the new pressure gradient:
 
-$$
-\frac{\mathbf{u}^*-\mathbf{u}^n}{\Delta t}
-=
--\nabla_h\cdot(\mathbf{u}\otimes\mathbf{u})^n
-+\nu\nabla_h^2\mathbf{u}^n
-+\mathbf{b}^n.
-$$
+$$ \frac{\mathbf{u}^*-\mathbf{u}^n}{\Delta t} = -\nabla_h\cdot(\mathbf{u}\otimes\mathbf{u})^n +\nu\nabla_h^2\mathbf{u}^n +\mathbf{b}^n. $$
 
 ### Step 2 — pressure Poisson equation
 
 Requiring the corrected velocity to satisfy discrete continuity gives
 
-$$
-\nabla_h^2p^{n+1}
-=
-\frac{\rho}{\Delta t}
-\nabla_h\cdot\mathbf{u}^*.
-$$
+$$ \nabla_h^2p^{n+1} = \frac{\rho}{\Delta t} \nabla_h\cdot\mathbf{u}^*. $$
 
 For each fluid cell, the discrete divergence is
 
-$$
-(\nabla_h\cdot\mathbf{u})_{i,j}
-=
-\frac{u_{i+1,j}-u_{i,j}}{\Delta x}
-+
-\frac{v_{i,j+1}-v_{i,j}}{\Delta y}.
-$$
+$$ (\nabla_h\cdot\mathbf{u})_{i,j} = \frac{u_{i+1,j}-u_{i,j}}{\Delta x} + \frac{v_{i,j+1}-v_{i,j}}{\Delta y}. $$
 
 ### Step 3 — velocity correction
 
 The face velocities are projected using the pressure gradient:
 
-$$
-u^{n+1}_{i,j}
-=
-u^*_{i,j}
--\frac{\Delta t}{\rho}
-\frac{p_{i,j}-p_{i-1,j}}{\Delta x},
-$$
+$$ u^{n+1}_{i,j} = u^*_{i,j} -\frac{\Delta t}{\rho} \frac{p_{i,j}-p_{i-1,j}}{\Delta x}, $$
 
-$$
-v^{n+1}_{i,j}
-=
-v^*_{i,j}
--\frac{\Delta t}{\rho}
-\frac{p_{i,j}-p_{i,j-1}}{\Delta y}.
-$$
+$$ v^{n+1}_{i,j} = v^*_{i,j} -\frac{\Delta t}{\rho} \frac{p_{i,j}-p_{i,j-1}}{\Delta y}. $$
 
 Boundary conditions are re-applied after correction.
 
@@ -436,18 +301,7 @@ Let $k$ denote the outer SIMPLE iteration and let $\alpha_u$ and $\alpha_p$ be t
 
 The predictor includes the current pressure gradient and applies the velocity relaxation factor to the explicit pseudo-time increment:
 
-$$
-\mathbf{u}^*
-=
-\mathbf{u}^k
-+\alpha_u\Delta t_p
-\left[
--\nabla_h\cdot(\mathbf{u}\otimes\mathbf{u})^k
-+\nu\nabla_h^2\mathbf{u}^k
--\frac{1}{\rho}\nabla_h p^k
-+\mathbf{b}^k
-\right],
-$$
+$$ \mathbf{u}^* = \mathbf{u}^k +\alpha_u\Delta t_p \left[ -\nabla_h\cdot(\mathbf{u}\otimes\mathbf{u})^k +\nu\nabla_h^2\mathbf{u}^k -\frac{1}{\rho}\nabla_h p^k +\mathbf{b}^k \right], $$
 
 where $\Delta t_p$ is the configured pseudo-time step.
 
@@ -455,29 +309,17 @@ where $\Delta t_p$ is the configured pseudo-time step.
 
 The pressure storage is temporarily used for a correction $p'$. The RHS scaling is consistent with the relaxed velocity correction:
 
-$$
-\nabla_h^2p'
-=
-\frac{\rho}{\alpha_u\Delta t_p}
-\nabla_h\cdot\mathbf{u}^*.
-$$
+$$ \nabla_h^2p' = \frac{\rho}{\alpha_u\Delta t_p} \nabla_h\cdot\mathbf{u}^*. $$
 
 ### Velocity and pressure correction
 
 Velocity is corrected as
 
-$$
-\mathbf{u}^{k+1}
-=
-\mathbf{u}^*
--\frac{\alpha_u\Delta t_p}{\rho}\nabla_h p',
-$$
+$$ \mathbf{u}^{k+1} = \mathbf{u}^* -\frac{\alpha_u\Delta t_p}{\rho}\nabla_h p', $$
 
 and pressure is under-relaxed according to
 
-$$
-p^{k+1}=p^k+\alpha_p p'.
-$$
+$$ p^{k+1}=p^k+\alpha_p p'. $$
 
 This formulation is suitable for the current structured solver and its steady iterations, but it should not be confused with a general coefficient-based SIMPLE implementation for arbitrary collocated or unstructured finite-volume systems.
 
@@ -489,13 +331,7 @@ This formulation is suitable for the current structured solver and its steady it
 
 Away from solids and Dirichlet pressure cells, the 2D pressure Laplacian is
 
-$$
-(\nabla_h^2p)_{i,j}
-=
-\frac{p_{i+1,j}-2p_{i,j}+p_{i-1,j}}{\Delta x^2}
-+
-\frac{p_{i,j+1}-2p_{i,j}+p_{i,j-1}}{\Delta y^2}.
-$$
+$$ (\nabla_h^2p)_{i,j} = \frac{p_{i+1,j}-2p_{i,j}+p_{i-1,j}}{\Delta x^2} + \frac{p_{i,j+1}-2p_{i,j}+p_{i,j-1}}{\Delta y^2}. $$
 
 At masked or domain boundaries, unavailable neighbours are removed from the active stencil in a manner corresponding to a zero-normal-gradient treatment unless a pressure outlet imposes a Dirichlet value.
 
@@ -503,21 +339,11 @@ At masked or domain boundaries, unavailable neighbours are removed from the acti
 
 The Successive Over-Relaxation solver updates an active pressure cell using
 
-$$
-p_P^{\mathrm{new}}
-=p_P^{\mathrm{old}}
-+\omega
-\left(
-\frac{\displaystyle\sum_N a_Np_N-b_P}{a_P}
--p_P^{\mathrm{old}}
-\right),
-$$
+$$ p_P^{\mathrm{new}} =p_P^{\mathrm{old}} +\omega \left( \frac{\displaystyle\sum_N a_Np_N-b_P}{a_P} -p_P^{\mathrm{old}} \right), $$
 
 with
 
-$$
-0<\omega<2.
-$$
+$$ 0<\omega<2. $$
 
 SOR is implemented as an in-place sequential sweep. It is therefore not parallelized by the 2D Rayon worker pool.
 
@@ -525,23 +351,17 @@ SOR is implemented as an in-place sequential sweep. It is therefore not parallel
 
 The alternative pressure solver is PCG applied to the symmetric structured pressure operator, using a Jacobi preconditioner:
 
-$$
-M^{-1}\approx\operatorname{diag}(A)^{-1}.
-$$
+$$ M^{-1}\approx\operatorname{diag}(A)^{-1}. $$
 
 The expensive stencil application, vector updates, dot products, and maximum-residual reductions are parallelized with Rayon. Solver work vectors are retained between outer iterations to avoid repeated allocation.
 
 The stopping quantity is the maximum absolute algebraic residual,
 
-$$
-R_p=\|\mathbf{b}-A\mathbf{p}\|_\infty,
-$$
+$$ R_p=\|\mathbf{b}-A\mathbf{p}\|_\infty, $$
 
 and the solve terminates when
 
-$$
-R_p<\varepsilon_p
-$$
+$$ R_p<\varepsilon_p $$
 
 or the configured pressure-iteration limit is reached.
 
@@ -578,9 +398,7 @@ For the velocity component normal to a domain face:
 
 Tangential conditions are represented through ghost values in the momentum stencil. For a prescribed tangential wall velocity $u_w$, a mirrored ghost value is constructed as
 
-$$
-u_g=2u_w-u_P.
-$$
+$$ u_g=2u_w-u_P. $$
 
 A stationary no-slip wall therefore gives $u_g=-u_P$. The corresponding construction is used for the $v$ component.
 
@@ -600,33 +418,15 @@ This distinction is important for interpreting surface forces and near-wall grad
 
 Temperature is advanced at cell centres with a first-order explicit finite-volume update:
 
-$$
-T_{i,j}^{n+1}
-=
-T_{i,j}^{n}
-+\Delta t
-\left[
--\mathcal{C}_T
-+\alpha\nabla_h^2T
-+S_T
-\right].
-$$
+$$ T_{i,j}^{n+1} = T_{i,j}^{n} +\Delta t \left[ -\mathcal{C}_T +\alpha\nabla_h^2T +S_T \right]. $$
 
 Thermal convection currently uses first-order upwind face values irrespective of the momentum convection option. For example,
 
-$$
-F_e=u_eT_{e,\mathrm{upwind}},
-$$
+$$ F_e=u_eT_{e,\mathrm{upwind}}, $$
 
 and
 
-$$
-\mathcal{C}_T
-=
-\frac{F_e-F_w}{\Delta x}
-+
-\frac{F_n-F_s}{\Delta y}.
-$$
+$$ \mathcal{C}_T = \frac{F_e-F_w}{\Delta x} + \frac{F_n-F_s}{\Delta y}. $$
 
 Thermal diffusion uses the same Cartesian second-difference Laplacian as the momentum diffusion term.
 
@@ -634,15 +434,11 @@ Thermal diffusion uses the same Cartesian second-difference Laplacian as the mom
 
 For an adiabatic domain boundary,
 
-$$
-\frac{\partial T}{\partial n}=0.
-$$
+$$ \frac{\partial T}{\partial n}=0. $$
 
 The implemented ghost treatment sets the neighbour value equal to the adjacent cell-centre value,
 
-$$
-T_g=T_P,
-$$
+$$ T_g=T_P, $$
 
 which gives zero normal difference at the boundary in the discrete stencil.
 
@@ -650,9 +446,7 @@ which gives zero normal difference at the boundary in the discrete stencil.
 
 For a prescribed wall temperature $T_w$, the ghost value is
 
-$$
-T_g=2T_w-T_P.
-$$
+$$ T_g=2T_w-T_P. $$
 
 This places the desired wall temperature halfway between the interior and ghost cell centres, consistent with the Cartesian cell-centred arrangement.
 
@@ -664,83 +458,47 @@ If a temperature stencil encounters an internal solid cell, the neighbour temper
 
 ## 10. Stability Measures
 
-Because momentum and temperature are advanced explicitly, time-step selection is a material part of solution quality. FLURSYS reports reference stability measures; these should be interpreted as diagnostics rather than universal sufficiency conditions.
+Because momentum and temperature are advanced explicitly, time-step selection is a material part of solution quality. FLURSYS reports stability measures; they guide adaptive projection-step selection when enabled, but are not universal sufficiency conditions.
 
 ### 10.1 Momentum Courant number
 
 After a completed 2D step, FLURSYS computes
 
-$$
-\mathrm{CFL}_m
-=\Delta t
-\left(
-\frac{\max|u|}{\Delta x}
-+
-\frac{\max|v|}{\Delta y}
-\right),
-$$
+$$ \mathrm{CFL}_m =\Delta t \left( \frac{\max|u|}{\Delta x} + \frac{\max|v|}{\Delta y} \right), $$
 
 using maxima from the staggered velocity fields.
 
-The solver currently reports $\mathrm{CFL}_m\le 1$ as a common explicit reference limit. It does **not** automatically reduce the time step when this value is exceeded.
+For fixed stepping, $\mathrm{CFL}_m\le 1$ is reported as a common explicit reference limit without automatic enforcement. When adaptive projection stepping is enabled, the selected step uses the same staggered-velocity CFL rate with the configured target CFL.
 
 ### 10.2 Momentum viscous diffusion number
 
 The corresponding viscous diagnostic is
 
-$$
-D_\nu
-=\nu\Delta t
-\left(
-\frac{1}{\Delta x^2}
-+
-\frac{1}{\Delta y^2}
-\right).
-$$
+$$ D_\nu =\nu\Delta t \left( \frac{1}{\Delta x^2} + \frac{1}{\Delta y^2} \right). $$
 
-A value $D_\nu\le 0.5$ is reported as a common explicit reference bound for the two-dimensional diffusion operator. Again, this value is diagnostic; momentum stepping is not currently rejected solely because $D_\nu$ is large.
+For fixed stepping, $D_\nu\le 0.5$ is a common explicit reference bound and remains diagnostic-only. Adaptive projection stepping selects against the configured diffusion target using the larger of the momentum and active thermal diffusivities; it does not use rejected-step rollback.
 
 ### 10.3 Thermal advection CFL
 
 When thermal transport is active, the runtime thermal update evaluates
 
-$$
-\mathrm{CFL}_T
-=\Delta t
-\left(
-\frac{\max|u_c|}{\Delta x}
-+
-\frac{\max|v_c|}{\Delta y}
-\right),
-$$
+$$ \mathrm{CFL}_T =\Delta t \left( \frac{\max|u_c|}{\Delta x} + \frac{\max|v_c|}{\Delta y} \right), $$
 
 where $u_c$ and $v_c$ are reconstructed cell-centred velocities. The thermal step is rejected if
 
-$$
-\mathrm{CFL}_T>1.
-$$
+$$ \mathrm{CFL}_T>1. $$
 
 ### 10.4 Thermal diffusion condition
 
-Configuration validation evaluates
+Fixed-step configuration validation evaluates
 
-$$
-D_T
-=\alpha\Delta t
-\left(
-\frac{1}{\Delta x^2}
-+
-\frac{1}{\Delta y^2}
-\right),
-$$
+$$ D_T =\alpha\Delta t \left( \frac{1}{\Delta x^2} + \frac{1}{\Delta y^2} \right), $$
 
 and requires
 
-$$
-D_T\le\frac12.
-$$
+$$ D_T\le\frac12. $$
 
-This is the standard forward-Euler Cartesian diffusion restriction for the implemented 2D scalar Laplacian.
+This is the standard forward-Euler Cartesian diffusion restriction for the implemented 2D scalar Laplacian. Adaptive projection settings validate the thermal properties and the configured minimum step; the runtime selector includes thermal diffusivity when the energy model is active.
 
 ### 10.5 Practical interpretation
 
@@ -756,14 +514,7 @@ FLURSYS records several distinct quantities. They should not be conflated: the p
 
 For the stencil pressure solver, the reported pressure residual is the maximum local Poisson defect,
 
-$$
-R_p
-=
-\max_{(i,j)\in\Omega_f}
-\left|
-(\nabla_h^2p)_{i,j}-b_{i,j}
-\right|,
-$$
+$$ R_p = \max_{(i,j)\in\Omega_f} \left| (\nabla_h^2p)_{i,j}-b_{i,j} \right|, $$
 
 excluding solid and Dirichlet outlet cells. PCG equivalently tracks the maximum absolute algebraic residual.
 
@@ -771,16 +522,7 @@ excluding solid and Dirichlet outlet cells. PCG equivalently tracks the maximum 
 
 The corrected-flow continuity measure is
 
-$$
-R_c
-=
-\max_{(i,j)\in\Omega_f}
-\left|
-\frac{u_{i+1,j}-u_{i,j}}{\Delta x}
-+
-\frac{v_{i,j+1}-v_{i,j}}{\Delta y}
-\right|.
-$$
+$$ R_c = \max_{(i,j)\in\Omega_f} \left| \frac{u_{i+1,j}-u_{i,j}}{\Delta x} + \frac{v_{i,j+1}-v_{i,j}}{\Delta y} \right|. $$
 
 This is an absolute dimensional divergence measure, not a normalized mass-imbalance norm.
 
@@ -788,27 +530,15 @@ This is an absolute dimensional divergence measure, not a normalized mass-imbala
 
 The current steady-change diagnostic is
 
-$$
-R_u
-=
-\max
-\left(
-\|u^{n+1}-u^n\|_\infty,
-\|v^{n+1}-v^n\|_\infty
-\right).
-$$
+$$ R_u = \max \left( \|u^{n+1}-u^n\|_\infty, \|v^{n+1}-v^n\|_\infty \right). $$
 
 For cases eligible for steady stopping, convergence is declared only after the configured minimum number of iterations/steps and when
 
-$$
-R_u<\varepsilon_{\mathrm{steady}}
-$$
+$$ R_u<\varepsilon_{\mathrm{steady}} $$
 
 and
 
-$$
-R_c<10\,\varepsilon_p.
-$$
+$$ R_c<10\,\varepsilon_p. $$
 
 The cylinder case is deliberately excluded from this steady stopping rule because the canonical wake case is intended to admit sustained unsteady vortex shedding.
 
@@ -824,32 +554,19 @@ The present residual quantities are absolute rather than nondimensionalized or n
 
 For visualization and post-processing, staggered velocities are reconstructed at cell centres by arithmetic averaging:
 
-$$
-u_{c,i,j}
-=\frac12\left(u_{i,j}+u_{i+1,j}\right),
-$$
+$$ u_{c,i,j} =\frac12\left(u_{i,j}+u_{i+1,j}\right), $$
 
-$$
-v_{c,i,j}
-=\frac12\left(v_{i,j}+v_{i,j+1}\right).
-$$
+$$ v_{c,i,j} =\frac12\left(v_{i,j}+v_{i,j+1}\right). $$
 
 The speed magnitude is
 
-$$
-|\mathbf{u}_c|
-=\sqrt{u_c^2+v_c^2}.
-$$
+$$ |\mathbf{u}_c| =\sqrt{u_c^2+v_c^2}. $$
 
 ### 12.2 Vorticity
 
 The 2D out-of-plane vorticity is
 
-$$
-\omega_z
-=\frac{\partial v}{\partial x}
--\frac{\partial u}{\partial y}.
-$$
+$$ \omega_z =\frac{\partial v}{\partial x} -\frac{\partial u}{\partial y}. $$
 
 FLURSYS evaluates derivatives from the reconstructed cell-centred velocity fields. Central differences are used where unobstructed neighbours exist on both sides; one-sided differences are used near a solid or domain edge when only one valid neighbour is available.
 
@@ -857,11 +574,7 @@ FLURSYS evaluates derivatives from the reconstructed cell-centred velocity field
 
 For the cylinder case, pressure and an approximate viscous contribution are integrated over fluid cells adjacent to the Cartesian solid mask. The resulting forces per unit span are normalized as
 
-$$
-C_D=\frac{F_x}{\frac12\rho U_\infty^2D},
-\qquad
-C_L=\frac{F_y}{\frac12\rho U_\infty^2D}.
-$$
+$$ C_D=\frac{F_x}{\frac12\rho U_\infty^2D}, \qquad C_L=\frac{F_y}{\frac12\rho U_\infty^2D}. $$
 
 The viscous contribution uses a near-wall gradient inferred from the adjacent cell-centred tangential velocity over half a grid spacing. Consequently, $C_D$ and $C_L$ should be expected to exhibit mesh sensitivity associated with the staircase representation of the circular boundary.
 
@@ -869,17 +582,11 @@ The viscous contribution uses a near-wall gradient inferred from the adjacent ce
 
 For the backward-facing-step case, the bottom-wall shear proxy is
 
-$$
-\tau_w
-\approx
-\mu\frac{u_c}{\Delta y/2}.
-$$
+$$ \tau_w \approx \mu\frac{u_c}{\Delta y/2}. $$
 
 Downstream of the step, the solver searches for a change from non-positive to positive wall shear and linearly interpolates the zero crossing. The reported nondimensional reattachment length is
 
-$$
-\frac{x_r-x_s}{h_s},
-$$
+$$ \frac{x_r-x_s}{h_s}, $$
 
 where $x_s$ is the step location and $h_s$ is the step height.
 
@@ -894,18 +601,7 @@ The 2D solver writes field and history information intended for both numerical i
 `history.csv` presently contains
 
 ```text
-step
- time
- pressure_residual
- pressure_iterations
- max_divergence
- velocity_change
- max_speed
- cd
- cl
- reattachment_x_over_h
- momentum_cfl
- viscous_diffusion_number
+step,time,pressure_residual,pressure_iterations,max_divergence,velocity_change,max_speed,cd,cl,reattachment_x_over_h,momentum_cfl,viscous_diffusion_number,time_step
 ```
 
 The drag, lift, and reattachment columns are case-dependent diagnostics and are zero or non-applicable outside their corresponding canonical cases.
@@ -933,16 +629,9 @@ The current 3D solver is a genuine staggered-grid incompressible projection impl
 
 The 3D backend solves constant-density laminar incompressible flow,
 
-$$
-\nabla\cdot\mathbf{u}=0,
-$$
+$$ \nabla\cdot\mathbf{u}=0, $$
 
-$$
-\frac{\partial\mathbf{u}}{\partial t}
-+(\mathbf{u}\cdot\nabla)\mathbf{u}
-=-\frac{1}{\rho}\nabla p
-+\nu\nabla^2\mathbf{u},
-$$
+$$ \frac{\partial\mathbf{u}}{\partial t} +(\mathbf{u}\cdot\nabla)\mathbf{u} =-\frac{1}{\rho}\nabla p +\nu\nabla^2\mathbf{u}, $$
 
 for a rectangular lid-driven cavity.
 
@@ -950,11 +639,7 @@ for a rectangular lid-driven cavity.
 
 Unlike the 2D momentum path, the current 3D predictor is written in an explicit advective form. Interior directional derivatives use centred differences, for example
 
-$$
-\frac{\partial u}{\partial x}
-\approx
-\frac{u_E-u_W}{2\Delta x},
-$$
+$$ \frac{\partial u}{\partial x} \approx \frac{u_E-u_W}{2\Delta x}, $$
 
 while cross-component transporting velocities are reconstructed by local four-point averages at the required staggered locations. Viscous diffusion uses the standard 7-point Cartesian Laplacian.
 
@@ -964,18 +649,7 @@ The time update is first-order forward Euler with fixed $\Delta t$.
 
 The pressure RHS is
 
-$$
-b_{i,j,k}
-=
-\frac{\rho}{\Delta t}
-\left[
-\frac{u^*_{i+1,j,k}-u^*_{i,j,k}}{\Delta x}
-+
-\frac{v^*_{i,j+1,k}-v^*_{i,j,k}}{\Delta y}
-+
-\frac{w^*_{i,j,k+1}-w^*_{i,j,k}}{\Delta z}
-\right].
-$$
+$$ b_{i,j,k} = \frac{\rho}{\Delta t} \left[ \frac{u^*_{i+1,j,k}-u^*_{i,j,k}}{\Delta x} + \frac{v^*_{i,j+1,k}-v^*_{i,j,k}}{\Delta y} + \frac{w^*_{i,j,k+1}-w^*_{i,j,k}}{\Delta z} \right]. $$
 
 Pressure is solved with SOR on the 3D Cartesian Poisson stencil. The cell $(0,0,0)$ is fixed to zero to remove the pressure null space. Velocity is then corrected with the corresponding face-centred pressure gradients.
 
@@ -1038,7 +712,7 @@ First-order upwind is deliberately dissipative. It may smear shear layers and vo
 
 ### 16.4 Fixed time step
 
-The 2D and 3D momentum solvers currently use a configured fixed time step. The reported momentum CFL and diffusion number aid diagnosis, but the solver does not yet perform automatic step-size adaptation or step rejection for the momentum equation.
+Fixed stepping remains the default for every solver. The 2D transient projection solver can opt into adaptive project-configured stepping; it limits each accepted step using CFL and explicit diffusion targets, bounds, and a growth factor. SIMPLE pseudo-time iterations and the 3D solver continue to use their configured fixed steps. The implementation does not perform rejected-step rollback.
 
 ### 16.5 Solver tolerance is not discretization error
 
@@ -1068,7 +742,8 @@ The following table summarizes the numerical scope described by this document.
 | Cylinder $C_D$ and $C_L$ diagnostics | Implemented |
 | Backward-step reattachment diagnostic | Implemented |
 | Initial 3D staggered cavity projection | Implemented |
-| Automatic adaptive momentum time step | Not implemented |
+| Adaptive time step for 2D transient projection coupling | Implemented |
+| Adaptive stepping for SIMPLE or 3D coupling | Not implemented |
 | Turbulence closure ($k$–$\varepsilon$, $k$–$\omega$ SST, LES) | Not implemented |
 | Compressible flow | Not implemented |
 | Multiphase flow | Not implemented |
