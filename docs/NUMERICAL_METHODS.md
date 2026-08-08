@@ -219,7 +219,7 @@ This is the conventional second-order Cartesian Laplacian in an unobstructed int
 
 Momentum is advanced explicitly with a first-order forward-Euler update. In generic form,
 
-$$ \phi^*= \phi^n +\Delta t\, \left[-\mathcal{C}(\phi) +\nu\nabla_h^2\phi -\frac{1}{\rho}(\nabla_h p)_\phi +b_\phi\right]. $$
+$$ \phi^{*}= \phi^n +\Delta t\, \left[-\mathcal{C}(\phi) +\nu\nabla_h^2\phi -\frac{1}{\rho}(\nabla_h p)_\phi +b_\phi\right]. $$
 
 For the transient projection method, the pressure-gradient term is omitted from the predictor and introduced through the subsequent projection. For SIMPLE-style iterations, the current pressure field is included in the momentum predictor.
 
@@ -239,13 +239,13 @@ The projection path is a fractional-step method.
 
 An intermediate velocity is computed without the new pressure gradient:
 
-$$ \frac{\mathbf{u}^*-\mathbf{u}^n}{\Delta t} = -\nabla_h\cdot(\mathbf{u}\otimes\mathbf{u})^n +\nu\nabla_h^2\mathbf{u}^n +\mathbf{b}^n. $$
+$$ \frac{\mathbf{u}^{*}-\mathbf{u}^n}{\Delta t} = -\nabla_h\cdot(\mathbf{u}\otimes\mathbf{u})^n +\nu\nabla_h^2\mathbf{u}^n +\mathbf{b}^n. $$
 
 ### Step 2 — pressure Poisson equation
 
 Requiring the corrected velocity to satisfy discrete continuity gives
 
-$$ \nabla_h^2p^{n+1} = \frac{\rho}{\Delta t} \nabla_h\cdot\mathbf{u}^*. $$
+$$ \nabla_h^2p^{n+1} = \frac{\rho}{\Delta t} \nabla_h\cdot\mathbf{u}^{*}. $$
 
 For each fluid cell, the discrete divergence is
 
@@ -255,9 +255,9 @@ $$ (\nabla_h\cdot\mathbf{u})_{i,j} = \frac{u_{i+1,j}-u_{i,j}}{\Delta x} + \frac{
 
 The face velocities are projected using the pressure gradient:
 
-$$ u^{n+1}_{i,j} = u^*_{i,j} -\frac{\Delta t}{\rho} \frac{p_{i,j}-p_{i-1,j}}{\Delta x}, $$
+$$ u^{n+1}_{i,j} = u^{*}_{i,j} -\frac{\Delta t}{\rho} \frac{p_{i,j}-p_{i-1,j}}{\Delta x}, $$
 
-$$ v^{n+1}_{i,j} = v^*_{i,j} -\frac{\Delta t}{\rho} \frac{p_{i,j}-p_{i,j-1}}{\Delta y}. $$
+$$ v^{n+1}_{i,j} = v^{*}_{i,j} -\frac{\Delta t}{\rho} \frac{p_{i,j}-p_{i,j-1}}{\Delta y}. $$
 
 Boundary conditions are re-applied after correction.
 
@@ -301,7 +301,7 @@ Let $k$ denote the outer SIMPLE iteration and let $\alpha_u$ and $\alpha_p$ be t
 
 The predictor includes the current pressure gradient and applies the velocity relaxation factor to the explicit pseudo-time increment:
 
-$$ \mathbf{u}^* = \mathbf{u}^k +\alpha_u\Delta t_p \left[ -\nabla_h\cdot(\mathbf{u}\otimes\mathbf{u})^k +\nu\nabla_h^2\mathbf{u}^k -\frac{1}{\rho}\nabla_h p^k +\mathbf{b}^k \right], $$
+$$ \mathbf{u}^{*} = \mathbf{u}^k +\alpha_u\Delta t_p \left[ -\nabla_h\cdot(\mathbf{u}\otimes\mathbf{u})^k +\nu\nabla_h^2\mathbf{u}^k -\frac{1}{\rho}\nabla_h p^k +\mathbf{b}^k \right], $$
 
 where $\Delta t_p$ is the configured pseudo-time step.
 
@@ -309,13 +309,13 @@ where $\Delta t_p$ is the configured pseudo-time step.
 
 The pressure storage is temporarily used for a correction $p'$. The RHS scaling is consistent with the relaxed velocity correction:
 
-$$ \nabla_h^2p' = \frac{\rho}{\alpha_u\Delta t_p} \nabla_h\cdot\mathbf{u}^*. $$
+$$ \nabla_h^2p' = \frac{\rho}{\alpha_u\Delta t_p} \nabla_h\cdot\mathbf{u}^{*}. $$
 
 ### Velocity and pressure correction
 
 Velocity is corrected as
 
-$$ \mathbf{u}^{k+1} = \mathbf{u}^* -\frac{\alpha_u\Delta t_p}{\rho}\nabla_h p', $$
+$$ \mathbf{u}^{k+1} = \mathbf{u}^{*} -\frac{\alpha_u\Delta t_p}{\rho}\nabla_h p', $$
 
 and pressure is under-relaxed according to
 
@@ -351,7 +351,7 @@ SOR is implemented as an in-place sequential sweep. It is therefore not parallel
 
 The alternative pressure solver is PCG applied to the symmetric structured pressure operator, using a Jacobi preconditioner:
 
-$$ M^{-1}\approx\operatorname{diag}(A)^{-1}. $$
+$$ M^{-1}\approx diag(A)^{-1}. $$
 
 The expensive stencil application, vector updates, dot products, and maximum-residual reductions are parallelized with Rayon. Solver work vectors are retained between outer iterations to avoid repeated allocation.
 
@@ -649,7 +649,7 @@ The time update is first-order forward Euler with fixed $\Delta t$.
 
 The pressure RHS is
 
-$$ b_{i,j,k} = \frac{\rho}{\Delta t} \left[ \frac{u^*_{i+1,j,k}-u^*_{i,j,k}}{\Delta x} + \frac{v^*_{i,j+1,k}-v^*_{i,j,k}}{\Delta y} + \frac{w^*_{i,j,k+1}-w^*_{i,j,k}}{\Delta z} \right]. $$
+$$ b_{i,j,k} = \frac{\rho}{\Delta t} \left[ \frac{u^{*}_{i+1,j,k}-u^{*}_{i,j,k}}{\Delta x} + \frac{v^{*}_{i,j+1,k}-v^{*}_{i,j,k}}{\Delta y} + \frac{w^{*}_{i,j,k+1}-w^{*}_{i,j,k}}{\Delta z} \right]. $$
 
 Pressure is solved with SOR on the 3D Cartesian Poisson stencil. The cell $(0,0,0)$ is fixed to zero to remove the pressure null space. Velocity is then corrected with the corresponding face-centred pressure gradients.
 
