@@ -74,6 +74,12 @@ import { SectionTitle, SectionHint, Card, MetricCard, InteractiveGeometryPreview
         in-out property <int> result-colormap-index: 0;
         in-out property <int> result-contour-levels: 12;
         in-out property <string> residual-summary: "Waiting for a solver run.";
+        in-out property <float> solver-physical-time: 0.0;
+        in-out property <float> solver-time-step: 0.0;
+        in-out property <float> solver-momentum-cfl: 0.0;
+        in-out property <float> solver-viscous-number: 0.0;
+        in-out property <float> solver-max-speed: 0.0;
+        in-out property <string> solver-stability-summary: "Time       0.0000e+0\ndt         0.0000e+0\nCFL        0.0000e+0\nDν         0.0000e+0\n|U|max     0.0000e+0";
         in-out property <image> residual-image;
         in-out property <float> continuity-level: 0.0;
         in-out property <float> momentum-level: 0.0;
@@ -435,6 +441,8 @@ import { SectionTitle, SectionHint, Card, MetricCard, InteractiveGeometryPreview
                                 Card { horizontal-stretch: 1; VerticalLayout { padding: 18px; spacing: 10px;
                                     Text { text: "LIVE CONVERGENCE"; color: rgb(240, 195, 109); font-size: 11px; font-weight: 700; }
                                     Rectangle { vertical-stretch: 1; background: rgb(9, 16, 22); border-color: rgb(40, 66, 82); border-width: 1px; Image { source: root.residual-image; width: parent.width; height: parent.height; image-fit: contain; } }
+                                    Text { text: "STABILITY · COMPLETED STEP"; color: rgb(132, 161, 180); font-size: 10px; font-weight: 700; }
+                                    Text { text: root.solver-stability-summary; color: rgb(213, 227, 236); font-family: "monospace"; font-size: 11px; }
                                     HorizontalLayout { MetricCard { label: "STATUS"; value: root.status; } MetricCard { label: "ITERATIONS"; value: root.iterations; } MetricCard { label: "WORKERS"; value: root.threads == 0 ? "AUTO" : root.threads; } }
                                 } }
                             }

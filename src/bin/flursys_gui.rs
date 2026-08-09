@@ -1,7 +1,8 @@
 use flursys::runtime::{SolverCommand, SolverController, SolverState, SolverUpdate};
 use flursys::{
     BoundaryConditionKind, BoundaryFace, ExtrudedMesh3D, FieldUpdate, GeometrySketch, Project,
-    SketchAxis, SketchEntityKind, SketchProfileKind, StructuredMesh2D, ThermalBoundaryCondition,
+    ProjectCoupling, SketchAxis, SketchEntityKind, SketchProfileKind, StructuredMesh2D,
+    ThermalBoundaryCondition,
 };
 use slint::{ComponentHandle, SharedString, Timer, TimerMode};
 use std::cell::RefCell;
@@ -1313,6 +1314,23 @@ fn refresh_ui(ui: &MainWindow, state: &AppState) {
     let solver_state = update.map_or(SolverState::Idle, |update| update.state);
     ui.set_status(SharedString::from(format!("{:?}", solver_state)));
     if let Some(update) = update {
+        ui.set_solver_physical_time(update.physical_time as f32);
+        ui.set_solver_time_step(update.time_step as f32);
+        ui.set_solver_momentum_cfl(update.momentum_cfl as f32);
+        ui.set_solver_viscous_number(update.viscous_diffusion_number as f32);
+        ui.set_solver_max_speed(update.max_speed as f32);
+        let time_label = match state.project.solver.coupling {
+            ProjectCoupling::Projection => "Time",
+            ProjectCoupling::Simple => "Pseudo time",
+        };
+        ui.set_solver_stability_summary(SharedString::from(format!(
+            "{time_label:<10}{:>10.4e}\ndt         {:>10.4e}\nCFL        {:>10.4e}\nDν         {:>10.4e}\n|U|max     {:>10.4e}",
+            update.physical_time,
+            update.time_step,
+            update.momentum_cfl,
+            update.viscous_diffusion_number,
+            update.max_speed,
+        )));
         ui.set_residual_summary(SharedString::from(format!(
             "Iteration        {:>10}\nElapsed          {:>10.3} s\nLast iteration   {:>10.3} ms\nPressure PCG     {:>10} iters\nContinuity       {:>10.3e}\nMomentum         {:>10.3e}\nPressure         {:>10.3e}\nConverged        {}",
             update.iteration,

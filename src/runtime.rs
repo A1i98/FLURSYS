@@ -32,10 +32,15 @@ pub enum SolverState {
 pub struct SolverUpdate {
     pub state: SolverState,
     pub iteration: usize,
+    pub physical_time: f64,
+    pub time_step: f64,
     pub continuity_residual: f64,
     pub momentum_residual: f64,
     pub pressure_residual: f64,
     pub pressure_iterations: usize,
+    pub momentum_cfl: f64,
+    pub viscous_diffusion_number: f64,
+    pub max_speed: f64,
     pub drag_coefficient: f64,
     pub lift_coefficient: f64,
     pub elapsed_seconds: f64,
@@ -50,10 +55,15 @@ impl SolverUpdate {
         Self {
             state,
             iteration: 0,
+            physical_time: 0.0,
+            time_step: 0.0,
             continuity_residual: 0.0,
             momentum_residual: 0.0,
             pressure_residual: 0.0,
             pressure_iterations: 0,
+            momentum_cfl: 0.0,
+            viscous_diffusion_number: 0.0,
+            max_speed: 0.0,
             drag_coefficient: 0.0,
             lift_coefficient: 0.0,
             elapsed_seconds: 0.0,
@@ -74,10 +84,15 @@ impl SolverUpdate {
         Self {
             state,
             iteration: step.iteration,
+            physical_time: step.time,
+            time_step: step.time_step,
             continuity_residual: step.continuity_residual,
             momentum_residual: step.momentum_residual,
             pressure_residual: step.pressure_residual,
             pressure_iterations: step.pressure_iterations,
+            momentum_cfl: step.momentum_cfl,
+            viscous_diffusion_number: step.viscous_diffusion_number,
+            max_speed: step.max_speed,
             drag_coefficient: step.drag_coefficient,
             lift_coefficient: step.lift_coefficient,
             elapsed_seconds,
@@ -338,6 +353,47 @@ mod tests {
         }
     }
 
+    fn step() -> SolverStep {
+        SolverStep {
+            iteration: 7,
+            time: 1.25,
+            time_step: 2.5e-4,
+            continuity_residual: 3.0e-5,
+            pressure_residual: 4.0e-6,
+            pressure_iterations: 12,
+            momentum_residual: 5.0e-7,
+            max_speed: 1.75,
+            momentum_cfl: 0.42,
+            viscous_diffusion_number: 0.18,
+            drag_coefficient: 0.31,
+            lift_coefficient: 0.02,
+            converged: false,
+            reached_end_time: false,
+        }
+    }
+
+    #[test]
+    fn update_copies_solver_stability_diagnostics() {
+        let update = SolverUpdate::from_step(SolverState::Running, step(), 2.0, 0.1, None);
+
+        assert_eq!(update.physical_time, 1.25);
+        assert_eq!(update.time_step, 2.5e-4);
+        assert_eq!(update.momentum_cfl, 0.42);
+        assert_eq!(update.viscous_diffusion_number, 0.18);
+        assert_eq!(update.max_speed, 1.75);
+    }
+
+    #[test]
+    fn status_update_uses_finite_stability_defaults() {
+        let update = SolverUpdate::status(SolverState::Idle, None);
+
+        assert!(update.physical_time.is_finite());
+        assert!(update.time_step.is_finite());
+        assert!(update.momentum_cfl.is_finite());
+        assert!(update.viscous_diffusion_number.is_finite());
+        assert!(update.max_speed.is_finite());
+    }
+
     #[test]
     fn worker_completes_projection_run_at_physical_end_time() {
         let config = config();
@@ -362,5 +418,10 @@ mod tests {
         let completed = completed.expect("solver worker did not complete in time");
         assert!(completed.iteration < max_iterations);
         assert!(completed.field_update.is_some());
+        assert!(completed.physical_time.is_finite());
+        assert!(completed.time_step.is_finite());
+        assert!(completed.momentum_cfl.is_finite());
+        assert!(completed.viscous_diffusion_number.is_finite());
+        assert!(completed.max_speed.is_finite());
     }
 }
