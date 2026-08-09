@@ -174,7 +174,8 @@ fn worker_loop(commands: Receiver<SolverCommand>, updates: Sender<SolverUpdate>)
         let iteration_started = Instant::now();
         match run.solver.advance() {
             Ok(step) => {
-                let completed = step.converged || step.iteration >= run.max_iterations;
+                let completed =
+                    step.converged || step.reached_end_time || step.iteration >= run.max_iterations;
                 let publish_update = completed || step.iteration.is_multiple_of(run.update_every);
                 if !publish_update {
                     continue;
@@ -315,20 +316,20 @@ mod tests {
             ny: 16,
             dt: 1.0e-3,
             time_step: TimeStepSettings::default(),
-            max_steps: 2,
-            t_end: 0.0,
+            max_steps: 8,
+            t_end: 2.0e-3,
             convection: ConvectionScheme::FirstOrderUpwind,
-            coupling: PressureVelocityCoupling::Simple,
+            coupling: PressureVelocityCoupling::Projection,
             pressure_solver: PressureSolverKind::Pcg,
             pressure_max_iters: 800,
             pressure_tolerance: 1.0e-6,
             pressure_omega: 1.7,
             velocity_relaxation: 0.7,
             pressure_relaxation: 0.3,
-            print_every: 100,
+            print_every: 1,
             output_every: 100,
             frame_every: 100,
-            steady_tolerance: 1.0e-10,
+            steady_tolerance: 1.0e-12,
             minimum_steps: 100,
             threads: 1,
             boundary_overrides: SolverBoundaryOverrides::default(),
@@ -338,24 +339,28 @@ mod tests {
     }
 
     #[test]
-    fn worker_runs_without_blocking_the_caller() {
+    fn worker_completes_projection_run_at_physical_end_time() {
+        let config = config();
+        let max_iterations = config.max_steps;
         let controller = SolverController::spawn();
         controller
-            .send(SolverCommand::Start(Box::new(config())))
+            .send(SolverCommand::Start(Box::new(config)))
             .unwrap();
 
         let deadline = Instant::now() + Duration::from_secs(2);
-        let mut completed = false;
+        let mut completed = None;
         while Instant::now() < deadline {
             match controller.try_recv() {
                 Ok(update) if update.state == SolverState::Completed => {
-                    completed = true;
+                    completed = Some(update);
                     break;
                 }
                 Ok(_) | Err(mpsc::TryRecvError::Empty) => thread::sleep(Duration::from_millis(2)),
                 Err(mpsc::TryRecvError::Disconnected) => break,
             }
         }
-        assert!(completed, "solver worker did not complete in time");
+        let completed = completed.expect("solver worker did not complete in time");
+        assert!(completed.iteration < max_iterations);
+        assert!(completed.field_update.is_some());
     }
 }

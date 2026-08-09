@@ -224,6 +224,8 @@ pub struct SolverStep {
     pub drag_coefficient: f64,
     pub lift_coefficient: f64,
     pub converged: bool,
+    /// Whether a transient projection run has reached its configured physical end time.
+    pub reached_end_time: bool,
 }
 
 /// Cell-centred fields suitable for a UI preview or remote observer.
@@ -434,9 +436,7 @@ impl IncompressibleSolver {
             );
         }
 
-        while self.step < self.cfg.max_steps
-            && (self.cfg.coupling == PressureVelocityCoupling::Simple || self.time < self.cfg.t_end)
-        {
+        while self.step < self.cfg.max_steps && !self.reached_end_time() {
             let diag = self.advance_one_step()?;
             self.last_diag = diag;
 
@@ -534,6 +534,7 @@ impl IncompressibleSolver {
             && self.step >= self.cfg.minimum_steps
             && diag.velocity_change < self.cfg.steady_tolerance
             && diag.max_divergence < 10.0 * self.cfg.pressure_tolerance;
+        let reached_end_time = self.reached_end_time();
 
         Ok(SolverStep {
             iteration: self.step,
@@ -549,7 +550,14 @@ impl IncompressibleSolver {
             drag_coefficient: diag.cd,
             lift_coefficient: diag.cl,
             converged,
+            reached_end_time,
         })
+    }
+
+    fn reached_end_time(&self) -> bool {
+        let time_tolerance = f64::EPSILON * self.cfg.t_end.abs().max(1.0) * 16.0;
+        self.cfg.coupling == PressureVelocityCoupling::Projection
+            && self.time >= self.cfg.t_end - time_tolerance
     }
 
     pub fn field_update(&self) -> FieldUpdate {
@@ -612,6 +620,10 @@ impl IncompressibleSolver {
     }
 
     fn advance_one_step(&mut self) -> Result<Diagnostics, String> {
+        if self.reached_end_time() {
+            return Err("projection simulation has already reached t_end".to_string());
+        }
+
         let mut step_dt = self.cfg.dt;
         if self.cfg.time_step.adaptive {
             let thermal_diffusivity = (self.cfg.physics.thermal.model
@@ -629,12 +641,16 @@ impl IncompressibleSolver {
                 },
                 self.cfg.time_step,
             )?;
+        }
+        if self.cfg.coupling == PressureVelocityCoupling::Projection {
             let remaining_time = self.cfg.t_end - self.time;
             // The final step may be below min_dt only to land exactly on t_end.
             step_dt = step_dt.min(remaining_time);
             if step_dt <= 0.0 {
-                return Err("adaptive step requires positive remaining simulation time".to_string());
+                return Err("projection simulation has already reached t_end".to_string());
             }
+        }
+        if self.cfg.time_step.adaptive {
             self.current_dt = step_dt;
         }
         let old_u = self.u.clone();
@@ -688,7 +704,7 @@ impl IncompressibleSolver {
         );
 
         self.step += 1;
-        if self.cfg.time_step.adaptive {
+        if self.cfg.coupling == PressureVelocityCoupling::Projection {
             self.time += step_dt;
         } else {
             self.time = self.step as f64 * self.cfg.dt;
@@ -2369,6 +2385,35 @@ mod tests {
         ThermalBoundaryCondition,
     };
 
+    fn test_config(coupling: PressureVelocityCoupling, output_dir: &str) -> SimulationConfig {
+        SimulationConfig {
+            case: Case::LidDrivenCavity(CavityCase::default()),
+            nx: 8,
+            ny: 8,
+            dt: 1.0e-3,
+            time_step: TimeStepSettings::default(),
+            max_steps: 10,
+            t_end: 2.5e-3,
+            convection: ConvectionScheme::FirstOrderUpwind,
+            coupling,
+            pressure_solver: PressureSolverKind::Pcg,
+            pressure_max_iters: 50,
+            pressure_tolerance: 1.0e-4,
+            pressure_omega: 1.5,
+            velocity_relaxation: 0.7,
+            pressure_relaxation: 0.3,
+            print_every: 100,
+            output_every: 100,
+            frame_every: 100,
+            steady_tolerance: 1.0e-12,
+            minimum_steps: 100,
+            threads: 1,
+            boundary_overrides: SolverBoundaryOverrides::default(),
+            physics: Default::default(),
+            output_dir: PathBuf::from(output_dir),
+        }
+    }
+
     #[test]
     fn momentum_stability_numbers_match_known_values() {
         let (momentum_cfl, viscous_diffusion_number) =
@@ -2567,6 +2612,42 @@ mod tests {
         };
         let solver = IncompressibleSolver::new(cfg);
         assert!(solver.is_ok());
+    }
+
+    #[test]
+    fn projection_step_reports_when_the_physical_end_time_is_reached() {
+        let mut solver = IncompressibleSolver::new(test_config(
+            PressureVelocityCoupling::Projection,
+            "target/projection-end-time-step-test",
+        ))
+        .unwrap();
+
+        let mut step = solver.advance().unwrap();
+        while !step.reached_end_time {
+            step = solver.advance().unwrap();
+        }
+
+        assert!((step.time - 2.5e-3).abs() < 1.0e-12);
+        assert!(step.reached_end_time);
+        assert_eq!(
+            solver.advance().unwrap_err(),
+            "projection simulation has already reached t_end"
+        );
+    }
+
+    #[test]
+    fn simple_steps_do_not_report_a_physical_end_time() {
+        let mut config = test_config(
+            PressureVelocityCoupling::Simple,
+            "target/simple-end-time-step-test",
+        );
+        config.t_end = 0.0;
+        let mut solver = IncompressibleSolver::new(config).unwrap();
+
+        let step = solver.advance().unwrap();
+
+        assert!(!step.reached_end_time);
+        assert_eq!(step.iteration, 1);
     }
 
     #[test]
