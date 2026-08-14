@@ -6,9 +6,12 @@
 
 pub mod cases;
 pub mod field;
+pub mod fields;
 pub mod grid;
+pub mod io;
 pub mod mesh;
 pub mod mesh_artifact;
+pub mod numerics;
 pub mod output;
 pub mod physics;
 pub mod preprocess;
@@ -18,8 +21,20 @@ pub mod solver;
 pub mod workbench;
 
 pub use cases::{Case, CaseKind};
-pub use mesh::{ExtrudedMesh3D, StructuredMesh2D};
+pub use fields::{CellField, FaceField, FieldError};
+pub use io::gmsh::{load_gmsh, parse_gmsh, GmshError};
+pub use mesh::{
+    BoundaryPatch, BoundaryType, Cell, CellDefinition, ExtrudedMesh3D, Face, MeshDimension,
+    MeshError, MeshId, MeshQualityReport as UnstructuredMeshQualityReport, MeshStatistics, Point,
+    StructuredMesh2D, UnstructuredMesh, Vec3,
+};
 pub use mesh_artifact::{MeshQualityReport, StructuredMeshArtifact};
+pub use numerics::{
+    divergence, divergence_into, face_flux, face_flux_into, gauss_gradient_from_faces,
+    gauss_gradient_from_faces_into, integrated_divergence, integrated_divergence_into,
+    interpolate_scalar, interpolate_scalar_into, interpolate_vector_into,
+    orthogonal_laplacian_into, NonOrthogonalCorrection, NumericsError, ScalarBoundaryValue,
+};
 pub use physics::{
     BuoyancyModel, EnergyModel, PhysicsSettings, ThermalBoundaryCondition, ThermalSettings,
 };
