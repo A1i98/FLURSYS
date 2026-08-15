@@ -1,6 +1,6 @@
 //! Conservative reference operators for unstructured finite-volume meshes.
 
-use crate::{CellField, FaceField, FieldError, UnstructuredMesh, Vec3};
+use crate::{CellField, FaceField, FieldError, MeshId, UnstructuredMesh, Vec3};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ScalarBoundaryValue {
@@ -10,27 +10,61 @@ pub enum ScalarBoundaryValue {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NonOrthogonalCorrection {
     None,
+    Explicit,
+}
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ScalarBoundaryCondition {
+    FixedValue(f64),
+    ZeroGradient,
+}
+#[derive(Clone, Debug, PartialEq)]
+pub struct ResolvedScalarBoundaryConditions {
+    mesh_id: MeshId,
+    conditions: Vec<Option<ScalarBoundaryCondition>>,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DiffusivityInterpolation {
+    Linear,
+    Harmonic,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DiffusionOptions {
+    pub diffusivity_interpolation: DiffusivityInterpolation,
+    pub non_orthogonal_correction: NonOrthogonalCorrection,
+}
+impl Default for DiffusionOptions {
+    fn default() -> Self {
+        Self {
+            diffusivity_interpolation: DiffusivityInterpolation::Linear,
+            non_orthogonal_correction: NonOrthogonalCorrection::None,
+        }
+    }
+}
+#[derive(Clone, Copy, Debug)]
+pub enum Diffusivity<'a> {
+    Constant(f64),
+    CellField(&'a CellField<f64>),
+}
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct NonOrthogonalDecomposition {
+    pub orthogonal: Vec3,
+    pub non_orthogonal: Vec3,
 }
 #[derive(Clone, Debug, PartialEq)]
 pub enum NumericsError {
     Field(FieldError),
     DegenerateOwnerNeighbourDistance { face: usize },
+    DegenerateOwnerFaceDistance { face: usize },
     InvalidCellMeasure { cell: usize },
-}
-impl From<FieldError> for NumericsError {
-    fn from(value: FieldError) -> Self {
-        Self::Field(value)
-    }
+    UnknownBoundaryPatch { patch: String },
+    DuplicateBoundaryPatchCondition { patch: String },
+    MissingBoundaryCondition { face: usize },
+    BoundaryConditionOnInternalFace { face: usize },
+    InvalidDiffusivity { cell: usize, value: f64 },
+    InvalidFaceDiffusivity { face: usize },
+    InvalidNonOrthogonalGeometry { face: usize },
 }
 
-fn check_cell_measure(mesh: &UnstructuredMesh) -> Result<(), NumericsError> {
-    for (index, cell) in mesh.cells().iter().enumerate() {
-        if cell.volume <= 0.0 {
-            return Err(NumericsError::InvalidCellMeasure { cell: index });
-        }
-    }
-    Ok(())
-}
 fn weight(mesh: &UnstructuredMesh, face_index: usize) -> Result<f64, NumericsError> {
     let face = &mesh.faces()[face_index];
     let neighbour = face.neighbour.expect("internal face required");
@@ -40,6 +74,151 @@ fn weight(mesh: &UnstructuredMesh, face_index: usize) -> Result<f64, NumericsErr
         return Err(NumericsError::DegenerateOwnerNeighbourDistance { face: face_index });
     }
     Ok((face.center - mesh.cells()[face.owner].center).dot(d) / d2)
+}
+
+impl ResolvedScalarBoundaryConditions {
+    pub fn strict(
+        mesh: &UnstructuredMesh,
+        assignments: &[(&str, ScalarBoundaryCondition)],
+    ) -> Result<Self, NumericsError> {
+        let mut conditions = vec![None; mesh.face_count()];
+        let mut names = std::collections::HashSet::new();
+        for (name, condition) in assignments {
+            if !names.insert(*name) {
+                return Err(NumericsError::DuplicateBoundaryPatchCondition {
+                    patch: (*name).to_string(),
+                });
+            }
+            let patch = mesh
+                .boundary_patches()
+                .iter()
+                .find(|patch| patch.name == *name)
+                .ok_or_else(|| NumericsError::UnknownBoundaryPatch {
+                    patch: (*name).to_string(),
+                })?;
+            for &face in &patch.face_indices {
+                if mesh.faces()[face].neighbour.is_some() {
+                    return Err(NumericsError::BoundaryConditionOnInternalFace { face });
+                }
+                if conditions[face].replace(*condition).is_some() {
+                    return Err(NumericsError::BoundaryConditionOnInternalFace { face });
+                }
+            }
+        }
+        for (face, geometry) in mesh.faces().iter().enumerate() {
+            if geometry.neighbour.is_none() && conditions[face].is_none() {
+                return Err(NumericsError::MissingBoundaryCondition { face });
+            }
+        }
+        Ok(Self {
+            mesh_id: mesh.id(),
+            conditions,
+        })
+    }
+
+    pub fn ensure_mesh(&self, mesh: &UnstructuredMesh) -> Result<(), NumericsError> {
+        if self.mesh_id == mesh.id() {
+            Ok(())
+        } else {
+            Err(NumericsError::Field(FieldError::MeshMismatch {
+                expected: self.mesh_id,
+                actual: mesh.id(),
+            }))
+        }
+    }
+
+    pub fn condition(&self, face: usize) -> Option<ScalarBoundaryCondition> {
+        self.conditions[face]
+    }
+}
+
+fn checked_diffusivity(value: f64, cell: usize) -> Result<f64, NumericsError> {
+    if value.is_finite() && value >= 0.0 {
+        Ok(value)
+    } else {
+        Err(NumericsError::InvalidDiffusivity { cell, value })
+    }
+}
+
+fn cell_diffusivity(
+    mesh: &UnstructuredMesh,
+    diffusivity: Diffusivity<'_>,
+    cell: usize,
+) -> Result<f64, NumericsError> {
+    match diffusivity {
+        Diffusivity::Constant(value) => checked_diffusivity(value, cell),
+        Diffusivity::CellField(values) => {
+            values.ensure_mesh(mesh)?;
+            checked_diffusivity(values[cell], cell)
+        }
+    }
+}
+
+pub fn interpolate_diffusivity_into(
+    mesh: &UnstructuredMesh,
+    diffusivity: Diffusivity<'_>,
+    scheme: DiffusivityInterpolation,
+    output: &mut FaceField<f64>,
+) -> Result<(), NumericsError> {
+    output.ensure_mesh(mesh)?;
+    if let Diffusivity::CellField(values) = diffusivity {
+        values.ensure_mesh(mesh)?;
+    }
+    for (index, face) in mesh.faces().iter().enumerate() {
+        let owner = cell_diffusivity(mesh, diffusivity, face.owner)?;
+        output[index] = if let Some(neighbour) = face.neighbour {
+            let adjacent = cell_diffusivity(mesh, diffusivity, neighbour)?;
+            let lambda = weight(mesh, index)?;
+            match scheme {
+                DiffusivityInterpolation::Linear => (1.0 - lambda) * owner + lambda * adjacent,
+                DiffusivityInterpolation::Harmonic if owner == 0.0 || adjacent == 0.0 => 0.0,
+                DiffusivityInterpolation::Harmonic => {
+                    let denominator = (1.0 - lambda) / owner + lambda / adjacent;
+                    if denominator.is_finite() && denominator > 0.0 {
+                        1.0 / denominator
+                    } else {
+                        return Err(NumericsError::InvalidFaceDiffusivity { face: index });
+                    }
+                }
+            }
+        } else {
+            owner
+        };
+        if !output[index].is_finite() || output[index] < 0.0 {
+            return Err(NumericsError::InvalidFaceDiffusivity { face: index });
+        }
+    }
+    Ok(())
+}
+
+pub fn interpolate_diffusivity(
+    mesh: &UnstructuredMesh,
+    diffusivity: Diffusivity<'_>,
+    scheme: DiffusivityInterpolation,
+) -> Result<FaceField<f64>, NumericsError> {
+    let mut output = FaceField::filled(mesh, 0.0);
+    interpolate_diffusivity_into(mesh, diffusivity, scheme, &mut output)?;
+    Ok(output)
+}
+
+pub fn non_orthogonal_decomposition(
+    mesh: &UnstructuredMesh,
+    face_index: usize,
+) -> Result<NonOrthogonalDecomposition, NumericsError> {
+    let face = &mesh.faces()[face_index];
+    let neighbour = face
+        .neighbour
+        .ok_or(NumericsError::BoundaryConditionOnInternalFace { face: face_index })?;
+    let d = mesh.cells()[neighbour].center - mesh.cells()[face.owner].center;
+    let denominator = face.area_vector.dot(d);
+    if !denominator.is_finite() || denominator <= f64::EPSILON {
+        return Err(NumericsError::InvalidNonOrthogonalGeometry { face: face_index });
+    }
+    let orthogonal = d * (face.area_vector.norm_squared() / denominator);
+    Ok(NonOrthogonalDecomposition {
+        orthogonal,
+        non_orthogonal: face.area_vector - orthogonal,
+    })
 }
 
 pub fn interpolate_scalar_into(
@@ -187,6 +366,111 @@ pub fn gauss_gradient_from_faces(
     gauss_gradient_from_faces_into(mesh, values, &mut output)?;
     Ok(output)
 }
+
+pub fn integrated_diffusion_into(
+    mesh: &UnstructuredMesh,
+    values: &CellField<f64>,
+    diffusivity: Diffusivity<'_>,
+    boundary: &ResolvedScalarBoundaryConditions,
+    options: DiffusionOptions,
+    output: &mut CellField<f64>,
+) -> Result<(), NumericsError> {
+    check_cell_measure(mesh)?;
+    values.ensure_mesh(mesh)?;
+    output.ensure_mesh(mesh)?;
+    boundary.ensure_mesh(mesh)?;
+    let gamma = interpolate_diffusivity(mesh, diffusivity, options.diffusivity_interpolation)?;
+    let mut face_values = FaceField::filled(mesh, 0.0);
+    for (index, face) in mesh.faces().iter().enumerate() {
+        face_values[index] = match face.neighbour {
+            Some(neighbour) => {
+                let lambda = weight(mesh, index)?;
+                (1.0 - lambda) * values[face.owner] + lambda * values[neighbour]
+            }
+            None => match boundary
+                .condition(index)
+                .ok_or(NumericsError::MissingBoundaryCondition { face: index })?
+            {
+                ScalarBoundaryCondition::FixedValue(value) => value,
+                ScalarBoundaryCondition::ZeroGradient => values[face.owner],
+            },
+        };
+    }
+    let gradients = if options.non_orthogonal_correction == NonOrthogonalCorrection::Explicit {
+        Some(gauss_gradient_from_faces(mesh, &face_values)?)
+    } else {
+        None
+    };
+    output.fill(0.0);
+    for (index, face) in mesh.faces().iter().enumerate() {
+        if let Some(neighbour) = face.neighbour {
+            let d = mesh.cells()[neighbour].center - mesh.cells()[face.owner].center;
+            let d2 = d.norm_squared();
+            if d2 <= f64::EPSILON {
+                return Err(NumericsError::DegenerateOwnerNeighbourDistance { face: index });
+            }
+            let mut contribution = gamma[index] * face.area_vector.dot(d) / d2
+                * (values[neighbour] - values[face.owner]);
+            if let Some(gradients) = &gradients {
+                let lambda = weight(mesh, index)?;
+                let gradient =
+                    gradients[face.owner] * (1.0 - lambda) + gradients[neighbour] * lambda;
+                contribution += gamma[index]
+                    * gradient.dot(non_orthogonal_decomposition(mesh, index)?.non_orthogonal);
+            }
+            output[face.owner] += contribution;
+            output[neighbour] -= contribution;
+        } else if let ScalarBoundaryCondition::FixedValue(value) = boundary
+            .condition(index)
+            .ok_or(NumericsError::MissingBoundaryCondition { face: index })?
+        {
+            let d = face.center - mesh.cells()[face.owner].center;
+            let d2 = d.norm_squared();
+            if d2 <= f64::EPSILON {
+                return Err(NumericsError::DegenerateOwnerFaceDistance { face: index });
+            }
+            output[face.owner] +=
+                gamma[index] * face.area_vector.dot(d) / d2 * (value - values[face.owner]);
+        }
+    }
+    Ok(())
+}
+pub fn integrated_diffusion(
+    mesh: &UnstructuredMesh,
+    values: &CellField<f64>,
+    diffusivity: Diffusivity<'_>,
+    boundary: &ResolvedScalarBoundaryConditions,
+    options: DiffusionOptions,
+) -> Result<CellField<f64>, NumericsError> {
+    let mut output = CellField::filled(mesh, 0.0);
+    integrated_diffusion_into(mesh, values, diffusivity, boundary, options, &mut output)?;
+    Ok(output)
+}
+pub fn laplacian_into(
+    mesh: &UnstructuredMesh,
+    values: &CellField<f64>,
+    diffusivity: Diffusivity<'_>,
+    boundary: &ResolvedScalarBoundaryConditions,
+    options: DiffusionOptions,
+    output: &mut CellField<f64>,
+) -> Result<(), NumericsError> {
+    integrated_diffusion_into(mesh, values, diffusivity, boundary, options, output)?;
+    for (value, cell) in output.values_mut().iter_mut().zip(mesh.cells()) {
+        *value /= cell.volume;
+    }
+    Ok(())
+}
+pub fn laplacian(
+    mesh: &UnstructuredMesh,
+    values: &CellField<f64>,
+    diffusivity: Diffusivity<'_>,
+    boundary: &ResolvedScalarBoundaryConditions,
+    options: DiffusionOptions,
+) -> Result<CellField<f64>, NumericsError> {
+    let mut output = CellField::filled(mesh, 0.0);
+    laplacian_into(mesh, values, diffusivity, boundary, options, &mut output)?;
+    Ok(output)
+}
 pub fn orthogonal_laplacian_into(
     mesh: &UnstructuredMesh,
     values: &CellField<f64>,
@@ -216,7 +500,7 @@ pub fn orthogonal_laplacian_into(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{parse_gmsh, CellDefinition, MeshDimension, Point};
+    use crate::{parse_gmsh, BoundaryPatch, BoundaryType, CellDefinition, MeshDimension, Point};
     const TOL: f64 = 1.0e-10;
 
     fn assert_close(actual: f64, expected: f64) {
@@ -712,5 +996,503 @@ mod tests {
             }
             assert_close(residual.values().iter().sum(), 0.);
         }
+    }
+
+    fn line_mesh_with_patches() -> UnstructuredMesh {
+        let mesh = three_cells();
+        let mut left = Vec::new();
+        let mut right = Vec::new();
+        let mut walls = Vec::new();
+        for (index, face) in mesh
+            .faces()
+            .iter()
+            .enumerate()
+            .filter(|(_, face)| face.neighbour.is_none())
+        {
+            if face.center.x == 0.0 {
+                left.push(index);
+            } else if face.center.x == 3.0 {
+                right.push(index);
+            } else {
+                walls.push(index);
+            }
+        }
+        mesh.with_boundary_patches(vec![
+            BoundaryPatch {
+                name: "left".into(),
+                face_indices: left,
+                boundary_type: BoundaryType::Wall,
+            },
+            BoundaryPatch {
+                name: "right".into(),
+                face_indices: right,
+                boundary_type: BoundaryType::Wall,
+            },
+            BoundaryPatch {
+                name: "walls".into(),
+                face_indices: walls,
+                boundary_type: BoundaryType::Wall,
+            },
+        ])
+        .unwrap()
+    }
+
+    #[test]
+    fn patch_resolution_and_orthogonal_diffusion_are_verified() {
+        let mesh = line_mesh_with_patches();
+        let boundary = ResolvedScalarBoundaryConditions::strict(
+            &mesh,
+            &[
+                ("left", ScalarBoundaryCondition::FixedValue(0.0)),
+                ("right", ScalarBoundaryCondition::FixedValue(9.0)),
+                ("walls", ScalarBoundaryCondition::ZeroGradient),
+            ],
+        )
+        .unwrap();
+        assert!(matches!(
+            ResolvedScalarBoundaryConditions::strict(
+                &mesh,
+                &[("missing", ScalarBoundaryCondition::ZeroGradient)]
+            ),
+            Err(NumericsError::UnknownBoundaryPatch { .. })
+        ));
+        let values = CellField::from_cells(&mesh, |_, cell| cell.center.x * cell.center.x);
+        let integrated = integrated_diffusion(
+            &mesh,
+            &values,
+            Diffusivity::Constant(1.0),
+            &boundary,
+            DiffusionOptions::default(),
+        )
+        .unwrap();
+        let lap = laplacian(
+            &mesh,
+            &values,
+            Diffusivity::Constant(1.0),
+            &boundary,
+            DiffusionOptions::default(),
+        )
+        .unwrap();
+        assert_close(lap[1], 2.0);
+        assert_close(integrated[1], 2.0 * mesh.cells()[1].volume);
+    }
+
+    #[test]
+    fn variable_diffusivity_decomposition_and_reuse_are_verified() {
+        let mesh = line_mesh_with_patches();
+        let boundary = ResolvedScalarBoundaryConditions::strict(
+            &mesh,
+            &[
+                ("left", ScalarBoundaryCondition::ZeroGradient),
+                ("right", ScalarBoundaryCondition::ZeroGradient),
+                ("walls", ScalarBoundaryCondition::ZeroGradient),
+            ],
+        )
+        .unwrap();
+        let gamma = CellField::from_values(&mesh, vec![2.0, 6.0, 3.0]).unwrap();
+        let first = mesh
+            .faces()
+            .iter()
+            .position(|face| face.neighbour.is_some())
+            .unwrap();
+        let linear = interpolate_diffusivity(
+            &mesh,
+            Diffusivity::CellField(&gamma),
+            DiffusivityInterpolation::Linear,
+        )
+        .unwrap();
+        let harmonic = interpolate_diffusivity(
+            &mesh,
+            Diffusivity::CellField(&gamma),
+            DiffusivityInterpolation::Harmonic,
+        )
+        .unwrap();
+        assert_close(linear[first], 4.0);
+        assert_close(harmonic[first], 3.0);
+        let decomposition = non_orthogonal_decomposition(&mesh, first).unwrap();
+        assert_vec_close(
+            decomposition.orthogonal + decomposition.non_orthogonal,
+            mesh.faces()[first].area_vector,
+        );
+        assert_close(decomposition.non_orthogonal.norm(), 0.0);
+        let values = CellField::from_values(&mesh, vec![1.5, -0.75, 2.0]).unwrap();
+        let allocated = integrated_diffusion(
+            &mesh,
+            &values,
+            Diffusivity::CellField(&gamma),
+            &boundary,
+            DiffusionOptions::default(),
+        )
+        .unwrap();
+        let mut reused = CellField::filled(&mesh, 99.0);
+        integrated_diffusion_into(
+            &mesh,
+            &values,
+            Diffusivity::CellField(&gamma),
+            &boundary,
+            DiffusionOptions::default(),
+            &mut reused,
+        )
+        .unwrap();
+        assert_eq!(allocated.values(), reused.values());
+        assert_close(allocated.values().iter().sum(), 0.0);
+        assert!(matches!(
+            interpolate_diffusivity(
+                &mesh,
+                Diffusivity::Constant(-1.0),
+                DiffusivityInterpolation::Linear
+            ),
+            Err(NumericsError::InvalidDiffusivity { .. })
+        ));
+    }
+
+    fn individually_patched(mesh: UnstructuredMesh) -> UnstructuredMesh {
+        let patches = mesh
+            .faces()
+            .iter()
+            .enumerate()
+            .filter(|(_, face)| face.neighbour.is_none())
+            .map(|(face, _)| BoundaryPatch {
+                name: format!("boundary-{face}"),
+                face_indices: vec![face],
+                boundary_type: BoundaryType::Wall,
+            })
+            .collect();
+        mesh.with_boundary_patches(patches).unwrap()
+    }
+
+    fn analytic_fixed_boundaries(
+        mesh: &UnstructuredMesh,
+        function: impl Fn(Vec3) -> f64,
+    ) -> ResolvedScalarBoundaryConditions {
+        let assignments: Vec<_> = mesh
+            .boundary_patches()
+            .iter()
+            .map(|patch| {
+                (
+                    patch.name.as_str(),
+                    ScalarBoundaryCondition::FixedValue(function(
+                        mesh.faces()[patch.face_indices[0]].center,
+                    )),
+                )
+            })
+            .collect();
+        ResolvedScalarBoundaryConditions::strict(mesh, &assignments).unwrap()
+    }
+
+    fn skewed_two_cell_mesh() -> UnstructuredMesh {
+        individually_patched(
+            UnstructuredMesh::from_cells(
+                MeshDimension::TwoD,
+                vec![
+                    Point::new(0., 0., 0.),
+                    Point::new(1., 0., 0.),
+                    Point::new(1., 1., 0.),
+                    Point::new(0., 1., 0.),
+                    Point::new(2., 0.5, 0.),
+                    Point::new(2., 1.5, 0.),
+                ],
+                vec![
+                    CellDefinition::polygon(vec![0, 1, 2, 3]),
+                    CellDefinition::polygon(vec![1, 4, 5, 2]),
+                ],
+            )
+            .unwrap(),
+        )
+    }
+
+    #[test]
+    #[ignore = "documents the unverified explicit-correction skewed-mesh failure"]
+    fn explicit_correction_reduces_skewed_linear_field_error() {
+        let mesh = skewed_two_cell_mesh();
+        let values = CellField::from_cells(&mesh, |_, cell| {
+            2. * cell.center.x - 3. * cell.center.y + 4.
+        });
+        let boundary = analytic_fixed_boundaries(&mesh, |point| 2. * point.x - 3. * point.y + 4.);
+        let internal: Vec<_> = mesh
+            .faces()
+            .iter()
+            .enumerate()
+            .filter(|(_, face)| face.neighbour.is_some())
+            .collect();
+        assert_eq!(internal.len(), 1);
+        let (face, geometry) = internal[0];
+        let d =
+            mesh.cells()[geometry.neighbour.unwrap()].center - mesh.cells()[geometry.owner].center;
+        assert!(geometry.area_vector.dot(d) > 0.0);
+        let decomposition = non_orthogonal_decomposition(&mesh, face).unwrap();
+        assert_vec_close(
+            decomposition.orthogonal + decomposition.non_orthogonal,
+            geometry.area_vector,
+        );
+        assert!(decomposition.non_orthogonal.norm() > 0.1);
+        let none = laplacian(
+            &mesh,
+            &values,
+            Diffusivity::Constant(1.0),
+            &boundary,
+            DiffusionOptions::default(),
+        )
+        .unwrap();
+        let explicit = laplacian(
+            &mesh,
+            &values,
+            Diffusivity::Constant(1.0),
+            &boundary,
+            DiffusionOptions {
+                diffusivity_interpolation: DiffusivityInterpolation::Linear,
+                non_orthogonal_correction: NonOrthogonalCorrection::Explicit,
+            },
+        )
+        .unwrap();
+        let error = |field: &CellField<f64>| {
+            (field
+                .values()
+                .iter()
+                .map(|value| value * value)
+                .sum::<f64>()
+                / field.len() as f64)
+                .sqrt()
+        };
+        let none_error = error(&none);
+        let explicit_error = error(&explicit);
+        assert!(none_error.is_finite() && explicit_error.is_finite());
+        assert!(
+            explicit_error < none_error,
+            "none={none_error}, explicit={explicit_error}"
+        );
+    }
+
+    fn cube_block_3d() -> UnstructuredMesh {
+        let mut points = Vec::new();
+        for z in 0..4 {
+            for y in 0..4 {
+                for x in 0..4 {
+                    points.push(Point::new(x as f64, y as f64, z as f64));
+                }
+            }
+        }
+        let point = |x: usize, y: usize, z: usize| x + 4 * (y + 4 * z);
+        let mut cells = Vec::new();
+        for z in 0..3 {
+            for y in 0..3 {
+                for x in 0..3 {
+                    cells.push(CellDefinition::Hexahedron([
+                        point(x, y, z),
+                        point(x + 1, y, z),
+                        point(x + 1, y + 1, z),
+                        point(x, y + 1, z),
+                        point(x, y, z + 1),
+                        point(x + 1, y, z + 1),
+                        point(x + 1, y + 1, z + 1),
+                        point(x, y + 1, z + 1),
+                    ]));
+                }
+            }
+        }
+        individually_patched(
+            UnstructuredMesh::from_cells(MeshDimension::ThreeD, points, cells).unwrap(),
+        )
+    }
+
+    #[test]
+    fn three_dimensional_diffusion_api_and_mesh_safety_are_verified() {
+        let mesh = cube_block_3d();
+        let constant_bc = analytic_fixed_boundaries(&mesh, |_| 7.25);
+        let constant = CellField::filled(&mesh, 7.25);
+        let integrated = integrated_diffusion(
+            &mesh,
+            &constant,
+            Diffusivity::Constant(2.5),
+            &constant_bc,
+            DiffusionOptions::default(),
+        )
+        .unwrap();
+        let lap = laplacian(
+            &mesh,
+            &constant,
+            Diffusivity::Constant(2.5),
+            &constant_bc,
+            DiffusionOptions::default(),
+        )
+        .unwrap();
+        assert!(integrated
+            .values()
+            .iter()
+            .chain(lap.values())
+            .all(|v| v.is_finite() && v.abs() < TOL));
+        let linear = CellField::from_cells(&mesh, |_, c| {
+            2. * c.center.x - 3. * c.center.y + 4. * c.center.z + 5.
+        });
+        let linear_bc = analytic_fixed_boundaries(&mesh, |p| 2. * p.x - 3. * p.y + 4. * p.z + 5.);
+        assert!(laplacian(
+            &mesh,
+            &linear,
+            Diffusivity::Constant(1.),
+            &linear_bc,
+            DiffusionOptions::default()
+        )
+        .unwrap()
+        .values()
+        .iter()
+        .all(|v| v.is_finite() && v.abs() < TOL));
+        let quadratic = CellField::from_cells(&mesh, |_, c| c.center.norm_squared());
+        let quadratic_bc = analytic_fixed_boundaries(&mesh, |p| p.norm_squared());
+        assert_close(
+            laplacian(
+                &mesh,
+                &quadratic,
+                Diffusivity::Constant(1.),
+                &quadratic_bc,
+                DiffusionOptions::default(),
+            )
+            .unwrap()[13],
+            6.,
+        );
+        let gamma = CellField::from_cells(&mesh, |_, c| 1. + 0.2 * c.center.x + 0.1 * c.center.y);
+        let variable_integrated = integrated_diffusion(
+            &mesh,
+            &quadratic,
+            Diffusivity::CellField(&gamma),
+            &quadratic_bc,
+            DiffusionOptions::default(),
+        )
+        .unwrap();
+        let variable_lap = laplacian(
+            &mesh,
+            &quadratic,
+            Diffusivity::CellField(&gamma),
+            &quadratic_bc,
+            DiffusionOptions::default(),
+        )
+        .unwrap();
+        assert!(variable_integrated
+            .values()
+            .iter()
+            .chain(variable_lap.values())
+            .all(|v| v.is_finite()));
+        let internal = mesh
+            .faces()
+            .iter()
+            .position(|f| f.neighbour.is_some())
+            .unwrap();
+        let f = &mesh.faces()[internal];
+        let lambda = weight(&mesh, internal).unwrap();
+        let harmonic = interpolate_diffusivity(
+            &mesh,
+            Diffusivity::CellField(&gamma),
+            DiffusivityInterpolation::Harmonic,
+        )
+        .unwrap();
+        assert_close(
+            harmonic[internal],
+            1. / ((1. - lambda) / gamma[f.owner] + lambda / gamma[f.neighbour.unwrap()]),
+        );
+        let mut into = CellField::filled(&mesh, 99.);
+        laplacian_into(
+            &mesh,
+            &quadratic,
+            Diffusivity::CellField(&gamma),
+            &quadratic_bc,
+            DiffusionOptions::default(),
+            &mut into,
+        )
+        .unwrap();
+        assert_eq!(variable_lap.values(), into.values());
+        let other = CellField::from_cells(&mesh, |_, c| c.center.x);
+        laplacian_into(
+            &mesh,
+            &other,
+            Diffusivity::CellField(&gamma),
+            &quadratic_bc,
+            DiffusionOptions::default(),
+            &mut into,
+        )
+        .unwrap();
+        assert_ne!(variable_lap.values(), into.values());
+        for i in 0..mesh.cell_count() {
+            assert_close(
+                variable_lap[i],
+                variable_integrated[i] / mesh.cells()[i].volume,
+            );
+        }
+        let foreign = cube_block_3d();
+        let foreign_field = CellField::filled(&foreign, 1.);
+        let foreign_bc = analytic_fixed_boundaries(&foreign, |_| 1.);
+        let mut foreign_output = CellField::filled(&foreign, 0.);
+        assert!(matches!(
+            integrated_diffusion(
+                &mesh,
+                &foreign_field,
+                Diffusivity::Constant(1.),
+                &constant_bc,
+                DiffusionOptions::default()
+            ),
+            Err(NumericsError::Field(FieldError::MeshMismatch { .. }))
+        ));
+        assert!(matches!(
+            integrated_diffusion(
+                &mesh,
+                &constant,
+                Diffusivity::Constant(1.),
+                &foreign_bc,
+                DiffusionOptions::default()
+            ),
+            Err(NumericsError::Field(FieldError::MeshMismatch { .. }))
+        ));
+        assert!(matches!(
+            integrated_diffusion_into(
+                &mesh,
+                &constant,
+                Diffusivity::CellField(&foreign_field),
+                &constant_bc,
+                DiffusionOptions::default(),
+                &mut foreign_output
+            ),
+            Err(NumericsError::Field(FieldError::MeshMismatch { .. }))
+        ));
+    }
+
+    #[test]
+    fn variable_diffusivity_3d_internal_diffusion_is_globally_conservative() {
+        let mesh = cube_block_3d();
+        let assignments: Vec<_> = mesh
+            .boundary_patches()
+            .iter()
+            .map(|patch| (patch.name.as_str(), ScalarBoundaryCondition::ZeroGradient))
+            .collect();
+        let boundary = ResolvedScalarBoundaryConditions::strict(&mesh, &assignments).unwrap();
+        let values = CellField::from_cells(&mesh, |_, cell| {
+            1.5 * cell.center.x - 0.75 * cell.center.y + 0.4 * cell.center.z + 2.0
+        });
+        let gamma = CellField::from_cells(&mesh, |_, cell| {
+            1.0 + 0.15 * cell.center.x + 0.10 * cell.center.y + 0.05 * cell.center.z
+        });
+        let integrated = integrated_diffusion(
+            &mesh,
+            &values,
+            Diffusivity::CellField(&gamma),
+            &boundary,
+            DiffusionOptions::default(),
+        )
+        .unwrap();
+        assert!(integrated.values().iter().all(|value| value.is_finite()));
+        assert!(integrated.values().iter().any(|value| value.abs() > TOL));
+        assert_close(integrated.values().iter().sum(), 0.0);
+
+        let foreign = cube_block_3d();
+        let foreign_gamma = CellField::filled(&foreign, 1.0);
+        let mut output = CellField::filled(&mesh, 0.0);
+        assert!(matches!(
+            integrated_diffusion_into(
+                &mesh,
+                &values,
+                Diffusivity::CellField(&foreign_gamma),
+                &boundary,
+                DiffusionOptions::default(),
+                &mut output,
+            ),
+            Err(NumericsError::Field(FieldError::MeshMismatch { .. }))
+        ));
     }
 }

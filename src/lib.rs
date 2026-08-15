@@ -31,9 +31,12 @@ pub use mesh::{
 pub use mesh_artifact::{MeshQualityReport, StructuredMeshArtifact};
 pub use numerics::{
     divergence, divergence_into, face_flux, face_flux_into, gauss_gradient_from_faces,
-    gauss_gradient_from_faces_into, integrated_divergence, integrated_divergence_into,
-    interpolate_scalar, interpolate_scalar_into, interpolate_vector_into,
-    orthogonal_laplacian_into, NonOrthogonalCorrection, NumericsError, ScalarBoundaryValue,
+    gauss_gradient_from_faces_into, integrated_diffusion, integrated_diffusion_into,
+    integrated_divergence, integrated_divergence_into, interpolate_diffusivity,
+    interpolate_diffusivity_into, interpolate_scalar, interpolate_scalar_into,
+    interpolate_vector_into, laplacian, laplacian_into, non_orthogonal_decomposition, orthogonal_laplacian_into,
+    DiffusionOptions, Diffusivity, DiffusivityInterpolation, NonOrthogonalCorrection, NonOrthogonalDecomposition,
+    NumericsError, ResolvedScalarBoundaryConditions, ScalarBoundaryCondition, ScalarBoundaryValue,
 };
 pub use physics::{
     BuoyancyModel, EnergyModel, PhysicsSettings, ThermalBoundaryCondition, ThermalSettings,
