@@ -34,8 +34,10 @@ pub use numerics::{
     gauss_gradient_from_faces_into, integrated_diffusion, integrated_diffusion_into,
     integrated_divergence, integrated_divergence_into, interpolate_diffusivity,
     interpolate_diffusivity_into, interpolate_scalar, interpolate_scalar_into,
-    interpolate_vector_into, laplacian, laplacian_into, non_orthogonal_decomposition, orthogonal_laplacian_into,
-    DiffusionOptions, Diffusivity, DiffusivityInterpolation, NonOrthogonalCorrection, NonOrthogonalDecomposition,
+    interpolate_vector_into, laplacian, laplacian_into, least_squares_gradient,
+    least_squares_gradient_into, non_orthogonal_decomposition, orthogonal_laplacian_into,
+    DiffusionOptions, Diffusivity, DiffusivityInterpolation, GradientScheme,
+    LeastSquaresGradientStencil, NonOrthogonalCorrection, NonOrthogonalDecomposition,
     NumericsError, ResolvedScalarBoundaryConditions, ScalarBoundaryCondition, ScalarBoundaryValue,
 };
 pub use physics::{

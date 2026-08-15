@@ -12,6 +12,11 @@ pub enum NonOrthogonalCorrection {
     None,
     Explicit,
 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GradientScheme {
+    Gauss,
+    LeastSquares,
+}
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ScalarBoundaryCondition {
     FixedValue(f64),
@@ -63,8 +68,187 @@ pub enum NumericsError {
     InvalidDiffusivity { cell: usize, value: f64 },
     InvalidFaceDiffusivity { face: usize },
     InvalidNonOrthogonalGeometry { face: usize },
+    SingularLeastSquaresStencil { cell: usize },
 }
 
+/// A mesh- and boundary-condition-bound cache for weighted least-squares gradients.
+///
+/// Construct this once per immutable mesh and resolved scalar boundary-condition set,
+/// then reuse it for cell fields with those same fixed boundary values. Internal
+/// cell-centre equations and `FixedValue` face-centre equations are cached with
+/// inverse-distance-squared weights; `ZeroGradient` faces deliberately contribute
+/// no equation.
+#[derive(Clone, Debug)]
+pub struct LeastSquaresGradientStencil {
+    mesh_id: MeshId,
+    equations: Vec<Vec<LeastSquaresEquation>>,
+    inverse_normal_matrices: Vec<[f64; 9]>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct LeastSquaresEquation {
+    rhs_coefficient: Vec3,
+    source: LeastSquaresSource,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum LeastSquaresSource {
+    Neighbour(usize),
+    FixedValue(f64),
+}
+
+impl LeastSquaresGradientStencil {
+    /// Builds and validates a reusable weighted least-squares gradient cache.
+    pub fn new(
+        mesh: &UnstructuredMesh,
+        boundary: &ResolvedScalarBoundaryConditions,
+    ) -> Result<Self, NumericsError> {
+        boundary.ensure_mesh(mesh)?;
+        let mut equations = Vec::with_capacity(mesh.cell_count());
+        let mut inverse_normal_matrices = Vec::with_capacity(mesh.cell_count());
+
+        for (cell_index, cell) in mesh.cells().iter().enumerate() {
+            let mut normal = [0.0; 9];
+            let mut cell_equations = Vec::with_capacity(cell.faces.len());
+            for &face_index in &cell.faces {
+                let face = &mesh.faces()[face_index];
+                let (offset, source) = if let Some(neighbour) = face.neighbour {
+                    let neighbour = if face.owner == cell_index {
+                        neighbour
+                    } else {
+                        face.owner
+                    };
+                    (
+                        mesh.cells()[neighbour].center - cell.center,
+                        LeastSquaresSource::Neighbour(neighbour),
+                    )
+                } else {
+                    match boundary
+                        .condition(face_index)
+                        .ok_or(NumericsError::MissingBoundaryCondition { face: face_index })?
+                    {
+                        ScalarBoundaryCondition::FixedValue(value) => (
+                            face.center - cell.center,
+                            LeastSquaresSource::FixedValue(value),
+                        ),
+                        ScalarBoundaryCondition::ZeroGradient => continue,
+                    }
+                };
+                let distance_squared = offset.norm_squared();
+                if distance_squared <= f64::EPSILON {
+                    return Err(if face.neighbour.is_some() {
+                        NumericsError::DegenerateOwnerNeighbourDistance { face: face_index }
+                    } else {
+                        NumericsError::DegenerateOwnerFaceDistance { face: face_index }
+                    });
+                }
+                let weight = 1.0 / distance_squared;
+                let rhs_coefficient = offset * weight;
+                normal[0] += rhs_coefficient.x * offset.x;
+                normal[1] += rhs_coefficient.x * offset.y;
+                normal[2] += rhs_coefficient.x * offset.z;
+                normal[3] += rhs_coefficient.y * offset.x;
+                normal[4] += rhs_coefficient.y * offset.y;
+                normal[5] += rhs_coefficient.y * offset.z;
+                normal[6] += rhs_coefficient.z * offset.x;
+                normal[7] += rhs_coefficient.z * offset.y;
+                normal[8] += rhs_coefficient.z * offset.z;
+                cell_equations.push(LeastSquaresEquation {
+                    rhs_coefficient,
+                    source,
+                });
+            }
+            let inverse = inverse_normal_matrix(mesh, normal, cell_index)?;
+            equations.push(cell_equations);
+            inverse_normal_matrices.push(inverse);
+        }
+        Ok(Self {
+            mesh_id: mesh.id(),
+            equations,
+            inverse_normal_matrices,
+        })
+    }
+
+    /// Rejects use of this cache with a different mesh identity.
+    pub fn ensure_mesh(&self, mesh: &UnstructuredMesh) -> Result<(), NumericsError> {
+        if self.mesh_id == mesh.id() {
+            Ok(())
+        } else {
+            Err(NumericsError::Field(FieldError::MeshMismatch {
+                expected: self.mesh_id,
+                actual: mesh.id(),
+            }))
+        }
+    }
+}
+
+fn inverse_normal_matrix(
+    mesh: &UnstructuredMesh,
+    normal: [f64; 9],
+    cell: usize,
+) -> Result<[f64; 9], NumericsError> {
+    let singular = || Err(NumericsError::SingularLeastSquaresStencil { cell });
+    if !normal.iter().all(|value| value.is_finite()) {
+        return singular();
+    }
+    match mesh.dimension() {
+        crate::MeshDimension::TwoD => {
+            let determinant = normal[0] * normal[4] - normal[1] * normal[3];
+            let scale = normal[0].abs().max(normal[4].abs()).max(1.0);
+            if determinant.abs() <= f64::EPSILON * scale * scale {
+                return singular();
+            }
+            Ok([
+                normal[4] / determinant,
+                -normal[1] / determinant,
+                0.0,
+                -normal[3] / determinant,
+                normal[0] / determinant,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+            ])
+        }
+        crate::MeshDimension::ThreeD => {
+            let determinant = normal[0] * (normal[4] * normal[8] - normal[5] * normal[7])
+                - normal[1] * (normal[3] * normal[8] - normal[5] * normal[6])
+                + normal[2] * (normal[3] * normal[7] - normal[4] * normal[6]);
+            let scale = normal
+                .iter()
+                .fold(1.0_f64, |scale, value| scale.max(value.abs()));
+            if determinant.abs() <= f64::EPSILON * scale * scale * scale {
+                return singular();
+            }
+            Ok([
+                (normal[4] * normal[8] - normal[5] * normal[7]) / determinant,
+                (normal[2] * normal[7] - normal[1] * normal[8]) / determinant,
+                (normal[1] * normal[5] - normal[2] * normal[4]) / determinant,
+                (normal[5] * normal[6] - normal[3] * normal[8]) / determinant,
+                (normal[0] * normal[8] - normal[2] * normal[6]) / determinant,
+                (normal[2] * normal[3] - normal[0] * normal[5]) / determinant,
+                (normal[3] * normal[7] - normal[4] * normal[6]) / determinant,
+                (normal[1] * normal[6] - normal[0] * normal[7]) / determinant,
+                (normal[0] * normal[4] - normal[1] * normal[3]) / determinant,
+            ])
+        }
+    }
+}
+
+impl From<FieldError> for NumericsError {
+    fn from(value: FieldError) -> Self {
+        Self::Field(value)
+    }
+}
+
+fn check_cell_measure(mesh: &UnstructuredMesh) -> Result<(), NumericsError> {
+    for (index, cell) in mesh.cells().iter().enumerate() {
+        if cell.volume <= 0.0 {
+            return Err(NumericsError::InvalidCellMeasure { cell: index });
+        }
+    }
+    Ok(())
+}
 fn weight(mesh: &UnstructuredMesh, face_index: usize) -> Result<f64, NumericsError> {
     let face = &mesh.faces()[face_index];
     let neighbour = face.neighbour.expect("internal face required");
@@ -364,6 +548,53 @@ pub fn gauss_gradient_from_faces(
 ) -> Result<CellField<Vec3>, NumericsError> {
     let mut output = CellField::filled(mesh, Vec3::ZERO);
     gauss_gradient_from_faces_into(mesh, values, &mut output)?;
+    Ok(output)
+}
+
+/// Reconstructs cell-centred scalar gradients using a prevalidated weighted LSQ cache.
+///
+/// The stencil uses cell-centre differences for internal faces and face-centre
+/// `FixedValue` boundary differences. `ZeroGradient` boundaries are omitted.
+pub fn least_squares_gradient_into(
+    mesh: &UnstructuredMesh,
+    stencil: &LeastSquaresGradientStencil,
+    values: &CellField<f64>,
+    output: &mut CellField<Vec3>,
+) -> Result<(), NumericsError> {
+    stencil.ensure_mesh(mesh)?;
+    values.ensure_mesh(mesh)?;
+    output.ensure_mesh(mesh)?;
+    for (cell, (equations, inverse)) in stencil
+        .equations
+        .iter()
+        .zip(&stencil.inverse_normal_matrices)
+        .enumerate()
+    {
+        let mut rhs = Vec3::ZERO;
+        for equation in equations {
+            let adjacent = match equation.source {
+                LeastSquaresSource::Neighbour(neighbour) => values[neighbour],
+                LeastSquaresSource::FixedValue(value) => value,
+            };
+            rhs += equation.rhs_coefficient * (adjacent - values[cell]);
+        }
+        output[cell] = Vec3::new(
+            inverse[0] * rhs.x + inverse[1] * rhs.y + inverse[2] * rhs.z,
+            inverse[3] * rhs.x + inverse[4] * rhs.y + inverse[5] * rhs.z,
+            inverse[6] * rhs.x + inverse[7] * rhs.y + inverse[8] * rhs.z,
+        );
+    }
+    Ok(())
+}
+
+/// Allocates and reconstructs cell-centred scalar gradients with weighted LSQ.
+pub fn least_squares_gradient(
+    mesh: &UnstructuredMesh,
+    stencil: &LeastSquaresGradientStencil,
+    values: &CellField<f64>,
+) -> Result<CellField<Vec3>, NumericsError> {
+    let mut output = CellField::filled(mesh, Vec3::ZERO);
+    least_squares_gradient_into(mesh, stencil, values, &mut output)?;
     Ok(output)
 }
 
@@ -1180,6 +1411,69 @@ mod tests {
         ResolvedScalarBoundaryConditions::strict(mesh, &assignments).unwrap()
     }
 
+    #[test]
+    fn least_squares_reconstruction_is_linear_exact_reusable_and_mesh_safe_in_2d_and_3d() {
+        for candidate in [individually_patched(mesh()), cube_block_3d()] {
+            let gradient = match candidate.dimension() {
+                MeshDimension::TwoD => Vec3::new(2.0, -3.0, 0.0),
+                MeshDimension::ThreeD => Vec3::new(2.0, -3.0, 4.0),
+            };
+            let values =
+                CellField::from_cells(&candidate, |_, cell| gradient.dot(cell.center) + 5.0);
+            let boundary = analytic_fixed_boundaries(&candidate, |point| gradient.dot(point) + 5.0);
+            let stencil = LeastSquaresGradientStencil::new(&candidate, &boundary).unwrap();
+            let allocated = least_squares_gradient(&candidate, &stencil, &values).unwrap();
+            assert!(allocated
+                .values()
+                .iter()
+                .all(|actual| (*actual - gradient).norm() < TOL));
+
+            let mut reused = CellField::filled(&candidate, Vec3::new(99.0, 99.0, 99.0));
+            least_squares_gradient_into(&candidate, &stencil, &values, &mut reused).unwrap();
+            assert_eq!(allocated.values(), reused.values());
+
+            let foreign = match candidate.dimension() {
+                MeshDimension::TwoD => individually_patched(mesh()),
+                MeshDimension::ThreeD => cube_block_3d(),
+            };
+            let foreign_values = CellField::filled(&foreign, 0.0);
+            assert!(matches!(
+                least_squares_gradient(&candidate, &stencil, &foreign_values),
+                Err(NumericsError::Field(FieldError::MeshMismatch { .. }))
+            ));
+        }
+    }
+
+    #[test]
+    fn least_squares_omits_zero_gradient_boundaries_and_rejects_singular_stencils() {
+        let mesh = line_mesh_with_patches();
+        let zero_gradient = ResolvedScalarBoundaryConditions::strict(
+            &mesh,
+            &[
+                ("left", ScalarBoundaryCondition::ZeroGradient),
+                ("right", ScalarBoundaryCondition::ZeroGradient),
+                ("walls", ScalarBoundaryCondition::ZeroGradient),
+            ],
+        )
+        .unwrap();
+        assert!(matches!(
+            LeastSquaresGradientStencil::new(&mesh, &zero_gradient),
+            Err(NumericsError::SingularLeastSquaresStencil { .. })
+        ));
+
+        let mesh = individually_patched(three_cells());
+        let fixed = analytic_fixed_boundaries(&mesh, |point| 2.0 * point.x - 3.0 * point.y + 1.0);
+        let stencil = LeastSquaresGradientStencil::new(&mesh, &fixed).unwrap();
+        let values = CellField::from_cells(&mesh, |_, cell| {
+            2.0 * cell.center.x - 3.0 * cell.center.y + 1.0
+        });
+        let gradients = least_squares_gradient(&mesh, &stencil, &values).unwrap();
+        assert!(gradients
+            .values()
+            .iter()
+            .all(|gradient| (*gradient - Vec3::new(2.0, -3.0, 0.0)).norm() < TOL));
+    }
+
     fn skewed_two_cell_mesh() -> UnstructuredMesh {
         individually_patched(
             UnstructuredMesh::from_cells(
@@ -1199,6 +1493,234 @@ mod tests {
             )
             .unwrap(),
         )
+    }
+
+    fn skewed_multi_cell_mesh_2d() -> UnstructuredMesh {
+        let point = |x: usize, y: usize| {
+            Point::new(
+                x as f64 + 0.14 * (y * y) as f64,
+                y as f64 + 0.06 * (x * x) as f64,
+                0.0,
+            )
+        };
+        let mut points = Vec::new();
+        for y in 0..4 {
+            for x in 0..4 {
+                points.push(point(x, y));
+            }
+        }
+        let index = |x: usize, y: usize| x + 4 * y;
+        let mut cells = Vec::new();
+        for y in 0..3 {
+            for x in 0..3 {
+                cells.push(CellDefinition::polygon(vec![
+                    index(x, y),
+                    index(x + 1, y),
+                    index(x + 1, y + 1),
+                    index(x, y + 1),
+                ]));
+            }
+        }
+        individually_patched(
+            UnstructuredMesh::from_cells(MeshDimension::TwoD, points, cells).unwrap(),
+        )
+    }
+
+    fn skewed_tetrahedron_mesh_3d() -> UnstructuredMesh {
+        individually_patched(
+            UnstructuredMesh::from_cells(
+                MeshDimension::ThreeD,
+                vec![
+                    Point::new(0.0, 0.0, 0.0),
+                    Point::new(1.7, 0.2, 0.1),
+                    Point::new(0.3, 1.4, 0.2),
+                    Point::new(0.2, 0.4, 1.8),
+                ],
+                vec![CellDefinition::tetrahedron([0, 1, 2, 3])],
+            )
+            .unwrap(),
+        )
+    }
+
+    fn rms_gradient_error(
+        gradients: &CellField<Vec3>,
+        expected: impl Fn(Vec3) -> Vec3,
+        mesh: &UnstructuredMesh,
+    ) -> f64 {
+        (gradients
+            .values()
+            .iter()
+            .zip(mesh.cells())
+            .map(|(actual, cell)| (*actual - expected(cell.center)).norm_squared())
+            .sum::<f64>()
+            / gradients.len() as f64)
+            .sqrt()
+    }
+
+    fn interpolated_internal_exact_boundary_faces(
+        mesh: &UnstructuredMesh,
+        values: &CellField<f64>,
+        analytic: impl Fn(Vec3) -> f64,
+    ) -> FaceField<f64> {
+        let mut faces = interpolate_scalar(mesh, values, ScalarBoundaryValue::OwnerValue).unwrap();
+        for (index, face) in mesh.faces().iter().enumerate() {
+            if face.neighbour.is_none() {
+                faces[index] = analytic(face.center);
+            }
+        }
+        faces
+    }
+
+    #[test]
+    fn least_squares_constant_field_is_zero_on_orthogonal_and_skewed_2d_meshes() {
+        for mesh in [individually_patched(mesh()), skewed_multi_cell_mesh_2d()] {
+            let values = CellField::filled(&mesh, 7.25);
+            let boundary = analytic_fixed_boundaries(&mesh, |_| 7.25);
+            let stencil = LeastSquaresGradientStencil::new(&mesh, &boundary).unwrap();
+            let gradients = least_squares_gradient(&mesh, &stencil, &values).unwrap();
+            assert!(gradients.values().iter().all(|gradient| {
+                gradient.x.is_finite()
+                    && gradient.y.is_finite()
+                    && gradient.z.is_finite()
+                    && gradient.norm() < TOL
+            }));
+        }
+    }
+
+    #[test]
+    fn least_squares_is_exact_on_skewed_multi_cell_2d_linear_field_and_beats_interpolated_gauss() {
+        let mesh = skewed_multi_cell_mesh_2d();
+        let expected = Vec3::new(2.0, -3.0, 0.0);
+        let analytic = |point: Vec3| expected.dot(point) + 5.0;
+        let values = CellField::from_cells(&mesh, |_, cell| analytic(cell.center));
+        let boundary = analytic_fixed_boundaries(&mesh, analytic);
+        let stencil = LeastSquaresGradientStencil::new(&mesh, &boundary).unwrap();
+        let least_squares = least_squares_gradient(&mesh, &stencil, &values).unwrap();
+        let exact_gauss = gauss_gradient_from_faces(
+            &mesh,
+            &FaceField::from_faces(&mesh, |_, face| analytic(face.center)),
+        )
+        .unwrap();
+        let interpolated_gauss = gauss_gradient_from_faces(
+            &mesh,
+            &interpolated_internal_exact_boundary_faces(&mesh, &values, analytic),
+        )
+        .unwrap();
+        let linear = |_| expected;
+        let least_squares_error = rms_gradient_error(&least_squares, linear, &mesh);
+        let exact_gauss_error = rms_gradient_error(&exact_gauss, linear, &mesh);
+        let interpolated_gauss_error = rms_gradient_error(&interpolated_gauss, linear, &mesh);
+        assert!(least_squares_error.is_finite());
+        assert!(exact_gauss_error.is_finite());
+        assert!(interpolated_gauss_error.is_finite());
+        assert!(least_squares_error < TOL, "LSQ error={least_squares_error}");
+        assert!(
+            exact_gauss_error < TOL,
+            "exact Gauss error={exact_gauss_error}"
+        );
+        assert!(
+            interpolated_gauss_error > 1.0e-4,
+            "interpolated Gauss error={interpolated_gauss_error}"
+        );
+        assert!(
+            least_squares_error < interpolated_gauss_error,
+            "LSQ={least_squares_error}, interpolated Gauss={interpolated_gauss_error}"
+        );
+    }
+
+    #[test]
+    fn least_squares_is_linear_exact_and_finite_on_a_skewed_unstructured_3d_tetrahedron() {
+        let mesh = skewed_tetrahedron_mesh_3d();
+        let expected = Vec3::new(2.0, -3.0, 4.0);
+        let analytic = |point: Vec3| expected.dot(point) - 1.5;
+        let values = CellField::from_cells(&mesh, |_, cell| analytic(cell.center));
+        let boundary = analytic_fixed_boundaries(&mesh, analytic);
+        let stencil = LeastSquaresGradientStencil::new(&mesh, &boundary).unwrap();
+        let gradients = least_squares_gradient(&mesh, &stencil, &values).unwrap();
+        assert!(rms_gradient_error(&gradients, |_| expected, &mesh) < TOL);
+        assert!(gradients.values().iter().all(|gradient| {
+            gradient.x.is_finite() && gradient.y.is_finite() && gradient.z.is_finite()
+        }));
+    }
+
+    #[test]
+    fn least_squares_quadratic_gradient_errors_are_finite_in_2d_and_3d() {
+        for mesh in [skewed_multi_cell_mesh_2d(), skewed_tetrahedron_mesh_3d()] {
+            let quadratic = |point: Vec3| point.norm_squared() + 0.5 * point.x * point.y;
+            let exact_gradient = |point: Vec3| {
+                Vec3::new(
+                    2.0 * point.x + 0.5 * point.y,
+                    2.0 * point.y + 0.5 * point.x,
+                    2.0 * point.z,
+                )
+            };
+            let values = CellField::from_cells(&mesh, |_, cell| quadratic(cell.center));
+            let boundary = analytic_fixed_boundaries(&mesh, quadratic);
+            let stencil = LeastSquaresGradientStencil::new(&mesh, &boundary).unwrap();
+            let gradients = least_squares_gradient(&mesh, &stencil, &values).unwrap();
+            let error = rms_gradient_error(&gradients, exact_gradient, &mesh);
+            assert!(error.is_finite() && error > TOL, "quadratic error={error}");
+            assert!(gradients.values().iter().all(|gradient| {
+                gradient.x.is_finite() && gradient.y.is_finite() && gradient.z.is_finite()
+            }));
+        }
+    }
+
+    #[test]
+    fn least_squares_reuse_and_all_foreign_mesh_inputs_are_rejected() {
+        let mesh = skewed_multi_cell_mesh_2d();
+        let expected = Vec3::new(2.0, -3.0, 0.0);
+        let analytic = |point: Vec3| expected.dot(point) + 5.0;
+        let values = CellField::from_cells(&mesh, |_, cell| analytic(cell.center));
+        let boundary = analytic_fixed_boundaries(&mesh, analytic);
+        let stencil = LeastSquaresGradientStencil::new(&mesh, &boundary).unwrap();
+        let allocated = least_squares_gradient(&mesh, &stencil, &values).unwrap();
+        let mut reused = CellField::filled(&mesh, Vec3::new(99.0, 99.0, 99.0));
+        least_squares_gradient_into(&mesh, &stencil, &values, &mut reused).unwrap();
+        assert_eq!(allocated.values(), reused.values());
+        let changed = CellField::filled(&mesh, -2.0);
+        let changed_allocated = least_squares_gradient(&mesh, &stencil, &changed).unwrap();
+        least_squares_gradient_into(&mesh, &stencil, &changed, &mut reused).unwrap();
+        assert_eq!(changed_allocated.values(), reused.values());
+        assert_ne!(allocated.values(), reused.values());
+
+        let foreign = skewed_multi_cell_mesh_2d();
+        let foreign_values = CellField::filled(&foreign, 0.0);
+        let mut foreign_output = CellField::filled(&foreign, Vec3::ZERO);
+        let foreign_boundary = analytic_fixed_boundaries(&foreign, |_| 0.0);
+        let foreign_stencil =
+            LeastSquaresGradientStencil::new(&foreign, &foreign_boundary).unwrap();
+        assert!(matches!(
+            LeastSquaresGradientStencil::new(&mesh, &foreign_boundary),
+            Err(NumericsError::Field(FieldError::MeshMismatch { .. }))
+        ));
+        assert!(matches!(
+            least_squares_gradient(&mesh, &stencil, &foreign_values),
+            Err(NumericsError::Field(FieldError::MeshMismatch { .. }))
+        ));
+        assert!(matches!(
+            least_squares_gradient(&mesh, &foreign_stencil, &values),
+            Err(NumericsError::Field(FieldError::MeshMismatch { .. }))
+        ));
+        assert!(matches!(
+            least_squares_gradient_into(&mesh, &stencil, &values, &mut foreign_output),
+            Err(NumericsError::Field(FieldError::MeshMismatch { .. }))
+        ));
+    }
+
+    #[test]
+    fn least_squares_reports_a_singular_three_dimensional_stencil() {
+        let mesh = skewed_tetrahedron_mesh_3d();
+        let assignments: Vec<_> = mesh
+            .boundary_patches()
+            .iter()
+            .map(|patch| (patch.name.as_str(), ScalarBoundaryCondition::ZeroGradient))
+            .collect();
+        let boundary = ResolvedScalarBoundaryConditions::strict(&mesh, &assignments).unwrap();
+        assert!(matches!(
+            LeastSquaresGradientStencil::new(&mesh, &boundary),
+            Err(NumericsError::SingularLeastSquaresStencil { cell: 0 })
+        ));
     }
 
     #[test]
