@@ -3,8 +3,10 @@ import { SectionTitle, SectionHint, Card, MetricCard, InteractiveGeometryPreview
 
     export component MainWindow inherits Window {
         title: "FLURSYS | CFD Workbench";
-        width: 1440px;
-        height: 900px;
+        preferred-width: 1440px;
+        preferred-height: 900px;
+        min-width: 900px;
+        min-height: 650px;
         background: rgb(11, 19, 26);
 
         in-out property <int> current-step: 0;
