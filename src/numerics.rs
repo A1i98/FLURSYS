@@ -36,12 +36,14 @@ pub enum DiffusivityInterpolation {
 pub struct DiffusionOptions {
     pub diffusivity_interpolation: DiffusivityInterpolation,
     pub non_orthogonal_correction: NonOrthogonalCorrection,
+    pub gradient_scheme: GradientScheme,
 }
 impl Default for DiffusionOptions {
     fn default() -> Self {
         Self {
             diffusivity_interpolation: DiffusivityInterpolation::Linear,
             non_orthogonal_correction: NonOrthogonalCorrection::None,
+            gradient_scheme: GradientScheme::Gauss,
         }
     }
 }
@@ -69,6 +71,7 @@ pub enum NumericsError {
     InvalidFaceDiffusivity { face: usize },
     InvalidNonOrthogonalGeometry { face: usize },
     SingularLeastSquaresStencil { cell: usize },
+    MissingLeastSquaresGradientStencil,
 }
 
 /// A mesh- and boundary-condition-bound cache for weighted least-squares gradients.
@@ -405,6 +408,56 @@ pub fn non_orthogonal_decomposition(
     })
 }
 
+/// Splits an internal face area vector using the projection consistent with the
+/// two-point diffusion coefficient `(S·d)/(d·d)`.
+pub fn projection_non_orthogonal_decomposition(
+    mesh: &UnstructuredMesh,
+    face_index: usize,
+) -> Result<NonOrthogonalDecomposition, NumericsError> {
+    let face = &mesh.faces()[face_index];
+    let neighbour = face
+        .neighbour
+        .ok_or(NumericsError::BoundaryConditionOnInternalFace { face: face_index })?;
+    let d = mesh.cells()[neighbour].center - mesh.cells()[face.owner].center;
+    let d2 = d.norm_squared();
+    let projection = face.area_vector.dot(d);
+    if !d2.is_finite()
+        || d2 <= f64::EPSILON
+        || !projection.is_finite()
+        || projection <= f64::EPSILON
+    {
+        return Err(NumericsError::InvalidNonOrthogonalGeometry { face: face_index });
+    }
+    let orthogonal = d * (projection / d2);
+    Ok(NonOrthogonalDecomposition {
+        orthogonal,
+        non_orthogonal: face.area_vector - orthogonal,
+    })
+}
+
+fn corrected_internal_diffusion_flux(
+    mesh: &UnstructuredMesh,
+    face_index: usize,
+    diffusivity: f64,
+    values: &CellField<f64>,
+    gradient: Vec3,
+) -> Result<f64, NumericsError> {
+    let face = &mesh.faces()[face_index];
+    let neighbour = face
+        .neighbour
+        .ok_or(NumericsError::BoundaryConditionOnInternalFace { face: face_index })?;
+    let d = mesh.cells()[neighbour].center - mesh.cells()[face.owner].center;
+    let d2 = d.norm_squared();
+    if d2 <= f64::EPSILON {
+        return Err(NumericsError::DegenerateOwnerNeighbourDistance { face: face_index });
+    }
+    let orthogonal =
+        diffusivity * face.area_vector.dot(d) / d2 * (values[neighbour] - values[face.owner]);
+    let non_orthogonal = diffusivity
+        * gradient.dot(projection_non_orthogonal_decomposition(mesh, face_index)?.non_orthogonal);
+    Ok(orthogonal + non_orthogonal)
+}
+
 pub fn interpolate_scalar_into(
     mesh: &UnstructuredMesh,
     cells: &CellField<f64>,
@@ -606,10 +659,37 @@ pub fn integrated_diffusion_into(
     options: DiffusionOptions,
     output: &mut CellField<f64>,
 ) -> Result<(), NumericsError> {
+    integrated_diffusion_with_stencil_into(
+        mesh,
+        values,
+        diffusivity,
+        boundary,
+        options,
+        None,
+        output,
+    )
+}
+
+/// Computes conservative diffusion using an optional reusable LSQ gradient cache.
+///
+/// `Explicit + LeastSquares` requires a cache so its mesh-bound geometry can be
+/// retained across repeated evaluations.
+pub fn integrated_diffusion_with_stencil_into(
+    mesh: &UnstructuredMesh,
+    values: &CellField<f64>,
+    diffusivity: Diffusivity<'_>,
+    boundary: &ResolvedScalarBoundaryConditions,
+    options: DiffusionOptions,
+    stencil: Option<&LeastSquaresGradientStencil>,
+    output: &mut CellField<f64>,
+) -> Result<(), NumericsError> {
     check_cell_measure(mesh)?;
     values.ensure_mesh(mesh)?;
     output.ensure_mesh(mesh)?;
     boundary.ensure_mesh(mesh)?;
+    if let Some(stencil) = stencil {
+        stencil.ensure_mesh(mesh)?;
+    }
     let gamma = interpolate_diffusivity(mesh, diffusivity, options.diffusivity_interpolation)?;
     let mut face_values = FaceField::filled(mesh, 0.0);
     for (index, face) in mesh.faces().iter().enumerate() {
@@ -628,7 +708,14 @@ pub fn integrated_diffusion_into(
         };
     }
     let gradients = if options.non_orthogonal_correction == NonOrthogonalCorrection::Explicit {
-        Some(gauss_gradient_from_faces(mesh, &face_values)?)
+        match options.gradient_scheme {
+            GradientScheme::Gauss => Some(gauss_gradient_from_faces(mesh, &face_values)?),
+            GradientScheme::LeastSquares => Some(least_squares_gradient(
+                mesh,
+                stencil.ok_or(NumericsError::MissingLeastSquaresGradientStencil)?,
+                values,
+            )?),
+        }
     } else {
         None
     };
@@ -646,8 +733,8 @@ pub fn integrated_diffusion_into(
                 let lambda = weight(mesh, index)?;
                 let gradient =
                     gradients[face.owner] * (1.0 - lambda) + gradients[neighbour] * lambda;
-                contribution += gamma[index]
-                    * gradient.dot(non_orthogonal_decomposition(mesh, index)?.non_orthogonal);
+                contribution =
+                    corrected_internal_diffusion_flux(mesh, index, gamma[index], values, gradient)?;
             }
             output[face.owner] += contribution;
             output[neighbour] -= contribution;
@@ -677,6 +764,26 @@ pub fn integrated_diffusion(
     integrated_diffusion_into(mesh, values, diffusivity, boundary, options, &mut output)?;
     Ok(output)
 }
+pub fn integrated_diffusion_with_stencil(
+    mesh: &UnstructuredMesh,
+    values: &CellField<f64>,
+    diffusivity: Diffusivity<'_>,
+    boundary: &ResolvedScalarBoundaryConditions,
+    options: DiffusionOptions,
+    stencil: Option<&LeastSquaresGradientStencil>,
+) -> Result<CellField<f64>, NumericsError> {
+    let mut output = CellField::filled(mesh, 0.0);
+    integrated_diffusion_with_stencil_into(
+        mesh,
+        values,
+        diffusivity,
+        boundary,
+        options,
+        stencil,
+        &mut output,
+    )?;
+    Ok(output)
+}
 pub fn laplacian_into(
     mesh: &UnstructuredMesh,
     values: &CellField<f64>,
@@ -700,6 +807,49 @@ pub fn laplacian(
 ) -> Result<CellField<f64>, NumericsError> {
     let mut output = CellField::filled(mesh, 0.0);
     laplacian_into(mesh, values, diffusivity, boundary, options, &mut output)?;
+    Ok(output)
+}
+pub fn laplacian_with_stencil_into(
+    mesh: &UnstructuredMesh,
+    values: &CellField<f64>,
+    diffusivity: Diffusivity<'_>,
+    boundary: &ResolvedScalarBoundaryConditions,
+    options: DiffusionOptions,
+    stencil: Option<&LeastSquaresGradientStencil>,
+    output: &mut CellField<f64>,
+) -> Result<(), NumericsError> {
+    integrated_diffusion_with_stencil_into(
+        mesh,
+        values,
+        diffusivity,
+        boundary,
+        options,
+        stencil,
+        output,
+    )?;
+    for (value, cell) in output.values_mut().iter_mut().zip(mesh.cells()) {
+        *value /= cell.volume;
+    }
+    Ok(())
+}
+pub fn laplacian_with_stencil(
+    mesh: &UnstructuredMesh,
+    values: &CellField<f64>,
+    diffusivity: Diffusivity<'_>,
+    boundary: &ResolvedScalarBoundaryConditions,
+    options: DiffusionOptions,
+    stencil: Option<&LeastSquaresGradientStencil>,
+) -> Result<CellField<f64>, NumericsError> {
+    let mut output = CellField::filled(mesh, 0.0);
+    laplacian_with_stencil_into(
+        mesh,
+        values,
+        diffusivity,
+        boundary,
+        options,
+        stencil,
+        &mut output,
+    )?;
     Ok(output)
 }
 pub fn orthogonal_laplacian_into(
@@ -1724,25 +1874,62 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "documents the unverified explicit-correction skewed-mesh failure"]
-    fn explicit_correction_reduces_skewed_linear_field_error() {
+    fn projection_decomposition_matches_a_hand_calculated_nonorthogonal_face_flux() {
         let mesh = skewed_two_cell_mesh();
-        let values = CellField::from_cells(&mesh, |_, cell| {
-            2. * cell.center.x - 3. * cell.center.y + 4.
-        });
-        let boundary = analytic_fixed_boundaries(&mesh, |point| 2. * point.x - 3. * point.y + 4.);
+        let (face_index, face) = mesh
+            .faces()
+            .iter()
+            .enumerate()
+            .find(|(_, face)| face.neighbour.is_some())
+            .unwrap();
+        let neighbour = face.neighbour.unwrap();
+        let d = mesh.cells()[neighbour].center - mesh.cells()[face.owner].center;
+        let s = face.area_vector;
+        let s_orth = d * (s.dot(d) / d.norm_squared());
+        let s_nonorth = s - s_orth;
+        let gamma = 1.7;
+        let phi_owner = 1.25;
+        let phi_neighbour = -0.75;
+        let gradient = Vec3::new(2.0, -3.0, 0.0);
+        let expected_orth = gamma * s.dot(d) / d.norm_squared() * (phi_neighbour - phi_owner);
+        let expected_nonorth = gamma * gradient.dot(s_nonorth);
+        let expected_total = expected_orth + expected_nonorth;
+        let mut values = CellField::filled(&mesh, 0.0);
+        values[face.owner] = phi_owner;
+        values[neighbour] = phi_neighbour;
+
+        let decomposition = projection_non_orthogonal_decomposition(&mesh, face_index).unwrap();
+        assert_vec_close(decomposition.orthogonal, s_orth);
+        assert_vec_close(decomposition.non_orthogonal, s_nonorth);
+        assert_vec_close(decomposition.orthogonal + decomposition.non_orthogonal, s);
+        assert!(expected_orth.abs() > TOL);
+        assert!(expected_nonorth.abs() > TOL);
+        assert!(expected_total.abs() > TOL);
+        assert_close(
+            corrected_internal_diffusion_flux(&mesh, face_index, gamma, &values, gradient).unwrap(),
+            expected_total,
+        );
+    }
+
+    #[test]
+    fn explicit_least_squares_correction_reduces_skewed_linear_field_error() {
+        let mesh = skewed_multi_cell_mesh_2d();
+        let analytic = |point: Vec3| 2. * point.x - 3. * point.y + 5.;
+        let values = CellField::from_cells(&mesh, |_, cell| analytic(cell.center));
+        let boundary = analytic_fixed_boundaries(&mesh, analytic);
+        let stencil = LeastSquaresGradientStencil::new(&mesh, &boundary).unwrap();
         let internal: Vec<_> = mesh
             .faces()
             .iter()
             .enumerate()
             .filter(|(_, face)| face.neighbour.is_some())
             .collect();
-        assert_eq!(internal.len(), 1);
+        assert!(!internal.is_empty());
         let (face, geometry) = internal[0];
         let d =
             mesh.cells()[geometry.neighbour.unwrap()].center - mesh.cells()[geometry.owner].center;
         assert!(geometry.area_vector.dot(d) > 0.0);
-        let decomposition = non_orthogonal_decomposition(&mesh, face).unwrap();
+        let decomposition = projection_non_orthogonal_decomposition(&mesh, face).unwrap();
         assert_vec_close(
             decomposition.orthogonal + decomposition.non_orthogonal,
             geometry.area_vector,
@@ -1756,7 +1943,7 @@ mod tests {
             DiffusionOptions::default(),
         )
         .unwrap();
-        let explicit = laplacian(
+        let gauss = laplacian(
             &mesh,
             &values,
             Diffusivity::Constant(1.0),
@@ -1764,24 +1951,54 @@ mod tests {
             DiffusionOptions {
                 diffusivity_interpolation: DiffusivityInterpolation::Linear,
                 non_orthogonal_correction: NonOrthogonalCorrection::Explicit,
+                gradient_scheme: GradientScheme::Gauss,
             },
         )
         .unwrap();
+        let explicit = laplacian_with_stencil(
+            &mesh,
+            &values,
+            Diffusivity::Constant(1.0),
+            &boundary,
+            DiffusionOptions {
+                diffusivity_interpolation: DiffusivityInterpolation::Linear,
+                non_orthogonal_correction: NonOrthogonalCorrection::Explicit,
+                gradient_scheme: GradientScheme::LeastSquares,
+            },
+            Some(&stencil),
+        )
+        .unwrap();
+        let interior: Vec<_> = mesh
+            .cells()
+            .iter()
+            .enumerate()
+            .filter_map(|(index, cell)| {
+                cell.faces
+                    .iter()
+                    .all(|&face| mesh.faces()[face].neighbour.is_some())
+                    .then_some(index)
+            })
+            .collect();
+        assert!(!interior.is_empty());
         let error = |field: &CellField<f64>| {
-            (field
-                .values()
+            (interior
                 .iter()
-                .map(|value| value * value)
+                .map(|&cell| field[cell] * field[cell])
                 .sum::<f64>()
-                / field.len() as f64)
+                / interior.len() as f64)
                 .sqrt()
         };
         let none_error = error(&none);
+        let gauss_error = error(&gauss);
         let explicit_error = error(&explicit);
-        assert!(none_error.is_finite() && explicit_error.is_finite());
+        assert!(none_error.is_finite() && gauss_error.is_finite() && explicit_error.is_finite());
         assert!(
             explicit_error < none_error,
-            "none={none_error}, explicit={explicit_error}"
+            "none={none_error}, gauss={gauss_error}, least_squares={explicit_error}"
+        );
+        assert!(
+            explicit_error < gauss_error,
+            "none={none_error}, gauss={gauss_error}, least_squares={explicit_error}"
         );
     }
 
@@ -1815,6 +2032,186 @@ mod tests {
         individually_patched(
             UnstructuredMesh::from_cells(MeshDimension::ThreeD, points, cells).unwrap(),
         )
+    }
+
+    fn skewed_block_3d() -> UnstructuredMesh {
+        let mut points = Vec::new();
+        for z in 0..4 {
+            for y in 0..4 {
+                for x in 0..4 {
+                    points.push(Point::new(
+                        x as f64 + 0.14 * (y * y) as f64,
+                        y as f64 + 0.06 * (x * x) as f64,
+                        z as f64,
+                    ));
+                }
+            }
+        }
+        let point = |x: usize, y: usize, z: usize| x + 4 * (y + 4 * z);
+        let mut cells = Vec::new();
+        for z in 0..3 {
+            for y in 0..3 {
+                for x in 0..3 {
+                    cells.push(CellDefinition::Hexahedron([
+                        point(x, y, z),
+                        point(x + 1, y, z),
+                        point(x + 1, y + 1, z),
+                        point(x, y + 1, z),
+                        point(x, y, z + 1),
+                        point(x + 1, y, z + 1),
+                        point(x + 1, y + 1, z + 1),
+                        point(x, y + 1, z + 1),
+                    ]));
+                }
+            }
+        }
+        individually_patched(
+            UnstructuredMesh::from_cells(MeshDimension::ThreeD, points, cells).unwrap(),
+        )
+    }
+
+    fn fully_internal_cells(mesh: &UnstructuredMesh) -> Vec<usize> {
+        mesh.cells()
+            .iter()
+            .enumerate()
+            .filter_map(|(index, cell)| {
+                cell.faces
+                    .iter()
+                    .all(|&face| mesh.faces()[face].neighbour.is_some())
+                    .then_some(index)
+            })
+            .collect()
+    }
+
+    fn rms_cell_error(values: &CellField<f64>, cells: &[usize]) -> f64 {
+        (cells
+            .iter()
+            .map(|&cell| values[cell] * values[cell])
+            .sum::<f64>()
+            / cells.len() as f64)
+            .sqrt()
+    }
+
+    #[test]
+    fn explicit_least_squares_correction_reduces_skewed_three_dimensional_linear_error() {
+        let mesh = skewed_block_3d();
+        let analytic = |point: Vec3| 2.0 * point.x - 3.0 * point.y + 4.0 * point.z + 5.0;
+        let values = CellField::from_cells(&mesh, |_, cell| analytic(cell.center));
+        let boundary = analytic_fixed_boundaries(&mesh, analytic);
+        let stencil = LeastSquaresGradientStencil::new(&mesh, &boundary).unwrap();
+        let none = laplacian(
+            &mesh,
+            &values,
+            Diffusivity::Constant(1.0),
+            &boundary,
+            DiffusionOptions::default(),
+        )
+        .unwrap();
+        let least_squares = laplacian_with_stencil(
+            &mesh,
+            &values,
+            Diffusivity::Constant(1.0),
+            &boundary,
+            DiffusionOptions {
+                diffusivity_interpolation: DiffusivityInterpolation::Linear,
+                non_orthogonal_correction: NonOrthogonalCorrection::Explicit,
+                gradient_scheme: GradientScheme::LeastSquares,
+            },
+            Some(&stencil),
+        )
+        .unwrap();
+        let interior = fully_internal_cells(&mesh);
+        assert!(!interior.is_empty());
+        let none_error = rms_cell_error(&none, &interior);
+        let least_squares_error = rms_cell_error(&least_squares, &interior);
+        assert!(none_error.is_finite() && least_squares_error.is_finite());
+        assert!(
+            least_squares_error < none_error,
+            "none={none_error}, least_squares={least_squares_error}"
+        );
+    }
+
+    #[test]
+    fn corrected_diffusion_preserves_constant_and_orthogonal_baselines() {
+        let skewed = skewed_multi_cell_mesh_2d();
+        let constant = CellField::filled(&skewed, 7.25);
+        let constant_boundary = analytic_fixed_boundaries(&skewed, |_| 7.25);
+        let constant_stencil =
+            LeastSquaresGradientStencil::new(&skewed, &constant_boundary).unwrap();
+        for corrected in [
+            laplacian(
+                &skewed,
+                &constant,
+                Diffusivity::Constant(1.0),
+                &constant_boundary,
+                DiffusionOptions::default(),
+            )
+            .unwrap(),
+            laplacian(
+                &skewed,
+                &constant,
+                Diffusivity::Constant(1.0),
+                &constant_boundary,
+                DiffusionOptions {
+                    diffusivity_interpolation: DiffusivityInterpolation::Linear,
+                    non_orthogonal_correction: NonOrthogonalCorrection::Explicit,
+                    gradient_scheme: GradientScheme::Gauss,
+                },
+            )
+            .unwrap(),
+            laplacian_with_stencil(
+                &skewed,
+                &constant,
+                Diffusivity::Constant(1.0),
+                &constant_boundary,
+                DiffusionOptions {
+                    diffusivity_interpolation: DiffusivityInterpolation::Linear,
+                    non_orthogonal_correction: NonOrthogonalCorrection::Explicit,
+                    gradient_scheme: GradientScheme::LeastSquares,
+                },
+                Some(&constant_stencil),
+            )
+            .unwrap(),
+        ] {
+            assert!(corrected
+                .values()
+                .iter()
+                .all(|value| value.is_finite() && value.abs() < TOL));
+        }
+
+        for mesh in [individually_patched(three_cells()), cube_block_3d()] {
+            let gradient = match mesh.dimension() {
+                MeshDimension::TwoD => Vec3::new(2.0, -3.0, 0.0),
+                MeshDimension::ThreeD => Vec3::new(2.0, -3.0, 4.0),
+            };
+            let values = CellField::from_cells(&mesh, |_, cell| gradient.dot(cell.center) + 5.0);
+            let boundary = analytic_fixed_boundaries(&mesh, |point| gradient.dot(point) + 5.0);
+            let stencil = LeastSquaresGradientStencil::new(&mesh, &boundary).unwrap();
+            let none = laplacian(
+                &mesh,
+                &values,
+                Diffusivity::Constant(1.0),
+                &boundary,
+                DiffusionOptions::default(),
+            )
+            .unwrap();
+            let least_squares = laplacian_with_stencil(
+                &mesh,
+                &values,
+                Diffusivity::Constant(1.0),
+                &boundary,
+                DiffusionOptions {
+                    diffusivity_interpolation: DiffusivityInterpolation::Linear,
+                    non_orthogonal_correction: NonOrthogonalCorrection::Explicit,
+                    gradient_scheme: GradientScheme::LeastSquares,
+                },
+                Some(&stencil),
+            )
+            .unwrap();
+            for (base, corrected) in none.values().iter().zip(least_squares.values()) {
+                assert_close(*corrected, *base);
+            }
+        }
     }
 
     #[test]
@@ -2013,6 +2410,129 @@ mod tests {
                 &boundary,
                 DiffusionOptions::default(),
                 &mut output,
+            ),
+            Err(NumericsError::Field(FieldError::MeshMismatch { .. }))
+        ));
+    }
+
+    #[test]
+    fn corrected_least_squares_diffusion_reuses_buffers_and_rejects_invalid_stencils() {
+        let mesh = skewed_multi_cell_mesh_2d();
+        let boundary =
+            analytic_fixed_boundaries(&mesh, |point| 2.0 * point.x - 3.0 * point.y + 5.0);
+        let stencil = LeastSquaresGradientStencil::new(&mesh, &boundary).unwrap();
+        let options = DiffusionOptions {
+            diffusivity_interpolation: DiffusivityInterpolation::Linear,
+            non_orthogonal_correction: NonOrthogonalCorrection::Explicit,
+            gradient_scheme: GradientScheme::LeastSquares,
+        };
+        let first = CellField::from_cells(&mesh, |_, cell| {
+            2.0 * cell.center.x - 3.0 * cell.center.y + 5.0
+        });
+        let second = CellField::from_cells(&mesh, |_, cell| cell.center.x * cell.center.y + 1.0);
+        let mut reused = CellField::filled(&mesh, 99.0);
+        integrated_diffusion_with_stencil_into(
+            &mesh,
+            &first,
+            Diffusivity::Constant(1.0),
+            &boundary,
+            options,
+            Some(&stencil),
+            &mut reused,
+        )
+        .unwrap();
+        let first_result = reused.clone();
+        integrated_diffusion_with_stencil_into(
+            &mesh,
+            &second,
+            Diffusivity::Constant(1.0),
+            &boundary,
+            options,
+            Some(&stencil),
+            &mut reused,
+        )
+        .unwrap();
+        let expected = integrated_diffusion_with_stencil(
+            &mesh,
+            &second,
+            Diffusivity::Constant(1.0),
+            &boundary,
+            options,
+            Some(&stencil),
+        )
+        .unwrap();
+        assert_ne!(first_result.values(), reused.values());
+        assert_eq!(expected.values(), reused.values());
+        assert!(reused.values().iter().all(|value| value.is_finite()));
+
+        let gamma = CellField::from_cells(&mesh, |_, cell| {
+            1.0 - 0.2 * cell.center.x - 0.1 * cell.center.y
+        });
+        let face_gamma = interpolate_diffusivity(
+            &mesh,
+            Diffusivity::CellField(&gamma),
+            DiffusivityInterpolation::Linear,
+        )
+        .unwrap();
+        let gradients = least_squares_gradient(&mesh, &stencil, &first).unwrap();
+        let mut internal_residual = CellField::filled(&mesh, 0.0);
+        for (face_index, face) in mesh.faces().iter().enumerate() {
+            let Some(neighbour) = face.neighbour else {
+                continue;
+            };
+            let lambda = weight(&mesh, face_index).unwrap();
+            let gradient = gradients[face.owner] * (1.0 - lambda) + gradients[neighbour] * lambda;
+            let flux = corrected_internal_diffusion_flux(
+                &mesh,
+                face_index,
+                face_gamma[face_index],
+                &first,
+                gradient,
+            )
+            .unwrap();
+            assert!(flux.is_finite());
+            let mut isolated = CellField::filled(&mesh, 0.0);
+            isolated[face.owner] += flux;
+            isolated[neighbour] -= flux;
+            assert_close(isolated[face.owner], flux);
+            assert_close(isolated[neighbour], -flux);
+            for (cell, contribution) in isolated.values().iter().enumerate() {
+                if cell != face.owner && cell != neighbour {
+                    assert_close(*contribution, 0.0);
+                }
+            }
+            internal_residual[face.owner] += flux;
+            internal_residual[neighbour] -= flux;
+        }
+        assert!(internal_residual
+            .values()
+            .iter()
+            .all(|value| value.is_finite()));
+        assert_close(internal_residual.values().iter().sum(), 0.0);
+        assert!(matches!(
+            integrated_diffusion_with_stencil(
+                &mesh,
+                &second,
+                Diffusivity::Constant(1.0),
+                &boundary,
+                options,
+                None,
+            ),
+            Err(NumericsError::MissingLeastSquaresGradientStencil)
+        ));
+
+        let foreign = skewed_multi_cell_mesh_2d();
+        let foreign_boundary = analytic_fixed_boundaries(&foreign, |_| 0.0);
+        let foreign_stencil =
+            LeastSquaresGradientStencil::new(&foreign, &foreign_boundary).unwrap();
+        assert!(matches!(
+            integrated_diffusion_with_stencil(
+                &mesh,
+                &second,
+                Diffusivity::Constant(1.0),
+                &boundary,
+                options,
+                Some(&foreign_stencil),
             ),
             Err(NumericsError::Field(FieldError::MeshMismatch { .. }))
         ));
