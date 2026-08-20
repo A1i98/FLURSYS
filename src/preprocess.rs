@@ -6,6 +6,7 @@
 //! while the solver grows into true 3D and unstructured support.
 
 use crate::cases::{BoundaryKind, Case, Side};
+use crate::GeometryTopology;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -31,6 +32,9 @@ pub struct GeometryModel {
     pub sketches: Vec<GeometrySketch>,
     /// Parametric operations applied to sketches, in creation order.
     pub features: Vec<GeometryFeature>,
+    /// Stable geometry entities used by meshing and future entity selection.
+    /// This is independent from generated mesh indices and solver fields.
+    pub topology: GeometryTopology,
 }
 
 impl Default for GeometryModel {
@@ -41,6 +45,7 @@ impl Default for GeometryModel {
             parts: Vec::new(),
             sketches: Vec::new(),
             features: Vec::new(),
+            topology: GeometryTopology::new(),
         }
     }
 }

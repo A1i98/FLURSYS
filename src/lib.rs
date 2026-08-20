@@ -7,6 +7,7 @@
 pub mod cases;
 pub mod field;
 pub mod fields;
+pub mod geometry;
 pub mod grid;
 pub mod io;
 pub mod linear;
@@ -28,6 +29,12 @@ pub mod workbench;
 
 pub use cases::{Case, CaseKind};
 pub use fields::{CellField, FaceField, FieldError};
+pub use geometry::{
+    BodyId, BoxEntities, CircleHoleEntities, EdgeGeometry, EdgeId, FaceId, GeometryBody,
+    GeometryBodyRepresentation, GeometryEdge, GeometryError, GeometryFace,
+    GeometryFaceRepresentation, GeometryRevision, GeometryTopology, GeometryVertex, OrientedEdge,
+    RectangleEntities, VertexId,
+};
 pub use io::gmsh::{load_gmsh, parse_gmsh, GmshError};
 pub use linear::{
     axpy, bicgstab, cg, copy_into, dot, norm_inf, norm_l2, pcg, residual, residual_into, scale,
@@ -41,8 +48,9 @@ pub use mesh::{
 };
 pub use mesh_artifact::{MeshQualityReport, StructuredMeshArtifact};
 pub use meshing::{
-    GeneratedMesh, GmshExecutable, GmshGeoDocument, GmshMeshOptions, GmshMesher, GmshMeshingReport,
-    GmshVersion, MeshingError,
+    GeneratedMesh, GeometryGmshExport, GeometryToGmshMap, GmshExecutable, GmshGeoDocument,
+    GmshGeometryExporter, GmshMeshOptions, GmshMesher, GmshMeshingReport, GmshVersion,
+    MeshingError,
 };
 pub use momentum::{
     assemble_momentum_component, constant_body_force, momentum_component_field,

@@ -1,9 +1,11 @@
 //! Headless, solver-independent meshing backends.
 
 mod geo;
+mod geometry;
 mod gmsh;
 
 pub use geo::GmshGeoDocument;
+pub use geometry::{GeometryGmshExport, GeometryToGmshMap, GmshGeometryExporter};
 pub use gmsh::{
     GeneratedMesh, GmshExecutable, GmshMeshOptions, GmshMesher, GmshMeshingReport, GmshVersion,
 };

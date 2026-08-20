@@ -10,6 +10,10 @@ pub struct GmshGeoDocument {
 }
 
 impl GmshGeoDocument {
+    pub(crate) fn from_source(dimension: MeshDimension, source: String) -> Self {
+        Self { dimension, source }
+    }
+
     /// Builds an XY-plane rectangle with stable point, curve, loop, and surface tags.
     /// Curve tags are bottom=1, right=2, top=3, left=4; the fluid surface is 1.
     pub fn rectangle(

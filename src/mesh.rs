@@ -4,6 +4,7 @@
 //! geometric representation for inspection and pre-processing, not a 3D CFD
 //! discretisation.
 
+use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
 use std::fmt;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -17,7 +18,7 @@ pub struct MeshId(u64);
 
 /// Cartesian vector used by both planar and spatial unstructured meshes.
 /// Planar meshes store points with `z = 0` and use edge length as face area.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Vec3 {
     pub x: f64,
     pub y: f64,
