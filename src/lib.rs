@@ -15,6 +15,7 @@ pub mod mesh_artifact;
 pub mod numerics;
 pub mod output;
 pub mod physics;
+pub mod poisson;
 pub mod preprocess;
 pub mod project;
 pub mod runtime;
@@ -51,6 +52,10 @@ pub use numerics::{
 };
 pub use physics::{
     BuoyancyModel, EnergyModel, PhysicsSettings, ThermalBoundaryCondition, ThermalSettings,
+};
+pub use poisson::{
+    assemble_poisson, solve_poisson, solve_poisson_correction_sweeps, PoissonError,
+    PoissonLinearSolver, PoissonOptions, PoissonReference, PoissonSystem,
 };
 pub use preprocess::{
     BoundaryCondition, BoundaryConditionKind, BoundaryFace, GeometryDimension, GeometryFeature,
