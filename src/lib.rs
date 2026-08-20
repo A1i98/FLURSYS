@@ -9,6 +9,7 @@ pub mod field;
 pub mod fields;
 pub mod grid;
 pub mod io;
+pub mod linear;
 pub mod mesh;
 pub mod mesh_artifact;
 pub mod numerics;
@@ -23,6 +24,11 @@ pub mod workbench;
 pub use cases::{Case, CaseKind};
 pub use fields::{CellField, FaceField, FieldError};
 pub use io::gmsh::{load_gmsh, parse_gmsh, GmshError};
+pub use linear::{
+    axpy, bicgstab, cg, copy_into, dot, norm_inf, norm_l2, pcg, residual, residual_into, scale,
+    CsrBuilder, CsrMatrix, JacobiPreconditioner, LinearAlgebraError, LinearSolveReport,
+    LinearSolverOptions, LinearSolverStatus,
+};
 pub use mesh::{
     BoundaryPatch, BoundaryType, Cell, CellDefinition, ExtrudedMesh3D, Face, MeshDimension,
     MeshError, MeshId, MeshQualityReport as UnstructuredMeshQualityReport, MeshStatistics, Point,
