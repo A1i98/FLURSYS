@@ -10,7 +10,8 @@ use crate::{
     solve_momentum_velocity, CellField, CsrBuilder, CsrMatrix, DiffusionOptions, Diffusivity,
     FaceField, FieldError, LeastSquaresGradientStencil, LinearAlgebraError, LinearSolveReport,
     LinearSolverOptions, MomentumComponent, MomentumError, MomentumOptions, NumericsError,
-    ResolvedVelocityBoundaryConditions, ScalarBoundaryValue, UnstructuredMesh, Vec3,
+    ResolvedScalarBoundaryConditions, ResolvedVelocityBoundaryConditions, ScalarBoundaryCondition,
+    ScalarBoundaryValue, UnstructuredMesh, Vec3,
 };
 
 #[derive(Clone, Debug, PartialEq)]
@@ -92,6 +93,11 @@ pub struct SimpleOptions<'a> {
     pub viscosity: Diffusivity<'a>,
     pub velocity_boundary: &'a ResolvedVelocityBoundaryConditions,
     pub pressure_stencil: &'a LeastSquaresGradientStencil,
+    /// Physical pressure values used by Rhie--Chow at pressure outlets.
+    pub pressure_boundary: Option<&'a ResolvedScalarBoundaryConditions>,
+    /// `ZeroGradient` preserves prescribed velocity-boundary flux; `FixedValue`
+    /// supplies a pressure-correction Dirichlet face and allows its flux to move.
+    pub pressure_correction_boundary: Option<&'a ResolvedScalarBoundaryConditions>,
     pub reference_cell: usize,
     pub max_outer_iterations: usize,
     pub continuity_absolute_tolerance: f64,
@@ -111,6 +117,8 @@ impl<'a> SimpleOptions<'a> {
             viscosity,
             velocity_boundary,
             pressure_stencil,
+            pressure_boundary: None,
+            pressure_correction_boundary: None,
             reference_cell: 0,
             max_outer_iterations: 200,
             continuity_absolute_tolerance: 1.0e-10,
@@ -211,7 +219,7 @@ pub fn solve_simple(
         }
         let diagonal = x_system.matrix().diagonal()?;
         let r_au = CellField::from_values(mesh, momentum_inverse_diagonal(&diagonal)?)?;
-        let predicted_flux = rhie_chow_predicted_flux(
+        let mut predicted_flux = rhie_chow_predicted_flux(
             mesh,
             &predictor,
             &state.pressure,
@@ -219,13 +227,37 @@ pub fn solve_simple(
             options.pressure_stencil,
             &state.face_flux,
         )?;
-        let coefficients = pressure_face_coefficients(mesh, &r_au)?;
-        let pressure_system = assemble_pressure_correction(
-            mesh,
-            &predicted_flux,
-            &coefficients,
-            options.reference_cell,
-        )?;
+        if let Some(correction_boundary) = options.pressure_correction_boundary {
+            correction_boundary.ensure_mesh(mesh)?;
+            for (face_index, face) in mesh.faces().iter().enumerate() {
+                if face.neighbour.is_none()
+                    && matches!(
+                        correction_boundary.condition(face_index),
+                        Some(ScalarBoundaryCondition::FixedValue(_))
+                    )
+                {
+                    predicted_flux[face_index] = predictor[face.owner].dot(face.area_vector);
+                }
+            }
+        }
+        let coefficients = match options.pressure_correction_boundary {
+            Some(boundary) => pressure_face_coefficients_with_boundary(mesh, &r_au, boundary)?,
+            None => pressure_face_coefficients(mesh, &r_au)?,
+        };
+        let pressure_system = match options.pressure_correction_boundary {
+            Some(boundary) => assemble_pressure_correction_with_boundary(
+                mesh,
+                &predicted_flux,
+                &coefficients,
+                boundary,
+            )?,
+            None => assemble_pressure_correction(
+                mesh,
+                &predicted_flux,
+                &coefficients,
+                options.reference_cell,
+            )?,
+        };
         let mut correction = CellField::filled(mesh, 0.0);
         let pressure_report =
             solve_pressure_correction(&pressure_system, &mut correction, options.pressure_solver)?;
@@ -244,7 +276,16 @@ pub fn solve_simple(
             least_squares_gradient(mesh, options.pressure_stencil, &correction)?;
         state.velocity =
             correct_cell_velocity_from_gradient(mesh, &predictor, &r_au, &correction_gradient)?;
-        state.face_flux = correct_face_flux(mesh, &predicted_flux, &coefficients, &correction)?;
+        state.face_flux = match options.pressure_correction_boundary {
+            Some(boundary) => correct_face_flux_with_boundary(
+                mesh,
+                &predicted_flux,
+                &coefficients,
+                &correction,
+                boundary,
+            )?,
+            None => correct_face_flux(mesh, &predicted_flux, &coefficients, &correction)?,
+        };
         let continuity = continuity_rms(mesh, &state.face_flux)?;
         history.push(continuity);
         last_momentum = Some(momentum_reports);
@@ -328,6 +369,42 @@ pub fn pressure_face_coefficients(
     Ok(coefficients)
 }
 
+/// Extends pressure response coefficients to fixed pressure-correction faces.
+/// `ZeroGradient` boundaries retain zero coefficient and therefore preserve
+/// caller-prescribed velocity-boundary fluxes.
+pub fn pressure_face_coefficients_with_boundary(
+    mesh: &UnstructuredMesh,
+    r_au: &CellField<f64>,
+    boundary: &ResolvedScalarBoundaryConditions,
+) -> Result<FaceField<f64>, SimpleError> {
+    boundary.ensure_mesh(mesh)?;
+    let mut coefficients = pressure_face_coefficients(mesh, r_au)?;
+    for (face_index, face) in mesh.faces().iter().enumerate() {
+        if face.neighbour.is_some()
+            || !matches!(
+                boundary.condition(face_index),
+                Some(ScalarBoundaryCondition::FixedValue(_))
+            )
+        {
+            continue;
+        }
+        let d = face.center - mesh.cells()[face.owner].center;
+        let d2 = d.norm_squared();
+        if !d2.is_finite() || d2 <= f64::EPSILON {
+            return Err(NumericsError::DegenerateOwnerFaceDistance { face: face_index }.into());
+        }
+        let coefficient = r_au[face.owner] * face.area_vector.dot(d) / d2;
+        if !coefficient.is_finite() || coefficient <= 0.0 {
+            return Err(SimpleError::InvalidPressureFaceCoefficient {
+                face: face_index,
+                value: coefficient,
+            });
+        }
+        coefficients[face_index] = coefficient;
+    }
+    Ok(coefficients)
+}
+
 /// Applies the pressure correction to the authoritative owner-oriented face
 /// flux. Only internal faces are changed: `Phi = Phi* - d_f (p'_N - p'_P)`.
 /// Keeping wall values unchanged enforces impermeability for the first supported
@@ -355,6 +432,53 @@ pub fn correct_face_flux(
         }
         corrected[face_index] -=
             coefficient * (pressure_correction[neighbour] - pressure_correction[face.owner]);
+        if !corrected[face_index].is_finite() {
+            return Err(SimpleError::InvalidPressureFaceCoefficient {
+                face: face_index,
+                value: corrected[face_index],
+            });
+        }
+    }
+    Ok(corrected)
+}
+
+/// Corrects internal faces and fixed pressure-correction boundary faces. For a
+/// boundary condition `p'_b`, the owner-oriented update is
+/// `Phi_b = Phi_b* - d_b (p'_b - p'_P)`.
+pub fn correct_face_flux_with_boundary(
+    mesh: &UnstructuredMesh,
+    predicted: &FaceField<f64>,
+    coefficients: &FaceField<f64>,
+    pressure_correction: &CellField<f64>,
+    boundary: &ResolvedScalarBoundaryConditions,
+) -> Result<FaceField<f64>, SimpleError> {
+    predicted.ensure_mesh(mesh)?;
+    coefficients.ensure_mesh(mesh)?;
+    pressure_correction.ensure_mesh(mesh)?;
+    boundary.ensure_mesh(mesh)?;
+    let mut corrected = predicted.clone();
+    for (face_index, face) in mesh.faces().iter().enumerate() {
+        let (boundary_correction, coefficient) = if let Some(neighbour) = face.neighbour {
+            (pressure_correction[neighbour], coefficients[face_index])
+        } else {
+            match boundary.condition(face_index) {
+                Some(ScalarBoundaryCondition::FixedValue(value)) => {
+                    (value, coefficients[face_index])
+                }
+                Some(ScalarBoundaryCondition::ZeroGradient) => continue,
+                None => {
+                    return Err(NumericsError::MissingBoundaryCondition { face: face_index }.into())
+                }
+            }
+        };
+        if !coefficient.is_finite() || coefficient <= 0.0 {
+            return Err(SimpleError::InvalidPressureFaceCoefficient {
+                face: face_index,
+                value: coefficient,
+            });
+        }
+        corrected[face_index] -=
+            coefficient * (boundary_correction - pressure_correction[face.owner]);
         if !corrected[face_index].is_finite() {
             return Err(SimpleError::InvalidPressureFaceCoefficient {
                 face: face_index,
@@ -446,6 +570,70 @@ pub fn assemble_pressure_correction(
     let mut builder = CsrBuilder::new(mesh.cell_count(), mesh.cell_count());
     for (row, column, value) in constrained {
         builder.add(row, column, value)?;
+    }
+    Ok(PressureCorrectionSystem {
+        mesh_id: mesh.id(),
+        matrix: builder.finalize()?,
+        rhs,
+    })
+}
+
+/// Assembles a pressure-correction system anchored by fixed correction values
+/// at one or more exterior faces, without an artificial reference cell.
+pub fn assemble_pressure_correction_with_boundary(
+    mesh: &UnstructuredMesh,
+    predicted_flux: &FaceField<f64>,
+    coefficients: &FaceField<f64>,
+    boundary: &ResolvedScalarBoundaryConditions,
+) -> Result<PressureCorrectionSystem, SimpleError> {
+    predicted_flux.ensure_mesh(mesh)?;
+    coefficients.ensure_mesh(mesh)?;
+    boundary.ensure_mesh(mesh)?;
+    let mut rhs = vec![0.0; mesh.cell_count()];
+    let mut builder = CsrBuilder::new(mesh.cell_count(), mesh.cell_count());
+    let mut anchored = false;
+    for (face_index, face) in mesh.faces().iter().enumerate() {
+        let flux = predicted_flux[face_index];
+        if !flux.is_finite() {
+            return Err(SimpleError::InvalidPressureFaceCoefficient {
+                face: face_index,
+                value: flux,
+            });
+        }
+        rhs[face.owner] -= flux;
+        if let Some(neighbour) = face.neighbour {
+            rhs[neighbour] += flux;
+            let coefficient = coefficients[face_index];
+            if !coefficient.is_finite() || coefficient <= 0.0 {
+                return Err(SimpleError::InvalidPressureFaceCoefficient {
+                    face: face_index,
+                    value: coefficient,
+                });
+            }
+            builder.add(face.owner, face.owner, coefficient)?;
+            builder.add(face.owner, neighbour, -coefficient)?;
+            builder.add(neighbour, face.owner, -coefficient)?;
+            builder.add(neighbour, neighbour, coefficient)?;
+        } else if let Some(ScalarBoundaryCondition::FixedValue(value)) =
+            boundary.condition(face_index)
+        {
+            let coefficient = coefficients[face_index];
+            if !coefficient.is_finite() || coefficient <= 0.0 || !value.is_finite() {
+                return Err(SimpleError::InvalidPressureFaceCoefficient {
+                    face: face_index,
+                    value: coefficient,
+                });
+            }
+            builder.add(face.owner, face.owner, coefficient)?;
+            rhs[face.owner] += coefficient * value;
+            anchored = true;
+        }
+    }
+    if !anchored {
+        return Err(SimpleError::InvalidPressureReference {
+            cell: 0,
+            cell_count: mesh.cell_count(),
+        });
     }
     Ok(PressureCorrectionSystem {
         mesh_id: mesh.id(),
