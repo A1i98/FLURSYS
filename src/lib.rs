@@ -32,13 +32,16 @@ pub use mesh_artifact::{MeshQualityReport, StructuredMeshArtifact};
 pub use numerics::{
     divergence, divergence_into, face_flux, face_flux_into, gauss_gradient_from_faces,
     gauss_gradient_from_faces_into, integrated_diffusion, integrated_diffusion_into,
+    integrated_diffusion_with_stencil, integrated_diffusion_with_stencil_into,
     integrated_divergence, integrated_divergence_into, interpolate_diffusivity,
     interpolate_diffusivity_into, interpolate_scalar, interpolate_scalar_into,
-    interpolate_vector_into, laplacian, laplacian_into, least_squares_gradient,
-    least_squares_gradient_into, non_orthogonal_decomposition, orthogonal_laplacian_into,
-    DiffusionOptions, Diffusivity, DiffusivityInterpolation, GradientScheme,
-    LeastSquaresGradientStencil, NonOrthogonalCorrection, NonOrthogonalDecomposition,
-    NumericsError, ResolvedScalarBoundaryConditions, ScalarBoundaryCondition, ScalarBoundaryValue,
+    interpolate_vector_into, laplacian, laplacian_into, laplacian_with_stencil,
+    laplacian_with_stencil_into, least_squares_gradient, least_squares_gradient_into,
+    non_orthogonal_decomposition, orthogonal_laplacian_into,
+    projection_non_orthogonal_decomposition, DiffusionOptions, Diffusivity,
+    DiffusivityInterpolation, GradientScheme, LeastSquaresGradientStencil, NonOrthogonalCorrection,
+    NonOrthogonalDecomposition, NumericsError, ResolvedScalarBoundaryConditions,
+    ScalarBoundaryCondition, ScalarBoundaryValue,
 };
 pub use physics::{
     BuoyancyModel, EnergyModel, PhysicsSettings, ThermalBoundaryCondition, ThermalSettings,
