@@ -20,6 +20,7 @@ pub mod poisson;
 pub mod preprocess;
 pub mod project;
 pub mod runtime;
+pub mod simple;
 pub mod solver;
 pub mod workbench;
 
@@ -74,6 +75,12 @@ pub use preprocess::{
 pub use project::{
     Project, ProjectCase, ProjectConvectionScheme, ProjectCoupling, ProjectPressureSolver,
     ProjectSolver, ProjectTimeStepSettings,
+};
+pub use simple::{
+    assemble_pressure_correction, continuity_rms, correct_cell_velocity_from_gradient,
+    correct_face_flux, initial_face_flux, momentum_inverse_diagonal, pressure_face_coefficients,
+    rhie_chow_predicted_flux, solve_pressure_correction, solve_simple, PressureCorrectionSystem,
+    SimpleError, SimpleOptions, SimpleReport, SimpleState,
 };
 pub use solver::{
     ConvectionScheme, FieldUpdate, IncompressibleSolver, LidDrivenCavity3DConfig,
