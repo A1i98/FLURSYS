@@ -1,5 +1,6 @@
 use crate::field::{Field2D, Field3D, Mask2D};
 use crate::grid::{UniformGrid2D, UniformGrid3D};
+use crate::{IncompressibleSolution, MeshDimension, UnstructuredMesh};
 use std::fs::{create_dir_all, File, OpenOptions};
 use std::io::{BufWriter, Write};
 use std::path::Path;
@@ -280,4 +281,109 @@ fn smoothstep(edge0: f64, edge1: f64, x: f64) -> f64 {
 
 fn io_err(e: std::io::Error) -> String {
     e.to_string()
+}
+
+/// Writes a 2D unstructured incompressible result as legacy ASCII VTK with
+/// cell-centred `pressure`, `velocity_magnitude`, and `velocity` fields.
+pub fn write_unstructured_legacy_vtk(
+    path: &Path,
+    title: &str,
+    mesh: &UnstructuredMesh,
+    solution: &IncompressibleSolution,
+) -> Result<(), String> {
+    solution
+        .velocity
+        .ensure_mesh(mesh)
+        .map_err(|error| format!("velocity field: {error:?}"))?;
+    solution
+        .pressure
+        .ensure_mesh(mesh)
+        .map_err(|error| format!("pressure field: {error:?}"))?;
+    if mesh.dimension() != MeshDimension::TwoD {
+        return Err("legacy unstructured VTK export currently supports 2D polygon cells".into());
+    }
+    let cells = (0..mesh.cell_count())
+        .map(|cell| polygon_vertices(mesh, cell))
+        .collect::<Result<Vec<_>, _>>()?;
+    let file =
+        File::create(path).map_err(|error| format!("cannot create {}: {error}", path.display()))?;
+    let mut writer = BufWriter::new(file);
+    writeln!(writer, "# vtk DataFile Version 3.0").map_err(io_err)?;
+    writeln!(writer, "{title}\nASCII\nDATASET UNSTRUCTURED_GRID").map_err(io_err)?;
+    writeln!(writer, "POINTS {} double", mesh.points().len()).map_err(io_err)?;
+    for point in mesh.points() {
+        writeln!(
+            writer,
+            "{:.12e} {:.12e} {:.12e}",
+            point.position.x, point.position.y, point.position.z
+        )
+        .map_err(io_err)?;
+    }
+    let size: usize = cells.iter().map(|cell| 1 + cell.len()).sum();
+    writeln!(writer, "CELLS {} {size}", cells.len()).map_err(io_err)?;
+    for cell in &cells {
+        write!(writer, "{}", cell.len()).map_err(io_err)?;
+        for vertex in cell {
+            write!(writer, " {vertex}").map_err(io_err)?;
+        }
+        writeln!(writer).map_err(io_err)?;
+    }
+    writeln!(writer, "CELL_TYPES {}", cells.len()).map_err(io_err)?;
+    for _ in &cells {
+        writeln!(writer, "7").map_err(io_err)?;
+    }
+    writeln!(writer, "CELL_DATA {}", mesh.cell_count()).map_err(io_err)?;
+    write_scalar_cell_field(&mut writer, "pressure", solution.pressure.values())?;
+    write_scalar_cell_field(&mut writer, "velocity_magnitude", solution.speed().values())?;
+    writeln!(writer, "VECTORS velocity double").map_err(io_err)?;
+    for value in solution.velocity.values() {
+        writeln!(writer, "{:.12e} {:.12e} {:.12e}", value.x, value.y, value.z).map_err(io_err)?;
+    }
+    Ok(())
+}
+
+fn write_scalar_cell_field(
+    writer: &mut BufWriter<File>,
+    name: &str,
+    values: &[f64],
+) -> Result<(), String> {
+    writeln!(writer, "SCALARS {name} double 1\nLOOKUP_TABLE default").map_err(io_err)?;
+    for value in values {
+        writeln!(writer, "{value:.12e}").map_err(io_err)?;
+    }
+    Ok(())
+}
+
+fn polygon_vertices(mesh: &UnstructuredMesh, cell_index: usize) -> Result<Vec<usize>, String> {
+    let edges = mesh.cells()[cell_index]
+        .faces
+        .iter()
+        .map(|&face| &mesh.faces()[face].vertices)
+        .collect::<Vec<_>>();
+    if edges.len() < 3 || edges.iter().any(|edge| edge.len() != 2) {
+        return Err(format!("cell {cell_index} is not a polygon"));
+    }
+    let mut used = vec![false; edges.len()];
+    let mut vertices = vec![edges[0][0], edges[0][1]];
+    used[0] = true;
+    while vertices.len() < edges.len() {
+        let current = *vertices.last().expect("polygon starts with an edge");
+        let (index, next) = edges
+            .iter()
+            .enumerate()
+            .find_map(|(index, edge)| {
+                (!used[index] && edge.contains(&current))
+                    .then_some((index, if edge[0] == current { edge[1] } else { edge[0] }))
+            })
+            .ok_or_else(|| format!("cell {cell_index} does not form one polygon loop"))?;
+        used[index] = true;
+        vertices.push(next);
+    }
+    if vertices.last() == Some(&vertices[0]) {
+        vertices.pop();
+    }
+    if vertices.len() != edges.len() {
+        return Err(format!("cell {cell_index} has invalid connectivity"));
+    }
+    Ok(vertices)
 }
