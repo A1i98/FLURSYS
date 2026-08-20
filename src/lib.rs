@@ -22,6 +22,7 @@ pub mod project;
 pub mod runtime;
 pub mod simple;
 pub mod solver;
+pub mod unstructured_incompressible;
 pub mod workbench;
 
 pub use cases::{Case, CaseKind};
@@ -86,6 +87,12 @@ pub use solver::{
     ConvectionScheme, FieldUpdate, IncompressibleSolver, LidDrivenCavity3DConfig,
     LidDrivenCavity3DSolver, PressureSolverKind, PressureVelocityCoupling, RunSummary,
     RunSummary3D, SimulationConfig, SolverStep, TimeStepSettings,
+};
+pub use unstructured_incompressible::{
+    patch_flux, solve_incompressible, IncompressibleBoundaryCondition, IncompressibleCase,
+    IncompressibleCaseError, IncompressibleInitialConditions, IncompressibleMaterial,
+    IncompressibleSolution, IncompressibleSolveError, IncompressibleSolveReport,
+    IncompressibleSolveStatus, IncompressibleSolverOptions, ResolvedIncompressibleBoundaries,
 };
 pub use workbench::{
     AnalysisDimension, AnalysisKind, ExecutionPlan, SolverBackend, WorkbenchAnalysis,
