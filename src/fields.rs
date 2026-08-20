@@ -100,6 +100,12 @@ macro_rules! field_api {
             pub fn iter_mut(&mut self) -> std::slice::IterMut<'_, T> {
                 self.values.iter_mut()
             }
+            pub fn map<U>(&self, mut function: impl FnMut(&T) -> U) -> $field<U> {
+                $field {
+                    mesh_id: self.mesh_id,
+                    values: self.values.iter().map(|value| function(value)).collect(),
+                }
+            }
             pub fn ensure_mesh(&self, mesh: &UnstructuredMesh) -> Result<(), FieldError> {
                 if self.mesh_id == mesh.id() {
                     Ok(())
