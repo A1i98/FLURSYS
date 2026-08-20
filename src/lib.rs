@@ -12,6 +12,7 @@ pub mod io;
 pub mod linear;
 pub mod mesh;
 pub mod mesh_artifact;
+pub mod meshing;
 pub mod momentum;
 pub mod numerics;
 pub mod output;
@@ -39,6 +40,10 @@ pub use mesh::{
     StructuredMesh2D, UnstructuredMesh, Vec3,
 };
 pub use mesh_artifact::{MeshQualityReport, StructuredMeshArtifact};
+pub use meshing::{
+    GeneratedMesh, GmshExecutable, GmshGeoDocument, GmshMeshOptions, GmshMesher, GmshMeshingReport,
+    GmshVersion, MeshingError,
+};
 pub use momentum::{
     assemble_momentum_component, constant_body_force, momentum_component_field,
     pressure_gradient_source, solve_momentum_component, solve_momentum_velocity, MomentumComponent,
