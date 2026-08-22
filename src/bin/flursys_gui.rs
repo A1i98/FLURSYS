@@ -1,11 +1,11 @@
 use flursys::runtime::{SolverCommand, SolverController, SolverState, SolverUpdate};
 use flursys::{
-    BoundaryConditionKind, BoundaryFace, ExtrudedMesh3D, FieldUpdate, GeneratedMesh,
-    GeometryEditorState, GeometrySelectionTarget, GeometrySketch, GeometryTool, GmshMesher,
-    IncompressibleBoundaryCondition, IncompressibleSolution, IncompressibleSolveError,
-    MeshDimension, MeshQualityMetric, MeshSelection, Project, ProjectCoupling, SketchAxis,
-    SketchEntityKind, SketchProfileKind, SolveStatus, StructuredMesh2D, ThermalBoundaryCondition,
-    Vec3, ViewTransform, WorkbenchSession,
+    build_example, example_descriptors, BoundaryConditionKind, BoundaryFace, ExampleProjectId,
+    ExtrudedMesh3D, FieldUpdate, GeneratedMesh, GeometryEditorState, GeometrySelectionTarget,
+    GeometrySketch, GeometryTool, GmshMesher, IncompressibleBoundaryCondition,
+    IncompressibleSolution, IncompressibleSolveError, MeshDimension, MeshQualityMetric,
+    MeshSelection, Project, ProjectCoupling, SketchAxis, SketchEntityKind, SketchProfileKind,
+    SolveStatus, StructuredMesh2D, ThermalBoundaryCondition, Vec3, ViewTransform, WorkbenchSession,
 };
 use slint::{ComponentHandle, ModelRc, SharedString, Timer, TimerMode, VecModel};
 use std::cell::RefCell;
@@ -110,6 +110,10 @@ struct AppState {
     gmsh_probe_rx: Option<Receiver<Result<String, String>>>,
     gmsh_status: String,
     current_step: usize,
+    // UI-owned descriptor transport. A catalogue provider may populate these typed
+    // Slint descriptors; opening an id is intentionally delegated to Rust.
+    examples: Vec<ExampleDescriptor>,
+    selected_example: Option<usize>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -192,6 +196,8 @@ impl AppState {
             gmsh_probe_rx: None,
             gmsh_status: "Gmsh: checking…".to_string(),
             current_step: 0,
+            examples: gallery_descriptors(),
+            selected_example: Some(0),
         }
     }
 
@@ -424,6 +430,33 @@ fn main() -> Result<(), slint::PlatformError> {
     ui.run()
 }
 
+fn gallery_descriptors() -> Vec<ExampleDescriptor> {
+    example_descriptors()
+        .iter()
+        .map(|descriptor| ExampleDescriptor {
+            id: SharedString::from(format!("{:?}", descriptor.id)),
+            title: SharedString::from(descriptor.title),
+            category: SharedString::from(format!(
+                "{} · {:?} · {}",
+                descriptor.category, descriptor.dimension, descriptor.difficulty
+            )),
+            summary: SharedString::from(descriptor.short_description),
+            details: SharedString::from(format!(
+                "Demonstrates: {}\nExpected: {}",
+                descriptor.capabilities.join(" · "),
+                descriptor.expected_behavior
+            )),
+        })
+        .collect()
+}
+
+fn example_id_from_index(index: i32) -> Option<ExampleProjectId> {
+    usize::try_from(index)
+        .ok()
+        .and_then(|index| example_descriptors().get(index))
+        .map(|descriptor| descriptor.id)
+}
+
 fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
     // ---- Phase 9D stable geometry editor ----
     let weak_ui = ui.as_weak();
@@ -624,6 +657,79 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
         let Some(ui) = weak_ui.upgrade() else { return };
         let mut state = editor_state.borrow_mut();
         delete_editor_selection(&mut state);
+        refresh_ui(&ui, &state);
+    });
+    let weak_ui = ui.as_weak();
+    let examples_state = state.clone();
+    ui.on_show_examples(move || {
+        let Some(ui) = weak_ui.upgrade() else { return };
+        let mut state = examples_state.borrow_mut();
+        if state.selected_example.is_none() && !state.examples.is_empty() {
+            state.selected_example = Some(0);
+        }
+        ui.set_examples_open(true);
+        refresh_ui(&ui, &state);
+    });
+    let weak_ui = ui.as_weak();
+    ui.on_close_examples(move || {
+        let Some(ui) = weak_ui.upgrade() else { return };
+        ui.set_examples_open(false);
+    });
+    let weak_ui = ui.as_weak();
+    let examples_state = state.clone();
+    ui.on_select_example(move |index| {
+        let Some(ui) = weak_ui.upgrade() else { return };
+        let mut state = examples_state.borrow_mut();
+        state.selected_example = usize::try_from(index)
+            .ok()
+            .filter(|index| *index < state.examples.len());
+        refresh_ui(&ui, &state);
+    });
+    let weak_ui = ui.as_weak();
+    let examples_state = state.clone();
+    ui.on_show_example_details(move |index| {
+        let Some(ui) = weak_ui.upgrade() else { return };
+        let mut state = examples_state.borrow_mut();
+        if let Some(title) = usize::try_from(index)
+            .ok()
+            .and_then(|index| state.examples.get(index))
+            .map(|example| example.title.clone())
+        {
+            state.log(format!("Example details requested: {title}."));
+        }
+        refresh_ui(&ui, &state);
+    });
+    let weak_ui = ui.as_weak();
+    let examples_state = state.clone();
+    ui.on_open_example(move |index| {
+        let Some(ui) = weak_ui.upgrade() else { return };
+        let mut state = examples_state.borrow_mut();
+        if let Some(id) = example_id_from_index(index) {
+            match build_example(id) {
+                Ok(session) => {
+                    state.workbench = session;
+                    state.geometry_editor = GeometryEditorState::new();
+                    state
+                        .geometry_editor
+                        .transform
+                        .set_viewport(f64::from(PREVIEW_WIDTH), f64::from(PREVIEW_HEIGHT));
+                    state.patch_names.clear();
+                    state.selected_tree = None;
+                    state.wb_selected_targets.clear();
+                    state.tree_dirty = true;
+                    state.show_mesh = false;
+                    state.show_geometry_3d = true;
+                    state.current_step = 0;
+                    ui.set_current_step(0);
+                    ui.set_examples_open(false);
+                    state.log(format!(
+                        "Opened editable example: {}.",
+                        example_descriptors()[index as usize].title
+                    ));
+                }
+                Err(error) => state.log(error.to_string()),
+            }
+        }
         refresh_ui(&ui, &state);
     });
     let weak_ui = ui.as_weak();
@@ -2703,8 +2809,35 @@ fn sketch_tool_label(tool: SketchTool) -> &'static str {
 #[path = "flursys_gui/bindings.rs"]
 mod bindings;
 use bindings::*;
+
+fn sync_example_gallery(ui: &MainWindow, state: &AppState) {
+    ui.set_example_model(ModelRc::new(VecModel::from(state.examples.clone())));
+    match state
+        .selected_example
+        .and_then(|index| state.examples.get(index))
+    {
+        Some(example) => {
+            ui.set_selected_example_index(state.selected_example.unwrap_or_default() as i32);
+            ui.set_selected_example_title(example.title.clone());
+            ui.set_selected_example_category(example.category.clone());
+            ui.set_selected_example_summary(example.summary.clone());
+            ui.set_selected_example_details(example.details.clone());
+        }
+        None => {
+            ui.set_selected_example_index(-1);
+            ui.set_selected_example_title(SharedString::from("Select an example"));
+            ui.set_selected_example_category(SharedString::default());
+            ui.set_selected_example_summary(SharedString::from(
+                "Choose a catalogue entry to inspect its setup.",
+            ));
+            ui.set_selected_example_details(SharedString::default());
+        }
+    }
+}
+
 fn refresh_ui(ui: &MainWindow, state: &AppState) {
     ui.set_project_loaded(state.project_loaded);
+    sync_example_gallery(ui, state);
     if !state.project_loaded {
         ui.set_geometry_parts_summary(SharedString::from(
             "No project is open. Choose a domain or load a .flursys.json project.",

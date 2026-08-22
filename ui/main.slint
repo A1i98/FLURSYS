@@ -1,6 +1,16 @@
 import { Button, ComboBox, LineEdit, SpinBox, TextEdit, ScrollView, ListView } from "std-widgets.slint";
 import { SectionTitle, SectionHint, Card, MetricCard, InteractiveGeometryPreview, WorkflowItem, TreeRowView, InspectorLabel, InspectorValue, ProjectTreeRow } from "components.slint";
 
+// This is deliberately presentation-only data. Rust owns the example catalogue and
+// interprets the selected id; Slint never constructs projects or solver backends.
+export struct ExampleDescriptor {
+    id: string,
+    title: string,
+    category: string,
+    summary: string,
+    details: string,
+}
+
 global UiTheme {
     in property <color> background: rgb(11, 19, 26);
     in property <color> sidebar: rgb(14, 25, 34);
@@ -50,6 +60,15 @@ export component MainWindow inherits Window {
     property <length> page-padding: root.compact-ui ? 14px : 24px;
     property <length> page-spacing: root.compact-ui ? 10px : 16px;
     property <length> sidebar-preferred-width: root.compact-ui ? 176px : 224px;
+
+    // ---- Example gallery (catalogue supplied by Rust) ----
+    in-out property <bool> examples-open: false;
+    in-out property <[ExampleDescriptor]> example-model;
+    in-out property <int> selected-example-index: -1;
+    in-out property <string> selected-example-title: "Select an example";
+    in-out property <string> selected-example-category: "";
+    in-out property <string> selected-example-summary: "Choose a catalogue entry to inspect its setup.";
+    in-out property <string> selected-example-details: "";
 
     in-out property <int> current-step: 0;
     in-out property <int> case-index: 0;
@@ -156,6 +175,7 @@ export component MainWindow inherits Window {
     callback start-sketch(); callback select-sketch-tool(int); callback sketch-click(float, float, float, float); callback sketch-preview(float, float, float, float); callback sketch-undo(); callback sketch-redo(); callback apply-driving-dimension();
     callback geometry-tool(int); callback geometry-pointer(float, float, float, float, bool); callback geometry-move(float, float, float, float); callback geometry-wheel(float, float, float, float); callback geometry-fit(); callback geometry-undo(); callback geometry-redo(); callback geometry-delete-selection(); callback geometry-toggle-snap(); callback geometry-toggle-grid();
     callback geometry-pan-begin(float, float, float, float); callback geometry-pan-move(float, float, float, float); callback geometry-shortcut(int);
+    callback show-examples(); callback close-examples(); callback select-example(int); callback show-example-details(int); callback open-example(int);
 
     // ---- Workbench pipeline (stable geometry → Named Selections → Gmsh → BCs → solve) ----
     in-out property <[ProjectTreeRow]> project-tree-model;
@@ -246,6 +266,7 @@ export component MainWindow inherits Window {
                 }
 
                 Button { text: "NEW PROJECT"; clicked => { root.new-project(); } }
+                Button { text: "EXAMPLES"; clicked => { root.show-examples(); } }
 
                 Rectangle { width: 1px; background: UiTheme.divider-strong; }
                 Text { text: "WORKFLOW"; color: UiTheme.text-label; font-size: 10px; vertical-alignment: center; }
@@ -362,7 +383,88 @@ export component MainWindow inherits Window {
                     horizontal-stretch: 1;
                     background: UiTheme.background;
 
-                    if root.current-step == 0 : Rectangle {
+                    if root.examples-open : Rectangle {
+                    width: parent.width; height: parent.height;
+                    gallery-scroll := ScrollView {
+                        width: parent.width;
+                        height: parent.height;
+                        horizontal-scrollbar-policy: as-needed;
+                        VerticalLayout {
+                            min-height: gallery-scroll.visible-height;
+                            padding: root.page-padding;
+                            spacing: root.page-spacing;
+                            HorizontalLayout {
+                                SectionTitle { text: "Example Gallery"; }
+                                Rectangle { horizontal-stretch: 1; }
+                                Button { text: "CLOSE"; clicked => { root.close-examples(); } }
+                            }
+                            SectionHint { text: "Start from a curated project setup. The catalogue and open action are supplied by Rust; this view only presents typed descriptors."; }
+                            HorizontalLayout {
+                                spacing: root.page-spacing;
+                                Card {
+                                    min-width: root.compact-ui ? 260px : 340px;
+                                    preferred-width: root.compact-ui ? 310px : 410px;
+                                    max-width: 470px;
+                                    horizontal-stretch: 1;
+                                    VerticalLayout {
+                                        padding: root.compact-ui ? 12px : 16px;
+                                        spacing: 7px;
+                                        Text { text: "CATALOGUE"; color: UiTheme.accent; font-size: 11px; font-weight: 800; }
+                                        if root.example-model.length == 0 : Text {
+                                            text: "No examples are currently available. Connect a Rust catalogue to populate this list.";
+                                            color: UiTheme.text-muted;
+                                            font-size: 11px;
+                                            wrap: word-wrap;
+                                        }
+                                        ScrollView {
+                                            vertical-stretch: 1;
+                                            horizontal-scrollbar-policy: always-off;
+                                            VerticalLayout {
+                                                spacing: 6px;
+                                                for example[index] in root.example-model : Rectangle {
+                                                    min-height: 72px;
+                                                    background: root.selected-example-index == index ? rgb(30, 61, 78) : rgb(17, 29, 38);
+                                                    border-color: root.selected-example-index == index ? UiTheme.accent : UiTheme.border-soft;
+                                                    border-width: 1px;
+                                                    border-radius: 4px;
+                                                    VerticalLayout {
+                                                        padding: 9px;
+                                                        spacing: 3px;
+                                                        Text { text: example.title; color: UiTheme.text-bright; font-size: 12px; font-weight: 700; overflow: elide; }
+                                                        Text { text: example.category; color: UiTheme.accent; font-size: 10px; font-weight: 700; overflow: elide; }
+                                                        Text { text: example.summary; color: UiTheme.text-muted; font-size: 10px; overflow: elide; }
+                                                    }
+                                                    TouchArea { clicked => { root.select-example(index); } }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                Card {
+                                    min-width: root.compact-ui ? 300px : 390px;
+                                    horizontal-stretch: 2;
+                                    VerticalLayout {
+                                        padding: root.compact-ui ? 12px : 16px;
+                                        spacing: 9px;
+                                        Text { text: "EXAMPLE DETAILS"; color: UiTheme.accent; font-size: 11px; font-weight: 800; }
+                                        Text { text: root.selected-example-title; color: UiTheme.text-bright; font-size: 19px; font-weight: 700; wrap: word-wrap; }
+                                        if root.selected-example-category != "" : Text { text: root.selected-example-category; color: UiTheme.text-dim; font-size: 11px; font-weight: 700; }
+                                        Text { text: root.selected-example-summary; color: UiTheme.text-secondary; font-size: 12px; wrap: word-wrap; }
+                                        Text { text: root.selected-example-details; color: UiTheme.text-muted; font-size: 11px; wrap: word-wrap; vertical-stretch: 1; }
+                                        HorizontalLayout {
+                                            spacing: 8px;
+                                            Button { text: "DETAILS"; enabled: root.selected-example-index >= 0; clicked => { root.show-example-details(root.selected-example-index); } }
+                                            Button { text: "OPEN EXAMPLE"; enabled: root.selected-example-index >= 0; clicked => { root.open-example(root.selected-example-index); } }
+                                            Rectangle { horizontal-stretch: 1; }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                    if !root.examples-open && root.current-step == 0 : Rectangle {
                     width: parent.width; height: parent.height;
                     VerticalLayout {
                         padding: 8px; spacing: 6px;
@@ -601,7 +703,7 @@ export component MainWindow inherits Window {
                     }
                 }
 
-                if root.current-step == 1 : Rectangle {
+                if !root.examples-open && root.current-step == 1 : Rectangle {
                     width: parent.width; height: parent.height;
                     mesh-scroll := ScrollView {
                         width: parent.width;
@@ -644,7 +746,7 @@ export component MainWindow inherits Window {
                     }
                 }
 
-                if root.current-step == 2 : Rectangle {
+                if !root.examples-open && root.current-step == 2 : Rectangle {
                     width: parent.width; height: parent.height;
                     setup-scroll := ScrollView {
                         width: parent.width;
@@ -704,7 +806,7 @@ export component MainWindow inherits Window {
                     }
                 }
 
-                if root.current-step == 3 : Rectangle {
+                if !root.examples-open && root.current-step == 3 : Rectangle {
                     width: parent.width; height: parent.height;
                     run-scroll := ScrollView {
                         width: parent.width;
@@ -759,7 +861,7 @@ export component MainWindow inherits Window {
                     }
                 }
 
-                if root.current-step == 4 : Rectangle {
+                if !root.examples-open && root.current-step == 4 : Rectangle {
                     width: parent.width; height: parent.height;
                     results-scroll := ScrollView {
                         width: parent.width;
