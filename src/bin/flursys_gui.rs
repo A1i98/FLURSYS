@@ -43,6 +43,7 @@ struct AppState {
     sketch_redo: Vec<GeometrySketch>,
     workbench: WorkbenchSession,
     geometry_editor: GeometryEditorState,
+    geometry_pan_anchor: Option<(f64, f64)>,
     tree_rows: Vec<ProjectTreeRowData>,
     tree_dirty: bool,
     selected_tree: Option<TreeSelection>,
@@ -114,6 +115,7 @@ impl AppState {
                     .set_viewport(f64::from(PREVIEW_WIDTH), f64::from(PREVIEW_HEIGHT));
                 editor
             },
+            geometry_pan_anchor: None,
             tree_rows: Vec::new(),
             tree_dirty: true,
             selected_tree: None,
@@ -445,6 +447,90 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
         let Some(ui) = weak_ui.upgrade() else { return };
         let mut state = editor_state.borrow_mut();
         state.geometry_editor.grid_enabled = !state.geometry_editor.grid_enabled;
+        refresh_ui(&ui, &state);
+    });
+    let weak_ui = ui.as_weak();
+    let editor_state = state.clone();
+    ui.on_geometry_pan_begin(move |x, y, width, height| {
+        let Some(ui) = weak_ui.upgrade() else {
+            return;
+        };
+        let mut state = editor_state.borrow_mut();
+        state.geometry_pan_anchor = Some(geometry_editor_point(x, y, width, height));
+        refresh_ui(&ui, &state);
+    });
+    let weak_ui = ui.as_weak();
+    let editor_state = state.clone();
+    ui.on_geometry_pan_move(move |x, y, width, height| {
+        let Some(ui) = weak_ui.upgrade() else {
+            return;
+        };
+        let mut state = editor_state.borrow_mut();
+        let point = geometry_editor_point(x, y, width, height);
+        if let Some(previous) = state.geometry_pan_anchor.replace(point) {
+            state
+                .geometry_editor
+                .transform
+                .pan_pixels(point.0 - previous.0, point.1 - previous.1);
+        }
+        refresh_ui(&ui, &state);
+    });
+    let weak_ui = ui.as_weak();
+    let editor_state = state.clone();
+    ui.on_geometry_shortcut(move |action| {
+        let Some(ui) = weak_ui.upgrade() else {
+            return;
+        };
+        let mut state = editor_state.borrow_mut();
+        match action {
+            0 => state.geometry_editor.cancel(),
+            1 => state.geometry_editor.set_tool(GeometryTool::Line),
+            2 => state.geometry_editor.set_tool(GeometryTool::Rectangle),
+            3 => state.geometry_editor.set_tool(GeometryTool::Circle),
+            4 => {
+                let targets = state.geometry_editor.selection.clone();
+                if !targets.is_empty() {
+                    let geometry = state.workbench.geometry().clone();
+                    state.geometry_editor.snapshot_before_delete(&geometry);
+                    let mut deleted = 0;
+                    for target in targets {
+                        if state.workbench.delete_geometry_target(target).is_ok() {
+                            deleted += 1;
+                        }
+                    }
+                    if deleted > 0 {
+                        state.geometry_editor.selection.clear();
+                        state.wb_selected_targets.clear();
+                        rebuild_tree_rows(&mut state);
+                    }
+                }
+            }
+            5 => {
+                let geometry = state.workbench.geometry().clone();
+                state.geometry_editor.fit_view(&geometry);
+            }
+            6 => {
+                let mut editor = std::mem::take(&mut state.geometry_editor);
+                let changed = editor.undo(state.workbench.geometry_mut());
+                state.geometry_editor = editor;
+                if changed {
+                    state.workbench.geometry_changed();
+                    state.wb_selected_targets.clear();
+                    rebuild_tree_rows(&mut state);
+                }
+            }
+            7 => {
+                let mut editor = std::mem::take(&mut state.geometry_editor);
+                let changed = editor.redo(state.workbench.geometry_mut());
+                state.geometry_editor = editor;
+                if changed {
+                    state.workbench.geometry_changed();
+                    state.wb_selected_targets.clear();
+                    rebuild_tree_rows(&mut state);
+                }
+            }
+            _ => {}
+        }
         refresh_ui(&ui, &state);
     });
     let weak_ui = ui.as_weak();
@@ -1398,7 +1484,7 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
         };
         match row.kind {
             TREE_KIND_STAGE => apply_workflow_step(&ui, &mut state, row.payload),
-            TREE_KIND_BODY | TREE_KIND_FACE | TREE_KIND_EDGE => {
+            TREE_KIND_BODY | TREE_KIND_FACE | TREE_KIND_EDGE | TREE_KIND_VERTEX => {
                 if let Some(target) = find_geometry_target(&state.workbench, row.kind, row.payload)
                 {
                     if let Some(existing) =
@@ -1819,6 +1905,12 @@ fn rebuild_tree_rows(state: &mut AppState) {
         .faces()
         .map(|face| face.id.get())
         .collect();
+    let vertices: Vec<u64> = state
+        .workbench
+        .geometry()
+        .vertices()
+        .map(|vertex| vertex.id.get())
+        .collect();
     let edges: Vec<u64> = state
         .workbench
         .geometry()
@@ -1852,6 +1944,7 @@ fn rebuild_tree_rows(state: &mut AppState) {
     state.tree_rows = build_project_tree_rows(
         &bodies,
         &faces,
+        &vertices,
         &edges,
         mesh_cells,
         &named_selections,
@@ -1870,9 +1963,16 @@ fn find_geometry_target(
 ) -> Option<GeometrySelectionTarget> {
     session
         .geometry()
-        .edges()
-        .find(|edge| edge.id.get() == payload as u64)
-        .map(|edge| GeometrySelectionTarget::Edge(edge.id))
+        .vertices()
+        .find(|vertex| vertex.id.get() == payload as u64)
+        .map(|vertex| GeometrySelectionTarget::Vertex(vertex.id))
+        .or_else(|| {
+            session
+                .geometry()
+                .edges()
+                .find(|edge| edge.id.get() == payload as u64)
+                .map(|edge| GeometrySelectionTarget::Edge(edge.id))
+        })
         .or_else(|| {
             session
                 .geometry()
@@ -1891,6 +1991,10 @@ fn find_geometry_target(
 
 fn tree_selection_for_target(target: GeometrySelectionTarget) -> Option<TreeSelection> {
     match target {
+        GeometrySelectionTarget::Vertex(id) => Some(TreeSelection {
+            kind: TREE_KIND_VERTEX,
+            payload: id.get() as i32,
+        }),
         GeometrySelectionTarget::Body(id) => Some(TreeSelection {
             kind: TREE_KIND_BODY,
             payload: id.get() as i32,
@@ -1903,7 +2007,6 @@ fn tree_selection_for_target(target: GeometrySelectionTarget) -> Option<TreeSele
             kind: TREE_KIND_EDGE,
             payload: id.get() as i32,
         }),
-        GeometrySelectionTarget::Vertex(_) => None,
     }
 }
 
@@ -1918,6 +2021,74 @@ fn describe_targets(targets: &[GeometrySelectionTarget]) -> String {
         })
         .collect::<Vec<_>>()
         .join(", ")
+}
+
+fn geometry_target_inspector(
+    topology: &flursys::GeometryTopology,
+    target: GeometrySelectionTarget,
+) -> String {
+    match target {
+        GeometrySelectionTarget::Vertex(id) => topology.vertex(id).map_or_else(
+            || format!("Vertex {} (deleted)", id.get()),
+            |vertex| {
+                format!(
+                    "Vertex {}\nX {:.6} · Y {:.6} · Z {:.6}",
+                    id.get(),
+                    vertex.position.x,
+                    vertex.position.y,
+                    vertex.position.z
+                )
+            },
+        ),
+        GeometrySelectionTarget::Edge(id) => topology.edge(id).map_or_else(
+            || format!("Edge {} (deleted)", id.get()),
+            |edge| match edge.geometry {
+                flursys::EdgeGeometry::Line { start, end } => {
+                    let length = topology
+                        .vertex(start)
+                        .zip(topology.vertex(end))
+                        .map_or(0.0, |(a, b)| (b.position - a.position).norm());
+                    format!(
+                        "Edge {} · Line\nEndpoints: {} → {}\nLength {:.6}",
+                        id.get(),
+                        start.get(),
+                        end.get(),
+                        length
+                    )
+                }
+                flursys::EdgeGeometry::CircularArc { start, center, end } => {
+                    format!(
+                        "Edge {} · Circular arc\nStart {} · Center {} · End {}",
+                        id.get(),
+                        start.get(),
+                        center.get(),
+                        end.get()
+                    )
+                }
+            },
+        ),
+        GeometrySelectionTarget::Face(id) => topology.face(id).map_or_else(
+            || format!("Face {} (deleted)", id.get()),
+            |face| match &face.representation {
+                flursys::GeometryFaceRepresentation::Planar {
+                    outer_loop,
+                    inner_loops,
+                } => format!(
+                    "Face {} · Planar\n{} outer edges · {} holes",
+                    id.get(),
+                    outer_loop.len(),
+                    inner_loops.len()
+                ),
+                flursys::GeometryFaceRepresentation::PrimitiveSurface => {
+                    format!("Face {} · Primitive surface", id.get())
+                }
+            },
+        ),
+        GeometrySelectionTarget::Body(id) => topology.body(id).map_or_else(
+            || format!("Body {} (deleted)", id.get()),
+            |body| format!("Body {}\n{} faces", id.get(), body.faces.len()),
+        ),
+    }
 }
 
 fn selected_named_selection_name(state: &AppState) -> Option<String> {
@@ -2513,7 +2684,8 @@ fn refresh_ui(ui: &MainWindow, state: &AppState) {
                 members.join(", ")
             }));
             ui.set_inspector_info(SharedString::from(format!(
-                "{target:?}\nStable topology id — survives edits and feeds Named Selections.\n{} entities selected for the next group.",
+                "{}\nStable topology id — survives edits and feeds Named Selections.\n{} entities selected for the next group.",
+                geometry_target_inspector(state.workbench.geometry(), target),
                 state.wb_selected_targets.len()
             )));
         }
@@ -3060,6 +3232,7 @@ mod tests {
             &[1],
             &[1],
             &[1, 2, 3, 4],
+            &[1, 2, 3, 4],
             None,
             &[("inlet".to_string(), 1)],
             patches,
@@ -3082,6 +3255,10 @@ mod tests {
                 "Geometry",
                 "Body 1",
                 "Face 1",
+                "Vertex 1",
+                "Vertex 2",
+                "Vertex 3",
+                "Vertex 4",
                 "Edge 1",
                 "Edge 2",
                 "Edge 3",
@@ -3097,11 +3274,11 @@ mod tests {
                 "Results",
             ]
         );
-        let inlet_patch = &rows[12];
+        let inlet_patch = &rows[16];
         assert_eq!(inlet_patch.kind, TREE_KIND_PATCH);
         assert_eq!(inlet_patch.payload, 0);
         assert_eq!(inlet_patch.note, "Assigned");
-        let outlet_patch = &rows[13];
+        let outlet_patch = &rows[17];
         assert_eq!(outlet_patch.payload, 1);
         assert_eq!(outlet_patch.note, "Unassigned");
         // Nothing is selected and the current step is Geometry.
@@ -3114,6 +3291,7 @@ mod tests {
         let rows = build_project_tree_rows(
             &[1],
             &[1],
+            &[1, 2, 3, 4],
             &[1, 2, 3, 4],
             None,
             &[("inlet".to_string(), 1)],
@@ -3150,6 +3328,7 @@ mod tests {
         session.unassign_boundary("outlet");
         let bodies: Vec<u64> = session.geometry().bodies().map(|b| b.id.get()).collect();
         let faces: Vec<u64> = session.geometry().faces().map(|f| f.id.get()).collect();
+        let vertices: Vec<u64> = session.geometry().vertices().map(|v| v.id.get()).collect();
         let edges: Vec<u64> = session.geometry().edges().map(|e| e.id.get()).collect();
         let named_selections: Vec<(String, usize)> = session
             .named_selections()
@@ -3168,6 +3347,7 @@ mod tests {
         let rows = build_project_tree_rows(
             &bodies,
             &faces,
+            &vertices,
             &edges,
             None,
             &named_selections,

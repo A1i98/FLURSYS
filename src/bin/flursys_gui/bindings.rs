@@ -421,8 +421,9 @@ pub(super) const TREE_KIND_STAGE: i32 = 0;
 pub(super) const TREE_KIND_BODY: i32 = 1;
 pub(super) const TREE_KIND_FACE: i32 = 2;
 pub(super) const TREE_KIND_EDGE: i32 = 3;
-pub(super) const TREE_KIND_NAMED_SELECTION: i32 = 4;
-pub(super) const TREE_KIND_PATCH: i32 = 5;
+pub(super) const TREE_KIND_VERTEX: i32 = 4;
+pub(super) const TREE_KIND_NAMED_SELECTION: i32 = 5;
+pub(super) const TREE_KIND_PATCH: i32 = 6;
 pub(super) const TREE_KIND_INERT: i32 = -1;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -446,7 +447,7 @@ pub(super) struct ProjectTreeRowData {
 /// results (5).
 pub(super) fn inspector_mode_for(kind: i32, step: usize) -> usize {
     match kind {
-        TREE_KIND_BODY | TREE_KIND_FACE | TREE_KIND_EDGE => 0,
+        TREE_KIND_BODY | TREE_KIND_FACE | TREE_KIND_EDGE | TREE_KIND_VERTEX => 0,
         TREE_KIND_NAMED_SELECTION => 1,
         TREE_KIND_PATCH => 3,
         _ => match step {
@@ -463,6 +464,7 @@ pub(super) fn inspector_mode_for(kind: i32, step: usize) -> usize {
 pub(super) fn build_project_tree_rows(
     body_ids: &[u64],
     face_ids: &[u64],
+    vertex_ids: &[u64],
     edge_ids: &[u64],
     mesh_cells: Option<usize>,
     named_selections: &[(String, usize)],
@@ -473,7 +475,7 @@ pub(super) fn build_project_tree_rows(
     selected: Option<TreeSelection>,
 ) -> Vec<ProjectTreeRowData> {
     let mut rows: Vec<(usize, String, String, i32, i32)> = Vec::new();
-    let entities = body_ids.len() + face_ids.len() + edge_ids.len();
+    let entities = body_ids.len() + face_ids.len() + vertex_ids.len() + edge_ids.len();
     rows.push((
         0,
         "Geometry".to_string(),
@@ -496,6 +498,15 @@ pub(super) fn build_project_tree_rows(
             format!("Face {id}"),
             String::new(),
             TREE_KIND_FACE,
+            *id as i32,
+        ));
+    }
+    for id in vertex_ids {
+        rows.push((
+            1,
+            format!("Vertex {id}"),
+            String::new(),
+            TREE_KIND_VERTEX,
             *id as i32,
         ));
     }

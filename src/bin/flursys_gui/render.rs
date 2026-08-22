@@ -405,10 +405,26 @@ pub(super) fn render_geometry_editor(
         }
     }
     for edge in topology.edges() {
+        let belongs_to = |face_id| {
+            topology.faces().any(|face| {
+                face.id == face_id
+                    && matches!(
+                        &face.representation,
+                        flursys::GeometryFaceRepresentation::Planar {
+                            outer_loop,
+                            inner_loops,
+                        } if outer_loop.iter().chain(inner_loops.iter().flatten()).any(|entry| entry.edge == edge.id)
+                    )
+            })
+        };
         let selected = editor
             .selection
-            .contains(&GeometrySelectionTarget::Edge(edge.id));
-        let hovered = editor.hover_target == Some(GeometrySelectionTarget::Edge(edge.id));
+            .contains(&GeometrySelectionTarget::Edge(edge.id))
+            || editor.selection.iter().any(
+                |target| matches!(target, GeometrySelectionTarget::Face(id) if belongs_to(*id)),
+            );
+        let hovered = editor.hover_target == Some(GeometrySelectionTarget::Edge(edge.id))
+            || matches!(editor.hover_target, Some(GeometrySelectionTarget::Face(id)) if belongs_to(id));
         let color = if selected {
             [240, 195, 109, 255]
         } else if hovered {

@@ -618,4 +618,25 @@ mod tests {
             Some(GeometrySelectionTarget::Face(_))
         ));
     }
+
+    #[test]
+    fn selection_replaces_or_toggles_without_changing_geometry() {
+        let mut topology = GeometryTopology::new();
+        let mut editor = GeometryEditorState::new();
+        editor.transform.set_viewport(1000.0, 800.0);
+        editor.set_tool(GeometryTool::Rectangle);
+        editor.click(&mut topology, (400.0, 500.0), false).unwrap();
+        editor.click(&mut topology, (600.0, 300.0), false).unwrap();
+        editor.set_tool(GeometryTool::Select);
+        let revision = topology.revision();
+        editor.click(&mut topology, (450.0, 500.0), false).unwrap();
+        assert_eq!(editor.selection.len(), 1);
+        editor.click(&mut topology, (600.0, 450.0), true).unwrap();
+        assert_eq!(editor.selection.len(), 2);
+        editor.click(&mut topology, (450.0, 500.0), true).unwrap();
+        assert_eq!(editor.selection.len(), 1);
+        editor.click(&mut topology, (500.0, 400.0), false).unwrap();
+        assert_eq!(editor.selection.len(), 1);
+        assert_eq!(topology.revision(), revision);
+    }
 }
