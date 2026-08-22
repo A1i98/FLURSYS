@@ -4,9 +4,11 @@
 //! created only after project data has been validated against the capabilities
 //! of a concrete numerical backend.
 
+pub mod editor;
 pub mod selection;
 pub mod session;
 
+pub use editor::{GeometryEditorState, GeometryTool, PreviewPrimitive, ViewTransform};
 pub use selection::{
     GeometrySelectionTarget, NamedSelection, NamedSelectionError, NamedSelectionStore,
 };

@@ -1,10 +1,10 @@
 use flursys::runtime::{SolverCommand, SolverController, SolverState, SolverUpdate};
 use flursys::{
     BoundaryConditionKind, BoundaryFace, ExtrudedMesh3D, FieldUpdate, GeneratedMesh,
-    GeometrySelectionTarget, GeometrySketch, GmshMesher, IncompressibleBoundaryCondition,
-    IncompressibleSolution, IncompressibleSolveError, MeshDimension, Project, ProjectCoupling,
-    SketchAxis, SketchEntityKind, SketchProfileKind, SolveStatus, StructuredMesh2D,
-    ThermalBoundaryCondition, Vec3, WorkbenchSession,
+    GeometryEditorState, GeometrySelectionTarget, GeometrySketch, GeometryTool, GmshMesher,
+    IncompressibleBoundaryCondition, IncompressibleSolution, IncompressibleSolveError,
+    MeshDimension, Project, ProjectCoupling, SketchAxis, SketchEntityKind, SketchProfileKind,
+    SolveStatus, StructuredMesh2D, ThermalBoundaryCondition, Vec3, WorkbenchSession,
 };
 use slint::{ComponentHandle, ModelRc, SharedString, Timer, TimerMode, VecModel};
 use std::cell::RefCell;
@@ -42,6 +42,7 @@ struct AppState {
     sketch_undo: Vec<GeometrySketch>,
     sketch_redo: Vec<GeometrySketch>,
     workbench: WorkbenchSession,
+    geometry_editor: GeometryEditorState,
     tree_rows: Vec<ProjectTreeRowData>,
     tree_dirty: bool,
     selected_tree: Option<TreeSelection>,
@@ -105,8 +106,14 @@ impl AppState {
             sketch_hover: None,
             sketch_undo: Vec::new(),
             sketch_redo: Vec::new(),
-            workbench: WorkbenchSession::demo_channel(4.0, 1.0)
-                .expect("the built-in demo channel is a valid workflow"),
+            workbench: WorkbenchSession::new(),
+            geometry_editor: {
+                let mut editor = GeometryEditorState::new();
+                editor
+                    .transform
+                    .set_viewport(f64::from(PREVIEW_WIDTH), f64::from(PREVIEW_HEIGHT));
+                editor
+            },
             tree_rows: Vec::new(),
             tree_dirty: true,
             selected_tree: None,
@@ -346,6 +353,159 @@ fn main() -> Result<(), slint::PlatformError> {
 }
 
 fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
+    // ---- Phase 9D stable geometry editor ----
+    let weak_ui = ui.as_weak();
+    let editor_state = state.clone();
+    ui.on_geometry_tool(move |tool| {
+        let Some(ui) = weak_ui.upgrade() else {
+            return;
+        };
+        let mut state = editor_state.borrow_mut();
+        state.geometry_editor.set_tool(match tool {
+            1 => GeometryTool::Line,
+            2 => GeometryTool::Rectangle,
+            3 => GeometryTool::Circle,
+            _ => GeometryTool::Select,
+        });
+        let active_tool = state.geometry_editor.active_tool;
+        state.log(format!("Geometry tool: {:?}.", active_tool));
+        refresh_ui(&ui, &state);
+    });
+    let weak_ui = ui.as_weak();
+    let editor_state = state.clone();
+    ui.on_geometry_move(move |x, y, w, h| {
+        let Some(ui) = weak_ui.upgrade() else { return };
+        let mut state = editor_state.borrow_mut();
+        let p = geometry_editor_point(x, y, w, h);
+        let geometry = state.workbench.geometry().clone();
+        state.geometry_editor.cursor_moved(&geometry, p);
+        refresh_ui(&ui, &state);
+    });
+    let weak_ui = ui.as_weak();
+    let editor_state = state.clone();
+    ui.on_geometry_pointer(move |x, y, w, h, additive| {
+        let Some(ui) = weak_ui.upgrade() else {
+            return;
+        };
+        let mut state = editor_state.borrow_mut();
+        let p = geometry_editor_point(x, y, w, h);
+        let mut editor = std::mem::take(&mut state.geometry_editor);
+        let result = editor.click(state.workbench.geometry_mut(), p, additive);
+        state.geometry_editor = editor;
+        match result {
+            Ok(true) => {
+                state.workbench.geometry_changed();
+                state.wb_selected_targets.clear();
+                state.tree_dirty = true;
+                state.log("Geometry updated; dependent mesh and solution were invalidated.");
+            }
+            Ok(false) => {
+                state.wb_selected_targets = state.geometry_editor.selection.clone();
+                state.selected_tree = state
+                    .wb_selected_targets
+                    .first()
+                    .and_then(|target| tree_selection_for_target(*target));
+            }
+            Err(error) => state.log(format!("Geometry edit rejected: {error}")),
+        }
+        rebuild_tree_rows(&mut state);
+        refresh_ui(&ui, &state);
+    });
+    let weak_ui = ui.as_weak();
+    let editor_state = state.clone();
+    ui.on_geometry_wheel(move |x, y, w, delta| {
+        let Some(ui) = weak_ui.upgrade() else { return };
+        let mut state = editor_state.borrow_mut();
+        state.geometry_editor.transform.zoom_at(
+            geometry_editor_point(x, y, w, PREVIEW_HEIGHT as f32),
+            f64::from(delta),
+        );
+        refresh_ui(&ui, &state);
+    });
+    let weak_ui = ui.as_weak();
+    let editor_state = state.clone();
+    ui.on_geometry_fit(move || {
+        let Some(ui) = weak_ui.upgrade() else { return };
+        let mut state = editor_state.borrow_mut();
+        let geometry = state.workbench.geometry().clone();
+        state.geometry_editor.fit_view(&geometry);
+        refresh_ui(&ui, &state);
+    });
+    let weak_ui = ui.as_weak();
+    let editor_state = state.clone();
+    ui.on_geometry_toggle_snap(move || {
+        let Some(ui) = weak_ui.upgrade() else { return };
+        let mut state = editor_state.borrow_mut();
+        state.geometry_editor.snap_enabled = !state.geometry_editor.snap_enabled;
+        refresh_ui(&ui, &state);
+    });
+    let weak_ui = ui.as_weak();
+    let editor_state = state.clone();
+    ui.on_geometry_toggle_grid(move || {
+        let Some(ui) = weak_ui.upgrade() else { return };
+        let mut state = editor_state.borrow_mut();
+        state.geometry_editor.grid_enabled = !state.geometry_editor.grid_enabled;
+        refresh_ui(&ui, &state);
+    });
+    let weak_ui = ui.as_weak();
+    let editor_state = state.clone();
+    ui.on_geometry_undo(move || {
+        let Some(ui) = weak_ui.upgrade() else { return };
+        let mut state = editor_state.borrow_mut();
+        let mut editor = std::mem::take(&mut state.geometry_editor);
+        let changed = editor.undo(state.workbench.geometry_mut());
+        state.geometry_editor = editor;
+        if changed {
+            state.workbench.geometry_changed();
+            state.wb_selected_targets.clear();
+            state.log("Geometry undo restored stable topology IDs.");
+            rebuild_tree_rows(&mut state);
+        }
+        refresh_ui(&ui, &state);
+    });
+    let weak_ui = ui.as_weak();
+    let editor_state = state.clone();
+    ui.on_geometry_redo(move || {
+        let Some(ui) = weak_ui.upgrade() else { return };
+        let mut state = editor_state.borrow_mut();
+        let mut editor = std::mem::take(&mut state.geometry_editor);
+        let changed = editor.redo(state.workbench.geometry_mut());
+        state.geometry_editor = editor;
+        if changed {
+            state.workbench.geometry_changed();
+            state.wb_selected_targets.clear();
+            state.log("Geometry redo restored stable topology IDs.");
+            rebuild_tree_rows(&mut state);
+        }
+        refresh_ui(&ui, &state);
+    });
+    let weak_ui = ui.as_weak();
+    let editor_state = state.clone();
+    ui.on_geometry_delete_selection(move || {
+        let Some(ui) = weak_ui.upgrade() else { return };
+        let mut state = editor_state.borrow_mut();
+        let targets = state.geometry_editor.selection.clone();
+        if targets.is_empty() {
+            state.log("Select geometry before deleting.");
+        } else {
+            let geometry = state.workbench.geometry().clone();
+            state.geometry_editor.snapshot_before_delete(&geometry);
+            let mut deleted = 0;
+            for target in targets {
+                match state.workbench.delete_geometry_target(target) {
+                    Ok(()) => deleted += 1,
+                    Err(error) => state.log(format!("Cannot delete {target:?}: {error}")),
+                }
+            }
+            if deleted > 0 {
+                state.geometry_editor.selection.clear();
+                state.wb_selected_targets.clear();
+                state.log(format!("Deleted {deleted} geometry entities."));
+                rebuild_tree_rows(&mut state);
+            }
+        }
+        refresh_ui(&ui, &state);
+    });
     let weak_ui = ui.as_weak();
     let new_project_state = state.clone();
     ui.on_new_project(move || {
@@ -1252,6 +1412,7 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
                         state.wb_selected_targets.push(target);
                         state.log(format!("Added {target:?} to the geometry selection."));
                     }
+                    state.geometry_editor.selection = state.wb_selected_targets.clone();
                 }
                 state.selected_tree = Some(TreeSelection {
                     kind: row.kind,
@@ -1728,10 +1889,29 @@ fn find_geometry_target(
         })
 }
 
+fn tree_selection_for_target(target: GeometrySelectionTarget) -> Option<TreeSelection> {
+    match target {
+        GeometrySelectionTarget::Body(id) => Some(TreeSelection {
+            kind: TREE_KIND_BODY,
+            payload: id.get() as i32,
+        }),
+        GeometrySelectionTarget::Face(id) => Some(TreeSelection {
+            kind: TREE_KIND_FACE,
+            payload: id.get() as i32,
+        }),
+        GeometrySelectionTarget::Edge(id) => Some(TreeSelection {
+            kind: TREE_KIND_EDGE,
+            payload: id.get() as i32,
+        }),
+        GeometrySelectionTarget::Vertex(_) => None,
+    }
+}
+
 fn describe_targets(targets: &[GeometrySelectionTarget]) -> String {
     targets
         .iter()
         .map(|target| match target {
+            GeometrySelectionTarget::Vertex(id) => format!("Vertex {}", id.get()),
             GeometrySelectionTarget::Edge(id) => format!("Edge {}", id.get()),
             GeometrySelectionTarget::Face(id) => format!("Face {}", id.get()),
             GeometrySelectionTarget::Body(id) => format!("Body {}", id.get()),
@@ -1959,6 +2139,18 @@ fn sketch_viewport_point(
         (pixel_x - f64::from(PREVIEW_WIDTH) * 0.5) / scale,
         (f64::from(PREVIEW_HEIGHT) * 0.5 - pixel_y) / scale,
     ))
+}
+
+/// Maps the actual Slint viewport coordinates into the fixed-size editor
+/// render buffer. The domain transform itself remains centralized in the
+/// editor and is never duplicated in UI callbacks.
+fn geometry_editor_point(x: f32, y: f32, width: f32, height: f32) -> (f64, f64) {
+    let width = width.max(1.0);
+    let height = height.max(1.0);
+    (
+        f64::from(x / width * PREVIEW_WIDTH as f32),
+        f64::from(y / height * PREVIEW_HEIGHT as f32),
+    )
 }
 
 fn snap_sketch_point((x, y): (f64, f64)) -> (f64, f64) {
@@ -2245,6 +2437,36 @@ fn refresh_ui(ui: &MainWindow, state: &AppState) {
     ui.set_wb_mesh_summary(SharedString::from(mesh_summary_text(&state.workbench)));
     ui.set_wb_solution_summary(SharedString::from(solution_summary_text(&state.workbench)));
     ui.set_can_run_workbench(!busy && state.workbench.readiness().is_ok());
+    ui.set_geometry_editor_image(render_geometry_editor(
+        state.workbench.geometry(),
+        &state.geometry_editor,
+    ));
+    ui.set_geometry_active_tool(match state.geometry_editor.active_tool {
+        GeometryTool::Select => 0,
+        GeometryTool::Line => 1,
+        GeometryTool::Rectangle => 2,
+        GeometryTool::Circle => 3,
+    });
+    ui.set_geometry_snap(state.geometry_editor.snap_enabled);
+    ui.set_geometry_grid(state.geometry_editor.grid_enabled);
+    ui.set_geometry_editor_status(SharedString::from(
+        match state.geometry_editor.active_tool {
+            GeometryTool::Select => match state.geometry_editor.hover_target {
+                Some(target) => format!("Hover: {target:?} · click to select"),
+                None if state.workbench.geometry().vertices().next().is_none() => {
+                    "Start by drawing a Line, Rectangle, or Circle.".to_string()
+                }
+                None => "SELECT · click an entity; vertex > edge > face priority".to_string(),
+            },
+            GeometryTool::Line => "LINE · click start, then end · Esc cancels".to_string(),
+            GeometryTool::Rectangle => {
+                "RECTANGLE · click opposite corners · Esc cancels".to_string()
+            }
+            GeometryTool::Circle => {
+                "CIRCLE · click centre then radius inside a planar face".to_string()
+            }
+        },
+    ));
 
     match state.workbench.mesh() {
         Some(generated) => ui.set_status_cells(SharedString::from(format!(

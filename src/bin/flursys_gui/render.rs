@@ -1,7 +1,8 @@
 use super::{residual_level, ResidualSample, PREVIEW_HEIGHT, PREVIEW_WIDTH};
 use flursys::{
-    BoundaryConditionKind, BoundaryFace, EnergyModel, ExtrudedMesh3D, FieldUpdate, GeometryPart,
-    GeometryPartKind, GeometrySketch, Project, ProjectCase, SketchAxis, SketchEntityKind,
+    BoundaryConditionKind, BoundaryFace, EnergyModel, ExtrudedMesh3D, FieldUpdate,
+    GeometryEditorState, GeometryPart, GeometryPartKind, GeometrySelectionTarget, GeometrySketch,
+    GeometryTopology, PreviewPrimitive, Project, ProjectCase, SketchAxis, SketchEntityKind,
     StructuredMesh2D,
 };
 use slint::{Image, Rgba8Pixel, SharedPixelBuffer};
@@ -358,6 +359,167 @@ pub(super) fn render_empty_preview() -> Image {
     let mut pixels = vec![0_u8; (PREVIEW_WIDTH * PREVIEW_HEIGHT * 4) as usize];
     fill(&mut pixels, [9, 16, 22, 255]);
     image_from_rgba(PREVIEW_WIDTH, PREVIEW_HEIGHT, pixels)
+}
+
+/// Raster preview of the Rust-owned stable geometry editor.  It is deliberately
+/// a compact render model: topology remains in `GeometryTopology`, while Slint
+/// receives only an image and sends pointer gestures back to the controller.
+pub(super) fn render_geometry_editor(
+    topology: &GeometryTopology,
+    editor: &GeometryEditorState,
+) -> Image {
+    let width = PREVIEW_WIDTH;
+    let height = PREVIEW_HEIGHT;
+    let mut pixels = vec![0_u8; (width * height * 4) as usize];
+    fill(&mut pixels, [9, 16, 22, 255]);
+    let to_screen = |p: (f64, f64)| editor.transform.world_to_screen(p);
+    if editor.grid_enabled {
+        let grid = (60.0 / editor.transform.pixels_per_unit).max(1.0e-6);
+        let (left, bottom) = editor.transform.screen_to_world((0.0, f64::from(height)));
+        let (right, top) = editor.transform.screen_to_world((f64::from(width), 0.0));
+        let first_x = (left / grid).floor() as i32;
+        let last_x = (right / grid).ceil() as i32;
+        let first_y = (bottom / grid).floor() as i32;
+        let last_y = (top / grid).ceil() as i32;
+        for x in first_x..=last_x {
+            let x = to_screen((f64::from(x) * grid, 0.0)).0 as i32;
+            draw_line(
+                &mut pixels,
+                width,
+                height,
+                (x, 0),
+                (x, height as i32),
+                [22, 40, 51, 255],
+            );
+        }
+        for y in first_y..=last_y {
+            let y = to_screen((0.0, f64::from(y) * grid)).1 as i32;
+            draw_line(
+                &mut pixels,
+                width,
+                height,
+                (0, y),
+                (width as i32, y),
+                [22, 40, 51, 255],
+            );
+        }
+    }
+    for edge in topology.edges() {
+        let selected = editor
+            .selection
+            .contains(&GeometrySelectionTarget::Edge(edge.id));
+        let hovered = editor.hover_target == Some(GeometrySelectionTarget::Edge(edge.id));
+        let color = if selected {
+            [240, 195, 109, 255]
+        } else if hovered {
+            [116, 189, 135, 255]
+        } else {
+            [104, 222, 237, 255]
+        };
+        match edge.geometry {
+            flursys::EdgeGeometry::Line { start, end } => {
+                if let (Some(a), Some(b)) = (topology.vertex(start), topology.vertex(end)) {
+                    let a = to_screen((a.position.x, a.position.y));
+                    let b = to_screen((b.position.x, b.position.y));
+                    draw_line(
+                        &mut pixels,
+                        width,
+                        height,
+                        (a.0 as i32, a.1 as i32),
+                        (b.0 as i32, b.1 as i32),
+                        color,
+                    );
+                }
+            }
+            flursys::EdgeGeometry::CircularArc { start, center, end } => {
+                if let (Some(a), Some(c), Some(b)) = (
+                    topology.vertex(start),
+                    topology.vertex(center),
+                    topology.vertex(end),
+                ) {
+                    let r = ((a.position.x - c.position.x).hypot(a.position.y - c.position.y)
+                        * editor.transform.pixels_per_unit) as i32;
+                    let center = to_screen((c.position.x, c.position.y));
+                    let _ = b;
+                    draw_ellipse(
+                        &mut pixels,
+                        width,
+                        height,
+                        (center.0 as i32, center.1 as i32),
+                        r,
+                        r,
+                        color,
+                    );
+                }
+            }
+        }
+    }
+    for vertex in topology.vertices() {
+        let p = to_screen((vertex.position.x, vertex.position.y));
+        let selected = editor
+            .selection
+            .contains(&GeometrySelectionTarget::Vertex(vertex.id));
+        let hovered = editor.hover_target == Some(GeometrySelectionTarget::Vertex(vertex.id));
+        draw_marker(
+            &mut pixels,
+            width,
+            height,
+            (p.0 as i32, p.1 as i32),
+            if selected {
+                [240, 195, 109, 255]
+            } else if hovered {
+                [116, 189, 135, 255]
+            } else {
+                [178, 214, 224, 255]
+            },
+        );
+    }
+    if let Some(preview) = editor.preview() {
+        let color = [255, 181, 88, 255];
+        match preview {
+            PreviewPrimitive::Line(a, b) => {
+                let a = to_screen(a);
+                let b = to_screen(b);
+                draw_line(
+                    &mut pixels,
+                    width,
+                    height,
+                    (a.0 as i32, a.1 as i32),
+                    (b.0 as i32, b.1 as i32),
+                    color,
+                )
+            }
+            PreviewPrimitive::Rectangle(a, b) => {
+                let p = [a, (b.0, a.1), b, (a.0, b.1)];
+                for i in 0..4 {
+                    let a = to_screen(p[i]);
+                    let b = to_screen(p[(i + 1) % 4]);
+                    draw_line(
+                        &mut pixels,
+                        width,
+                        height,
+                        (a.0 as i32, a.1 as i32),
+                        (b.0 as i32, b.1 as i32),
+                        color,
+                    )
+                }
+            }
+            PreviewPrimitive::Circle(c, r) => {
+                let c = to_screen(c);
+                let r = (r * editor.transform.pixels_per_unit) as i32;
+                draw_ellipse(
+                    &mut pixels,
+                    width,
+                    height,
+                    (c.0 as i32, c.1 as i32),
+                    r,
+                    r,
+                    color,
+                )
+            }
+        }
+    }
+    image_from_rgba(width, height, pixels)
 }
 
 pub(super) fn render_sketch_2d(

@@ -132,6 +132,11 @@ export component MainWindow inherits Window {
     in-out property <string> field-summary: "No field snapshot received.";
     in-out property <image> visualization-image;
     in-out property <image> sketch-image;
+    in-out property <image> geometry-editor-image;
+    in-out property <string> geometry-editor-status: "Start by drawing a Line, Rectangle, or Circle.";
+    in-out property <int> geometry-active-tool: 0;
+    in-out property <bool> geometry-snap: true;
+    in-out property <bool> geometry-grid: true;
     in-out property <bool> sketch-editing: false;
     in-out property <string> sketch-status: "Start a sketch to edit a 2D profile.";
     in-out property <string> visualization-title: "MESH PREVIEW";
@@ -148,6 +153,7 @@ export component MainWindow inherits Window {
     callback geometry-drag(float, float, float, float); callback geometry-zoom(float); callback reset-geometry-view(); callback select-geometry-view-axis(int);
     callback pick-boundary(float, float, float, float);
     callback start-sketch(); callback select-sketch-tool(int); callback sketch-click(float, float, float, float); callback sketch-preview(float, float, float, float); callback sketch-undo(); callback sketch-redo(); callback apply-driving-dimension();
+    callback geometry-tool(int); callback geometry-pointer(float, float, float, float, bool); callback geometry-move(float, float, float, float); callback geometry-wheel(float, float, float, float); callback geometry-fit(); callback geometry-undo(); callback geometry-redo(); callback geometry-delete-selection(); callback geometry-toggle-snap(); callback geometry-toggle-grid();
 
     // ---- Workbench pipeline (stable geometry → Named Selections → Gmsh → BCs → solve) ----
     in-out property <[ProjectTreeRow]> project-tree-model;
@@ -365,16 +371,18 @@ export component MainWindow inherits Window {
                                 HorizontalLayout {
                                     spacing: 5px;
 
-                                    Text { text: "SKETCH"; color: UiTheme.accent; font-size: 10px; font-weight: 800; vertical-alignment: center; }
+                                    Text { text: "GEOMETRY"; color: UiTheme.accent; font-size: 10px; font-weight: 800; vertical-alignment: center; }
                                     Rectangle { width: 1px; background: UiTheme.divider; }
 
-                                    Button { text: "NEW SKETCH"; clicked => { root.start-sketch(); } }
-                                    Button { text: "SELECT"; clicked => { root.select-sketch-tool(0); } }
-                                    Button { text: "LINE"; clicked => { root.select-sketch-tool(8); } }
-                                    Button { text: "RECT"; clicked => { root.select-sketch-tool(1); } }
-                                    Button { text: "SQUARE"; clicked => { root.select-sketch-tool(2); } }
-                                    Button { text: "CIRCLE"; clicked => { root.select-sketch-tool(3); } }
-                                    Button { text: "DIM"; clicked => { root.select-sketch-tool(4); } }
+                                    Button { text: root.geometry-active-tool == 0 ? "SELECT ✓" : "SELECT"; clicked => { root.geometry-tool(0); } }
+                                    Button { text: root.geometry-active-tool == 1 ? "LINE ✓" : "LINE"; clicked => { root.geometry-tool(1); } }
+                                    Button { text: root.geometry-active-tool == 2 ? "RECT ✓" : "RECT"; clicked => { root.geometry-tool(2); } }
+                                    Button { text: root.geometry-active-tool == 3 ? "CIRCLE ✓" : "CIRCLE"; clicked => { root.geometry-tool(3); } }
+                                    Button { text: root.geometry-snap ? "SNAP ON" : "SNAP OFF"; clicked => { root.geometry-toggle-snap(); } }
+                                    Button { text: root.geometry-grid ? "GRID ON" : "GRID OFF"; clicked => { root.geometry-toggle-grid(); } }
+                                    Button { text: "UNDO"; clicked => { root.geometry-undo(); } }
+                                    Button { text: "REDO"; clicked => { root.geometry-redo(); } }
+                                    Button { text: "DELETE"; clicked => { root.geometry-delete-selection(); } }
 
                                     Rectangle { horizontal-stretch: 1; }
                                 }
@@ -382,13 +390,9 @@ export component MainWindow inherits Window {
                                 HorizontalLayout {
                                     spacing: 5px;
 
-                                    Text { text: "EDIT / FEATURE"; color: UiTheme.text-dim; font-size: 10px; font-weight: 700; vertical-alignment: center; }
+                                    Text { text: "VIEW"; color: UiTheme.text-dim; font-size: 10px; font-weight: 700; vertical-alignment: center; }
 
-                                    Button { text: "HORIZONTAL"; clicked => { root.select-sketch-tool(6); } }
-                                    Button { text: "VERTICAL"; clicked => { root.select-sketch-tool(7); } }
-                                    Button { text: "TRIM"; clicked => { root.select-sketch-tool(5); } }
-                                    Button { text: "UNDO"; clicked => { root.sketch-undo(); } }
-                                    Button { text: "REDO"; clicked => { root.sketch-redo(); } }
+                                    Button { text: "FIT"; clicked => { root.geometry-fit(); } }
 
                                     Rectangle { width: 1px; background: UiTheme.divider; }
 
@@ -528,19 +532,19 @@ export component MainWindow inherits Window {
                                 horizontal-stretch: 3;
                                 VerticalLayout {
                                     padding: 12px; spacing: 8px;
-                                    HorizontalLayout { Text { text: root.sketch-editing ? "2D SKETCH EDITOR" : "3D VIEWPORT"; color: UiTheme.accent; font-size: 11px; font-weight: 800; } Rectangle { horizontal-stretch: 1; } Text { text: root.sketch-editing ? "XY PLANE · mm" : "PERSPECTIVE · mm"; color: UiTheme.text-dim; font-size: 10px; } }
-                                    if root.sketch-editing : Rectangle {
+                                    HorizontalLayout { Text { text: "2D GEOMETRY EDITOR"; color: UiTheme.accent; font-size: 11px; font-weight: 800; } Rectangle { horizontal-stretch: 1; } Text { text: "XY PLANE · mm"; color: UiTheme.text-dim; font-size: 10px; } }
+                                    Rectangle {
                                         vertical-stretch: 1;
                                         background: UiTheme.viewport;
                                         border-color: UiTheme.viewport-border;
                                         border-width: 1px;
-                                        Image { source: root.sketch-image; width: parent.width; height: parent.height; image-fit: contain; }
-                                        Text { x: 10px; y: parent.height - self.height - 8px; text: "CLICK: APPLY ACTIVE SKETCH TOOL  ·  GRID: 0.1 mm  ·  ENDPOINT + AXIS SNAP"; color: UiTheme.text-overlay; font-size: 10px; font-weight: 700; }
+                                        Image { source: root.geometry-editor-image; width: parent.width; height: parent.height; image-fit: contain; }
+                                        Text { x: 10px; y: parent.height - self.height - 8px; text: root.geometry-editor-status; color: UiTheme.text-overlay; font-size: 10px; font-weight: 700; }
                                         TouchArea {
                                             x: 0px; y: 0px;
                                             width: parent.width; height: parent.height;
                                             moved => {
-                                                root.sketch-preview(
+                                                root.geometry-move(
                                                     self.mouse-x / 1px,
                                                     self.mouse-y / 1px,
                                                     self.width / 1px,
@@ -548,17 +552,17 @@ export component MainWindow inherits Window {
                                                 );
                                             }
                                             clicked => {
-                                                root.sketch-click(
+                                                root.geometry-pointer(
                                                     self.mouse-x / 1px,
                                                     self.mouse-y / 1px,
                                                     self.width / 1px,
-                                                    self.height / 1px,
+                                                    self.height / 1px, false,
                                                 );
                                             }
+                                            scroll-event(event) => { root.geometry-wheel(self.mouse-x / 1px, self.mouse-y / 1px, self.width / 1px, event.delta-y / 1px); accept }
                                         }
                                     }
-                                    if !root.sketch-editing : InteractiveGeometryPreview { vertical-stretch: 1; preview-image: root.visualization-image; view-axis: root.geometry-view-axis; orbit(x, y, pressed-x, pressed-y) => { root.geometry-drag(x, y, pressed-x, pressed-y); } zoom(delta) => { root.geometry-zoom(delta); } reset-view => { root.reset-geometry-view(); } select-view-axis(axis) => { root.select-geometry-view-axis(axis); } pick-boundary(x, y, w, h) => { root.pick-boundary(x, y, w, h); } }
-                                    HorizontalLayout { Text { text: root.sketch-editing ? root.sketch-status : root.animation-status; color: UiTheme.text-soft; font-size: 10px; vertical-alignment: center; wrap: word-wrap; } Rectangle { horizontal-stretch: 1; } if root.sketch-editing : Button { text: "FINISH SKETCH"; clicked => { root.show-geometry-3d(); } } if !root.sketch-editing : Button { text: "ORBIT"; clicked => { root.rotate-geometry-3d(); } } Button { text: "FIT VIEW"; clicked => { root.reset-geometry-view(); } } }
+                                    HorizontalLayout { Text { text: root.geometry-editor-status; color: UiTheme.text-soft; font-size: 10px; vertical-alignment: center; wrap: word-wrap; } Rectangle { horizontal-stretch: 1; } Button { text: "FIT VIEW"; clicked => { root.geometry-fit(); } } }
                                 }
                             }
 

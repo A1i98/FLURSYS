@@ -108,7 +108,7 @@ pub use unstructured_incompressible::{
     IncompressibleSolveStatus, IncompressibleSolverOptions, ResolvedIncompressibleBoundaries,
 };
 pub use workbench::{
-    AnalysisDimension, AnalysisKind, ExecutionPlan, GeometrySelectionTarget, NamedSelection,
-    NamedSelectionError, NamedSelectionStore, SolveStatus, SolverBackend, WorkbenchAnalysis,
-    WorkbenchError, WorkbenchSession,
+    AnalysisDimension, AnalysisKind, ExecutionPlan, GeometryEditorState, GeometrySelectionTarget,
+    GeometryTool, NamedSelection, NamedSelectionError, NamedSelectionStore, PreviewPrimitive,
+    SolveStatus, SolverBackend, ViewTransform, WorkbenchAnalysis, WorkbenchError, WorkbenchSession,
 };

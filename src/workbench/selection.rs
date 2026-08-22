@@ -4,11 +4,12 @@
 //! mesh face indices. `NamedSelection` stores a deterministic, ordered set of
 //! stable targets under a validated, unique name.
 
-use crate::{BodyId, EdgeId, FaceId};
+use crate::{BodyId, EdgeId, FaceId, VertexId};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum GeometrySelectionTarget {
+    Vertex(VertexId),
     Edge(EdgeId),
     Face(FaceId),
     Body(BodyId),
@@ -17,6 +18,7 @@ pub enum GeometrySelectionTarget {
 impl GeometrySelectionTarget {
     pub const fn kind_label(self) -> &'static str {
         match self {
+            Self::Vertex(_) => "vertex",
             Self::Edge(_) => "edge",
             Self::Face(_) => "face",
             Self::Body(_) => "body",
@@ -25,6 +27,7 @@ impl GeometrySelectionTarget {
 
     pub const fn id_value(self) -> u64 {
         match self {
+            Self::Vertex(id) => id.get(),
             Self::Edge(id) => id.get(),
             Self::Face(id) => id.get(),
             Self::Body(id) => id.get(),
@@ -188,6 +191,20 @@ impl NamedSelectionStore {
 
     pub fn is_empty(&self) -> bool {
         self.selections.is_empty()
+    }
+
+    /// Removes references to deleted topology and drops groups that would be
+    /// empty afterwards. This keeps persistent selections free of invisible,
+    /// dangling stable IDs.
+    pub fn retain_targets(
+        &mut self,
+        mut target_exists: impl FnMut(GeometrySelectionTarget) -> bool,
+    ) {
+        for selection in &mut self.selections {
+            selection.targets.retain(|target| target_exists(*target));
+        }
+        self.selections
+            .retain(|selection| !selection.targets.is_empty());
     }
 
     /// Names of every selection containing the given target, in storage order.

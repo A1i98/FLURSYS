@@ -172,6 +172,40 @@ impl WorkbenchSession {
         &self.geometry
     }
 
+    /// Mutable topology access for the geometry-editor controller only. Call
+    /// [`Self::geometry_changed`] once after a successful committed edit.
+    pub fn geometry_mut(&mut self) -> &mut GeometryTopology {
+        &mut self.geometry
+    }
+
+    /// Invalidates all products derived from geometry. View and selection
+    /// operations deliberately never call this method.
+    pub fn geometry_changed(&mut self) {
+        self.mesh = None;
+        self.solution = None;
+        self.status = SolveStatus::Idle;
+        self.patch_names_clear();
+        let geometry = &self.geometry;
+        self.named_selections.retain_targets(|target| match target {
+            GeometrySelectionTarget::Vertex(id) => geometry.vertex(id).is_some(),
+            GeometrySelectionTarget::Edge(id) => geometry.edge(id).is_some(),
+            GeometrySelectionTarget::Face(id) => geometry.face(id).is_some(),
+            GeometrySelectionTarget::Body(id) => geometry.body(id).is_some(),
+        });
+        self.rectangle = self
+            .rectangle
+            .take()
+            .filter(|rectangle| self.geometry.face(rectangle.face).is_some());
+        self.box_body = self
+            .box_body
+            .take()
+            .filter(|box_body| self.geometry.body(box_body.body).is_some());
+    }
+
+    fn patch_names_clear(&mut self) {
+        self.boundaries.clear();
+    }
+
     /// Adds a planar rectangle and marks its face as the fluid face for 2D meshing.
     pub fn add_rectangle(
         &mut self,
@@ -180,6 +214,7 @@ impl WorkbenchSession {
     ) -> Result<RectangleEntities, WorkbenchError> {
         let rectangle = self.geometry.add_rectangle(width, height)?;
         self.rectangle = Some(rectangle.clone());
+        self.geometry_changed();
         Ok(rectangle)
     }
 
@@ -192,19 +227,57 @@ impl WorkbenchSession {
     ) -> Result<BoxEntities, WorkbenchError> {
         let entities = self.geometry.add_box(length, width, height)?;
         self.box_body = Some(entities.clone());
+        self.geometry_changed();
         Ok(entities)
     }
 
     pub fn fluid_face(&self) -> Option<FaceId> {
-        self.rectangle.as_ref().map(|rectangle| rectangle.face)
+        self.rectangle
+            .as_ref()
+            .map(|rectangle| rectangle.face)
+            .or_else(|| {
+                self.geometry.faces().find_map(|face| {
+                    matches!(
+                        face.representation,
+                        crate::GeometryFaceRepresentation::Planar { .. }
+                    )
+                    .then_some(face.id)
+                })
+            })
     }
 
     pub fn target_exists(&self, target: GeometrySelectionTarget) -> bool {
         match target {
+            GeometrySelectionTarget::Vertex(id) => self.geometry.vertex(id).is_some(),
             GeometrySelectionTarget::Edge(id) => self.geometry.edge(id).is_some(),
             GeometrySelectionTarget::Face(id) => self.geometry.face(id).is_some(),
             GeometrySelectionTarget::Body(id) => self.geometry.body(id).is_some(),
         }
+    }
+
+    /// Removes one topology entity through the validated geometry API.
+    /// Dependent mesh/solution data and stale Named Selection targets are
+    /// invalidated only after the removal succeeds.
+    pub fn delete_geometry_target(
+        &mut self,
+        target: GeometrySelectionTarget,
+    ) -> Result<(), WorkbenchError> {
+        match target {
+            GeometrySelectionTarget::Vertex(id) => {
+                self.geometry.remove_vertex(id)?;
+            }
+            GeometrySelectionTarget::Edge(id) => {
+                self.geometry.remove_edge(id)?;
+            }
+            GeometrySelectionTarget::Face(id) => {
+                self.geometry.remove_face(id)?;
+            }
+            GeometrySelectionTarget::Body(id) => {
+                self.geometry.remove_body(id)?;
+            }
+        }
+        self.geometry_changed();
+        Ok(())
     }
 
     // ---------------------------------------------------------------
