@@ -5,11 +5,17 @@
 //! of a concrete numerical backend.
 
 pub mod editor;
+pub mod examples;
 pub mod mesh_viewport;
 pub mod selection;
 pub mod session;
 
 pub use editor::{GeometryEditorState, GeometryTool, PreviewPrimitive, ViewTransform};
+pub use examples::{
+    build_example, descriptor as example_descriptor, example_descriptors, expectations,
+    verify_solution, ExampleCheck, ExampleExpectations, ExampleProjectDescriptor,
+    ExampleProjectError, ExampleProjectId, ExampleVerificationReport,
+};
 pub use mesh_viewport::{
     MeshQualityMetric, MeshQualityValues, MeshRenderCache, MeshSelection, MeshSelectionTarget,
     RenderRange,

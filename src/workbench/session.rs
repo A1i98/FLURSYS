@@ -10,11 +10,11 @@ use super::{
     NamedSelectionStore,
 };
 use crate::{
-    output::write_unstructured_legacy_vtk, BoxEntities, EdgeId, FaceId, GeneratedMesh,
-    GeometryError, GeometryGmshExport, GeometryTopology, GmshGeometryExporter, GmshMeshOptions,
-    GmshMesher, IncompressibleBoundaryCondition, IncompressibleCase, IncompressibleCaseError,
-    IncompressibleMaterial, IncompressibleSolution, IncompressibleSolverOptions, MeshDimension,
-    MeshingError, RectangleEntities,
+    output::write_unstructured_legacy_vtk, BoxEntities, CircleHoleEntities, EdgeId, FaceId,
+    GeneratedMesh, GeometryError, GeometryGmshExport, GeometryTopology, GmshGeometryExporter,
+    GmshMeshOptions, GmshMesher, IncompressibleBoundaryCondition, IncompressibleCase,
+    IncompressibleCaseError, IncompressibleMaterial, IncompressibleSolution,
+    IncompressibleSolverOptions, MeshDimension, MeshingError, RectangleEntities, Vec3,
 };
 use std::collections::BTreeMap;
 
@@ -228,6 +228,23 @@ impl WorkbenchSession {
         self.rectangle = Some(rectangle.clone());
         self.geometry_changed();
         Ok(rectangle)
+    }
+
+    /// Adds a planar rectangle with a circular fluid exclusion while retaining
+    /// the rectangle as the session's 2D fluid face.
+    pub fn add_rectangle_with_circle(
+        &mut self,
+        width: f64,
+        height: f64,
+        center: Vec3,
+        radius: f64,
+    ) -> Result<(RectangleEntities, CircleHoleEntities), WorkbenchError> {
+        let (rectangle, hole) = self
+            .geometry
+            .add_rectangle_with_circle(width, height, center.x, center.y, radius)?;
+        self.rectangle = Some(rectangle.clone());
+        self.geometry_changed();
+        Ok((rectangle, hole))
     }
 
     /// Adds a box body for 3D meshing through the OpenCASCADE exporter.
@@ -563,6 +580,32 @@ impl WorkbenchSession {
             ));
         }
         self.boundaries.insert(patch.to_string(), condition);
+        self.status = SolveStatus::Idle;
+        self.solution = None;
+        Ok(())
+    }
+
+    /// Stores a boundary condition for an existing Named Selection before mesh
+    /// generation. `install_mesh` retains it only when Gmsh preserves the patch.
+    pub fn configure_named_boundary(
+        &mut self,
+        selection: &str,
+        condition: IncompressibleBoundaryCondition,
+    ) -> Result<(), WorkbenchError> {
+        if self.named_selections.get(selection).is_none() {
+            return Err(WorkbenchError::InvalidGrouping {
+                message: format!("Named Selection {selection:?} does not exist"),
+            });
+        }
+        if condition_values(condition)
+            .iter()
+            .any(|value| !value.is_finite())
+        {
+            return Err(WorkbenchError::Case(
+                IncompressibleCaseError::InvalidInitialConditions,
+            ));
+        }
+        self.boundaries.insert(selection.to_string(), condition);
         self.status = SolveStatus::Idle;
         self.solution = None;
         Ok(())
