@@ -109,6 +109,8 @@ pub use unstructured_incompressible::{
 };
 pub use workbench::{
     AnalysisDimension, AnalysisKind, ExecutionPlan, GeometryEditorState, GeometrySelectionTarget,
-    GeometryTool, NamedSelection, NamedSelectionError, NamedSelectionStore, PreviewPrimitive,
-    SolveStatus, SolverBackend, ViewTransform, WorkbenchAnalysis, WorkbenchError, WorkbenchSession,
+    GeometryTool, MeshQualityMetric, MeshQualityValues, MeshRenderCache, MeshSelection,
+    MeshSelectionTarget, NamedSelection, NamedSelectionError, NamedSelectionStore,
+    PreviewPrimitive, RenderRange, SolveStatus, SolverBackend, ViewTransform, WorkbenchAnalysis,
+    WorkbenchError, WorkbenchSession,
 };

@@ -5,7 +5,10 @@
 //! The session owns validated domain state. The UI issues commands and renders
 //! what this module reports; it never stores duplicate geometry/mesh/BC state.
 
-use super::{GeometrySelectionTarget, NamedSelectionError, NamedSelectionStore};
+use super::{
+    GeometrySelectionTarget, MeshRenderCache, MeshSelection, NamedSelectionError,
+    NamedSelectionStore,
+};
 use crate::{
     output::write_unstructured_legacy_vtk, BoxEntities, EdgeId, FaceId, GeneratedMesh,
     GeometryError, GeometryGmshExport, GeometryTopology, GmshGeometryExporter, GmshMeshOptions,
@@ -96,6 +99,9 @@ pub struct WorkbenchSession {
     element_order: u8,
     mesher: GmshMesher,
     mesh: Option<GeneratedMesh>,
+    mesh_render_cache: Option<MeshRenderCache>,
+    mesh_selection: Option<MeshSelection>,
+    mesh_hover: Option<MeshSelection>,
     boundaries: BTreeMap<String, IncompressibleBoundaryCondition>,
     material: IncompressibleMaterial,
     solver: IncompressibleSolverOptions,
@@ -123,6 +129,9 @@ impl WorkbenchSession {
             element_order: 1,
             mesher: GmshMesher::auto(),
             mesh: None,
+            mesh_render_cache: None,
+            mesh_selection: None,
+            mesh_hover: None,
             boundaries: BTreeMap::new(),
             material: IncompressibleMaterial {
                 density: 1.0,
@@ -182,6 +191,9 @@ impl WorkbenchSession {
     /// operations deliberately never call this method.
     pub fn geometry_changed(&mut self) {
         self.mesh = None;
+        self.mesh_render_cache = None;
+        self.mesh_selection = None;
+        self.mesh_hover = None;
         self.solution = None;
         self.status = SolveStatus::Idle;
         self.patch_names_clear();
@@ -468,6 +480,9 @@ impl WorkbenchSession {
         self.boundaries.retain(|name, _| patch_names.contains(name));
         self.solution = None;
         self.status = SolveStatus::Idle;
+        self.mesh_render_cache = MeshRenderCache::build(&generated.mesh).ok();
+        self.mesh_selection = None;
+        self.mesh_hover = None;
         self.mesh = Some(generated);
     }
 
@@ -477,6 +492,38 @@ impl WorkbenchSession {
 
     pub fn has_mesh(&self) -> bool {
         self.mesh.is_some()
+    }
+
+    /// Derived viewport data is valid only for the current mesh identity.
+    pub fn mesh_render_cache(&self) -> Option<&MeshRenderCache> {
+        self.mesh_render_cache.as_ref()
+    }
+
+    pub fn mesh_selection(&self) -> Option<MeshSelection> {
+        self.mesh_selection
+    }
+
+    pub fn mesh_hover(&self) -> Option<MeshSelection> {
+        self.mesh_hover
+    }
+
+    pub fn set_mesh_selection(&mut self, selection: Option<MeshSelection>) {
+        self.mesh_selection = selection.filter(|selection| {
+            self.mesh
+                .as_ref()
+                .and_then(|generated| selection.resolve(&generated.mesh))
+                .is_some()
+        });
+    }
+
+    /// Hover is intentionally transient and does not alter persistent selection.
+    pub fn set_mesh_hover(&mut self, hover: Option<MeshSelection>) {
+        self.mesh_hover = hover.filter(|selection| {
+            self.mesh
+                .as_ref()
+                .and_then(|generated| selection.resolve(&generated.mesh))
+                .is_some()
+        });
     }
 
     // ---------------------------------------------------------------

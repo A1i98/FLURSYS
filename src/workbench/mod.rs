@@ -5,10 +5,15 @@
 //! of a concrete numerical backend.
 
 pub mod editor;
+pub mod mesh_viewport;
 pub mod selection;
 pub mod session;
 
 pub use editor::{GeometryEditorState, GeometryTool, PreviewPrimitive, ViewTransform};
+pub use mesh_viewport::{
+    MeshQualityMetric, MeshQualityValues, MeshRenderCache, MeshSelection, MeshSelectionTarget,
+    RenderRange,
+};
 pub use selection::{
     GeometrySelectionTarget, NamedSelection, NamedSelectionError, NamedSelectionStore,
 };
