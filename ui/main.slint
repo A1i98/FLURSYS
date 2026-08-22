@@ -170,6 +170,12 @@ export component MainWindow inherits Window {
     in-out property <string> wb-min-size: "0.05";
     in-out property <string> wb-max-size: "0.2";
     in-out property <string> wb-mesh-summary: "No mesh generated yet.";
+    in-out property <int> mesh-display-index: 2;
+    in-out property <int> mesh-selection-index: 0;
+    in-out property <int> mesh-color-index: 0;
+    in-out property <int> mesh-quality-index: 0;
+    in-out property <string> mesh-quality-threshold: "10";
+    in-out property <[string]> bad-cell-model;
     in-out property <string> wb-gmsh-status: "Gmsh: checking…";
     in-out property <[string]> patch-model;
     in-out property <int> patch-index: 0;
@@ -203,6 +209,8 @@ export component MainWindow inherits Window {
     callback run-workbench();
     callback export-vtk-wb();
     callback refresh-gmsh-status();
+    callback mesh-display(int); callback mesh-select-mode(int); callback mesh-color(int); callback mesh-quality(int); callback mesh-threshold(); callback select-bad-cell(int);
+    callback mesh-hover(float, float, float, float);
 
     VerticalLayout {
         spacing: 0px;
@@ -604,11 +612,11 @@ export component MainWindow inherits Window {
                             min-height: mesh-scroll.visible-height;
                             padding: root.page-padding; spacing: root.page-spacing;
                         SectionTitle { text: "02  Mesh"; }
-                        SectionHint { text: "Define the active structured solver grid and retain extrusion layers for the 3D workbench model."; }
+                        SectionHint { text: "Generate and inspect the active unstructured mesh before assigning boundaries or solving."; }
                         HorizontalLayout {
                                 spacing: root.page-spacing;
                                 Card { min-width: 250px; preferred-width: 340px; max-width: 400px; horizontal-stretch: 1; VerticalLayout { padding: root.compact-ui ? 14px : 18px; spacing: 10px;
-                                Text { text: "STRUCTURED GRID"; color: UiTheme.accent; font-size: 11px; font-weight: 700; }
+                                Text { text: "MESH GENERATION"; color: UiTheme.accent; font-size: 11px; font-weight: 700; }
                                 Text { text: "Planar cells"; color: UiTheme.text-muted; font-size: 11px; }
                                 HorizontalLayout { Text { text: "Nx"; color: UiTheme.text-alt; vertical-alignment: center; } SpinBox { value <=> root.nx; minimum: 4; maximum: 1024; } Text { text: "Ny"; color: UiTheme.text-alt; vertical-alignment: center; } SpinBox { value <=> root.ny; minimum: 4; maximum: 1024; } }
                                 Text { text: "Extrusion layers (Nz)"; color: UiTheme.text-muted; font-size: 11px; }
@@ -616,12 +624,18 @@ export component MainWindow inherits Window {
                                 Text { text: "Extrusion depth"; color: UiTheme.text-muted; font-size: 11px; }
                                 LineEdit { text <=> root.extrusion-depth; }
                                 Text { text: "The active solver uses Nx × Ny. Nz is retained in the project and drives the 3D mesh preview."; color: UiTheme.text-faint; font-size: 11px; wrap: word-wrap; }
-                                Button { text: "GENERATE MESH PREVIEW"; clicked => { root.show-mesh(); } }
+                                Button { text: "SHOW ACTIVE MESH"; clicked => { root.show-mesh(); } }
                             } }
                                 Card { min-width: 350px; horizontal-stretch: 2; VerticalLayout { padding: root.compact-ui ? 14px : 18px; spacing: 10px;
                                 Text { text: "MESH INSPECTION"; color: UiTheme.accent; font-size: 11px; font-weight: 700; }
+                                HorizontalLayout { Text { text: "View"; color: UiTheme.text-muted; vertical-alignment: center; } Button { text: root.mesh-display-index == 0 ? "WIREFRAME ✓" : "WIREFRAME"; clicked => { root.mesh-display(0); } } Button { text: root.mesh-display-index == 1 ? "SURFACE ✓" : "SURFACE"; clicked => { root.mesh-display(1); } } Button { text: root.mesh-display-index == 2 ? "SURFACE + EDGES ✓" : "SURFACE + EDGES"; clicked => { root.mesh-display(2); } } }
+                                HorizontalLayout { Text { text: "Select"; color: UiTheme.text-muted; vertical-alignment: center; } Button { text: root.mesh-selection-index == 0 ? "FACE ✓" : "FACE"; clicked => { root.mesh-select-mode(0); } } Button { text: root.mesh-selection-index == 1 ? "CELL ✓" : "CELL"; clicked => { root.mesh-select-mode(1); } } }
+                                HorizontalLayout { Text { text: "Color"; color: UiTheme.text-muted; vertical-alignment: center; } Button { text: "NEUTRAL"; clicked => { root.mesh-color(0); } } Button { text: "PATCHES"; clicked => { root.mesh-color(1); } } Button { text: "QUALITY"; clicked => { root.mesh-color(2); } } }
+                                HorizontalLayout { Text { text: "Metric"; color: UiTheme.text-muted; vertical-alignment: center; } Button { text: "ASPECT"; clicked => { root.mesh-quality(0); } } Button { text: "SKEW"; clicked => { root.mesh-quality(1); } } Button { text: "NON-ORTH"; clicked => { root.mesh-quality(2); } } Button { text: "MEASURE"; clicked => { root.mesh-quality(3); } } }
+                                HorizontalLayout { Text { text: "Threshold"; color: UiTheme.text-muted; vertical-alignment: center; } LineEdit { text <=> root.mesh-quality-threshold; } Button { text: "APPLY"; clicked => { root.mesh-threshold(); } } }
+                                if root.bad-cell-model.length > 0 : VerticalLayout { spacing: 3px; Text { text: "BAD CELLS (first " + root.bad-cell-model.length + ")"; color: UiTheme.text-muted; font-size: 10px; font-weight: 700; } ListView { min-height: 48px; max-height: 96px; for cell[index] in root.bad-cell-model : Button { text: cell; clicked => { root.select-bad-cell(index); } } } }
                                 Text { text: root.mesh-inspection; color: UiTheme.text-subtle; font-family: "monospace"; font-size: 11px; wrap: word-wrap; }
-                                InteractiveGeometryPreview { vertical-stretch: 1; preview-image: root.visualization-image; view-axis: root.geometry-view-axis; orbit(x, y, pressed-x, pressed-y) => { root.geometry-drag(x, y, pressed-x, pressed-y); } zoom(delta) => { root.geometry-zoom(delta); } reset-view => { root.reset-geometry-view(); } select-view-axis(axis) => { root.select-geometry-view-axis(axis); } pick-boundary(x, y, w, h) => { root.pick-boundary(x, y, w, h); } }
+                                InteractiveGeometryPreview { vertical-stretch: 1; preview-image: root.visualization-image; view-axis: root.geometry-view-axis; orbit(x, y, pressed-x, pressed-y) => { root.geometry-drag(x, y, pressed-x, pressed-y); } zoom(delta) => { root.geometry-zoom(delta); } reset-view => { root.reset-geometry-view(); } select-view-axis(axis) => { root.select-geometry-view-axis(axis); } pick-boundary(x, y, w, h) => { root.pick-boundary(x, y, w, h); } hover(x, y, w, h) => { root.mesh-hover(x, y, w, h); } }
                                 Text { text: root.visualization-title + " · " + root.animation-status; color: UiTheme.text-soft; font-size: 11px; }
                                 HorizontalLayout { Button { text: "2D GRID"; clicked => { root.show-mesh(); } } Button { text: "3D VOLUME"; clicked => { root.show-geometry-3d(); } } }
                             } }
@@ -681,7 +695,7 @@ export component MainWindow inherits Window {
                             } }
                                 Card { min-width: 250px; horizontal-stretch: 2; VerticalLayout { padding: root.compact-ui ? 14px : 18px; spacing: 10px;
                                 Text { text: "BOUNDARY & VOLUME VIEW"; color: UiTheme.accent; font-size: 11px; font-weight: 700; }
-                                InteractiveGeometryPreview { vertical-stretch: 1; preview-image: root.visualization-image; view-axis: root.geometry-view-axis; orbit(x, y, pressed-x, pressed-y) => { root.geometry-drag(x, y, pressed-x, pressed-y); } zoom(delta) => { root.geometry-zoom(delta); } reset-view => { root.reset-geometry-view(); } select-view-axis(axis) => { root.select-geometry-view-axis(axis); } pick-boundary(x, y, w, h) => { root.pick-boundary(x, y, w, h); } }
+                                InteractiveGeometryPreview { vertical-stretch: 1; preview-image: root.visualization-image; view-axis: root.geometry-view-axis; orbit(x, y, pressed-x, pressed-y) => { root.geometry-drag(x, y, pressed-x, pressed-y); } zoom(delta) => { root.geometry-zoom(delta); } reset-view => { root.reset-geometry-view(); } select-view-axis(axis) => { root.select-geometry-view-axis(axis); } pick-boundary(x, y, w, h) => { root.pick-boundary(x, y, w, h); } hover(x, y, w, h) => { root.mesh-hover(x, y, w, h); } }
                                 Text { text: "Cyan: left · Gold: right · Green: top · Magenta: bottom"; color: UiTheme.text-soft; font-size: 11px; }
                                 HorizontalLayout { Button { text: "SHOW 3D"; clicked => { root.show-geometry-3d(); } } Button { text: "ROTATE"; clicked => { root.rotate-geometry-3d(); } } }
                             } }

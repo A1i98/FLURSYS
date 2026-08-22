@@ -3,8 +3,9 @@ use flursys::{
     BoundaryConditionKind, BoundaryFace, ExtrudedMesh3D, FieldUpdate, GeneratedMesh,
     GeometryEditorState, GeometrySelectionTarget, GeometrySketch, GeometryTool, GmshMesher,
     IncompressibleBoundaryCondition, IncompressibleSolution, IncompressibleSolveError,
-    MeshDimension, Project, ProjectCoupling, SketchAxis, SketchEntityKind, SketchProfileKind,
-    SolveStatus, StructuredMesh2D, ThermalBoundaryCondition, Vec3, WorkbenchSession,
+    MeshDimension, MeshQualityMetric, MeshSelection, Project, ProjectCoupling, SketchAxis,
+    SketchEntityKind, SketchProfileKind, SolveStatus, StructuredMesh2D, ThermalBoundaryCondition,
+    Vec3, ViewTransform, WorkbenchSession,
 };
 use slint::{ComponentHandle, ModelRc, SharedString, Timer, TimerMode, VecModel};
 use std::cell::RefCell;
@@ -14,6 +15,53 @@ use std::sync::mpsc::Receiver;
 use std::time::Duration;
 
 slint::include_modules!();
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MeshColorMode {
+    Neutral,
+    Patches,
+    Quality,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MeshDisplayMode {
+    Wireframe,
+    Surface,
+    SurfaceEdges,
+}
+
+impl MeshDisplayMode {
+    const fn draws_surface(self) -> bool {
+        !matches!(self, Self::Wireframe)
+    }
+
+    const fn draws_edges(self) -> bool {
+        !matches!(self, Self::Surface)
+    }
+
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Wireframe => "wireframe",
+            Self::Surface => "surface",
+            Self::SurfaceEdges => "surface + edges",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MeshPickMode {
+    Face,
+    Cell,
+}
+
+impl MeshPickMode {
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Face => "Face",
+            Self::Cell => "Cell",
+        }
+    }
+}
+
 struct AppState {
     controller: SolverController,
     project: Project,
@@ -44,6 +92,12 @@ struct AppState {
     workbench: WorkbenchSession,
     geometry_editor: GeometryEditorState,
     geometry_pan_anchor: Option<(f64, f64)>,
+    mesh_view: ViewTransform,
+    mesh_display_mode: MeshDisplayMode,
+    mesh_pick_mode: MeshPickMode,
+    mesh_color_mode: MeshColorMode,
+    mesh_quality_metric: MeshQualityMetric,
+    mesh_quality_threshold: f64,
     tree_rows: Vec<ProjectTreeRowData>,
     tree_dirty: bool,
     selected_tree: Option<TreeSelection>,
@@ -116,6 +170,16 @@ impl AppState {
                 editor
             },
             geometry_pan_anchor: None,
+            mesh_view: {
+                let mut view = ViewTransform::default();
+                view.set_viewport(f64::from(PREVIEW_WIDTH), f64::from(PREVIEW_HEIGHT));
+                view
+            },
+            mesh_display_mode: MeshDisplayMode::SurfaceEdges,
+            mesh_pick_mode: MeshPickMode::Face,
+            mesh_color_mode: MeshColorMode::Neutral,
+            mesh_quality_metric: MeshQualityMetric::AspectRatio,
+            mesh_quality_threshold: 10.0,
             tree_rows: Vec::new(),
             tree_dirty: true,
             selected_tree: None,
@@ -175,6 +239,12 @@ impl AppState {
                         generated.report.patch_count
                     );
                     self.workbench.install_mesh(generated);
+                    if let Some(cache) = self.workbench.mesh_render_cache() {
+                        let (min, max) = cache.bounds();
+                        if cache.dimension() == MeshDimension::TwoD {
+                            self.mesh_view.fit(Some((min.x, min.y, max.x, max.y)));
+                        }
+                    }
                     self.patch_names = self.workbench.patch_names();
                     self.tree_dirty = true;
                     self.selected_tree = None;
@@ -1329,6 +1399,28 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
             return;
         };
         let mut state = pick_boundary_state.borrow_mut();
+        if state.show_mesh {
+            let point = geometry_editor_point(x, y, preview_width, preview_height);
+            if let Some(cache) = state.workbench.mesh_render_cache() {
+                let selected = match (cache.dimension(), state.mesh_pick_mode) {
+                    (MeshDimension::TwoD, MeshPickMode::Face) => cache.pick_face_2d(
+                        state.mesh_view.screen_to_world(point),
+                        8.0 / state.mesh_view.pixels_per_unit,
+                    ),
+                    (MeshDimension::TwoD, MeshPickMode::Cell) => {
+                        cache.pick_cell_2d(state.mesh_view.screen_to_world(point))
+                    }
+                    (MeshDimension::ThreeD, MeshPickMode::Face) => {
+                        let (origin, direction) = mesh_screen_ray(point);
+                        cache.pick_face_3d(origin, direction)
+                    }
+                    (MeshDimension::ThreeD, MeshPickMode::Cell) => None,
+                };
+                state.workbench.set_mesh_selection(selected);
+                refresh_ui(&ui, &state);
+                return;
+            }
+        }
         if state.show_geometry_3d {
             if let Some(axis) = pick_orientation_axis_3d(
                 &state.project,
@@ -1515,6 +1607,12 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
                         .clamp(0, (state.patch_names.len().max(1) - 1) as i32),
                 );
                 push_boundary_fields(&ui, &state.workbench, &name);
+                // A patch selection is a mesh-view selection: keep the boundary
+                // inspector open while showing the exact mesh faces it owns.
+                state.show_mesh = true;
+                state.show_geometry_3d = false;
+                ui.set_current_step(1);
+                state.current_step = 1;
                 ui.set_inspector_mode(3);
                 rebuild_tree_rows(&mut state);
                 refresh_ui(&ui, &state);
@@ -1823,6 +1921,131 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
         state.log("Checking for the gmsh executable…");
         refresh_ui(&ui, &state);
     });
+
+    let weak_ui = ui.as_weak();
+    let mesh_controls = state.clone();
+    ui.on_mesh_display(move |index| {
+        let Some(ui) = weak_ui.upgrade() else {
+            return;
+        };
+        let mut state = mesh_controls.borrow_mut();
+        state.mesh_display_mode = match index {
+            0 => MeshDisplayMode::Wireframe,
+            1 => MeshDisplayMode::Surface,
+            _ => MeshDisplayMode::SurfaceEdges,
+        };
+        refresh_ui(&ui, &state);
+    });
+    let weak_ui = ui.as_weak();
+    let mesh_controls = state.clone();
+    ui.on_mesh_select_mode(move |index| {
+        let Some(ui) = weak_ui.upgrade() else {
+            return;
+        };
+        let mut state = mesh_controls.borrow_mut();
+        state.mesh_pick_mode = if index == 1 {
+            MeshPickMode::Cell
+        } else {
+            MeshPickMode::Face
+        };
+        refresh_ui(&ui, &state);
+    });
+    let weak_ui = ui.as_weak();
+    let mesh_controls = state.clone();
+    ui.on_mesh_color(move |index| {
+        let Some(ui) = weak_ui.upgrade() else {
+            return;
+        };
+        let mut state = mesh_controls.borrow_mut();
+        state.mesh_color_mode = match index {
+            1 => MeshColorMode::Patches,
+            2 => MeshColorMode::Quality,
+            _ => MeshColorMode::Neutral,
+        };
+        refresh_ui(&ui, &state);
+    });
+    let weak_ui = ui.as_weak();
+    let mesh_controls = state.clone();
+    ui.on_mesh_quality(move |index| {
+        let Some(ui) = weak_ui.upgrade() else {
+            return;
+        };
+        let mut state = mesh_controls.borrow_mut();
+        state.mesh_quality_metric = match index {
+            1 => MeshQualityMetric::Skewness,
+            2 => MeshQualityMetric::NonOrthogonality,
+            3 => MeshQualityMetric::CellMeasure,
+            _ => MeshQualityMetric::AspectRatio,
+        };
+        refresh_ui(&ui, &state);
+    });
+    let weak_ui = ui.as_weak();
+    let mesh_threshold_state = state.clone();
+    ui.on_mesh_threshold(move || {
+        let Some(ui) = weak_ui.upgrade() else {
+            return;
+        };
+        let mut state = mesh_threshold_state.borrow_mut();
+        state.mesh_quality_threshold = parse_number(
+            ui.get_mesh_quality_threshold().as_str(),
+            state.mesh_quality_threshold,
+        );
+        refresh_ui(&ui, &state);
+    });
+    let weak_ui = ui.as_weak();
+    let bad_cell_state = state.clone();
+    ui.on_select_bad_cell(move |list_index| {
+        let Some(ui) = weak_ui.upgrade() else {
+            return;
+        };
+        let mut state = bad_cell_state.borrow_mut();
+        let Some(cell_index) = state.workbench.mesh_render_cache().and_then(|cache| {
+            cache
+                .quality()
+                .bad_cells(state.mesh_quality_metric, state.mesh_quality_threshold)
+                .get(usize::try_from(list_index.max(0)).unwrap_or(usize::MAX))
+                .copied()
+        }) else {
+            return;
+        };
+        let mesh_id = state.workbench.mesh().map(|mesh| mesh.mesh.id());
+        if let Some(mesh_id) = mesh_id {
+            state
+                .workbench
+                .set_mesh_selection(Some(MeshSelection::cell(mesh_id, cell_index)));
+            state.mesh_pick_mode = MeshPickMode::Cell;
+            refresh_ui(&ui, &state);
+        }
+    });
+    let weak_ui = ui.as_weak();
+    let mesh_hover_state = state.clone();
+    ui.on_mesh_hover(move |x, y, width, height| {
+        let Some(ui) = weak_ui.upgrade() else {
+            return;
+        };
+        let mut state = mesh_hover_state.borrow_mut();
+        if state.show_mesh {
+            let screen = geometry_editor_point(x, y, width, height);
+            let hover = state.workbench.mesh_render_cache().and_then(|cache| {
+                match (cache.dimension(), state.mesh_pick_mode) {
+                    (MeshDimension::TwoD, MeshPickMode::Face) => cache.pick_face_2d(
+                        state.mesh_view.screen_to_world(screen),
+                        8.0 / state.mesh_view.pixels_per_unit,
+                    ),
+                    (MeshDimension::TwoD, MeshPickMode::Cell) => {
+                        cache.pick_cell_2d(state.mesh_view.screen_to_world(screen))
+                    }
+                    (MeshDimension::ThreeD, MeshPickMode::Face) => {
+                        let (origin, direction) = mesh_screen_ray(screen);
+                        cache.pick_face_3d(origin, direction)
+                    }
+                    (MeshDimension::ThreeD, MeshPickMode::Cell) => None,
+                }
+            });
+            state.workbench.set_mesh_hover(hover);
+            refresh_ui(&ui, &state);
+        }
+    });
 }
 
 fn apply_workflow_step(ui: &MainWindow, state: &mut AppState, step: i32) {
@@ -1972,6 +2195,12 @@ fn tree_selection_for_target(target: GeometrySelectionTarget) -> Option<TreeSele
             payload: id.get() as i32,
         }),
     }
+}
+
+fn selected_patch_index(selection: Option<TreeSelection>) -> Option<usize> {
+    selection
+        .filter(|entry| entry.kind == TREE_KIND_PATCH && entry.payload >= 0)
+        .map(|entry| entry.payload as usize)
 }
 
 fn describe_targets(targets: &[GeometrySelectionTarget]) -> String {
@@ -2185,6 +2414,29 @@ fn sync_solver_panel(ui: &MainWindow, session: &mut WorkbenchSession) -> Result<
         )
         .map_err(|error| format!("Invalid solver controls: {error}"))?;
     Ok(())
+}
+
+fn mesh_inspector_summary(
+    mesh: &flursys::UnstructuredMesh,
+    cache: &flursys::MeshRenderCache,
+    metric: MeshQualityMetric,
+    threshold: f64,
+) -> String {
+    let quality = cache.quality();
+    let (minimum, maximum) = quality.color_range(metric).unwrap_or((0.0, 0.0));
+    let bad_cells = quality.bad_cells(metric, threshold);
+    format!(
+        "nodes     {:>8}\ncells     {:>8}\nfaces     {:>8}\npatches   {:>8}\n{}\nrange     {:.3e} .. {:.3e}\nthreshold {:.3e}\nbad cells {:>8}",
+        mesh.points().len(),
+        mesh.cell_count(),
+        mesh.face_count(),
+        mesh.boundary_patches().len(),
+        metric.label(),
+        minimum,
+        maximum,
+        threshold,
+        bad_cells.len(),
+    )
 }
 
 fn mesh_summary_text(session: &WorkbenchSession) -> String {
@@ -2597,7 +2849,46 @@ fn refresh_ui(ui: &MainWindow, state: &AppState) {
     let busy = state.meshing || state.solving;
     ui.set_wb_busy(busy);
     ui.set_wb_gmsh_status(SharedString::from(state.gmsh_status.as_str()));
-    ui.set_wb_mesh_summary(SharedString::from(mesh_summary_text(&state.workbench)));
+    let mesh_summary = state
+        .workbench
+        .mesh()
+        .zip(state.workbench.mesh_render_cache())
+        .map_or_else(
+            || mesh_summary_text(&state.workbench),
+            |(generated, cache)| {
+                mesh_inspector_summary(
+                    &generated.mesh,
+                    cache,
+                    state.mesh_quality_metric,
+                    state.mesh_quality_threshold,
+                )
+            },
+        );
+    ui.set_wb_mesh_summary(SharedString::from(mesh_summary));
+    let bad_cell_indices = state
+        .workbench
+        .mesh_render_cache()
+        .map(|cache| {
+            cache
+                .quality()
+                .bad_cells(state.mesh_quality_metric, state.mesh_quality_threshold)
+        })
+        .unwrap_or_default();
+    let bad_cell_items: Vec<SharedString> = bad_cell_indices
+        .iter()
+        .take(8)
+        .map(|index| SharedString::from(format!("Cell {index}")))
+        .collect();
+    ui.set_bad_cell_model(ModelRc::new(VecModel::from(bad_cell_items)));
+    ui.set_mesh_display_index(match state.mesh_display_mode {
+        MeshDisplayMode::Wireframe => 0,
+        MeshDisplayMode::Surface => 1,
+        MeshDisplayMode::SurfaceEdges => 2,
+    });
+    ui.set_mesh_selection_index(match state.mesh_pick_mode {
+        MeshPickMode::Face => 0,
+        MeshPickMode::Cell => 1,
+    });
     ui.set_wb_solution_summary(SharedString::from(solution_summary_text(&state.workbench)));
     ui.set_can_run_workbench(!busy && state.workbench.readiness().is_ok());
     ui.set_geometry_editor_image(render_geometry_editor(
@@ -2668,6 +2959,24 @@ fn refresh_ui(ui: &MainWindow, state: &AppState) {
         find_geometry_target(&state.workbench, selection.kind, selection.payload)
     });
     match (inspector_mode, selected_target) {
+        (0, _) if state.workbench.mesh_selection().is_some() => {
+            if let (Some(generated), Some(selection)) =
+                (state.workbench.mesh(), state.workbench.mesh_selection())
+            {
+                let text = match selection.target() {
+                    flursys::MeshSelectionTarget::Face(index) => generated.mesh.faces().get(index).map_or_else(
+                        || format!("Mesh face {index} is no longer valid."),
+                        |face| format!("MESH FACE {index}\nowner cell {}\nneighbour {}\ncentre {:.5}, {:.5}, {:.5}\nmeasure {:.5}\narea vector {:.5}, {:.5}, {:.5}", face.owner, face.neighbour.map_or_else(|| "boundary".to_string(), |value| value.to_string()), face.center.x, face.center.y, face.center.z, face.area, face.area_vector.x, face.area_vector.y, face.area_vector.z),
+                    ),
+                    flursys::MeshSelectionTarget::Cell(index) => generated.mesh.cells().get(index).map_or_else(
+                        || format!("Mesh cell {index} is no longer valid."),
+                        |cell| format!("MESH CELL {index}\ncentre {:.5}, {:.5}, {:.5}\nmeasure {:.5}\nfaces {}\nneighbours {}", cell.center.x, cell.center.y, cell.center.z, cell.volume, cell.faces.len(), cell.neighbours.len()),
+                    ),
+                };
+                ui.set_inspector_title(SharedString::from("MESH ENTITY"));
+                ui.set_inspector_info(SharedString::from(text));
+            }
+        }
         (_, Some(target)) if inspector_mode == 0 => {
             let members = selection_memberships(&state.workbench, &target);
             ui.set_ns_members(SharedString::from(if members.is_empty() {
@@ -2736,28 +3045,42 @@ fn refresh_ui(ui: &MainWindow, state: &AppState) {
             Some(state.selected_boundary_face),
         ));
     } else if state.show_mesh {
-        ui.set_visualization_title(SharedString::from("MESH PREVIEW"));
-        let (length, height) = project_case_domain(&state.project.case);
-        let mesh = StructuredMesh2D::new(
-            state.project.solver.nx,
-            state.project.solver.ny,
-            length,
-            height,
-        )
-        .expect("project domain and UI grid are validated before rendering");
-        ui.set_animation_status(SharedString::from(format!(
-            "{} × {} · {} cells · dx {:.3e} · dy {:.3e} · aspect {:.3}",
-            mesh.nx,
-            mesh.ny,
-            mesh.cell_count(),
-            mesh.dx,
-            mesh.dy,
-            mesh.dx.max(mesh.dy) / mesh.dx.min(mesh.dy),
-        )));
-        ui.set_visualization_image(render_mesh(
-            &state.project,
-            Some(state.selected_boundary_face),
-        ));
+        if let Some(generated) = state.workbench.mesh() {
+            if let Some(cache) = state.workbench.mesh_render_cache() {
+                ui.set_visualization_title(SharedString::from("UNSTRUCTURED MESH"));
+                ui.set_animation_status(SharedString::from(format!(
+                    "{} nodes · {} faces · {} cells · {} · {} · view {} · select {}",
+                    generated.mesh.points().len(),
+                    generated.mesh.face_count(),
+                    generated.mesh.cell_count(),
+                    state.mesh_quality_metric.label(),
+                    match state.mesh_color_mode {
+                        MeshColorMode::Neutral => "neutral",
+                        MeshColorMode::Patches => "patches",
+                        MeshColorMode::Quality => "quality",
+                    },
+                    state.mesh_display_mode.label(),
+                    state.mesh_pick_mode.label(),
+                )));
+                ui.set_visualization_image(render_workbench_mesh(
+                    &generated.mesh,
+                    cache,
+                    &state.mesh_view,
+                    state.mesh_display_mode,
+                    state.mesh_color_mode,
+                    state.mesh_quality_metric,
+                    state.workbench.mesh_selection(),
+                    state.workbench.mesh_hover(),
+                    selected_patch_index(state.selected_tree),
+                ));
+            }
+        } else {
+            ui.set_visualization_title(SharedString::from("NO MESH GENERATED"));
+            ui.set_animation_status(SharedString::from(
+                "Configure mesh settings and choose Generate Mesh.",
+            ));
+            ui.set_visualization_image(render_empty_image());
+        }
     } else if let Some(field) = state.frames.get(state.frame_index) {
         let selected = ui.get_result_field_index();
         let plot = ui.get_result_plot_index().clamp(0, 3);
@@ -3196,10 +3519,42 @@ mod tests {
     }
 
     #[test]
-    fn mesh_inspection_reports_real_structured_metrics() {
-        let summary = mesh_inspection(&Project::default());
-        assert!(summary.contains("2D cells"));
-        assert!(summary.contains("dx / dy / dz"));
+    fn mesh_display_modes_are_distinct_and_surface_capable() {
+        assert!(!MeshDisplayMode::Wireframe.draws_surface());
+        assert!(MeshDisplayMode::Surface.draws_surface());
+        assert!(MeshDisplayMode::SurfaceEdges.draws_surface());
+        assert!(!MeshDisplayMode::Surface.draws_edges());
+        assert!(MeshDisplayMode::SurfaceEdges.draws_edges());
+    }
+
+    #[test]
+    fn mesh_selection_mode_keeps_face_and_cell_picking_unambiguous() {
+        assert_eq!(MeshPickMode::Face.label(), "Face");
+        assert_eq!(MeshPickMode::Cell.label(), "Cell");
+    }
+
+    #[test]
+    fn mesh_inspector_summary_uses_installed_unstructured_mesh_quality() {
+        let mesh = flursys::UnstructuredMesh::from_cells(
+            MeshDimension::TwoD,
+            vec![
+                flursys::Point::new(0.0, 0.0, 0.0),
+                flursys::Point::new(1.0, 0.0, 0.0),
+                flursys::Point::new(1.0, 1.0, 0.0),
+                flursys::Point::new(0.0, 1.0, 0.0),
+            ],
+            vec![flursys::CellDefinition::polygon(vec![0, 1, 2, 3])],
+        )
+        .unwrap();
+        let cache = flursys::MeshRenderCache::build(&mesh).unwrap();
+
+        let summary = mesh_inspector_summary(&mesh, &cache, MeshQualityMetric::AspectRatio, 1.1);
+
+        assert!(summary.contains("nodes"));
+        assert!(summary.contains("cells"));
+        assert!(summary.contains("Aspect ratio"));
+        assert!(summary.contains("bad cells"));
+        assert!(!summary.contains("dx / dy / dz"));
     }
 
     #[test]

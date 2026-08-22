@@ -1,9 +1,10 @@
-use super::{residual_level, ResidualSample, PREVIEW_HEIGHT, PREVIEW_WIDTH};
+use super::{residual_level, MeshColorMode, ResidualSample, PREVIEW_HEIGHT, PREVIEW_WIDTH};
 use flursys::{
     BoundaryConditionKind, BoundaryFace, EnergyModel, ExtrudedMesh3D, FieldUpdate,
     GeometryEditorState, GeometryPart, GeometryPartKind, GeometrySelectionTarget, GeometrySketch,
-    GeometryTopology, PreviewPrimitive, Project, ProjectCase, SketchAxis, SketchEntityKind,
-    StructuredMesh2D,
+    GeometryTopology, MeshDimension, MeshQualityMetric, MeshRenderCache, MeshSelection,
+    MeshSelectionTarget, PreviewPrimitive, Project, ProjectCase, SketchAxis, SketchEntityKind,
+    StructuredMesh2D, UnstructuredMesh, ViewTransform,
 };
 use slint::{Image, Rgba8Pixel, SharedPixelBuffer};
 use std::collections::VecDeque;
@@ -17,6 +18,7 @@ pub(super) fn render_empty_image() -> Image {
     image_from_rgba(PREVIEW_WIDTH, PREVIEW_HEIGHT, pixels)
 }
 
+#[allow(dead_code)]
 pub(super) fn render_mesh(project: &Project, selected_boundary: Option<BoundaryFace>) -> Image {
     let width = PREVIEW_WIDTH;
     let height = PREVIEW_HEIGHT;
@@ -118,6 +120,224 @@ pub(super) fn render_mesh(project: &Project, selected_boundary: Option<BoundaryF
     image_from_rgba(width, height, pixels)
 }
 
+#[allow(clippy::too_many_arguments)] // Render inputs are independent UI state, not owned data.
+pub(super) fn render_workbench_mesh(
+    mesh: &UnstructuredMesh,
+    cache: &MeshRenderCache,
+    view: &ViewTransform,
+    display_mode: super::MeshDisplayMode,
+    color_mode: MeshColorMode,
+    metric: MeshQualityMetric,
+    selected: Option<MeshSelection>,
+    hovered: Option<MeshSelection>,
+    highlighted_patch: Option<usize>,
+) -> Image {
+    let (width, height) = (PREVIEW_WIDTH, PREVIEW_HEIGHT);
+    let mut pixels = vec![0_u8; (width * height * 4) as usize];
+    fill(&mut pixels, [9, 16, 22, 255]);
+    let values = cache.quality().values(metric);
+    let (minimum, maximum) = cache.quality().color_range(metric).unwrap_or((0.0, 0.0));
+    let face_color = |face_index: usize| {
+        let face = &mesh.faces()[face_index];
+        let selected_face =
+            selected.is_some_and(|entry| entry.target() == MeshSelectionTarget::Face(face_index));
+        let hovered_face =
+            hovered.is_some_and(|entry| entry.target() == MeshSelectionTarget::Face(face_index));
+        let patch_selected = highlighted_patch == cache.face_patch_indices()[face_index];
+        if selected_face {
+            [255, 214, 95, 255]
+        } else if hovered_face {
+            [127, 234, 188, 255]
+        } else if patch_selected {
+            [255, 214, 95, 255]
+        } else {
+            match color_mode {
+                MeshColorMode::Neutral => [70, 109, 128, 255],
+                MeshColorMode::Patches => patch_color(cache.face_patch_indices()[face_index]),
+                MeshColorMode::Quality => quality_color(values[face.owner], minimum, maximum),
+            }
+        }
+    };
+    if display_mode.draws_surface() {
+        if mesh.dimension() == MeshDimension::TwoD {
+            for (cell_index, &value) in values.iter().enumerate().take(mesh.cell_count()) {
+                let mut color = match color_mode {
+                    MeshColorMode::Neutral | MeshColorMode::Patches => [48, 79, 96, 255],
+                    MeshColorMode::Quality => quality_color(value, minimum, maximum),
+                };
+                if selected
+                    .is_some_and(|entry| entry.target() == MeshSelectionTarget::Cell(cell_index))
+                {
+                    color = [255, 214, 95, 255];
+                } else if hovered
+                    .is_some_and(|entry| entry.target() == MeshSelectionTarget::Cell(cell_index))
+                {
+                    color = [127, 234, 188, 255];
+                }
+                if let Some(polygon) = cache.cell_polygon(cell_index) {
+                    let points: Vec<_> = polygon
+                        .iter()
+                        .map(|&point| view.world_to_screen(point))
+                        .collect();
+                    draw_filled_polygon(&mut pixels, width, height, &points, color);
+                }
+            }
+        } else {
+            for (triangle, &face_index) in
+                cache.surface_triangles().iter().zip(cache.triangle_faces())
+            {
+                let points = triangle.map(|index| project_mesh_3d(cache.positions()[index]));
+                draw_filled_triangle(&mut pixels, width, height, points, face_color(face_index));
+            }
+        }
+    }
+    if display_mode.draws_edges() {
+        for (face_index, face) in mesh.faces().iter().enumerate() {
+            if mesh.dimension() == MeshDimension::ThreeD && face.neighbour.is_some() {
+                continue;
+            }
+            let color = face_color(face_index);
+            for (&a, &b) in face
+                .vertices
+                .iter()
+                .zip(face.vertices.iter().cycle().skip(1))
+                .take(face.vertices.len())
+            {
+                let project = |point: flursys::Vec3| {
+                    if mesh.dimension() == MeshDimension::TwoD {
+                        view.world_to_screen((point.x, point.y))
+                    } else {
+                        project_mesh_3d(point)
+                    }
+                };
+                let a = project(mesh.points()[a].position);
+                let b = project(mesh.points()[b].position);
+                draw_line(
+                    &mut pixels,
+                    width,
+                    height,
+                    (a.0 as i32, a.1 as i32),
+                    (b.0 as i32, b.1 as i32),
+                    color,
+                );
+            }
+        }
+    }
+    image_from_rgba(width, height, pixels)
+}
+
+/// Orthographic ray matching the compact 3D mesh surface projection.
+pub(super) fn mesh_screen_ray(point: (f64, f64)) -> (flursys::Vec3, flursys::Vec3) {
+    let u = (point.0 - f64::from(PREVIEW_WIDTH) * 0.5) / 130.0;
+    let v = (f64::from(PREVIEW_HEIGHT) * 0.62 - point.1) / 130.0;
+    (
+        flursys::Vec3::new(0.5 * u, -0.5 * u, v),
+        flursys::Vec3::new(1.0, 1.0, 1.0),
+    )
+}
+
+fn project_mesh_3d(point: flursys::Vec3) -> (f64, f64) {
+    (
+        f64::from(PREVIEW_WIDTH) * 0.5 + (point.x - point.y) * 130.0,
+        f64::from(PREVIEW_HEIGHT) * 0.62 - (point.z - 0.5 * (point.x + point.y)) * 130.0,
+    )
+}
+
+fn draw_filled_polygon(
+    pixels: &mut [u8],
+    width: u32,
+    height: u32,
+    points: &[(f64, f64)],
+    color: [u8; 4],
+) {
+    for index in 1..points.len().saturating_sub(1) {
+        draw_filled_triangle(
+            pixels,
+            width,
+            height,
+            [points[0], points[index], points[index + 1]],
+            color,
+        );
+    }
+}
+
+fn draw_filled_triangle(
+    pixels: &mut [u8],
+    width: u32,
+    height: u32,
+    points: [(f64, f64); 3],
+    color: [u8; 4],
+) {
+    let min_x = points
+        .iter()
+        .map(|point| point.0.floor() as i32)
+        .min()
+        .unwrap_or(0)
+        .max(0);
+    let max_x = points
+        .iter()
+        .map(|point| point.0.ceil() as i32)
+        .max()
+        .unwrap_or(-1)
+        .min(width as i32 - 1);
+    let min_y = points
+        .iter()
+        .map(|point| point.1.floor() as i32)
+        .min()
+        .unwrap_or(0)
+        .max(0);
+    let max_y = points
+        .iter()
+        .map(|point| point.1.ceil() as i32)
+        .max()
+        .unwrap_or(-1)
+        .min(height as i32 - 1);
+    let twice_area = |a: (f64, f64), b: (f64, f64), c: (f64, f64)| {
+        (b.0 - a.0) * (c.1 - a.1) - (b.1 - a.1) * (c.0 - a.0)
+    };
+    let area = twice_area(points[0], points[1], points[2]);
+    if area.abs() <= 1.0e-12 {
+        return;
+    }
+    for y in min_y..=max_y {
+        for x in min_x..=max_x {
+            let point = (f64::from(x) + 0.5, f64::from(y) + 0.5);
+            let a = twice_area(points[0], points[1], point) / area;
+            let b = twice_area(points[1], points[2], point) / area;
+            let c = twice_area(points[2], points[0], point) / area;
+            if a >= 0.0 && b >= 0.0 && c >= 0.0 {
+                set_pixel(pixels, width, height, x as u32, y as u32, color);
+            }
+        }
+    }
+}
+
+fn patch_color(index: Option<usize>) -> [u8; 4] {
+    const COLORS: [[u8; 4]; 6] = [
+        [72, 166, 190, 255],
+        [235, 177, 86, 255],
+        [114, 185, 132, 255],
+        [193, 118, 177, 255],
+        [108, 142, 220, 255],
+        [180, 130, 205, 255],
+    ];
+    index.map_or([70, 109, 128, 255], |value| COLORS[value % COLORS.len()])
+}
+fn quality_color(value: f64, minimum: f64, maximum: f64) -> [u8; 4] {
+    let t = if maximum > minimum {
+        ((value - minimum) / (maximum - minimum)).clamp(0.0, 1.0)
+    } else {
+        0.5
+    };
+    [
+        (40.0 + 215.0 * t) as u8,
+        (180.0 - 145.0 * t) as u8,
+        (125.0 - 90.0 * t) as u8,
+        255,
+    ]
+}
+
+#[allow(dead_code)]
 pub(super) fn draw_boundary_line_2d(
     pixels: &mut [u8],
     width: u32,
@@ -155,6 +375,7 @@ pub(super) fn project_case_domain(case: &ProjectCase) -> (f64, f64) {
     }
 }
 
+#[allow(dead_code)]
 pub(super) fn project_case_is_solid(case: &ProjectCase, x: f64, y: f64) -> bool {
     match case {
         ProjectCase::Cylinder {

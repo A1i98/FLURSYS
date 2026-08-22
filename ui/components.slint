@@ -47,6 +47,7 @@
         callback reset-view();
         callback select-view-axis(int);
         callback pick-boundary(float, float, float, float);
+        callback hover(float, float, float, float);
         background: rgb(9, 16, 22);
         border-color: rgb(40, 66, 82);
         border-width: 1px;
@@ -60,6 +61,7 @@
         TouchArea {
             mouse-cursor: self.pressed ? grabbing : grab;
             moved => {
+                root.hover(self.mouse-x / 1px, self.mouse-y / 1px, root.width / 1px, root.height / 1px);
                 if self.pressed {
                     root.orbit(self.mouse-x / 1px, self.mouse-y / 1px,
                         self.pressed-x / 1px, self.pressed-y / 1px);
