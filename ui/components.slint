@@ -1,5 +1,15 @@
     import { Button, ComboBox, LineEdit, SpinBox, TextEdit } from "std-widgets.slint";
 
+    export struct ProjectTreeRow {
+        index: int,
+        depth: int,
+        label: string,
+        note: string,
+        kind: int,
+        payload: int,
+        active: bool,
+    }
+
     export component SectionTitle inherits Text {
         color: rgb(228, 238, 246);
         font-size: 22px;
@@ -82,5 +92,47 @@
             }
         }
         TouchArea { clicked => { root.select(); } }
+    }
+
+    export component TreeRowView inherits Rectangle {
+        in property <ProjectTreeRow> entry;
+        callback select();
+        height: 23px;
+        background: root.entry.active ? rgb(30, 61, 78) : transparent;
+        border-radius: 3px;
+        HorizontalLayout {
+            padding-left: 6px + root.entry.depth * 12px;
+            padding-right: 6px;
+            spacing: 6px;
+            Text {
+                text: root.entry.label;
+                color: root.entry.active ? rgb(240, 195, 109) : root.entry.depth == 0 ? rgb(215, 229, 238) : rgb(184, 207, 219);
+                font-size: root.entry.depth == 0 ? 12px : 11px;
+                font-weight: root.entry.depth == 0 ? 800 : 400;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+            Rectangle { horizontal-stretch: 1; }
+            if root.entry.note != "" : Text {
+                text: root.entry.note;
+                color: rgb(126, 153, 170);
+                font-size: 9px;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+        }
+        TouchArea { clicked => { root.select(); } }
+    }
+
+    export component InspectorLabel inherits Text {
+        color: rgb(136, 164, 182);
+        font-size: 10px;
+        font-weight: 700;
+    }
+
+    export component InspectorValue inherits Text {
+        color: rgb(213, 227, 236);
+        font-size: 11px;
+        wrap: word-wrap;
     }
 

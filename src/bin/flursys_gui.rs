@@ -1,13 +1,16 @@
 use flursys::runtime::{SolverCommand, SolverController, SolverState, SolverUpdate};
 use flursys::{
-    BoundaryConditionKind, BoundaryFace, ExtrudedMesh3D, FieldUpdate, GeometrySketch, Project,
-    ProjectCoupling, SketchAxis, SketchEntityKind, SketchProfileKind, StructuredMesh2D,
-    ThermalBoundaryCondition,
+    BoundaryConditionKind, BoundaryFace, ExtrudedMesh3D, FieldUpdate, GeneratedMesh,
+    GeometrySelectionTarget, GeometrySketch, GmshMesher, IncompressibleBoundaryCondition,
+    IncompressibleSolution, IncompressibleSolveError, MeshDimension, Project, ProjectCoupling,
+    SketchAxis, SketchEntityKind, SketchProfileKind, SolveStatus, StructuredMesh2D,
+    ThermalBoundaryCondition, Vec3, WorkbenchSession,
 };
-use slint::{ComponentHandle, SharedString, Timer, TimerMode};
+use slint::{ComponentHandle, ModelRc, SharedString, Timer, TimerMode, VecModel};
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::rc::Rc;
+use std::sync::mpsc::Receiver;
 use std::time::Duration;
 
 slint::include_modules!();
@@ -38,6 +41,19 @@ struct AppState {
     sketch_hover: Option<(f64, f64)>,
     sketch_undo: Vec<GeometrySketch>,
     sketch_redo: Vec<GeometrySketch>,
+    workbench: WorkbenchSession,
+    tree_rows: Vec<ProjectTreeRowData>,
+    tree_dirty: bool,
+    selected_tree: Option<TreeSelection>,
+    wb_selected_targets: Vec<GeometrySelectionTarget>,
+    patch_names: Vec<String>,
+    meshing: bool,
+    solving: bool,
+    mesh_rx: Option<Receiver<Result<GeneratedMesh, flursys::MeshingError>>>,
+    solve_rx: Option<Receiver<Result<IncompressibleSolution, IncompressibleSolveError>>>,
+    gmsh_probe_rx: Option<Receiver<Result<String, String>>>,
+    gmsh_status: String,
+    current_step: usize,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -89,7 +105,128 @@ impl AppState {
             sketch_hover: None,
             sketch_undo: Vec::new(),
             sketch_redo: Vec::new(),
+            workbench: WorkbenchSession::demo_channel(4.0, 1.0)
+                .expect("the built-in demo channel is a valid workflow"),
+            tree_rows: Vec::new(),
+            tree_dirty: true,
+            selected_tree: None,
+            wb_selected_targets: Vec::new(),
+            patch_names: Vec::new(),
+            meshing: false,
+            solving: false,
+            mesh_rx: None,
+            solve_rx: None,
+            gmsh_probe_rx: None,
+            gmsh_status: "Gmsh: checking…".to_string(),
+            current_step: 0,
         }
+    }
+
+    fn spawn_gmsh_probe(&mut self) {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        self.gmsh_probe_rx = Some(receiver);
+        let mesher = GmshMesher::auto();
+        std::thread::spawn(move || {
+            let _ = sender.send(match mesher.version() {
+                Ok(version) => Ok(format!("Gmsh {} found", version.value)),
+                Err(error) => Err(format!("Gmsh unavailable: {error}")),
+            });
+        });
+    }
+
+    /// Polls worker-thread results (Gmsh probe, mesh generation, solve).
+    /// Returns true when any state visible to the UI changed.
+    fn drain_workbench_jobs(&mut self) -> bool {
+        let mut changed = false;
+        if let Some(receiver) = self.gmsh_probe_rx.take() {
+            if let Ok(result) = receiver.try_recv() {
+                match result {
+                    Ok(message) => {
+                        self.gmsh_status = message.clone();
+                        self.log(message);
+                    }
+                    Err(message) => {
+                        self.log(message.clone());
+                        self.gmsh_status = message;
+                    }
+                }
+                changed = true;
+            } else {
+                self.gmsh_probe_rx = Some(receiver);
+            }
+        }
+        if let Some(receiver) = self.mesh_rx.take() {
+            match receiver.try_recv() {
+                Ok(Ok(generated)) => {
+                    self.meshing = false;
+                    let report = format!(
+                        "Gmsh mesh installed: {} nodes, {} cells, {} patches.",
+                        generated.report.node_count,
+                        generated.report.cell_count,
+                        generated.report.patch_count
+                    );
+                    self.workbench.install_mesh(generated);
+                    self.patch_names = self.workbench.patch_names();
+                    self.tree_dirty = true;
+                    self.selected_tree = None;
+                    self.wb_selected_targets.clear();
+                    self.log(report);
+                    changed = true;
+                }
+                Ok(Err(error)) => {
+                    self.meshing = false;
+                    self.log(format!("Mesh generation failed: {error}"));
+                    self.log("Adjust the mesh panel settings and try again.");
+                    changed = true;
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {
+                    self.mesh_rx = Some(receiver);
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    self.meshing = false;
+                    self.log("Mesh worker stopped without a result.");
+                    changed = true;
+                }
+            }
+        }
+        if let Some(receiver) = self.solve_rx.take() {
+            match receiver.try_recv() {
+                Ok(outcome) => {
+                    self.solving = false;
+                    match &outcome {
+                        Ok(solution) => self.log(format!(
+                            "Workbench solve finished: converged={}, outer iterations={}, final continuity={:.3e}.",
+                            solution.report.converged(),
+                            solution.report.outer_iterations,
+                            solution
+                                .report
+                                .continuity_history
+                                .last()
+                                .copied()
+                                .unwrap_or(f64::NAN)
+                        )),
+                        Err(error) => self.log(format!("Workbench solve failed: {error}")),
+                    }
+                    self.workbench.complete_solve(outcome);
+                    self.tree_dirty = true;
+                    changed = true;
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {
+                    self.solve_rx = Some(receiver);
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    self.solving = false;
+                    self.workbench
+                        .complete_solve(Err(flursys::IncompressibleSolveError::Case(
+                            flursys::IncompressibleCaseError::InvalidInitialConditions,
+                        )));
+                    self.log("Solve worker stopped without reporting a status.");
+                    self.tree_dirty = true;
+                    changed = true;
+                }
+            }
+        }
+        changed
     }
 
     fn log(&mut self, line: impl Into<String>) {
@@ -162,6 +299,12 @@ fn main() -> Result<(), slint::PlatformError> {
     let ui = MainWindow::new()?;
     let state = Rc::new(RefCell::new(AppState::new()));
     write_project_to_ui(&ui, &state.borrow().project);
+    {
+        let mut state = state.borrow_mut();
+        state.spawn_gmsh_probe();
+        push_workbench_defaults(&ui, &state.workbench);
+        rebuild_tree_rows(&mut state);
+    }
     refresh_ui(&ui, &state.borrow());
 
     bind_callbacks(&ui, &state);
@@ -181,6 +324,9 @@ fn main() -> Result<(), slint::PlatformError> {
                 state.log(format!("Solver state: {:?}", update.state));
             }
             state.push_update(update);
+            changed = true;
+        }
+        if state.drain_workbench_jobs() {
             changed = true;
         }
         if state.animation_playing
@@ -238,28 +384,7 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
             return;
         };
         let mut state = workflow_state.borrow_mut();
-        sync_project_from_ui(&ui, &mut state.project);
-        let step = step.clamp(0, 4);
-        ui.set_current_step(step);
-        match step {
-            0 | 2 => {
-                state.show_geometry_3d = true;
-                state.show_mesh = false;
-                state.animation_playing = false;
-            }
-            1 => {
-                state.show_geometry_3d = false;
-                state.show_mesh = true;
-                state.animation_playing = false;
-            }
-            4 => {
-                state.show_geometry_3d = false;
-                state.show_mesh = false;
-                state.frame_index = state.frames.len().saturating_sub(1);
-            }
-            _ => {}
-        }
-        refresh_ui(&ui, &state);
+        apply_workflow_step(&ui, &mut state, step);
     });
 
     let weak_ui = ui.as_weak();
@@ -1095,6 +1220,721 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
         ));
         refresh_ui(&ui, &state);
     });
+
+    // ---- Workbench pipeline ----
+    let weak_ui = ui.as_weak();
+    let workflow_state = state.clone();
+    ui.on_select_tree_row(move |index| {
+        let Some(ui) = weak_ui.upgrade() else {
+            return;
+        };
+        let mut state = workflow_state.borrow_mut();
+        let Some(row) = state
+            .tree_rows
+            .get(usize::try_from(index.max(0)).unwrap_or(usize::MAX))
+            .cloned()
+        else {
+            return;
+        };
+        match row.kind {
+            TREE_KIND_STAGE => apply_workflow_step(&ui, &mut state, row.payload),
+            TREE_KIND_BODY | TREE_KIND_FACE | TREE_KIND_EDGE => {
+                if let Some(target) = find_geometry_target(&state.workbench, row.kind, row.payload)
+                {
+                    if let Some(existing) =
+                        state.wb_selected_targets.iter().position(|t| *t == target)
+                    {
+                        state.wb_selected_targets.remove(existing);
+                        state.log(format!(
+                            "Deselected {target:?} from the geometry selection."
+                        ));
+                    } else {
+                        state.wb_selected_targets.push(target);
+                        state.log(format!("Added {target:?} to the geometry selection."));
+                    }
+                }
+                state.selected_tree = Some(TreeSelection {
+                    kind: row.kind,
+                    payload: row.payload,
+                });
+                ui.set_inspector_mode(0);
+                rebuild_tree_rows(&mut state);
+                refresh_ui(&ui, &state);
+            }
+            TREE_KIND_NAMED_SELECTION => {
+                let names: Vec<String> = state
+                    .workbench
+                    .named_selections()
+                    .iter()
+                    .map(|selection| selection.name.clone())
+                    .collect();
+                let Some(name) = names
+                    .get(usize::try_from(row.payload.max(0)).unwrap_or(usize::MAX))
+                    .cloned()
+                else {
+                    return;
+                };
+                state.selected_tree = Some(TreeSelection {
+                    kind: row.kind,
+                    payload: row.payload,
+                });
+                state.wb_selected_targets.clear();
+                if let Some(selection) = state.workbench.named_selections().get(&name) {
+                    ui.set_ns_edit_name(SharedString::from(selection.name.as_str()));
+                    ui.set_ns_members(SharedString::from(describe_targets(&selection.targets)));
+                }
+                ui.set_inspector_mode(1);
+                rebuild_tree_rows(&mut state);
+                refresh_ui(&ui, &state);
+            }
+            TREE_KIND_PATCH => {
+                let Some(name) = state
+                    .patch_names
+                    .get(usize::try_from(row.payload.max(0)).unwrap_or(usize::MAX))
+                    .cloned()
+                else {
+                    return;
+                };
+                state.selected_tree = Some(TreeSelection {
+                    kind: row.kind,
+                    payload: row.payload,
+                });
+                ui.set_patch_index(
+                    row.payload
+                        .clamp(0, (state.patch_names.len().max(1) - 1) as i32),
+                );
+                push_boundary_fields(&ui, &state.workbench, &name);
+                ui.set_inspector_mode(3);
+                rebuild_tree_rows(&mut state);
+                refresh_ui(&ui, &state);
+            }
+            _ => {}
+        }
+    });
+
+    let weak_ui = ui.as_weak();
+    let ns_state = state.clone();
+    ui.on_create_named_selection(move || {
+        let Some(ui) = weak_ui.upgrade() else {
+            return;
+        };
+        let mut state = ns_state.borrow_mut();
+        let name = ui.get_ns_edit_name().trim().to_string();
+        if name.is_empty() {
+            state.log("Enter a name before creating a Named Selection.");
+            refresh_ui(&ui, &state);
+            return;
+        }
+        if state.wb_selected_targets.is_empty() {
+            state.log("Select one or more geometry entities in the project tree first.");
+            refresh_ui(&ui, &state);
+            return;
+        }
+        let count = state.wb_selected_targets.len();
+        let targets = state.wb_selected_targets.clone();
+        match state.workbench.create_named_selection(&name, targets) {
+            Ok(()) => {
+                state.log(format!(
+                    "Created Named Selection '{name}' with {count} entities."
+                ));
+                ui.set_ns_edit_name(SharedString::from(""));
+                state.tree_dirty = true;
+                rebuild_tree_rows(&mut state);
+                refresh_ui(&ui, &state);
+            }
+            Err(error) => state.log(format!("Cannot create Named Selection: {error}")),
+        }
+    });
+
+    let weak_ui = ui.as_weak();
+    let ns_state = state.clone();
+    ui.on_rename_named_selection(move || {
+        let Some(ui) = weak_ui.upgrade() else {
+            return;
+        };
+        let mut state = ns_state.borrow_mut();
+        let Some(old_name) = selected_named_selection_name(&state) else {
+            state.log("Select a Named Selection in the project tree first.");
+            refresh_ui(&ui, &state);
+            return;
+        };
+        let new_name = ui.get_ns_edit_name().trim().to_string();
+        match state.workbench.rename_named_selection(&old_name, &new_name) {
+            Ok(()) => {
+                state.log(format!(
+                    "Renamed Named Selection '{old_name}' to '{new_name}'."
+                ));
+                ui.set_ns_edit_name(SharedString::from(new_name.as_str()));
+                state.tree_dirty = true;
+                rebuild_tree_rows(&mut state);
+                refresh_ui(&ui, &state);
+            }
+            Err(error) => state.log(format!("Cannot rename '{old_name}': {error}")),
+        }
+    });
+
+    let weak_ui = ui.as_weak();
+    let ns_state = state.clone();
+    ui.on_delete_named_selection(move || {
+        let Some(ui) = weak_ui.upgrade() else {
+            return;
+        };
+        let mut state = ns_state.borrow_mut();
+        let Some(name) = selected_named_selection_name(&state) else {
+            state.log("Select a Named Selection in the project tree first.");
+            refresh_ui(&ui, &state);
+            return;
+        };
+        if state.workbench.delete_named_selection(&name) {
+            state.log(format!(
+                "Deleted Named Selection '{name}'. Its boundary assignment is dropped."
+            ));
+            state.selected_tree = None;
+            state.tree_dirty = true;
+            rebuild_tree_rows(&mut state);
+            refresh_ui(&ui, &state);
+        } else {
+            state.log(format!("Named Selection '{name}' no longer exists."));
+        }
+    });
+
+    let weak_ui = ui.as_weak();
+    let mesh_state = state.clone();
+    ui.on_generate_mesh_wb(move || {
+        let Some(ui) = weak_ui.upgrade() else {
+            return;
+        };
+        let mut state = mesh_state.borrow_mut();
+        if state.meshing || state.solving {
+            state.log("A Gmsh generation or solve is already running; wait for it to finish.");
+            refresh_ui(&ui, &state);
+            return;
+        }
+        let dimension = if ui.get_mesh_dimension_index() == 0 {
+            MeshDimension::TwoD
+        } else {
+            MeshDimension::ThreeD
+        };
+        let global_size = parse_number(ui.get_wb_global_size().as_str(), 0.0);
+        let min_size = parse_number(ui.get_wb_min_size().as_str(), 0.0);
+        let max_size = parse_number(ui.get_wb_max_size().as_str(), 0.0);
+        if let Err(error) =
+            state
+                .workbench
+                .set_mesh_configuration(dimension, global_size, min_size, max_size, 1)
+        {
+            state.log(format!("Invalid mesh configuration: {error}"));
+            refresh_ui(&ui, &state);
+            return;
+        }
+        match state.workbench.mesh_generation_inputs() {
+            Ok((export, options)) => {
+                let (sender, receiver) = std::sync::mpsc::channel();
+                state.mesh_rx = Some(receiver);
+                state.meshing = true;
+                std::thread::spawn(move || {
+                    let mesher = GmshMesher::auto();
+                    let result = mesher.generate(&export.document, &options);
+                    let _ = sender.send(result);
+                });
+                state.log(format!(
+                    "Gmsh generation started ({:?}, global size {global_size}).",
+                    dimension
+                ));
+            }
+            Err(error) => state.log(format!("Cannot start meshing: {error}")),
+        }
+        rebuild_tree_rows(&mut state);
+        refresh_ui(&ui, &state);
+    });
+
+    let weak_ui = ui.as_weak();
+    let bc_state = state.clone();
+    ui.on_apply_boundary_wb(move || {
+        let Some(ui) = weak_ui.upgrade() else {
+            return;
+        };
+        let mut state = bc_state.borrow_mut();
+        let index = ui
+            .get_patch_index()
+            .clamp(0, (state.patch_names.len().max(1) - 1) as i32) as usize;
+        let Some(patch) = state.patch_names.get(index).cloned() else {
+            state.log("Generate a mesh before assigning boundary conditions.");
+            return;
+        };
+        let condition = match ui.get_bc_kind_index() {
+            0 => IncompressibleBoundaryCondition::NoSlipWall,
+            1 => IncompressibleBoundaryCondition::MovingWall {
+                velocity: Vec3::new(
+                    parse_number(ui.get_bc_value_x().as_str(), 0.0),
+                    parse_number(ui.get_bc_value_y().as_str(), 0.0),
+                    parse_number(ui.get_bc_value_z().as_str(), 0.0),
+                ),
+            },
+            2 => IncompressibleBoundaryCondition::VelocityInlet {
+                velocity: Vec3::new(
+                    parse_number(ui.get_bc_value_x().as_str(), 0.0),
+                    parse_number(ui.get_bc_value_y().as_str(), 0.0),
+                    parse_number(ui.get_bc_value_z().as_str(), 0.0),
+                ),
+            },
+            _ => IncompressibleBoundaryCondition::PressureOutlet {
+                pressure: parse_number(ui.get_bc_pressure().as_str(), 0.0),
+            },
+        };
+        match state.workbench.assign_boundary(&patch, condition) {
+            Ok(()) => {
+                state.log(format!(
+                    "Assigned {:?} to patch '{patch}'.",
+                    bc_kind_label(condition)
+                ));
+                push_boundary_fields(&ui, &state.workbench, &patch);
+                rebuild_tree_rows(&mut state);
+                refresh_ui(&ui, &state);
+            }
+            Err(error) => state.log(format!("Cannot assign boundary condition: {error}")),
+        }
+    });
+
+    let weak_ui = ui.as_weak();
+    let bc_state = state.clone();
+    ui.on_unassign_boundary_wb(move || {
+        let Some(ui) = weak_ui.upgrade() else {
+            return;
+        };
+        let mut state = bc_state.borrow_mut();
+        let index = ui
+            .get_patch_index()
+            .clamp(0, (state.patch_names.len().max(1) - 1) as i32) as usize;
+        let Some(patch) = state.patch_names.get(index).cloned() else {
+            state.log("Generate a mesh first.");
+            return;
+        };
+        if state.workbench.unassign_boundary(&patch) {
+            state.log(format!("Cleared the assignment on patch '{patch}'."));
+            push_boundary_fields(&ui, &state.workbench, &patch);
+            rebuild_tree_rows(&mut state);
+            refresh_ui(&ui, &state);
+        } else {
+            state.log(format!("Patch '{patch}' had no assigned condition."));
+        }
+    });
+
+    let weak_ui = ui.as_weak();
+    let solver_state_wb = state.clone();
+    ui.on_apply_solver_settings_wb(move || {
+        let Some(ui) = weak_ui.upgrade() else {
+            return;
+        };
+        let mut state = solver_state_wb.borrow_mut();
+        match sync_solver_panel(&ui, &mut state.workbench) {
+            Ok(()) => state.log("Applied material and SIMPLE solver settings."),
+            Err(error) => state.log(error),
+        }
+        refresh_ui(&ui, &state);
+    });
+
+    let weak_ui = ui.as_weak();
+    let run_state = state.clone();
+    ui.on_run_workbench(move || {
+        let Some(ui) = weak_ui.upgrade() else {
+            return;
+        };
+        let mut state = run_state.borrow_mut();
+        if state.meshing || state.solving {
+            state.log("A job is already running; wait for it to finish.");
+            refresh_ui(&ui, &state);
+            return;
+        }
+        if let Err(error) = sync_solver_panel(&ui, &mut state.workbench) {
+            state.log(error);
+            refresh_ui(&ui, &state);
+            return;
+        }
+        if let Err(reason) = state.workbench.readiness() {
+            state.log(format!("Run blocked: {reason}"));
+            refresh_ui(&ui, &state);
+            return;
+        }
+        let case = match state.workbench.prepare_case() {
+            Ok(case) => case,
+            Err(error) => {
+                state.log(format!("Run blocked: {error}"));
+                refresh_ui(&ui, &state);
+                return;
+            }
+        };
+        let cells = case.mesh.cell_count();
+        state.workbench.mark_solving();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        state.solve_rx = Some(receiver);
+        state.solving = true;
+        std::thread::spawn(move || {
+            let outcome = flursys::solve_incompressible(&case);
+            let _ = sender.send(outcome);
+        });
+        state.log(format!(
+            "Unstructured incompressible solve started on {cells} cells."
+        ));
+        rebuild_tree_rows(&mut state);
+        refresh_ui(&ui, &state);
+    });
+
+    let weak_ui = ui.as_weak();
+    let vtk_state = state.clone();
+    ui.on_export_vtk_wb(move || {
+        let Some(ui) = weak_ui.upgrade() else {
+            return;
+        };
+        let mut state = vtk_state.borrow_mut();
+        let path = std::path::PathBuf::from("results/workbench-run/channel.vtk");
+        match state.workbench.export_vtk(&path) {
+            Ok(()) => {
+                state.log(format!(
+                    "Exported legacy VTK unstructured grid to {}.",
+                    path.display()
+                ));
+                ui.set_visualization_title(SharedString::from("WORKBENCH RUN EXPORTED"));
+            }
+            Err(error) => state.log(format!("VTK export failed: {error}")),
+        }
+        refresh_ui(&ui, &state);
+    });
+
+    let weak_ui = ui.as_weak();
+    let gmsh_state = state.clone();
+    ui.on_refresh_gmsh_status(move || {
+        let Some(ui) = weak_ui.upgrade() else {
+            return;
+        };
+        let mut state = gmsh_state.borrow_mut();
+        state.spawn_gmsh_probe();
+        state.log("Checking for the gmsh executable…");
+        refresh_ui(&ui, &state);
+    });
+}
+
+fn apply_workflow_step(ui: &MainWindow, state: &mut AppState, step: i32) {
+    sync_project_from_ui(ui, &mut state.project);
+    let step = step.clamp(0, 4);
+    ui.set_current_step(step);
+    state.current_step = step as usize;
+    state.selected_tree = None;
+    state.wb_selected_targets.clear();
+    ui.set_inspector_mode(inspector_mode_for(TREE_KIND_STAGE, step as usize) as i32);
+    match step {
+        0 | 2 => {
+            state.show_geometry_3d = true;
+            state.show_mesh = false;
+            state.animation_playing = false;
+        }
+        1 => {
+            state.show_geometry_3d = false;
+            state.show_mesh = true;
+            state.animation_playing = false;
+        }
+        4 => {
+            state.show_geometry_3d = false;
+            state.show_mesh = false;
+            state.frame_index = state.frames.len().saturating_sub(1);
+        }
+        _ => {}
+    }
+    rebuild_tree_rows(state);
+    refresh_ui(ui, state);
+}
+
+/// Rebuilds the Rust-side project tree rows from the session state.
+fn rebuild_tree_rows(state: &mut AppState) {
+    let bodies: Vec<u64> = state
+        .workbench
+        .geometry()
+        .bodies()
+        .map(|body| body.id.get())
+        .collect();
+    let faces: Vec<u64> = state
+        .workbench
+        .geometry()
+        .faces()
+        .map(|face| face.id.get())
+        .collect();
+    let edges: Vec<u64> = state
+        .workbench
+        .geometry()
+        .edges()
+        .map(|edge| edge.id.get())
+        .collect();
+    let mesh_cells = state
+        .workbench
+        .mesh()
+        .map(|generated| generated.report.cell_count);
+    let named_selections: Vec<(String, usize)> = state
+        .workbench
+        .named_selections()
+        .iter()
+        .map(|selection| (selection.name.clone(), selection.targets.len()))
+        .collect();
+    let patches: Vec<(String, bool)> = state
+        .patch_names
+        .iter()
+        .map(|name| {
+            (
+                name.clone(),
+                state.workbench.boundary_assignment(name).is_some(),
+            )
+        })
+        .collect();
+    let solved = matches!(
+        state.workbench.status(),
+        SolveStatus::Converged | SolveStatus::MaxIterations
+    );
+    state.tree_rows = build_project_tree_rows(
+        &bodies,
+        &faces,
+        &edges,
+        mesh_cells,
+        &named_selections,
+        &patches,
+        &status_label(&state.workbench),
+        solved,
+        state.current_step,
+        state.selected_tree,
+    );
+}
+
+fn find_geometry_target(
+    session: &WorkbenchSession,
+    _kind: i32,
+    payload: i32,
+) -> Option<GeometrySelectionTarget> {
+    session
+        .geometry()
+        .edges()
+        .find(|edge| edge.id.get() == payload as u64)
+        .map(|edge| GeometrySelectionTarget::Edge(edge.id))
+        .or_else(|| {
+            session
+                .geometry()
+                .faces()
+                .find(|face| face.id.get() == payload as u64)
+                .map(|face| GeometrySelectionTarget::Face(face.id))
+        })
+        .or_else(|| {
+            session
+                .geometry()
+                .bodies()
+                .find(|body| body.id.get() == payload as u64)
+                .map(|body| GeometrySelectionTarget::Body(body.id))
+        })
+}
+
+fn describe_targets(targets: &[GeometrySelectionTarget]) -> String {
+    targets
+        .iter()
+        .map(|target| match target {
+            GeometrySelectionTarget::Edge(id) => format!("Edge {}", id.get()),
+            GeometrySelectionTarget::Face(id) => format!("Face {}", id.get()),
+            GeometrySelectionTarget::Body(id) => format!("Body {}", id.get()),
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn selected_named_selection_name(state: &AppState) -> Option<String> {
+    let selection = state.selected_tree?;
+    if selection.kind != TREE_KIND_NAMED_SELECTION {
+        return None;
+    }
+    state
+        .workbench
+        .named_selections()
+        .iter()
+        .nth(usize::try_from(selection.payload.max(0)).unwrap_or(usize::MAX))
+        .map(|named| named.name.clone())
+}
+
+fn selection_memberships(
+    session: &WorkbenchSession,
+    target: &GeometrySelectionTarget,
+) -> Vec<String> {
+    session
+        .named_selections()
+        .iter()
+        .filter(|selection| selection.targets.contains(target))
+        .map(|selection| selection.name.clone())
+        .collect()
+}
+
+fn status_label(session: &WorkbenchSession) -> String {
+    match session.status() {
+        SolveStatus::Idle => "idle".to_string(),
+        SolveStatus::Solving => "running".to_string(),
+        SolveStatus::Converged => "converged".to_string(),
+        SolveStatus::MaxIterations => "iteration limit".to_string(),
+        SolveStatus::Failed(message) => format!("failed: {message}"),
+    }
+}
+
+fn bc_kind_label(condition: IncompressibleBoundaryCondition) -> &'static str {
+    match condition {
+        IncompressibleBoundaryCondition::NoSlipWall => "No-slip wall",
+        IncompressibleBoundaryCondition::MovingWall { .. } => "Moving wall",
+        IncompressibleBoundaryCondition::VelocityInlet { .. } => "Velocity inlet",
+        IncompressibleBoundaryCondition::PressureOutlet { .. } => "Pressure outlet",
+    }
+}
+
+fn push_workbench_defaults(ui: &MainWindow, session: &WorkbenchSession) {
+    let (global_size, min_size, max_size) = session.mesh_sizes();
+    ui.set_mesh_dimension_index(if matches!(session.mesh_dimension(), MeshDimension::TwoD) {
+        0
+    } else {
+        1
+    });
+    ui.set_wb_global_size(SharedString::from(format!("{global_size:.4}")));
+    ui.set_wb_min_size(SharedString::from(format!("{min_size:.4}")));
+    ui.set_wb_max_size(SharedString::from(format!("{max_size:.4}")));
+    let material = session.material();
+    ui.set_material_density(SharedString::from(format!("{}", material.density)));
+    ui.set_material_viscosity(SharedString::from(format!(
+        "{}",
+        material.kinematic_viscosity
+    )));
+    let solver = session.solver_options();
+    ui.set_wb_max_iterations(solver.max_outer_iterations as i32);
+    ui.set_wb_velocity_relaxation(SharedString::from(format!(
+        "{}",
+        solver.velocity_relaxation
+    )));
+    ui.set_wb_pressure_relaxation(SharedString::from(format!(
+        "{}",
+        solver.pressure_relaxation
+    )));
+    ui.set_wb_continuity_tolerance(SharedString::from(format!(
+        "{:e}",
+        solver.continuity_absolute_tolerance
+    )));
+}
+
+fn push_boundary_fields(ui: &MainWindow, session: &WorkbenchSession, patch: &str) {
+    match session.boundary_assignment(patch).copied() {
+        None => {
+            ui.set_bc_kind_index(2);
+            ui.set_bc_value_x(SharedString::from("0.1"));
+            ui.set_bc_value_y(SharedString::from("0"));
+            ui.set_bc_value_z(SharedString::from("0"));
+            ui.set_bc_pressure(SharedString::from("0"));
+            ui.set_bc_assigned(SharedString::from("Unassigned"));
+        }
+        Some(IncompressibleBoundaryCondition::NoSlipWall) => {
+            ui.set_bc_kind_index(0);
+            ui.set_bc_assigned(SharedString::from("Assigned: no-slip wall"));
+        }
+        Some(IncompressibleBoundaryCondition::MovingWall { velocity }) => {
+            ui.set_bc_kind_index(1);
+            set_velocity_fields(ui, velocity);
+            ui.set_bc_assigned(SharedString::from("Assigned: moving wall"));
+        }
+        Some(IncompressibleBoundaryCondition::VelocityInlet { velocity }) => {
+            ui.set_bc_kind_index(2);
+            set_velocity_fields(ui, velocity);
+            ui.set_bc_assigned(SharedString::from("Assigned: velocity inlet"));
+        }
+        Some(IncompressibleBoundaryCondition::PressureOutlet { pressure }) => {
+            ui.set_bc_kind_index(3);
+            ui.set_bc_pressure(SharedString::from(format!("{pressure:.4}")));
+            ui.set_bc_assigned(SharedString::from("Assigned: pressure outlet"));
+        }
+    }
+}
+
+fn set_velocity_fields(ui: &MainWindow, velocity: Vec3) {
+    ui.set_bc_value_x(SharedString::from(format!("{:.4}", velocity.x)));
+    ui.set_bc_value_y(SharedString::from(format!("{:.4}", velocity.y)));
+    ui.set_bc_value_z(SharedString::from(format!("{:.4}", velocity.z)));
+}
+
+/// Validates the material/SIMPLE panel inputs against the session.
+fn sync_solver_panel(ui: &MainWindow, session: &mut WorkbenchSession) -> Result<(), String> {
+    let density = parse_number(ui.get_material_density().as_str(), f64::NAN);
+    let viscosity = parse_number(ui.get_material_viscosity().as_str(), f64::NAN);
+    session
+        .set_material(density, viscosity)
+        .map_err(|error| format!("Invalid material: {error}"))?;
+    session
+        .set_solver_controls(
+            ui.get_wb_max_iterations().max(1) as usize,
+            parse_number(ui.get_wb_velocity_relaxation().as_str(), f64::NAN),
+            parse_number(ui.get_wb_pressure_relaxation().as_str(), f64::NAN),
+            parse_number(ui.get_wb_continuity_tolerance().as_str(), f64::NAN),
+        )
+        .map_err(|error| format!("Invalid solver controls: {error}"))?;
+    Ok(())
+}
+
+fn mesh_summary_text(session: &WorkbenchSession) -> String {
+    let Some(generated) = session.mesh() else {
+        return "No mesh generated yet.".to_string();
+    };
+    let statistics = generated.mesh.statistics();
+    let quality = &statistics.quality;
+    format!(
+        "nodes     {:>8}\ncells     {:>8}\nfaces     {:>8}\npatches   {:>8}\norder     {:>8}\nnon-orth  {:>7.1} deg\nskewness  {:>8.3}\naspect    {:>8.2}",
+        generated.report.node_count,
+        statistics.cell_count,
+        statistics.face_count,
+        statistics.boundary_patches.len(),
+        format!("#{}", session.element_order()),
+        quality.max_non_orthogonality_degrees,
+        quality.max_skewness,
+        quality.max_aspect_ratio,
+    )
+}
+
+fn solution_summary_text(session: &WorkbenchSession) -> String {
+    match session.solution() {
+        None => match session.status() {
+            SolveStatus::Idle => "No solution yet.".to_string(),
+            SolveStatus::Solving => "Solving… watch the log for progress.".to_string(),
+            SolveStatus::Failed(message) => format!("Last solve failed:\n{message}"),
+            SolveStatus::Converged | SolveStatus::MaxIterations => {
+                "Solution is being summarised…".to_string()
+            }
+        },
+        Some(solution) => {
+            let report = &solution.report;
+            let history: Vec<String> = report
+                .continuity_history
+                .iter()
+                .rev()
+                .take(6)
+                .rev()
+                .enumerate()
+                .map(|(offset, value)| {
+                    format!(
+                        "  iter {:>5}  continuity {:.3e}",
+                        report.outer_iterations.saturating_sub(5) + offset + 1,
+                        value
+                    )
+                })
+                .collect();
+            format!(
+                "status      {}\niterations  {}\ninitial ω   {:.3e}\nfinal ω     {:.3e}\ninflow      {:.5}\noutflow     {:.5}\nnet flux    {:+.3e}\n{}",
+                status_label(session),
+                report.outer_iterations,
+                report.initial_continuity_rms,
+                report.final_continuity_rms,
+                report.total_inflow.abs(),
+                report.total_outflow,
+                report.net_boundary_flux,
+                if history.is_empty() {
+                    String::new()
+                } else {
+                    format!("recent continuity:\n{}", history.join("\n"))
+                }
+            )
+        }
+    }
 }
 
 fn next_copy_name(source: &str, parts: &[flursys::GeometryPart]) -> String {
@@ -1368,6 +2208,113 @@ fn refresh_ui(ui: &MainWindow, state: &AppState) {
     ));
     ui.set_residual_image(render_residual_chart(&state.residual_history));
     ui.set_mesh_inspection(SharedString::from(mesh_inspection(&state.project)));
+
+    // ---- Workbench pipeline ----
+    let tree_model: VecModel<ProjectTreeRow> = state
+        .tree_rows
+        .iter()
+        .enumerate()
+        .map(|(index, row)| ProjectTreeRow {
+            index: index as i32,
+            depth: row.depth as i32,
+            label: SharedString::from(row.label.as_str()),
+            note: SharedString::from(row.note.as_str()),
+            kind: row.kind,
+            payload: row.payload,
+            active: row.active,
+        })
+        .collect();
+    ui.set_project_tree_model(ModelRc::new(tree_model));
+
+    let patch_items: Vec<SharedString> = state
+        .patch_names
+        .iter()
+        .map(|name| SharedString::from(name.as_str()))
+        .collect();
+    ui.set_patch_model(ModelRc::new(VecModel::from(patch_items)));
+    if !state.patch_names.is_empty() {
+        ui.set_patch_index(
+            ui.get_patch_index()
+                .clamp(0, state.patch_names.len() as i32 - 1),
+        );
+    }
+
+    let busy = state.meshing || state.solving;
+    ui.set_wb_busy(busy);
+    ui.set_wb_gmsh_status(SharedString::from(state.gmsh_status.as_str()));
+    ui.set_wb_mesh_summary(SharedString::from(mesh_summary_text(&state.workbench)));
+    ui.set_wb_solution_summary(SharedString::from(solution_summary_text(&state.workbench)));
+    ui.set_can_run_workbench(!busy && state.workbench.readiness().is_ok());
+
+    match state.workbench.mesh() {
+        Some(generated) => ui.set_status_cells(SharedString::from(format!(
+            "{} cells",
+            generated.report.cell_count
+        ))),
+        None => ui.set_status_cells(SharedString::from("— cells")),
+    }
+    if let Some(solution) = state.workbench.solution() {
+        ui.set_status_iteration(SharedString::from(format!(
+            "iter {}",
+            solution.report.outer_iterations
+        )));
+        ui.set_status_continuity(SharedString::from(format!(
+            "continuity {:.1e}",
+            solution.report.final_continuity_rms
+        )));
+    } else if let Some(update) = update {
+        ui.set_status_iteration(SharedString::from(format!("iter {}", update.iteration)));
+        ui.set_status_continuity(SharedString::from(format!(
+            "continuity {:.1e}",
+            update.continuity_residual
+        )));
+    }
+
+    let inspector_mode = ui.get_inspector_mode();
+    ui.set_inspector_title(SharedString::from(match inspector_mode {
+        0 => "GEOMETRY",
+        1 => "NAMED SELECTIONS",
+        2 => "MESH GENERATION",
+        3 => "BOUNDARY CONDITIONS",
+        4 => "SOLVER SETTINGS",
+        _ => "RESULTS",
+    }));
+    let selected_target = state.selected_tree.and_then(|selection| {
+        find_geometry_target(&state.workbench, selection.kind, selection.payload)
+    });
+    match (inspector_mode, selected_target) {
+        (_, Some(target)) if inspector_mode == 0 => {
+            let members = selection_memberships(&state.workbench, &target);
+            ui.set_ns_members(SharedString::from(if members.is_empty() {
+                String::new()
+            } else {
+                members.join(", ")
+            }));
+            ui.set_inspector_info(SharedString::from(format!(
+                "{target:?}\nStable topology id — survives edits and feeds Named Selections.\n{} entities selected for the next group.",
+                state.wb_selected_targets.len()
+            )));
+        }
+        (mode, _) => {
+            let bodies = state.workbench.geometry().bodies().count();
+            let faces = state.workbench.geometry().faces().count();
+            let edges = state.workbench.geometry().edges().count();
+            let overview = format!(
+                "Fluid domain: {bodies} body · {faces} face · {edges} edges.\nPick a workflow stage on the left or in the top bar."
+            );
+            ui.set_inspector_info(SharedString::from(match mode {
+                1 => "Group geometry entities into reusable Named Selections; each group becomes one Gmsh physical group and boundary patch.".to_string(),
+                2 => "Generate the unstructured mesh with Gmsh once the Named Selections cover every exterior edge/face you need as a boundary patch.".to_string(),
+                3 => "Assign physical conditions to every mesh patch; the run stays blocked until all patches are covered.".to_string(),
+                4 => "Material properties and SIMPLE coupling controls for the unstructured solver.".to_string(),
+                _ => overview,
+            }));
+            if mode != 1 {
+                ui.set_ns_members(SharedString::from(""));
+            }
+        }
+    }
+
     if state.show_geometry_3d && !state.show_sketch_editor {
         ui.set_visualization_title(SharedString::from("3D GEOMETRY & MESH"));
         let (length, height) = project_case_domain(&state.project.case);
@@ -1884,5 +2831,135 @@ mod tests {
             pick_boundary_2d(&project, (125.0, 160.0)),
             Some(BoundaryFace::Left)
         );
+    }
+
+    fn workbench_tree_fixture(patches: &[(String, bool)]) -> Vec<ProjectTreeRowData> {
+        build_project_tree_rows(
+            &[1],
+            &[1],
+            &[1, 2, 3, 4],
+            None,
+            &[("inlet".to_string(), 1)],
+            patches,
+            "idle",
+            false,
+            0,
+            None,
+        )
+    }
+
+    #[test]
+    fn project_tree_lists_stages_entities_groups_and_boundaries() {
+        let rows =
+            workbench_tree_fixture(&[("inlet".to_string(), true), ("outlet".to_string(), false)]);
+
+        let labels: Vec<&str> = rows.iter().map(|row| row.label.as_str()).collect();
+        assert_eq!(
+            labels,
+            vec![
+                "Geometry",
+                "Body 1",
+                "Face 1",
+                "Edge 1",
+                "Edge 2",
+                "Edge 3",
+                "Edge 4",
+                "Named Selections",
+                "inlet",
+                "Mesh",
+                "Setup",
+                "Boundaries",
+                "inlet",
+                "outlet",
+                "Solution",
+                "Results",
+            ]
+        );
+        let inlet_patch = &rows[12];
+        assert_eq!(inlet_patch.kind, TREE_KIND_PATCH);
+        assert_eq!(inlet_patch.payload, 0);
+        assert_eq!(inlet_patch.note, "Assigned");
+        let outlet_patch = &rows[13];
+        assert_eq!(outlet_patch.payload, 1);
+        assert_eq!(outlet_patch.note, "Unassigned");
+        // Nothing is selected and the current step is Geometry.
+        assert!(rows[0].active);
+        assert!(!rows.iter().skip(1).any(|row| row.active));
+    }
+
+    #[test]
+    fn tree_selection_highlights_exactly_one_row_per_kind() {
+        let rows = build_project_tree_rows(
+            &[1],
+            &[1],
+            &[1, 2, 3, 4],
+            None,
+            &[("inlet".to_string(), 1)],
+            &[],
+            "idle",
+            false,
+            0,
+            Some(TreeSelection {
+                kind: TREE_KIND_EDGE,
+                payload: 2,
+            }),
+        );
+        let active: Vec<&ProjectTreeRowData> = rows.iter().filter(|row| row.active).collect();
+        assert_eq!(active.len(), 1);
+        assert_eq!(active[0].label, "Edge 2");
+    }
+
+    #[test]
+    fn inspector_mode_follows_stage_and_selection() {
+        assert_eq!(inspector_mode_for(TREE_KIND_STAGE, 0), 0);
+        assert_eq!(inspector_mode_for(TREE_KIND_STAGE, 1), 2);
+        assert_eq!(inspector_mode_for(TREE_KIND_STAGE, 2), 3);
+        assert_eq!(inspector_mode_for(TREE_KIND_STAGE, 3), 4);
+        assert_eq!(inspector_mode_for(TREE_KIND_STAGE, 4), 5);
+        assert_eq!(inspector_mode_for(TREE_KIND_EDGE, 2), 0);
+        assert_eq!(inspector_mode_for(TREE_KIND_NAMED_SELECTION, 2), 1);
+        assert_eq!(inspector_mode_for(TREE_KIND_PATCH, 2), 3);
+    }
+
+    #[test]
+    fn demo_session_reports_unassigned_patches_in_the_project_tree() {
+        let mut session = WorkbenchSession::demo_channel(4.0, 1.0)
+            .expect("the built-in demo channel is a valid workflow");
+        session.unassign_boundary("outlet");
+        let bodies: Vec<u64> = session.geometry().bodies().map(|b| b.id.get()).collect();
+        let faces: Vec<u64> = session.geometry().faces().map(|f| f.id.get()).collect();
+        let edges: Vec<u64> = session.geometry().edges().map(|e| e.id.get()).collect();
+        let named_selections: Vec<(String, usize)> = session
+            .named_selections()
+            .iter()
+            .map(|selection| (selection.name.clone(), selection.targets.len()))
+            .collect();
+        let patches: Vec<(String, bool)> = ["inlet", "outlet", "walls"]
+            .iter()
+            .map(|name| {
+                (
+                    name.to_string(),
+                    session.boundary_assignment(name).is_some(),
+                )
+            })
+            .collect();
+        let rows = build_project_tree_rows(
+            &bodies,
+            &faces,
+            &edges,
+            None,
+            &named_selections,
+            &patches,
+            "idle",
+            false,
+            0,
+            None,
+        );
+        let outlet = rows
+            .iter()
+            .find(|row| row.kind == TREE_KIND_PATCH && row.label == "outlet")
+            .expect("outlet patch listed");
+        assert_eq!(outlet.note, "Unassigned");
+        assert!(session.readiness().is_err());
     }
 }

@@ -414,3 +414,211 @@ pub(super) fn boundary_face_index(face: BoundaryFace) -> i32 {
         BoundaryFace::Back => 5,
     }
 }
+
+// ---- Workbench project tree / inspector helpers ----
+
+pub(super) const TREE_KIND_STAGE: i32 = 0;
+pub(super) const TREE_KIND_BODY: i32 = 1;
+pub(super) const TREE_KIND_FACE: i32 = 2;
+pub(super) const TREE_KIND_EDGE: i32 = 3;
+pub(super) const TREE_KIND_NAMED_SELECTION: i32 = 4;
+pub(super) const TREE_KIND_PATCH: i32 = 5;
+pub(super) const TREE_KIND_INERT: i32 = -1;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct TreeSelection {
+    pub kind: i32,
+    pub payload: i32,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(super) struct ProjectTreeRowData {
+    pub label: String,
+    pub note: String,
+    pub depth: usize,
+    pub kind: i32,
+    pub payload: i32,
+    pub active: bool,
+}
+
+/// Inspector page for a tree selection: entity info (0), Named Selection
+/// editor (1), mesh panel (2), boundary conditions (3), solver settings (4),
+/// results (5).
+pub(super) fn inspector_mode_for(kind: i32, step: usize) -> usize {
+    match kind {
+        TREE_KIND_BODY | TREE_KIND_FACE | TREE_KIND_EDGE => 0,
+        TREE_KIND_NAMED_SELECTION => 1,
+        TREE_KIND_PATCH => 3,
+        _ => match step {
+            0 => 0,
+            1 => 2,
+            2 => 3,
+            3 => 4,
+            _ => 5,
+        },
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn build_project_tree_rows(
+    body_ids: &[u64],
+    face_ids: &[u64],
+    edge_ids: &[u64],
+    mesh_cells: Option<usize>,
+    named_selections: &[(String, usize)],
+    patches: &[(String, bool)],
+    solve_note: &str,
+    solved: bool,
+    current_step: usize,
+    selected: Option<TreeSelection>,
+) -> Vec<ProjectTreeRowData> {
+    let mut rows: Vec<(usize, String, String, i32, i32)> = Vec::new();
+    let entities = body_ids.len() + face_ids.len() + edge_ids.len();
+    rows.push((
+        0,
+        "Geometry".to_string(),
+        format!("{entities} entities"),
+        TREE_KIND_STAGE,
+        0,
+    ));
+    for id in body_ids {
+        rows.push((
+            1,
+            format!("Body {id}"),
+            String::new(),
+            TREE_KIND_BODY,
+            *id as i32,
+        ));
+    }
+    for id in face_ids {
+        rows.push((
+            1,
+            format!("Face {id}"),
+            String::new(),
+            TREE_KIND_FACE,
+            *id as i32,
+        ));
+    }
+    for id in edge_ids {
+        rows.push((
+            1,
+            format!("Edge {id}"),
+            String::new(),
+            TREE_KIND_EDGE,
+            *id as i32,
+        ));
+    }
+    if !named_selections.is_empty() {
+        rows.push((
+            1,
+            "Named Selections".to_string(),
+            format!("{} groups", named_selections.len()),
+            TREE_KIND_INERT,
+            0,
+        ));
+        for (name, members) in named_selections {
+            rows.push((
+                2,
+                name.clone(),
+                format!("{members} entities"),
+                TREE_KIND_NAMED_SELECTION,
+                0,
+            ));
+        }
+    }
+
+    rows.push((
+        0,
+        "Mesh".to_string(),
+        match mesh_cells {
+            Some(cells) => format!("{cells} cells"),
+            None => "no mesh".to_string(),
+        },
+        TREE_KIND_STAGE,
+        1,
+    ));
+
+    rows.push((
+        0,
+        "Setup".to_string(),
+        format!("{} patches", patches.len()),
+        TREE_KIND_STAGE,
+        2,
+    ));
+    if !patches.is_empty() {
+        rows.push((
+            1,
+            "Boundaries".to_string(),
+            String::new(),
+            TREE_KIND_INERT,
+            0,
+        ));
+        for (name, assigned) in patches {
+            rows.push((
+                2,
+                name.clone(),
+                if *assigned { "Assigned" } else { "Unassigned" }.to_string(),
+                TREE_KIND_PATCH,
+                0,
+            ));
+        }
+    }
+
+    rows.push((
+        0,
+        "Solution".to_string(),
+        solve_note.to_string(),
+        TREE_KIND_STAGE,
+        3,
+    ));
+    rows.push((
+        0,
+        "Results".to_string(),
+        if solved {
+            "solution ready".to_string()
+        } else {
+            String::from("no solution")
+        },
+        TREE_KIND_STAGE,
+        4,
+    ));
+
+    // Patch payloads are indices into the patch list; NS payloads are indices
+    // into the Named Selection list.
+    let mut ns_index = 0_usize;
+    let mut patch_index = 0_usize;
+    rows.into_iter()
+        .map(|(depth, label, note, kind, payload)| {
+            let resolved_payload = match kind {
+                TREE_KIND_NAMED_SELECTION => {
+                    ns_index += 1;
+                    (ns_index - 1) as i32
+                }
+                TREE_KIND_PATCH => {
+                    patch_index += 1;
+                    (patch_index - 1) as i32
+                }
+                _ => payload,
+            };
+            let active = match kind {
+                TREE_KIND_STAGE => selected.is_none() && payload == current_step as i32,
+                TREE_KIND_INERT => false,
+                _ => {
+                    selected
+                        == Some(TreeSelection {
+                            kind,
+                            payload: resolved_payload,
+                        })
+                }
+            };
+            ProjectTreeRowData {
+                label,
+                note,
+                depth,
+                kind,
+                payload: resolved_payload,
+                active,
+            }
+        })
+        .collect()
+}

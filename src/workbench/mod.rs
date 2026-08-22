@@ -4,6 +4,14 @@
 //! created only after project data has been validated against the capabilities
 //! of a concrete numerical backend.
 
+pub mod selection;
+pub mod session;
+
+pub use selection::{
+    GeometrySelectionTarget, NamedSelection, NamedSelectionError, NamedSelectionStore,
+};
+pub use session::{SolveStatus, WorkbenchError, WorkbenchSession};
+
 use crate::{LidDrivenCavity3DConfig, SimulationConfig};
 use serde::{Deserialize, Serialize};
 
