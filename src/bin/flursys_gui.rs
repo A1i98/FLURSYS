@@ -487,24 +487,7 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
             1 => state.geometry_editor.set_tool(GeometryTool::Line),
             2 => state.geometry_editor.set_tool(GeometryTool::Rectangle),
             3 => state.geometry_editor.set_tool(GeometryTool::Circle),
-            4 => {
-                let targets = state.geometry_editor.selection.clone();
-                if !targets.is_empty() {
-                    let geometry = state.workbench.geometry().clone();
-                    state.geometry_editor.snapshot_before_delete(&geometry);
-                    let mut deleted = 0;
-                    for target in targets {
-                        if state.workbench.delete_geometry_target(target).is_ok() {
-                            deleted += 1;
-                        }
-                    }
-                    if deleted > 0 {
-                        state.geometry_editor.selection.clear();
-                        state.wb_selected_targets.clear();
-                        rebuild_tree_rows(&mut state);
-                    }
-                }
-            }
+            4 => delete_editor_selection(&mut state),
             5 => {
                 let geometry = state.workbench.geometry().clone();
                 state.geometry_editor.fit_view(&geometry);
@@ -570,26 +553,7 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
     ui.on_geometry_delete_selection(move || {
         let Some(ui) = weak_ui.upgrade() else { return };
         let mut state = editor_state.borrow_mut();
-        let targets = state.geometry_editor.selection.clone();
-        if targets.is_empty() {
-            state.log("Select geometry before deleting.");
-        } else {
-            let geometry = state.workbench.geometry().clone();
-            state.geometry_editor.snapshot_before_delete(&geometry);
-            let mut deleted = 0;
-            for target in targets {
-                match state.workbench.delete_geometry_target(target) {
-                    Ok(()) => deleted += 1,
-                    Err(error) => state.log(format!("Cannot delete {target:?}: {error}")),
-                }
-            }
-            if deleted > 0 {
-                state.geometry_editor.selection.clear();
-                state.wb_selected_targets.clear();
-                state.log(format!("Deleted {deleted} geometry entities."));
-                rebuild_tree_rows(&mut state);
-            }
-        }
+        delete_editor_selection(&mut state);
         refresh_ui(&ui, &state);
     });
     let weak_ui = ui.as_weak();
@@ -2322,6 +2286,34 @@ fn geometry_editor_point(x: f32, y: f32, width: f32, height: f32) -> (f64, f64) 
         f64::from(x / width * PREVIEW_WIDTH as f32),
         f64::from(y / height * PREVIEW_HEIGHT as f32),
     )
+}
+
+/// Shared command path for the toolbar and Delete shortcut. A snapshot is
+/// recorded once before the first successful deletion, so undo restores the
+/// exact stable IDs present before the command.
+fn delete_editor_selection(state: &mut AppState) {
+    let targets = state.geometry_editor.selection.clone();
+    if targets.is_empty() {
+        state.log("Select geometry before deleting.");
+        return;
+    }
+    let geometry = state.workbench.geometry().clone();
+    state.geometry_editor.snapshot_before_delete(&geometry);
+    let mut deleted = 0;
+    for target in targets {
+        match state.workbench.delete_geometry_target(target) {
+            Ok(()) => deleted += 1,
+            Err(error) => state.log(format!("Cannot delete {target:?}: {error}")),
+        }
+    }
+    if deleted > 0 {
+        state.geometry_editor.selection.clear();
+        state.wb_selected_targets.clear();
+        state.log(format!("Deleted {deleted} geometry entities."));
+        rebuild_tree_rows(state);
+    } else {
+        state.geometry_editor.discard_last_undo_snapshot();
+    }
 }
 
 fn snap_sketch_point((x, y): (f64, f64)) -> (f64, f64) {

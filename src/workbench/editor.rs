@@ -237,6 +237,12 @@ impl GeometryEditorState {
         self.push_undo(topology.clone());
         self.redo.clear();
     }
+
+    /// Removes a just-recorded delete snapshot when the validated delete
+    /// command could not remove any selected entity.
+    pub fn discard_last_undo_snapshot(&mut self) {
+        self.undo.pop();
+    }
     pub fn pick(
         &self,
         topology: &GeometryTopology,
@@ -405,7 +411,7 @@ fn add_circle(
             message: "circle radius must be positive".into(),
         });
     }
-    let face = topology
+    let (face, representation) = topology
         .faces()
         .find(|face| {
             matches!(
@@ -413,12 +419,31 @@ fn add_circle(
                 GeometryFaceRepresentation::Planar { .. }
             ) && face_contains(topology, &face.representation, center)
         })
-        .map(|face| face.id)
+        .map(|face| (face.id, face.representation.clone()))
         .ok_or_else(|| GeometryError::InvalidPrimitive {
             message:
                 "circle must be placed inside an existing planar face; it becomes a compatible hole"
                     .into(),
         })?;
+    // A circular hole must remain wholly inside the selected planar domain.
+    // Sampling is sufficient for this phase's deterministic arcs and avoids
+    // claiming a general CAD curve-intersection kernel.
+    let entirely_inside = (0..32).all(|index| {
+        let angle = std::f64::consts::TAU * f64::from(index) / 32.0;
+        face_contains(
+            topology,
+            &representation,
+            (
+                center.0 + radius * angle.cos(),
+                center.1 + radius * angle.sin(),
+            ),
+        )
+    });
+    if !entirely_inside {
+        return Err(GeometryError::InvalidPrimitive {
+            message: "circle must remain wholly inside the planar face".into(),
+        });
+    }
     topology.add_circle_hole(face, Vec3::new(center.0, center.1, 0.0), radius)?;
     Ok(())
 }
@@ -637,6 +662,22 @@ mod tests {
         assert_eq!(editor.selection.len(), 1);
         editor.click(&mut topology, (500.0, 400.0), false).unwrap();
         assert_eq!(editor.selection.len(), 1);
+        assert_eq!(topology.revision(), revision);
+    }
+
+    #[test]
+    fn circle_crossing_a_planar_boundary_is_rejected_without_revision_change() {
+        let mut topology = GeometryTopology::new();
+        let mut editor = GeometryEditorState::new();
+        editor.transform.set_viewport(1000.0, 800.0);
+        editor.set_tool(GeometryTool::Rectangle);
+        editor.click(&mut topology, (400.0, 500.0), false).unwrap();
+        editor.click(&mut topology, (600.0, 300.0), false).unwrap();
+        editor.set_tool(GeometryTool::Circle);
+        editor.snap_enabled = false;
+        editor.click(&mut topology, (500.0, 400.0), false).unwrap();
+        let revision = topology.revision();
+        assert!(editor.click(&mut topology, (610.0, 400.0), false).is_err());
         assert_eq!(topology.revision(), revision);
     }
 }
