@@ -98,6 +98,9 @@ struct LeastSquaresEquation {
 enum LeastSquaresSource {
     Neighbour(usize),
     FixedValue(f64),
+    /// Homogeneous Neumann data constrains a directional derivative, not a
+    /// fabricated face value. It therefore contributes zero to the RHS.
+    ZeroNormalDerivative,
 }
 
 impl LeastSquaresGradientStencil {
@@ -113,6 +116,7 @@ impl LeastSquaresGradientStencil {
         for (cell_index, cell) in mesh.cells().iter().enumerate() {
             let mut normal = [0.0; 9];
             let mut cell_equations = Vec::with_capacity(cell.faces.len());
+            let mut zero_gradient_normals = Vec::new();
             for &face_index in &cell.faces {
                 let face = &mesh.faces()[face_index];
                 let (offset, source) = if let Some(neighbour) = face.neighbour {
@@ -134,7 +138,10 @@ impl LeastSquaresGradientStencil {
                             face.center - cell.center,
                             LeastSquaresSource::FixedValue(value),
                         ),
-                        ScalarBoundaryCondition::ZeroGradient => continue,
+                        ScalarBoundaryCondition::ZeroGradient => {
+                            zero_gradient_normals.push(face.normal);
+                            continue;
+                        }
                     }
                 };
                 let distance_squared = offset.norm_squared();
@@ -161,7 +168,27 @@ impl LeastSquaresGradientStencil {
                     source,
                 });
             }
-            let inverse = inverse_normal_matrix(mesh, normal, cell_index)?;
+            let inverse = match inverse_normal_matrix(mesh, normal, cell_index) {
+                Ok(inverse) => inverse,
+                Err(NumericsError::SingularLeastSquaresStencil { .. })
+                    if mesh.dimension() == crate::MeshDimension::ThreeD =>
+                {
+                    for normal_direction in zero_gradient_normals {
+                        let length = normal_direction.norm();
+                        if !(length.is_finite() && length > f64::EPSILON) {
+                            continue;
+                        }
+                        let direction = normal_direction / length;
+                        add_normal_outer_product(&mut normal, direction);
+                        cell_equations.push(LeastSquaresEquation {
+                            rhs_coefficient: Vec3::ZERO,
+                            source: LeastSquaresSource::ZeroNormalDerivative,
+                        });
+                    }
+                    inverse_normal_matrix(mesh, normal, cell_index)?
+                }
+                Err(error) => return Err(error),
+            };
             equations.push(cell_equations);
             inverse_normal_matrices.push(inverse);
         }
@@ -183,6 +210,18 @@ impl LeastSquaresGradientStencil {
             }))
         }
     }
+}
+
+fn add_normal_outer_product(matrix: &mut [f64; 9], direction: Vec3) {
+    matrix[0] += direction.x * direction.x;
+    matrix[1] += direction.x * direction.y;
+    matrix[2] += direction.x * direction.z;
+    matrix[3] += direction.y * direction.x;
+    matrix[4] += direction.y * direction.y;
+    matrix[5] += direction.y * direction.z;
+    matrix[6] += direction.z * direction.x;
+    matrix[7] += direction.z * direction.y;
+    matrix[8] += direction.z * direction.z;
 }
 
 fn inverse_normal_matrix(
@@ -628,6 +667,7 @@ pub fn least_squares_gradient_into(
             let adjacent = match equation.source {
                 LeastSquaresSource::Neighbour(neighbour) => values[neighbour],
                 LeastSquaresSource::FixedValue(value) => value,
+                LeastSquaresSource::ZeroNormalDerivative => values[cell],
             };
             rhs += equation.rhs_coefficient * (adjacent - values[cell]);
         }
@@ -1859,7 +1899,7 @@ mod tests {
     }
 
     #[test]
-    fn least_squares_reports_a_singular_three_dimensional_stencil() {
+    fn least_squares_uses_three_dimensional_zero_gradient_normals_as_constraints() {
         let mesh = skewed_tetrahedron_mesh_3d();
         let assignments: Vec<_> = mesh
             .boundary_patches()
@@ -1867,10 +1907,13 @@ mod tests {
             .map(|patch| (patch.name.as_str(), ScalarBoundaryCondition::ZeroGradient))
             .collect();
         let boundary = ResolvedScalarBoundaryConditions::strict(&mesh, &assignments).unwrap();
-        assert!(matches!(
-            LeastSquaresGradientStencil::new(&mesh, &boundary),
-            Err(NumericsError::SingularLeastSquaresStencil { cell: 0 })
-        ));
+        let stencil = LeastSquaresGradientStencil::new(&mesh, &boundary).unwrap();
+        let values = CellField::filled(&mesh, 2.5);
+        let gradients = least_squares_gradient(&mesh, &stencil, &values).unwrap();
+        assert!(gradients
+            .values()
+            .iter()
+            .all(|gradient| gradient.norm() < TOL));
     }
 
     #[test]
