@@ -30,10 +30,11 @@ pub mod workbench;
 pub use cases::{Case, CaseKind};
 pub use fields::{CellField, FaceField, FieldError};
 pub use geometry::{
-    BodyId, BoxEntities, CircleHoleEntities, EdgeGeometry, EdgeId, FaceId, GeometryBody,
-    GeometryBodyRepresentation, GeometryEdge, GeometryError, GeometryFace,
-    GeometryFaceRepresentation, GeometryRevision, GeometryTopology, GeometryVertex, OrientedEdge,
-    RectangleEntities, VertexId,
+    BodyId, BoxEntities, CadExtrudeFeature, CadFeatureId, CadPlaneFrame, CadSketch, CadSketchId,
+    CadSketchPlane, CadSketchProfile, CircleHoleEntities, EdgeGeometry, EdgeId, ExtrudeEntities,
+    FaceId, FaceRayHit, GeometryBody, GeometryBodyRepresentation, GeometryEdge, GeometryError,
+    GeometryFace, GeometryFaceRepresentation, GeometryRevision, GeometryTopology, GeometryVertex,
+    OrientedEdge, Ray3, RectangleEntities, RenderableFace, RigidBodyTransform, VertexId,
 };
 pub use io::gmsh::{load_gmsh, parse_gmsh, GmshError};
 pub use linear::{
@@ -108,11 +109,13 @@ pub use unstructured_incompressible::{
     IncompressibleSolveStatus, IncompressibleSolverOptions, ResolvedIncompressibleBoundaries,
 };
 pub use workbench::{
-    build_example, example_descriptor, example_descriptors, expectations, verify_solution,
-    AnalysisDimension, AnalysisKind, ExampleCheck, ExampleExpectations, ExampleProjectDescriptor,
+    build_example, delete_workspace_run, example_descriptor, example_descriptors, expectations,
+    load_workspace, save_workspace, verify_solution, AnalysisDimension, AnalysisKind, CadPickMode,
+    CadSelectionState, ExampleCheck, ExampleExpectations, ExampleProjectDescriptor,
     ExampleProjectError, ExampleProjectId, ExampleVerificationReport, ExecutionPlan,
     GeometryEditorState, GeometrySelectionTarget, GeometryTool, MeshQualityMetric,
     MeshQualityValues, MeshRenderCache, MeshSelection, MeshSelectionTarget, NamedSelection,
-    NamedSelectionError, NamedSelectionStore, PreviewPrimitive, RenderRange, SolveStatus,
-    SolverBackend, ViewTransform, WorkbenchAnalysis, WorkbenchError, WorkbenchSession,
+    NamedSelectionError, NamedSelectionStore, PhysicalBoundaryCondition, PreviewPrimitive,
+    ProjectDocumentError, RenderRange, RunRecord, RunStatus, SolveStatus, SolverBackend,
+    ViewTransform, WorkbenchAnalysis, WorkbenchError, WorkbenchProject, WorkbenchSession,
 };

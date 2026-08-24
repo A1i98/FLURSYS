@@ -7,6 +7,8 @@
 pub mod editor;
 pub mod examples;
 pub mod mesh_viewport;
+pub mod picking;
+pub mod project;
 pub mod selection;
 pub mod session;
 
@@ -19,6 +21,14 @@ pub use examples::{
 pub use mesh_viewport::{
     MeshQualityMetric, MeshQualityValues, MeshRenderCache, MeshSelection, MeshSelectionTarget,
     RenderRange,
+};
+pub use picking::{CadPickMode, CadSelectionState};
+pub use project::{
+    autosave_workspace, delete_workspace_run, discard_workspace_recovery, discover_templates,
+    load_workspace, recovery_is_newer, save_workspace, BoundaryAssignment, CaseTemplateManifest,
+    PhysicalBoundaryCondition, ProjectDocumentError, RunRecord, RunStatus, WorkbenchMaterial,
+    WorkbenchMeshSettings, WorkbenchProject, WorkbenchSolverSettings, PROJECT_DOCUMENT_FILE,
+    WORKBENCH_PROJECT_FORMAT_VERSION,
 };
 pub use selection::{
     GeometrySelectionTarget, NamedSelection, NamedSelectionError, NamedSelectionStore,

@@ -210,6 +210,143 @@ impl GmshGeometryExporter {
             map,
         })
     }
+    /// Exports a canonical planar-profile extrusion. Generated Gmsh tags stay
+    /// backend-local; `out[]` indices are used only to emit physical groups for
+    /// stable generated `FaceId` selections.
+    pub fn extruded(
+        geometry: &GeometryTopology,
+        body: BodyId,
+        boundary_groups: impl IntoIterator<Item = (impl AsRef<str>, Vec<FaceId>)>,
+        fluid_name: impl AsRef<str>,
+    ) -> Result<GeometryGmshExport, GeometryError> {
+        let body_entity = geometry
+            .body(body)
+            .ok_or_else(|| missing("body", body.get()))?;
+        let GeometryBodyRepresentation::Extrude {
+            source_face,
+            distance,
+            top_face,
+            side_faces,
+        } = &body_entity.representation
+        else {
+            return Err(GeometryError::InvalidPrimitive {
+                message: "Gmsh extrusion export requires an extrusion body".into(),
+            });
+        };
+        validate_name(fluid_name.as_ref())?;
+        let extrusion_vector = planar_face_normal(geometry, *source_face)? * *distance;
+        let source_export = Self::planar(
+            geometry,
+            *source_face,
+            Vec::<(String, Vec<EdgeId>)>::new(),
+            "__profile",
+        )?;
+        let mut source = source_export.document.to_geo_string().map_err(|error| {
+            GeometryError::InvalidPrimitive {
+                message: error.to_string(),
+            }
+        })?;
+        source = source.replace("Physical Surface(\"__profile\") = {3000};\n", "");
+        source.push_str(&format!(
+            "out[] = Extrude {{{:.17}, {:.17}, {:.17}}} {{ Surface{{3000}}; }};\n",
+            extrusion_vector.x, extrusion_vector.y, extrusion_vector.z
+        ));
+        let mut groups = boundary_groups
+            .into_iter()
+            .map(|(name, faces)| (name.as_ref().to_owned(), faces))
+            .collect::<Vec<_>>();
+        groups.sort_by(|left, right| left.0.cmp(&right.0));
+        for (name, faces) in groups {
+            validate_name(&name)?;
+            if faces.is_empty() || faces.iter().any(|face| !body_entity.faces.contains(face)) {
+                return Err(GeometryError::InvalidPrimitive {
+                    message: format!("physical group {name:?} references invalid extrusion faces"),
+                });
+            }
+            let expressions = faces
+                .iter()
+                .map(|face| {
+                    if face == source_face {
+                        Ok("3000".to_string())
+                    } else if face == top_face {
+                        Ok("out[0]".to_string())
+                    } else {
+                        side_faces
+                            .iter()
+                            .position(|candidate| candidate == face)
+                            .map(|index| format!("out[{}]", index + 2))
+                            .ok_or_else(|| GeometryError::InvalidPrimitive {
+                                message: format!(
+                                    "face {} is not an extrusion boundary",
+                                    face.get()
+                                ),
+                            })
+                    }
+                })
+                .collect::<Result<Vec<_>, GeometryError>>()?
+                .join(", ");
+            source.push_str(&format!(
+                "Physical Surface(\"{name}\") = {{{expressions}}};\n"
+            ));
+        }
+        source.push_str(&format!(
+            "Physical Volume(\"{}\") = {{out[1]}};\n",
+            fluid_name.as_ref()
+        ));
+        Ok(GeometryGmshExport {
+            document: GmshGeoDocument::from_source(MeshDimension::ThreeD, source),
+            map: source_export.map,
+        })
+    }
+}
+
+fn planar_face_normal(
+    geometry: &GeometryTopology,
+    face: FaceId,
+) -> Result<crate::Vec3, GeometryError> {
+    let GeometryFaceRepresentation::Planar { outer_loop, .. } = &geometry
+        .face(face)
+        .ok_or_else(|| missing("face", face.get()))?
+        .representation
+    else {
+        return Err(GeometryError::InvalidPrimitive {
+            message: "extrusion source must be planar".into(),
+        });
+    };
+    let points = outer_loop
+        .iter()
+        .map(|oriented| {
+            let edge = geometry
+                .edge(oriented.edge)
+                .ok_or_else(|| missing("edge", oriented.edge.get()))?;
+            let (start, end) = match edge.geometry {
+                EdgeGeometry::Line { start, end }
+                | EdgeGeometry::CircularArc { start, end, .. } => (start, end),
+            };
+            let vertex = if oriented.reversed { end } else { start };
+            geometry
+                .vertex(vertex)
+                .map(|vertex| vertex.position)
+                .ok_or_else(|| missing("vertex", vertex.get()))
+        })
+        .collect::<Result<Vec<_>, GeometryError>>()?;
+    let origin = points
+        .first()
+        .copied()
+        .ok_or_else(|| GeometryError::InvalidPrimitive {
+            message: "extrusion source has no boundary points".into(),
+        })?;
+    for index in 1..points.len().saturating_sub(1) {
+        if let Some(normal) = (points[index] - origin)
+            .cross(points[index + 1] - origin)
+            .normalized()
+        {
+            return Ok(normal);
+        }
+    }
+    Err(GeometryError::InvalidPrimitive {
+        message: "extrusion source has no finite plane normal".into(),
+    })
 }
 
 fn write_loop(

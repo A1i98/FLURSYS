@@ -283,8 +283,9 @@ fn io_err(e: std::io::Error) -> String {
     e.to_string()
 }
 
-/// Writes a 2D unstructured incompressible result as legacy ASCII VTK with
-/// cell-centred `pressure`, `velocity_magnitude`, and `velocity` fields.
+/// Writes supported unstructured incompressible results as legacy ASCII VTK
+/// with cell-centred `pressure`, `velocity_magnitude`, and `velocity` fields.
+/// The current 3D path accepts tetrahedra and rejects unsupported topology.
 pub fn write_unstructured_legacy_vtk(
     path: &Path,
     title: &str,
@@ -299,11 +300,8 @@ pub fn write_unstructured_legacy_vtk(
         .pressure
         .ensure_mesh(mesh)
         .map_err(|error| format!("pressure field: {error:?}"))?;
-    if mesh.dimension() != MeshDimension::TwoD {
-        return Err("legacy unstructured VTK export currently supports 2D polygon cells".into());
-    }
     let cells = (0..mesh.cell_count())
-        .map(|cell| polygon_vertices(mesh, cell))
+        .map(|cell| vtk_cell(mesh, cell))
         .collect::<Result<Vec<_>, _>>()?;
     let file =
         File::create(path).map_err(|error| format!("cannot create {}: {error}", path.display()))?;
@@ -319,9 +317,9 @@ pub fn write_unstructured_legacy_vtk(
         )
         .map_err(io_err)?;
     }
-    let size: usize = cells.iter().map(|cell| 1 + cell.len()).sum();
+    let size: usize = cells.iter().map(|(cell, _)| 1 + cell.len()).sum();
     writeln!(writer, "CELLS {} {size}", cells.len()).map_err(io_err)?;
-    for cell in &cells {
+    for (cell, _) in &cells {
         write!(writer, "{}", cell.len()).map_err(io_err)?;
         for vertex in cell {
             write!(writer, " {vertex}").map_err(io_err)?;
@@ -329,8 +327,8 @@ pub fn write_unstructured_legacy_vtk(
         writeln!(writer).map_err(io_err)?;
     }
     writeln!(writer, "CELL_TYPES {}", cells.len()).map_err(io_err)?;
-    for _ in &cells {
-        writeln!(writer, "7").map_err(io_err)?;
+    for (_, cell_type) in &cells {
+        writeln!(writer, "{cell_type}").map_err(io_err)?;
     }
     writeln!(writer, "CELL_DATA {}", mesh.cell_count()).map_err(io_err)?;
     write_scalar_cell_field(&mut writer, "pressure", solution.pressure.values())?;
@@ -340,6 +338,28 @@ pub fn write_unstructured_legacy_vtk(
         writeln!(writer, "{:.12e} {:.12e} {:.12e}", value.x, value.y, value.z).map_err(io_err)?;
     }
     Ok(())
+}
+
+fn vtk_cell(mesh: &UnstructuredMesh, cell_index: usize) -> Result<(Vec<usize>, usize), String> {
+    match mesh.dimension() {
+        MeshDimension::TwoD => Ok((polygon_vertices(mesh, cell_index)?, 7)),
+        MeshDimension::ThreeD => {
+            let vertices = mesh.cells()[cell_index]
+                .faces
+                .iter()
+                .flat_map(|&face| mesh.faces()[face].vertices.iter().copied())
+                .collect::<std::collections::BTreeSet<_>>()
+                .into_iter()
+                .collect::<Vec<_>>();
+            if vertices.len() != 4 {
+                return Err(format!(
+                    "legacy unstructured VTK export supports only tetrahedral 3D cells; cell {cell_index} has {} vertices",
+                    vertices.len()
+                ));
+            }
+            Ok((vertices, 10))
+        }
+    }
 }
 
 fn write_scalar_cell_field(

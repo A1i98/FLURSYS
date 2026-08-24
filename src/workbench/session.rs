@@ -6,15 +6,16 @@
 //! what this module reports; it never stores duplicate geometry/mesh/BC state.
 
 use super::{
-    GeometrySelectionTarget, MeshRenderCache, MeshSelection, NamedSelectionError,
-    NamedSelectionStore,
+    BoundaryAssignment, GeometrySelectionTarget, MeshRenderCache, MeshSelection,
+    NamedSelectionError, NamedSelectionStore, PhysicalBoundaryCondition, WorkbenchProject,
 };
 use crate::{
-    output::write_unstructured_legacy_vtk, BoxEntities, CircleHoleEntities, EdgeId, FaceId,
-    GeneratedMesh, GeometryError, GeometryGmshExport, GeometryTopology, GmshGeometryExporter,
-    GmshMeshOptions, GmshMesher, IncompressibleBoundaryCondition, IncompressibleCase,
-    IncompressibleCaseError, IncompressibleMaterial, IncompressibleSolution,
-    IncompressibleSolverOptions, MeshDimension, MeshingError, RectangleEntities, Vec3,
+    output::write_unstructured_legacy_vtk, BodyId, BoxEntities, CadExtrudeFeature, CadSketch,
+    CadSketchId, CadSketchPlane, CircleHoleEntities, EdgeId, FaceId, GeneratedMesh, GeometryError,
+    GeometryGmshExport, GeometryTopology, GmshGeometryExporter, GmshMeshOptions, GmshMesher,
+    IncompressibleBoundaryCondition, IncompressibleCase, IncompressibleCaseError,
+    IncompressibleMaterial, IncompressibleSolution, IncompressibleSolverOptions, MeshDimension,
+    MeshingError, RectangleEntities, Vec3,
 };
 use std::collections::BTreeMap;
 
@@ -143,6 +144,89 @@ impl WorkbenchSession {
         }
     }
 
+    /// Reconstructs transient workbench state from a validated canonical
+    /// project document. Meshes, caches, and solver fields remain derived.
+    pub fn from_project(project: &WorkbenchProject) -> Result<Self, WorkbenchError> {
+        project
+            .validate()
+            .map_err(|error| WorkbenchError::InvalidGrouping {
+                message: error.to_string(),
+            })?;
+        let mut session = Self::new();
+        session.geometry = project.geometry.clone();
+        session.set_mesh_configuration(
+            project.mesh.dimension,
+            project.mesh.global_size,
+            project.mesh.min_size,
+            project.mesh.max_size,
+            project.mesh.element_order,
+        )?;
+        session.set_material(
+            project.material.density,
+            project.material.kinematic_viscosity,
+        )?;
+        session.set_solver_controls(
+            project.solver.max_outer_iterations,
+            project.solver.velocity_relaxation,
+            project.solver.pressure_relaxation,
+            project.solver.continuity_absolute_tolerance,
+        )?;
+        for selection in &project.named_selections {
+            session.create_named_selection(&selection.name, selection.targets.clone())?;
+        }
+        for assignment in &project.boundaries {
+            session.configure_named_boundary(
+                &assignment.selection,
+                boundary_condition_from_document(&assignment.condition),
+            )?;
+        }
+        session.box_body = session
+            .geometry
+            .bodies()
+            .find_map(|body| match &body.representation {
+                crate::GeometryBodyRepresentation::Box { .. } if body.faces.len() == 6 => {
+                    Some(BoxEntities {
+                        body: body.id,
+                        x_min: body.faces[0],
+                        x_max: body.faces[1],
+                        y_min: body.faces[2],
+                        y_max: body.faces[3],
+                        z_min: body.faces[4],
+                        z_max: body.faces[5],
+                    })
+                }
+                _ => None,
+            });
+        Ok(session)
+    }
+
+    /// Captures only persistent workbench intent, never runtime artifacts.
+    pub fn to_project(&self, name: impl Into<String>) -> WorkbenchProject {
+        let mut project = WorkbenchProject::blank(name);
+        project.geometry = self.geometry.clone();
+        project.named_selections = self.named_selections.iter().cloned().collect();
+        project.mesh.dimension = self.mesh_dimension;
+        project.mesh.global_size = self.global_size;
+        project.mesh.min_size = self.min_size;
+        project.mesh.max_size = self.max_size;
+        project.mesh.element_order = self.element_order;
+        project.material.density = self.material.density;
+        project.material.kinematic_viscosity = self.material.kinematic_viscosity;
+        project.solver.max_outer_iterations = self.solver.max_outer_iterations;
+        project.solver.continuity_absolute_tolerance = self.solver.continuity_absolute_tolerance;
+        project.solver.velocity_relaxation = self.solver.velocity_relaxation;
+        project.solver.pressure_relaxation = self.solver.pressure_relaxation;
+        project.boundaries = self
+            .boundaries
+            .iter()
+            .map(|(selection, condition)| BoundaryAssignment {
+                selection: selection.clone(),
+                condition: boundary_condition_to_document(*condition),
+            })
+            .collect();
+        project
+    }
+
     /// Deterministic 2D rectangular channel demo:
     /// left edge → inlet, right edge → outlet, top/bottom edges → walls.
     pub fn demo_channel(width: f64, height: f64) -> Result<Self, WorkbenchError> {
@@ -187,6 +271,30 @@ impl WorkbenchSession {
         &mut self.geometry
     }
 
+    pub fn create_sketch_on_plane(
+        &mut self,
+        plane: CadSketchPlane,
+    ) -> Result<CadSketch, WorkbenchError> {
+        Ok(self.geometry.create_sketch_on_plane(plane)?)
+    }
+
+    pub fn create_sketch_on_face(&mut self, face: FaceId) -> Result<CadSketch, WorkbenchError> {
+        Ok(self.geometry.create_sketch_on_face(face)?)
+    }
+
+    pub fn materialize_sketch_rectangle(
+        &mut self,
+        sketch: CadSketchId,
+        width: f64,
+        height: f64,
+    ) -> Result<FaceId, WorkbenchError> {
+        let face = self
+            .geometry
+            .materialize_sketch_rectangle(sketch, width, height)?;
+        self.geometry_changed();
+        Ok(face)
+    }
+
     /// Invalidates all products derived from geometry. View and selection
     /// operations deliberately never call this method.
     pub fn geometry_changed(&mut self) {
@@ -196,7 +304,6 @@ impl WorkbenchSession {
         self.mesh_hover = None;
         self.solution = None;
         self.status = SolveStatus::Idle;
-        self.patch_names_clear();
         let geometry = &self.geometry;
         self.named_selections.retain_targets(|target| match target {
             GeometrySelectionTarget::Vertex(id) => geometry.vertex(id).is_some(),
@@ -212,10 +319,6 @@ impl WorkbenchSession {
             .box_body
             .take()
             .filter(|box_body| self.geometry.body(box_body.body).is_some());
-    }
-
-    fn patch_names_clear(&mut self) {
-        self.boundaries.clear();
     }
 
     /// Adds a planar rectangle and marks its face as the fluid face for 2D meshing.
@@ -258,6 +361,59 @@ impl WorkbenchSession {
         self.box_body = Some(entities.clone());
         self.geometry_changed();
         Ok(entities)
+    }
+
+    /// Commits a canonical planar-profile extrusion and invalidates derived
+    /// mesh/solution state while retaining stable source and generated IDs.
+    pub fn extrude_face(
+        &mut self,
+        source_face: FaceId,
+        distance: f64,
+    ) -> Result<crate::ExtrudeEntities, WorkbenchError> {
+        let entities = self.geometry.extrude_planar_face(source_face, distance)?;
+        self.geometry_changed();
+        Ok(entities)
+    }
+
+    /// Commits an extrusion tied to a canonical sketch/profile relation.
+    pub fn extrude_sketch_face(
+        &mut self,
+        sketch: CadSketchId,
+        source_face: FaceId,
+        distance: f64,
+    ) -> Result<(CadExtrudeFeature, crate::ExtrudeEntities), WorkbenchError> {
+        let result = self
+            .geometry
+            .extrude_sketch_face(sketch, source_face, distance)?;
+        self.geometry_changed();
+        Ok(result)
+    }
+
+    /// Translates one canonical body and invalidates every geometry-derived
+    /// artifact through the same lifecycle path as other committed edits.
+    pub fn translate_body(
+        &mut self,
+        body: BodyId,
+        displacement: Vec3,
+    ) -> Result<(), WorkbenchError> {
+        self.geometry.translate_body(body, displacement)?;
+        self.geometry_changed();
+        Ok(())
+    }
+
+    /// Rotates one canonical body about a finite axis and invalidates every
+    /// geometry-derived artifact through the normal geometry-change path.
+    pub fn rotate_body(
+        &mut self,
+        body: BodyId,
+        pivot: Vec3,
+        axis: Vec3,
+        angle_radians: f64,
+    ) -> Result<(), WorkbenchError> {
+        self.geometry
+            .rotate_body(body, pivot, axis, angle_radians)?;
+        self.geometry_changed();
+        Ok(())
     }
 
     pub fn fluid_face(&self) -> Option<FaceId> {
@@ -408,16 +564,31 @@ impl WorkbenchSession {
                 )?)
             }
             MeshDimension::ThreeD => {
-                let body = self
-                    .box_body
-                    .as_ref()
-                    .ok_or(WorkbenchError::NoGeometry { needed: "box body" })?;
-                Ok(GmshGeometryExporter::rectangular_box(
-                    &self.geometry,
-                    body.body,
-                    self.boundary_groups_3d()?,
-                    "fluid",
-                )?)
+                let groups = self.boundary_groups_3d()?;
+                if let Some(body) = &self.box_body {
+                    Ok(GmshGeometryExporter::rectangular_box(
+                        &self.geometry,
+                        body.body,
+                        groups,
+                        "fluid",
+                    )?)
+                } else if let Some(body) = self.geometry.bodies().find(|body| {
+                    matches!(
+                        body.representation,
+                        crate::GeometryBodyRepresentation::Extrude { .. }
+                    )
+                }) {
+                    Ok(GmshGeometryExporter::extruded(
+                        &self.geometry,
+                        body.id,
+                        groups,
+                        "fluid",
+                    )?)
+                } else {
+                    Err(WorkbenchError::NoGeometry {
+                        needed: "box or extrusion body",
+                    })
+                }
             }
         }
     }
@@ -816,5 +987,39 @@ fn condition_values(condition: IncompressibleBoundaryCondition) -> [f64; 4] {
             [velocity.x, velocity.y, velocity.z, 0.0]
         }
         IncompressibleBoundaryCondition::PressureOutlet { pressure } => [pressure, 0.0, 0.0, 0.0],
+    }
+}
+
+fn boundary_condition_to_document(
+    condition: IncompressibleBoundaryCondition,
+) -> PhysicalBoundaryCondition {
+    match condition {
+        IncompressibleBoundaryCondition::NoSlipWall => PhysicalBoundaryCondition::NoSlipWall,
+        IncompressibleBoundaryCondition::MovingWall { velocity } => {
+            PhysicalBoundaryCondition::MovingWall { velocity }
+        }
+        IncompressibleBoundaryCondition::VelocityInlet { velocity } => {
+            PhysicalBoundaryCondition::VelocityInlet { velocity }
+        }
+        IncompressibleBoundaryCondition::PressureOutlet { pressure } => {
+            PhysicalBoundaryCondition::PressureOutlet { pressure }
+        }
+    }
+}
+
+fn boundary_condition_from_document(
+    condition: &PhysicalBoundaryCondition,
+) -> IncompressibleBoundaryCondition {
+    match *condition {
+        PhysicalBoundaryCondition::NoSlipWall => IncompressibleBoundaryCondition::NoSlipWall,
+        PhysicalBoundaryCondition::MovingWall { velocity } => {
+            IncompressibleBoundaryCondition::MovingWall { velocity }
+        }
+        PhysicalBoundaryCondition::VelocityInlet { velocity } => {
+            IncompressibleBoundaryCondition::VelocityInlet { velocity }
+        }
+        PhysicalBoundaryCondition::PressureOutlet { pressure } => {
+            IncompressibleBoundaryCondition::PressureOutlet { pressure }
+        }
     }
 }

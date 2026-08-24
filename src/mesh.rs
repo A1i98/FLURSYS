@@ -16,6 +16,12 @@ static NEXT_MESH_ID: AtomicU64 = AtomicU64::new(1);
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct MeshId(u64);
 
+impl MeshId {
+    pub const fn get(self) -> u64 {
+        self.0
+    }
+}
+
 /// Cartesian vector used by both planar and spatial unstructured meshes.
 /// Planar meshes store points with `z = 0` and use edge length as face area.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -117,7 +123,8 @@ impl Point {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum MeshDimension {
     TwoD,
     ThreeD,

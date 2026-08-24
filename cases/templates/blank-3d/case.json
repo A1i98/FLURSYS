@@ -1,0 +1,41 @@
+{
+  "format_version": 1,
+  "id": "blank-3d",
+  "name": "Blank 3D Project",
+  "category": "New Project",
+  "description": "Empty editable three-dimensional workbench project.",
+  "capabilities": ["Editable", "3D", "Gmsh", "Extrude"],
+  "project_template": {
+    "format_version": 1,
+    "project_id": "template-blank-3d",
+    "name": "Blank 3D Project",
+    "geometry": {
+      "revision": 0,
+      "next_vertex_id": 1,
+      "next_edge_id": 1,
+      "next_face_id": 1,
+      "next_body_id": 1,
+      "vertices": {},
+      "edges": {},
+      "faces": {},
+      "bodies": {}
+    },
+    "named_selections": [],
+    "mesh": {
+      "dimension": "three-d",
+      "global_size": 0.1,
+      "min_size": 0.05,
+      "max_size": 0.2,
+      "element_order": 1
+    },
+    "boundaries": [],
+    "material": { "density": 1.0, "kinematic_viscosity": 0.01 },
+    "solver": {
+      "max_outer_iterations": 200,
+      "continuity_absolute_tolerance": 1e-10,
+      "velocity_relaxation": 0.7,
+      "pressure_relaxation": 0.3
+    },
+    "runs": []
+  }
+}
