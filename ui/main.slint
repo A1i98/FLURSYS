@@ -57,6 +57,8 @@ export component MainWindow inherits Window {
     // root.width -> compact-ui -> child layoutinfo -> root.layoutinfo -> root.width.
     // The backend may toggle this property on resize if automatic compact mode is desired.
     in-out property <bool> compact-ui: false;
+    in-out property <bool> recovery-pending: false;
+    in-out property <string> recovery-workspace: "";
     property <length> page-padding: root.compact-ui ? 14px : 24px;
     property <length> page-spacing: root.compact-ui ? 10px : 16px;
     property <length> sidebar-preferred-width: root.compact-ui ? 176px : 224px;
@@ -74,6 +76,7 @@ export component MainWindow inherits Window {
     in-out property <int> case-index: 0;
     in-out property <int> part-kind-index: 0;
     in-out property <int> sketch-kind-index: 0;
+    in-out property <int> sketch-plane-index: 0;
     in-out property <int> feature-kind-index: 0;
     in-out property <string> sketch-name: "Sketch 1";
     in-out property <string> feature-name: "Extrude 1";
@@ -165,7 +168,9 @@ export component MainWindow inherits Window {
     in-out property <string> log-text: "FLURSYS Slint workbench ready.";
 
     callback new-project(); callback start(); callback pause(); callback resume(); callback stop(); callback validate-case();
+    callback open-project-native(); callback save-project-native(); callback save-project-as();
     callback load-project(); callback save-project(); callback show-mesh(); callback show-field();
+    callback recover-workspace(); callback discard-workspace-recovery();
     callback animation-play-pause(); callback animation-next(); callback show-geometry-3d();
     callback rotate-geometry-3d(); callback apply-boundary(); callback show-boundary-face(); callback select-step(int);
     callback select-case(); callback add-part(); callback build-feature(); callback duplicate-last-part(); callback remove-last-part();
@@ -182,6 +187,16 @@ export component MainWindow inherits Window {
     in-out property <int> inspector-mode: 0;
     in-out property <string> inspector-title: "GEOMETRY";
     in-out property <string> inspector-info: "Select an entity in the project tree.";
+    in-out property <string> body-translate-x: "0";
+    in-out property <string> body-translate-y: "0";
+    in-out property <string> body-translate-z: "0";
+    in-out property <string> body-pivot-x: "0";
+    in-out property <string> body-pivot-y: "0";
+    in-out property <string> body-pivot-z: "0";
+    in-out property <string> body-axis-x: "0";
+    in-out property <string> body-axis-y: "0";
+    in-out property <string> body-axis-z: "1";
+    in-out property <string> body-angle-degrees: "0";
     in-out property <bool> ns-has-selection: false;
     in-out property <string> ns-edit-name: "";
     in-out property <string> ns-members: "";
@@ -222,12 +237,14 @@ export component MainWindow inherits Window {
     callback create-named-selection();
     callback rename-named-selection();
     callback delete-named-selection();
+    callback translate-selected-body();
+    callback rotate-selected-body();
     callback generate-mesh-wb();
     callback apply-boundary-wb();
     callback unassign-boundary-wb();
     callback apply-solver-settings-wb();
     callback run-workbench();
-    callback export-vtk-wb();
+    callback delete-run-wb();
     callback refresh-gmsh-status();
     callback mesh-display(int); callback mesh-select-mode(int); callback mesh-color(int); callback mesh-quality(int); callback mesh-threshold(); callback select-bad-cell(int);
     callback mesh-hover(float, float, float, float);
@@ -267,6 +284,9 @@ export component MainWindow inherits Window {
 
                 Button { text: "NEW PROJECT"; clicked => { root.new-project(); } }
                 Button { text: "EXAMPLES"; clicked => { root.show-examples(); } }
+                Button { text: root.compact-ui ? "OPEN" : "OPEN PROJECT"; clicked => { root.open-project-native(); } }
+                Button { text: "SAVE"; clicked => { root.save-project-native(); } }
+                Button { text: root.compact-ui ? "SAVE AS" : "SAVE AS…"; clicked => { root.save-project-as(); } }
 
                 Rectangle { width: 1px; background: UiTheme.divider-strong; }
                 Text { text: "WORKFLOW"; color: UiTheme.text-label; font-size: 10px; vertical-alignment: center; }
@@ -509,7 +529,6 @@ export component MainWindow inherits Window {
                                     Rectangle { width: 1px; background: UiTheme.divider; }
 
                                     Button { text: "EXTRUDE"; clicked => { root.feature-kind-index = 0; } }
-                                    Button { text: "REVOLVE"; clicked => { root.feature-kind-index = 1; } }
                                     Button { text: "BUILD"; clicked => { root.build-feature(); } }
 
                                     Rectangle { horizontal-stretch: 1; }
@@ -597,15 +616,17 @@ export component MainWindow inherits Window {
                                         Button { text: "SET ACTIVE DOMAIN"; clicked => { root.select-case(); } }
                                         Text { text: "Project"; color: UiTheme.text-muted; font-size: 10px; }
                                         LineEdit { text <=> root.project-name; }
-                                        Text { text: "File"; color: UiTheme.text-muted; font-size: 10px; }
-                                        LineEdit { text <=> root.project-path; }
-                                        HorizontalLayout { Button { text: "LOAD"; clicked => { root.load-project(); } } Button { text: "SAVE"; clicked => { root.save-project(); } } }
+                                        Text { text: "ADVANCED PATH (manual load/save)"; color: UiTheme.text-muted; font-size: 10px; }
+                                        LineEdit { text <=> root.project-path; placeholder-text: "Workspace folder or legacy .flursys.json"; }
+                                        HorizontalLayout { Button { text: "LOAD PATH"; clicked => { root.load-project(); } } Button { text: "SAVE PATH"; clicked => { root.save-project(); } } }
                                         Rectangle { vertical-stretch: 1; }
                                     }
                                     if root.geometry-sidebar-tab == 2 : VerticalLayout {
                                         Text { text: "INSPECTOR"; color: UiTheme.accent; font-size: 11px; font-weight: 800; }
                                         Text { text: "SKETCH"; color: UiTheme.text-muted; font-size: 10px; font-weight: 700; }
                                         ComboBox { model: ["Rectangle", "Circle"]; current-index <=> root.sketch-kind-index; }
+                                        Text { text: "SKETCH PLANE"; color: UiTheme.text-muted; font-size: 10px; font-weight: 700; }
+                                        ComboBox { model: ["XY", "YZ", "ZX"]; current-index <=> root.sketch-plane-index; }
                                         LineEdit { text <=> root.sketch-name; placeholder-text: "Sketch name"; }
                                         Text { text: "PROFILE SIZE (mm)"; color: UiTheme.text-muted; font-size: 10px; font-weight: 700; }
                                         HorizontalLayout {
@@ -624,10 +645,8 @@ export component MainWindow inherits Window {
                                         Text { text: "Selection fills the current value. Applying updates the same persistent driving dimension."; color: UiTheme.text-faint; font-size: 10px; wrap: word-wrap; }
                                         Rectangle { height: 1px; background: UiTheme.border; }
                                         Text { text: "FEATURE"; color: UiTheme.text-muted; font-size: 10px; font-weight: 700; }
-                                        ComboBox { model: ["Extrude", "Revolve (360°)"]; current-index <=> root.feature-kind-index; }
-                                        LineEdit { text <=> root.feature-name; placeholder-text: "Feature name"; }
-                                        if root.feature-kind-index == 0 : LineEdit { text <=> root.feature-depth; placeholder-text: "Extrude depth (mm)"; }
-                                        if root.feature-kind-index == 1 : LineEdit { text <=> root.revolve-axis-offset; placeholder-text: "Axis offset (mm)"; }
+                                        Text { text: "Extrude selected planar face"; color: UiTheme.text-secondary; font-size: 11px; }
+                                        LineEdit { text <=> root.feature-depth; placeholder-text: "Extrude distance (mm)"; }
                                         HorizontalLayout {
                                             Button { text: "BUILD"; clicked => { root.build-feature(); } }
                                             Button { text: "DUPLICATE"; clicked => { root.duplicate-last-part(); } }
@@ -644,7 +663,7 @@ export component MainWindow inherits Window {
                                 horizontal-stretch: 3;
                                 VerticalLayout {
                                     padding: 12px; spacing: 8px;
-                                    HorizontalLayout { Text { text: "2D GEOMETRY EDITOR"; color: UiTheme.accent; font-size: 11px; font-weight: 800; } Rectangle { horizontal-stretch: 1; } Text { text: "XY PLANE · mm"; color: UiTheme.text-dim; font-size: 10px; } }
+                                    HorizontalLayout { Text { text: "2D GEOMETRY EDITOR"; color: UiTheme.accent; font-size: 11px; font-weight: 800; } Rectangle { horizontal-stretch: 1; } Text { text: root.sketch-plane-index == 1 ? "YZ PLANE · mm" : root.sketch-plane-index == 2 ? "ZX PLANE · mm" : "XY PLANE · mm"; color: UiTheme.text-dim; font-size: 10px; } }
                                     Rectangle {
                                         vertical-stretch: 1;
                                         background: UiTheme.viewport;
@@ -946,6 +965,33 @@ export component MainWindow inherits Window {
                                     Rectangle { height: 1px; background: UiTheme.border; }
                                     InspectorLabel { text: "NAMED SELECTION MEMBERSHIP"; }
                                     InspectorValue { text: root.ns-members == "" ? "— none" : root.ns-members; font-family: "monospace"; }
+                                    Rectangle { height: 1px; background: UiTheme.border; }
+                                    InspectorLabel { text: "BODY TRANSLATE (ΔX · ΔY · ΔZ)"; }
+                                    HorizontalLayout {
+                                        spacing: 4px;
+                                        LineEdit { text <=> root.body-translate-x; placeholder-text: "ΔX"; }
+                                        LineEdit { text <=> root.body-translate-y; placeholder-text: "ΔY"; }
+                                        LineEdit { text <=> root.body-translate-z; placeholder-text: "ΔZ"; }
+                                    }
+                                    Button { text: "TRANSLATE SELECTED BODY"; enabled: !root.wb-busy; clicked => { root.translate-selected-body(); } }
+                                    Rectangle { height: 1px; background: UiTheme.border; }
+                                    InspectorLabel { text: "BODY ROTATE"; }
+                                    InspectorLabel { text: "PIVOT (X · Y · Z)"; }
+                                    HorizontalLayout {
+                                        spacing: 4px;
+                                        LineEdit { text <=> root.body-pivot-x; placeholder-text: "PX"; }
+                                        LineEdit { text <=> root.body-pivot-y; placeholder-text: "PY"; }
+                                        LineEdit { text <=> root.body-pivot-z; placeholder-text: "PZ"; }
+                                    }
+                                    InspectorLabel { text: "AXIS (X · Y · Z) / ANGLE °"; }
+                                    HorizontalLayout {
+                                        spacing: 4px;
+                                        LineEdit { text <=> root.body-axis-x; placeholder-text: "AX"; }
+                                        LineEdit { text <=> root.body-axis-y; placeholder-text: "AY"; }
+                                        LineEdit { text <=> root.body-axis-z; placeholder-text: "AZ"; }
+                                        LineEdit { text <=> root.body-angle-degrees; placeholder-text: "°"; }
+                                    }
+                                    Button { text: "ROTATE SELECTED BODY"; enabled: !root.wb-busy; clicked => { root.rotate-selected-body(); } }
                                     InspectorLabel { text: "Select entities in the project tree, then open NAMED SELECTIONS to group them."; wrap: word-wrap; color: rgb(126,153,170); font-size: 10px; }
                                     Button { text: "NAMED SELECTIONS →"; clicked => { root.inspector-mode = 1; } }
                                 }
@@ -1074,8 +1120,17 @@ export component MainWindow inherits Window {
                                     InspectorValue { text: "Pressure · Velocity · Velocity magnitude (cell-centred)"; }
                                     InspectorLabel { text: "RUN REPORT"; }
                                     InspectorValue { text: root.wb-solution-summary; font-family: "monospace"; }
-                                    Button { text: "EXPORT VTK"; clicked => { root.export-vtk-wb(); } }
-                                    InspectorLabel { text: "Writes a legacy ASCII VTK unstructured grid with pressure, velocity magnitude, and velocity vectors."; wrap: word-wrap; color: rgb(126,153,170); font-size: 10px; }
+                                    InspectorLabel { text: "Successful workspace solves persist their VTK artifact under runs/run-NNNN/solution.vtk."; wrap: word-wrap; color: rgb(126,153,170); font-size: 10px; }
+                                }
+
+                                // 6 — persisted run record
+                                if root.inspector-mode == 6 : VerticalLayout {
+                                    spacing: 6px;
+                                    InspectorLabel { text: "PERSISTED RUN METADATA"; }
+                                    InspectorValue { text: root.inspector-info; font-family: "monospace"; }
+                                    Rectangle { height: 1px; background: UiTheme.border; }
+                                    Button { text: "DELETE RUN"; enabled: !root.wb-busy; clicked => { root.delete-run-wb(); } }
+                                    InspectorLabel { text: "Delete is a two-step action: press once to arm confirmation, then press again to permanently remove this run's workspace artifacts."; wrap: word-wrap; color: rgb(126,153,170); font-size: 10px; }
                                 }
                             }
                         }
@@ -1161,5 +1216,34 @@ export component MainWindow inherits Window {
                 }
             }
         }
+        if root.recovery-pending : Rectangle {
+        min-height: 220px;
+        max-height: 220px;
+        background: #000000b8;
+        VerticalLayout {
+            alignment: center;
+            Rectangle {
+                width: root.compact-ui ? 360px : 460px;
+                height: 220px;
+                background: UiTheme.toolbar;
+                border-color: UiTheme.accent;
+                border-width: 1px;
+                border-radius: 6px;
+                VerticalLayout {
+                    padding: 20px;
+                    spacing: 12px;
+                    Text { text: "RECOVERY AVAILABLE"; color: UiTheme.accent; font-size: 15px; font-weight: 800; }
+                    Text { text: "A newer autosaved workspace was found. The saved project remains open until you choose."; color: UiTheme.text-bright; font-size: 12px; wrap: word-wrap; }
+                    Text { text: root.recovery-workspace; color: UiTheme.text-muted; font-size: 10px; overflow: elide; }
+                    Rectangle { vertical-stretch: 1; }
+                    HorizontalLayout {
+                        Rectangle { horizontal-stretch: 1; }
+                        Button { text: "DISCARD RECOVERY"; clicked => { root.discard-workspace-recovery(); } }
+                        Button { text: "RECOVER"; clicked => { root.recover-workspace(); } }
+                    }
+                }
+            }
+        }
+    }
     }
 }

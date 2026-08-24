@@ -3,8 +3,9 @@
 //! inputs, and Run enable/disable rules.
 
 use flursys::{
-    GeometrySelectionTarget, GmshMeshOptions, GmshMesher, IncompressibleBoundaryCondition,
-    MeshDimension, SolveStatus, WorkbenchSession,
+    CellDefinition, GeneratedMesh, GeometrySelectionTarget, GmshMeshOptions, GmshMesher,
+    GmshMeshingReport, GmshVersion, IncompressibleBoundaryCondition, MeshDimension, Point,
+    SolveStatus, UnstructuredMesh, WorkbenchSession,
 };
 use std::collections::BTreeSet;
 
@@ -243,4 +244,47 @@ fn regeneration_drops_assignments_for_removed_patches_and_invalidates_results() 
     session.unassign_boundary("inlet");
     assert!(session.boundary_assignment("inlet").is_none());
     assert!(session.readiness().is_err());
+}
+
+#[test]
+fn body_transform_invalidates_the_installed_mesh_and_solution_lifecycle() {
+    let mut session = WorkbenchSession::new();
+    let rectangle = session.add_rectangle(2.0, 1.0).unwrap();
+    let extrusion = session.extrude_face(rectangle.face, 0.5).unwrap();
+    let mesh = UnstructuredMesh::from_cells(
+        MeshDimension::TwoD,
+        vec![
+            Point::new(0.0, 0.0, 0.0),
+            Point::new(1.0, 0.0, 0.0),
+            Point::new(0.0, 1.0, 0.0),
+        ],
+        vec![CellDefinition::polygon(vec![0, 1, 2])],
+    )
+    .unwrap();
+    session.install_mesh(GeneratedMesh {
+        report: GmshMeshingReport {
+            version: GmshVersion {
+                value: "test".into(),
+            },
+            dimension: MeshDimension::TwoD,
+            mesh_format: "test".into(),
+            node_count: mesh.points().len(),
+            cell_count: mesh.cell_count(),
+            patch_count: 0,
+            stdout: String::new(),
+            stderr: String::new(),
+        },
+        mesh,
+    });
+    session.mark_solving();
+    assert!(session.has_mesh());
+    assert_eq!(session.status(), &SolveStatus::Solving);
+
+    session
+        .translate_body(extrusion.body, flursys::Vec3::new(1.0, 2.0, 3.0))
+        .unwrap();
+
+    assert!(!session.has_mesh());
+    assert!(session.solution().is_none());
+    assert_eq!(session.status(), &SolveStatus::Idle);
 }

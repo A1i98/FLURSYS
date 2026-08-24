@@ -1,9 +1,9 @@
 use super::{case_name, parse_number, MainWindow};
 use flursys::cases::{BackwardStepCase, CavityCase, ChannelCase, CylinderCase};
 use flursys::{
-    BoundaryConditionKind, BoundaryFace, BuoyancyModel, EnergyModel, GeometryFeatureKind,
-    GeometryPart, GeometryPartKind, GeometrySketch, Project, ProjectCase, ProjectCoupling,
-    ProjectPressureSolver, SketchPlane, SketchProfileKind, ThermalBoundaryCondition,
+    BoundaryConditionKind, BoundaryFace, BuoyancyModel, EnergyModel, GeometryPart,
+    GeometryPartKind, GeometrySketch, Project, ProjectCase, ProjectCoupling, ProjectPressureSolver,
+    SketchPlane, SketchProfileKind, ThermalBoundaryCondition,
 };
 use slint::SharedString;
 
@@ -178,27 +178,6 @@ pub(super) fn sketch_from_ui(ui: &MainWindow) -> Result<GeometrySketch, String> 
         parse_finite(ui.get_sketch_pos_z().as_str(), "sketch origin Z")?,
     );
     Ok(sketch)
-}
-
-pub(super) fn feature_from_ui(ui: &MainWindow) -> Result<(String, GeometryFeatureKind), String> {
-    let feature_name = ui.get_feature_name().trim().to_string();
-    if feature_name.is_empty() {
-        return Err("feature name cannot be empty".to_string());
-    }
-    let feature = if ui.get_feature_kind_index() == 1 {
-        GeometryFeatureKind::Revolve {
-            axis_offset: parse_positive(
-                ui.get_revolve_axis_offset().as_str(),
-                "revolve axis offset",
-            )?,
-            angle_degrees: 360.0,
-        }
-    } else {
-        GeometryFeatureKind::Extrude {
-            depth: parse_positive(ui.get_feature_depth().as_str(), "extrude depth")?,
-        }
-    };
-    Ok((feature_name, feature))
 }
 
 pub(super) fn geometry_part_from_ui(ui: &MainWindow) -> Result<GeometryPart, String> {
@@ -424,6 +403,9 @@ pub(super) const TREE_KIND_EDGE: i32 = 3;
 pub(super) const TREE_KIND_VERTEX: i32 = 4;
 pub(super) const TREE_KIND_NAMED_SELECTION: i32 = 5;
 pub(super) const TREE_KIND_PATCH: i32 = 6;
+pub(super) const TREE_KIND_RUN: i32 = 7;
+pub(super) const TREE_KIND_SKETCH: i32 = 8;
+pub(super) const TREE_KIND_EXTRUDE_FEATURE: i32 = 9;
 pub(super) const TREE_KIND_INERT: i32 = -1;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -447,9 +429,15 @@ pub(super) struct ProjectTreeRowData {
 /// results (5).
 pub(super) fn inspector_mode_for(kind: i32, step: usize) -> usize {
     match kind {
-        TREE_KIND_BODY | TREE_KIND_FACE | TREE_KIND_EDGE | TREE_KIND_VERTEX => 0,
+        TREE_KIND_BODY
+        | TREE_KIND_FACE
+        | TREE_KIND_EDGE
+        | TREE_KIND_VERTEX
+        | TREE_KIND_SKETCH
+        | TREE_KIND_EXTRUDE_FEATURE => 0,
         TREE_KIND_NAMED_SELECTION => 1,
         TREE_KIND_PATCH => 3,
+        TREE_KIND_RUN => 6,
         _ => match step {
             0 => 0,
             1 => 2,
@@ -466,16 +454,24 @@ pub(super) fn build_project_tree_rows(
     face_ids: &[u64],
     vertex_ids: &[u64],
     edge_ids: &[u64],
+    sketch_ids: &[u64],
+    extrude_features: &[(u64, u64)],
     mesh_cells: Option<usize>,
     named_selections: &[(String, usize)],
     patches: &[(String, bool)],
+    runs: &[(String, String)],
     solve_note: &str,
     solved: bool,
     current_step: usize,
     selected: Option<TreeSelection>,
 ) -> Vec<ProjectTreeRowData> {
     let mut rows: Vec<(usize, String, String, i32, i32)> = Vec::new();
-    let entities = body_ids.len() + face_ids.len() + vertex_ids.len() + edge_ids.len();
+    let entities = body_ids.len()
+        + face_ids.len()
+        + vertex_ids.len()
+        + edge_ids.len()
+        + sketch_ids.len()
+        + extrude_features.len();
     rows.push((
         0,
         "Geometry".to_string(),
@@ -483,6 +479,42 @@ pub(super) fn build_project_tree_rows(
         TREE_KIND_STAGE,
         0,
     ));
+    if !sketch_ids.is_empty() {
+        rows.push((
+            1,
+            "Sketches".to_string(),
+            format!("{} sketches", sketch_ids.len()),
+            TREE_KIND_INERT,
+            0,
+        ));
+        for id in sketch_ids {
+            rows.push((
+                2,
+                format!("Sketch {id}"),
+                "canonical plane".to_string(),
+                TREE_KIND_SKETCH,
+                *id as i32,
+            ));
+        }
+    }
+    if !extrude_features.is_empty() {
+        rows.push((
+            1,
+            "Features".to_string(),
+            format!("{} features", extrude_features.len()),
+            TREE_KIND_INERT,
+            0,
+        ));
+        for (feature, body) in extrude_features {
+            rows.push((
+                2,
+                format!("Extrude {feature}"),
+                format!("Body {body}"),
+                TREE_KIND_EXTRUDE_FEATURE,
+                *feature as i32,
+            ));
+        }
+    }
     for id in body_ids {
         rows.push((
             1,
@@ -593,6 +625,16 @@ pub(super) fn build_project_tree_rows(
         TREE_KIND_STAGE,
         4,
     ));
+    rows.push((
+        0,
+        "Runs".to_string(),
+        format!("{} saved", runs.len()),
+        TREE_KIND_INERT,
+        0,
+    ));
+    for (index, (id, status)) in runs.iter().enumerate() {
+        rows.push((1, id.clone(), status.clone(), TREE_KIND_RUN, index as i32));
+    }
 
     // Patch payloads are indices into the patch list; NS payloads are indices
     // into the Named Selection list.

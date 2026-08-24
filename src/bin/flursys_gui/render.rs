@@ -3,8 +3,8 @@ use flursys::{
     BoundaryConditionKind, BoundaryFace, EnergyModel, ExtrudedMesh3D, FieldUpdate,
     GeometryEditorState, GeometryPart, GeometryPartKind, GeometrySelectionTarget, GeometrySketch,
     GeometryTopology, MeshDimension, MeshQualityMetric, MeshRenderCache, MeshSelection,
-    MeshSelectionTarget, PreviewPrimitive, Project, ProjectCase, SketchAxis, SketchEntityKind,
-    StructuredMesh2D, UnstructuredMesh, ViewTransform,
+    MeshSelectionTarget, PreviewPrimitive, Project, ProjectCase, Ray3, SketchAxis,
+    SketchEntityKind, StructuredMesh2D, UnstructuredMesh, Vec3, ViewTransform,
 };
 use slint::{Image, Rgba8Pixel, SharedPixelBuffer};
 use std::collections::VecDeque;
@@ -500,6 +500,7 @@ pub(super) fn sampled_indices(count: usize, maximum_lines: usize) -> Vec<usize> 
     indices
 }
 
+#[allow(dead_code)] // Compatibility renderer remains covered by legacy preview tests only.
 pub(super) fn render_geometry_3d(
     project: &Project,
     yaw: f32,
@@ -574,6 +575,209 @@ pub(super) fn render_geometry_3d(
     }
     draw_orientation_triad(&mut pixels, width, height, camera);
     image_from_rgba(width, height, pixels)
+}
+
+/// Renders stable CAD faces directly from `GeometryTopology`, without using a
+/// legacy project preview mesh. Selection uses the same `FaceId` as CAD picking.
+pub(super) fn render_canonical_geometry_3d(
+    topology: &GeometryTopology,
+    yaw: f32,
+    pitch: f32,
+    zoom: f32,
+    selected_face: Option<flursys::FaceId>,
+    hovered_face: Option<flursys::FaceId>,
+) -> Image {
+    let (width, height) = (PREVIEW_WIDTH, PREVIEW_HEIGHT);
+    let mut pixels = vec![0_u8; (width * height * 4) as usize];
+    fill(&mut pixels, [9, 16, 22, 255]);
+    let mut surfaces = topology.renderable_faces();
+    if surfaces.is_empty() {
+        return image_from_rgba(width, height, pixels);
+    }
+    let camera = CanonicalCamera::fit(
+        surfaces
+            .iter()
+            .flat_map(|surface| surface.vertices.iter().copied()),
+        yaw,
+        pitch,
+        zoom,
+    );
+    surfaces.sort_by(|left, right| {
+        camera
+            .depth(&left.vertices)
+            .total_cmp(&camera.depth(&right.vertices))
+    });
+    for surface in surfaces {
+        let selected = selected_face == Some(surface.face);
+        let hovered = hovered_face == Some(surface.face);
+        let fill_color = if selected {
+            [240, 195, 109, 255]
+        } else if hovered {
+            [79, 146, 112, 255]
+        } else if surface.body.is_some() {
+            [57, 100, 124, 255]
+        } else {
+            [42, 76, 94, 255]
+        };
+        let edge_color = if selected {
+            [255, 232, 164, 255]
+        } else if hovered {
+            [142, 232, 176, 255]
+        } else {
+            [108, 181, 202, 255]
+        };
+        let polygon = surface
+            .vertices
+            .iter()
+            .copied()
+            .map(|point| camera.project(point))
+            .collect::<Vec<_>>();
+        let fill_polygon = polygon
+            .iter()
+            .map(|&(x, y)| (f64::from(x), f64::from(y)))
+            .collect::<Vec<_>>();
+        draw_filled_polygon(&mut pixels, width, height, &fill_polygon, fill_color);
+        for (start, end) in polygon
+            .iter()
+            .copied()
+            .zip(polygon.iter().copied().cycle().skip(1))
+            .take(polygon.len())
+        {
+            draw_line(&mut pixels, width, height, start, end, edge_color);
+        }
+    }
+    image_from_rgba(width, height, pixels)
+}
+
+/// Builds the orthographic canonical CAD ray for a viewport point using the
+/// exact camera transform shared by `render_canonical_geometry_3d`.
+pub(super) fn canonical_geometry_ray(
+    topology: &GeometryTopology,
+    yaw: f32,
+    pitch: f32,
+    zoom: f32,
+    point: (f64, f64),
+) -> Option<Ray3> {
+    let surfaces = topology.renderable_faces();
+    (!surfaces.is_empty()).then(|| {
+        CanonicalCamera::fit(
+            surfaces
+                .iter()
+                .flat_map(|surface| surface.vertices.iter().copied()),
+            yaw,
+            pitch,
+            zoom,
+        )
+        .ray(point)
+    })?
+}
+
+#[derive(Clone, Copy)]
+struct CanonicalCamera {
+    centre: Vec3,
+    yaw: f64,
+    pitch: f64,
+    scale: f64,
+}
+
+impl CanonicalCamera {
+    fn fit(points: impl Iterator<Item = Vec3>, yaw: f32, pitch: f32, zoom: f32) -> Self {
+        let points = points.collect::<Vec<_>>();
+        let (minimum, maximum) = points.iter().copied().fold(
+            (
+                Vec3::new(f64::INFINITY, f64::INFINITY, f64::INFINITY),
+                Vec3::new(f64::NEG_INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY),
+            ),
+            |(minimum, maximum), point| {
+                (
+                    Vec3::new(
+                        minimum.x.min(point.x),
+                        minimum.y.min(point.y),
+                        minimum.z.min(point.z),
+                    ),
+                    Vec3::new(
+                        maximum.x.max(point.x),
+                        maximum.y.max(point.y),
+                        maximum.z.max(point.z),
+                    ),
+                )
+            },
+        );
+        let mut camera = Self {
+            centre: (minimum + maximum) * 0.5,
+            yaw: f64::from(yaw),
+            pitch: f64::from(pitch),
+            scale: 1.0,
+        };
+        let projected = points
+            .iter()
+            .copied()
+            .map(|point| camera.project_unscaled(point))
+            .collect::<Vec<_>>();
+        let (min_x, max_x) = projected.iter().fold(
+            (f64::INFINITY, f64::NEG_INFINITY),
+            |(minimum, maximum), &(x, _)| (minimum.min(x), maximum.max(x)),
+        );
+        let (min_y, max_y) = projected.iter().fold(
+            (f64::INFINITY, f64::NEG_INFINITY),
+            |(minimum, maximum), &(_, y)| (minimum.min(y), maximum.max(y)),
+        );
+        camera.scale = (460.0 / (max_x - min_x).max(1.0e-9))
+            .min(280.0 / (max_y - min_y).max(1.0e-9))
+            * f64::from(zoom);
+        camera
+    }
+
+    fn project_unscaled(&self, point: Vec3) -> (f64, f64) {
+        let point = point - self.centre;
+        let horizontal = point.x * self.yaw.cos() - point.y * self.yaw.sin();
+        let depth = point.x * self.yaw.sin() + point.y * self.yaw.cos();
+        (
+            horizontal,
+            point.z * self.pitch.cos() + depth * self.pitch.sin(),
+        )
+    }
+
+    fn project(&self, point: Vec3) -> (i32, i32) {
+        let (x, y) = self.project_unscaled(point);
+        (
+            (f64::from(PREVIEW_WIDTH) * 0.5 + x * self.scale) as i32,
+            (f64::from(PREVIEW_HEIGHT) * 0.5 - y * self.scale) as i32,
+        )
+    }
+
+    fn depth(&self, points: &[Vec3]) -> f64 {
+        points
+            .iter()
+            .map(|point| {
+                let point = *point - self.centre;
+                point.x * self.yaw.sin() + point.y * self.yaw.cos()
+            })
+            .sum::<f64>()
+            / points.len().max(1) as f64
+    }
+
+    fn ray(&self, point: (f64, f64)) -> Option<Ray3> {
+        let horizontal = (point.0 - f64::from(PREVIEW_WIDTH) * 0.5) / self.scale;
+        let vertical = (f64::from(PREVIEW_HEIGHT) * 0.5 - point.1) / self.scale;
+        let horizontal_axis = Vec3::new(self.yaw.cos(), -self.yaw.sin(), 0.0);
+        let depth_axis = Vec3::new(self.yaw.sin(), self.yaw.cos(), 0.0);
+        let vertical_axis = Vec3::new(
+            depth_axis.x * self.pitch.sin(),
+            depth_axis.y * self.pitch.sin(),
+            self.pitch.cos(),
+        );
+        let direction = Vec3::new(
+            depth_axis.x * self.pitch.cos(),
+            depth_axis.y * self.pitch.cos(),
+            -self.pitch.sin(),
+        );
+        Ray3::new(
+            self.centre + horizontal_axis * horizontal + vertical_axis * vertical
+                - direction * 10_000.0,
+            direction,
+        )
+    }
 }
 
 pub(super) fn render_empty_preview() -> Image {
@@ -885,6 +1089,7 @@ fn draw_marker(pixels: &mut [u8], width: u32, height: u32, center: (i32, i32), c
     );
 }
 
+#[allow(dead_code)]
 pub(super) fn draw_boundaries_3d(
     pixels: &mut [u8],
     width: u32,
@@ -1082,6 +1287,7 @@ pub(super) fn distance_to_segment(point: (f64, f64), start: (f64, f64), end: (f6
     ((point.0 - closest.0).powi(2) + (point.1 - closest.1).powi(2)).sqrt()
 }
 
+#[allow(dead_code)]
 pub(super) fn draw_case_solid_3d(
     pixels: &mut [u8],
     width: u32,
@@ -1137,6 +1343,7 @@ pub(super) fn draw_case_solid_3d(
     }
 }
 
+#[allow(dead_code)]
 pub(super) fn draw_case_box(
     pixels: &mut [u8],
     width: u32,
@@ -1175,6 +1382,7 @@ pub(super) fn draw_case_box(
     }
 }
 
+#[allow(dead_code)]
 pub(super) fn draw_part_with_camera(
     pixels: &mut [u8],
     width: u32,
@@ -1288,6 +1496,7 @@ pub(super) fn draw_part_with_camera(
 }
 
 #[allow(clippy::too_many_arguments)]
+#[allow(dead_code)]
 fn draw_camera_ring_solid(
     pixels: &mut [u8],
     width: u32,
@@ -1321,6 +1530,7 @@ fn draw_camera_ring_solid(
 }
 
 #[allow(clippy::too_many_arguments)]
+#[allow(dead_code)]
 fn draw_camera_ring(
     pixels: &mut [u8],
     width: u32,
@@ -1424,6 +1634,7 @@ impl MeshCamera {
 
 const TRIAD_ORIGIN: (i32, i32) = (478, 48);
 const TRIAD_LENGTH: f64 = 25.0;
+#[allow(dead_code)]
 const TRIAD_COLORS: [[u8; 4]; 3] = [[235, 91, 91, 255], [91, 210, 125, 255], [91, 144, 235, 255]];
 
 pub(super) fn orientation_triad_endpoints(camera: MeshCamera) -> [(i32, i32); 3] {
@@ -1455,6 +1666,7 @@ pub(super) fn pick_orientation_triad(point: (f64, f64), camera: MeshCamera) -> O
         .and_then(|(axis, distance)| (distance <= 10.0).then_some(axis))
 }
 
+#[allow(dead_code)]
 fn draw_orientation_triad(pixels: &mut [u8], width: u32, height: u32, camera: MeshCamera) {
     draw_marker(pixels, width, height, TRIAD_ORIGIN, [224, 235, 242, 255]);
     for (endpoint, color) in orientation_triad_endpoints(camera)

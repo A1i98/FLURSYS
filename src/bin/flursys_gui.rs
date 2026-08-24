@@ -1,20 +1,65 @@
 use flursys::runtime::{SolverCommand, SolverController, SolverState, SolverUpdate};
+use flursys::workbench::{discover_templates, CaseTemplateManifest};
 use flursys::{
-    build_example, example_descriptors, BoundaryConditionKind, BoundaryFace, ExampleProjectId,
-    ExtrudedMesh3D, FieldUpdate, GeneratedMesh, GeometryEditorState, GeometrySelectionTarget,
-    GeometrySketch, GeometryTool, GmshMesher, IncompressibleBoundaryCondition,
-    IncompressibleSolution, IncompressibleSolveError, MeshDimension, MeshQualityMetric,
-    MeshSelection, Project, ProjectCoupling, SketchAxis, SketchEntityKind, SketchProfileKind,
-    SolveStatus, StructuredMesh2D, ThermalBoundaryCondition, Vec3, ViewTransform, WorkbenchSession,
+    BoundaryConditionKind, BoundaryFace, CadSketchPlane, FieldUpdate, GeneratedMesh,
+    GeometryEditorState, GeometrySelectionTarget, GeometrySketch, GeometryTool, GmshMesher,
+    IncompressibleBoundaryCondition, IncompressibleSolution, IncompressibleSolveError,
+    MeshDimension, MeshQualityMetric, MeshSelection, Project, ProjectCoupling, SketchAxis,
+    SketchEntityKind, SketchPlane, SketchProfileKind, SolveStatus, ThermalBoundaryCondition, Vec3,
+    ViewTransform, WorkbenchProject, WorkbenchSession,
 };
 use slint::{ComponentHandle, ModelRc, SharedString, Timer, TimerMode, VecModel};
 use std::cell::RefCell;
 use std::collections::VecDeque;
+use std::fs;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::mpsc::Receiver;
 use std::time::Duration;
 
+#[cfg(test)]
+use flursys::{ExtrudedMesh3D, StructuredMesh2D};
+
 slint::include_modules!();
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum WorkspaceSaveRoute {
+    Existing(PathBuf),
+    SaveAsRequired,
+}
+
+fn workspace_save_route(workspace: Option<&Path>) -> WorkspaceSaveRoute {
+    workspace
+        .map(|workspace| WorkspaceSaveRoute::Existing(workspace.to_path_buf()))
+        .unwrap_or(WorkspaceSaveRoute::SaveAsRequired)
+}
+
+fn validate_new_workspace_target(workspace: &Path) -> Result<(), String> {
+    if workspace.as_os_str().is_empty() {
+        return Err("Choose a workspace folder before saving.".to_string());
+    }
+    if workspace.exists() && !workspace.is_dir() {
+        return Err(format!(
+            "Workspace path is not a folder: {}",
+            workspace.display()
+        ));
+    }
+    let document = workspace.join(flursys::workbench::PROJECT_DOCUMENT_FILE);
+    if document.exists() {
+        return Err(format!(
+            "Save As cancelled: selected folder already contains project.json: {}. Choose a new folder so the existing project is not overwritten.",
+            workspace.display()
+        ));
+    }
+    Ok(())
+}
+
+fn choose_workspace_folder(title: &str) -> Option<PathBuf> {
+    rfd::FileDialog::new()
+        .set_title(title)
+        .set_can_create_directories(true)
+        .pick_folder()
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum MeshColorMode {
     Neutral,
@@ -90,6 +135,14 @@ struct AppState {
     sketch_undo: Vec<GeometrySketch>,
     sketch_redo: Vec<GeometrySketch>,
     workbench: WorkbenchSession,
+    /// Canonical portable intent for the unstructured workbench. The legacy
+    /// `project` field is retained temporarily for the older structured UI
+    /// panels; new workspace save/load routes through this document only.
+    workbench_project: WorkbenchProject,
+    workspace_path: Option<PathBuf>,
+    workbench_dirty: bool,
+    workbench_autosave_needed: bool,
+    pending_recovery_workspace: Option<PathBuf>,
     geometry_editor: GeometryEditorState,
     geometry_pan_anchor: Option<(f64, f64)>,
     mesh_view: ViewTransform,
@@ -101,6 +154,7 @@ struct AppState {
     tree_rows: Vec<ProjectTreeRowData>,
     tree_dirty: bool,
     selected_tree: Option<TreeSelection>,
+    pending_run_delete: Option<String>,
     wb_selected_targets: Vec<GeometrySelectionTarget>,
     patch_names: Vec<String>,
     meshing: bool,
@@ -110,8 +164,9 @@ struct AppState {
     gmsh_probe_rx: Option<Receiver<Result<String, String>>>,
     gmsh_status: String,
     current_step: usize,
-    // UI-owned descriptor transport. A catalogue provider may populate these typed
-    // Slint descriptors; opening an id is intentionally delegated to Rust.
+    // Discovered template documents are the source of truth for the gallery;
+    // descriptors exist only as a Slint transport model.
+    templates: Vec<CaseTemplateManifest>,
     examples: Vec<ExampleDescriptor>,
     selected_example: Option<usize>,
 }
@@ -136,13 +191,20 @@ struct ResidualSample {
 
 impl AppState {
     fn new() -> Self {
+        let (templates, template_errors) = gallery_templates();
+        let mut logs = VecDeque::from([
+            "New editable project ready. Save it when you are ready to keep it.".to_string(),
+        ]);
+        logs.extend(
+            template_errors
+                .into_iter()
+                .map(|error| format!("Case template omitted from gallery: {error}")),
+        );
         Self {
             controller: SolverController::spawn(),
             project: Project::default(),
             project_loaded: true,
-            logs: VecDeque::from([
-                "New editable project ready. Save it when you are ready to keep it.".to_string(),
-            ]),
+            logs,
             last_update: None,
             residual_history: VecDeque::new(),
             frames: VecDeque::new(),
@@ -166,6 +228,11 @@ impl AppState {
             sketch_undo: Vec::new(),
             sketch_redo: Vec::new(),
             workbench: WorkbenchSession::new(),
+            workbench_project: WorkbenchProject::blank("Untitled Project"),
+            workspace_path: None,
+            workbench_dirty: true,
+            workbench_autosave_needed: false,
+            pending_recovery_workspace: None,
             geometry_editor: {
                 let mut editor = GeometryEditorState::new();
                 editor
@@ -187,6 +254,7 @@ impl AppState {
             tree_rows: Vec::new(),
             tree_dirty: true,
             selected_tree: None,
+            pending_run_delete: None,
             wb_selected_targets: Vec::new(),
             patch_names: Vec::new(),
             meshing: false,
@@ -196,9 +264,84 @@ impl AppState {
             gmsh_probe_rx: None,
             gmsh_status: "Gmsh: checking…".to_string(),
             current_step: 0,
-            examples: gallery_descriptors(),
+            examples: gallery_descriptors(&templates),
+            templates,
             selected_example: Some(0),
         }
+    }
+
+    fn open_gallery_template(&mut self, index: i32) -> Result<String, String> {
+        let template = usize::try_from(index)
+            .ok()
+            .and_then(|index| self.templates.get(index))
+            .cloned()
+            .ok_or_else(|| "Selected case template does not exist.".to_string())?;
+        let session =
+            WorkbenchSession::from_project(&template.project_template).map_err(|error| {
+                format!(
+                    "Case template {:?} could not be opened: {error}",
+                    template.id
+                )
+            })?;
+
+        self.workbench = session;
+        self.workbench_project = template.project_template;
+        self.workspace_path = None;
+        self.workbench_dirty = true;
+        self.workbench_autosave_needed = false;
+        self.pending_recovery_workspace = None;
+        self.geometry_editor = GeometryEditorState::new();
+        self.geometry_editor
+            .transform
+            .set_viewport(f64::from(PREVIEW_WIDTH), f64::from(PREVIEW_HEIGHT));
+        self.patch_names.clear();
+        self.selected_tree = None;
+        self.wb_selected_targets.clear();
+        self.tree_dirty = true;
+        self.show_mesh = false;
+        self.show_geometry_3d = true;
+        self.current_step = 0;
+        Ok(template.name)
+    }
+
+    fn new_blank_workbench_project(&mut self, dimension: MeshDimension) {
+        let name = match dimension {
+            MeshDimension::TwoD => "Untitled 2D Project",
+            MeshDimension::ThreeD => "Untitled 3D Project",
+        };
+        let mut project = WorkbenchProject::blank(name);
+        project.mesh.dimension = dimension;
+        self.workbench = WorkbenchSession::from_project(&project)
+            .expect("a blank workbench project is always valid");
+        self.workbench_project = project;
+        self.workspace_path = None;
+        self.workbench_dirty = true;
+        self.workbench_autosave_needed = false;
+        self.pending_recovery_workspace = None;
+        self.last_update = None;
+        self.residual_history.clear();
+        self.frames.clear();
+        self.frame_index = 0;
+        self.animation_playing = false;
+        self.show_mesh = false;
+        self.show_geometry_3d = true;
+        self.geometry_editor = GeometryEditorState::new();
+        self.geometry_editor
+            .transform
+            .set_viewport(f64::from(PREVIEW_WIDTH), f64::from(PREVIEW_HEIGHT));
+        self.geometry_pan_anchor = None;
+        self.draft_sketch = None;
+        self.show_sketch_editor = false;
+        self.sketch_points.clear();
+        self.sketch_hover = None;
+        self.sketch_undo.clear();
+        self.sketch_redo.clear();
+        self.patch_names.clear();
+        self.selected_tree = None;
+        self.pending_run_delete = None;
+        self.wb_selected_targets.clear();
+        self.tree_dirty = true;
+        self.preflight_summary = "Run validation before starting the solver.".to_string();
     }
 
     fn spawn_gmsh_probe(&mut self) {
@@ -293,6 +436,9 @@ impl AppState {
                         Err(error) => self.log(format!("Workbench solve failed: {error}")),
                     }
                     self.workbench.complete_solve(outcome);
+                    if let Err(error) = self.persist_completed_workbench_run() {
+                        self.log(format!("Could not persist workbench run: {error}"));
+                    }
                     self.tree_dirty = true;
                     changed = true;
                 }
@@ -319,6 +465,154 @@ impl AppState {
             self.logs.pop_front();
         }
         self.logs.push_back(line.into());
+    }
+
+    fn sync_workbench_project(&mut self) {
+        let mut document = self
+            .workbench
+            .to_project(self.workbench_project.name.clone());
+        document.project_id = self.workbench_project.project_id.clone();
+        document.runs = self.workbench_project.runs.clone();
+        self.workbench_project = document;
+    }
+
+    fn mark_workbench_dirty(&mut self) {
+        self.workbench_dirty = true;
+        self.workbench_autosave_needed = true;
+        self.sync_workbench_project();
+    }
+
+    fn autosave_workbench_if_needed(&mut self) -> Result<bool, String> {
+        if !self.workbench_autosave_needed {
+            return Ok(false);
+        }
+        let Some(workspace) = self.workspace_path.clone() else {
+            return Ok(false);
+        };
+        self.sync_workbench_project();
+        flursys::workbench::autosave_workspace(&workspace, &self.workbench_project)
+            .map_err(|error| error.to_string())?;
+        self.workbench_autosave_needed = false;
+        Ok(true)
+    }
+
+    fn save_workbench_workspace(&mut self, workspace: PathBuf) -> Result<(), String> {
+        self.sync_workbench_project();
+        flursys::save_workspace(&workspace, &self.workbench_project)
+            .map_err(|error| error.to_string())?;
+        self.workspace_path = Some(workspace);
+        self.workbench_dirty = false;
+        self.workbench_autosave_needed = false;
+        Ok(())
+    }
+
+    fn save_workbench_workspace_as(&mut self, workspace: PathBuf) -> Result<(), String> {
+        validate_new_workspace_target(&workspace)?;
+        self.save_workbench_workspace(workspace)
+    }
+
+    fn load_workbench_workspace(&mut self, workspace: PathBuf) -> Result<(), String> {
+        let document = flursys::load_workspace(&workspace).map_err(|error| error.to_string())?;
+        let session =
+            WorkbenchSession::from_project(&document).map_err(|error| error.to_string())?;
+        let recovery_available =
+            flursys::workbench::recovery_is_newer(&workspace).map_err(|error| error.to_string())?;
+        self.workbench_project = document;
+        self.workbench = session;
+        self.workspace_path = Some(workspace.clone());
+        self.workbench_dirty = false;
+        self.workbench_autosave_needed = false;
+        self.patch_names.clear();
+        self.selected_tree = None;
+        self.wb_selected_targets.clear();
+        self.tree_dirty = true;
+        self.pending_recovery_workspace = recovery_available.then_some(workspace);
+        Ok(())
+    }
+
+    fn recover_pending_workbench_workspace(&mut self) -> Result<(), String> {
+        let workspace = self
+            .pending_recovery_workspace
+            .clone()
+            .ok_or_else(|| "There is no workspace recovery to load.".to_string())?;
+        let document = flursys::load_workspace(&workspace.join("autosave"))
+            .map_err(|error| error.to_string())?;
+        let session =
+            WorkbenchSession::from_project(&document).map_err(|error| error.to_string())?;
+        self.workbench_project = document;
+        self.workbench = session;
+        self.workspace_path = Some(workspace);
+        self.workbench_dirty = true;
+        self.workbench_autosave_needed = false;
+        self.pending_recovery_workspace = None;
+        self.patch_names.clear();
+        self.selected_tree = None;
+        self.wb_selected_targets.clear();
+        self.tree_dirty = true;
+        Ok(())
+    }
+
+    fn discard_pending_workbench_recovery(&mut self) -> Result<(), String> {
+        let workspace = self
+            .pending_recovery_workspace
+            .clone()
+            .ok_or_else(|| "There is no workspace recovery to discard.".to_string())?;
+        flursys::workbench::discard_workspace_recovery(&workspace)
+            .map_err(|error| error.to_string())?;
+        self.pending_recovery_workspace = None;
+        Ok(())
+    }
+
+    fn persist_completed_workbench_run(&mut self) -> Result<(), String> {
+        let Some(workspace) = self.workspace_path.clone() else {
+            return Ok(());
+        };
+        let status = match self.workbench.status() {
+            SolveStatus::Converged => flursys::RunStatus::Converged,
+            SolveStatus::MaxIterations => flursys::RunStatus::MaxIterations,
+            SolveStatus::Failed(_) => flursys::RunStatus::Failed,
+            SolveStatus::Idle | SolveStatus::Solving => return Ok(()),
+        };
+        self.sync_workbench_project();
+        let mut record = self.workbench_project.next_run(status);
+        let run_directory = workspace.join(format!("runs/run-{:04}", record.ordinal));
+        fs::create_dir_all(&run_directory).map_err(|error| error.to_string())?;
+        if let (Some(mesh), Some(solution)) = (self.workbench.mesh(), self.workbench.solution()) {
+            record.mesh_identity = Some(mesh.mesh.id().get());
+            record.iterations = Some(solution.report.outer_iterations);
+            record.continuity_residual = Some(solution.report.final_continuity_rms);
+            record.total_inflow = Some(solution.report.total_inflow);
+            record.total_outflow = Some(solution.report.total_outflow);
+            record.net_boundary_flux = Some(solution.report.net_boundary_flux);
+            let solution_path = run_directory.join("solution.vtk");
+            self.workbench.export_vtk(&solution_path)?;
+            record.solution_path = Some(PathBuf::from(format!(
+                "runs/run-{:04}/solution.vtk",
+                record.ordinal
+            )));
+        }
+        let report = serde_json::json!({
+            "id": &record.id,
+            "ordinal": record.ordinal,
+            "status": &record.status,
+            "mesh_identity": record.mesh_identity,
+            "iterations": record.iterations,
+            "continuity_residual": record.continuity_residual,
+            "total_inflow": record.total_inflow,
+            "total_outflow": record.total_outflow,
+            "net_boundary_flux": record.net_boundary_flux,
+            "solution_path": &record.solution_path,
+        });
+        fs::write(
+            run_directory.join("report.json"),
+            format!(
+                "{}\n",
+                serde_json::to_string_pretty(&report).map_err(|error| error.to_string())?
+            ),
+        )
+        .map_err(|error| error.to_string())?;
+        self.workbench_project.runs.push(record);
+        self.save_workbench_workspace(workspace)
     }
 
     fn push_update(&mut self, update: SolverUpdate) {
@@ -357,6 +651,185 @@ fn require_project(state: &mut AppState) -> bool {
         state.log("Open or create a project before editing geometry.");
         false
     }
+}
+
+fn build_canonical_extrude(state: &mut AppState, distance_text: &str) -> Result<String, String> {
+    let source_face = state
+        .wb_selected_targets
+        .iter()
+        .find_map(|target| match target {
+            GeometrySelectionTarget::Face(face) => Some(*face),
+            _ => None,
+        })
+        .ok_or_else(|| "Select one planar canonical face before extruding.".to_string())?;
+    let distance = parse_positive(distance_text, "extrusion distance")?;
+    let sketch = state
+        .workbench
+        .create_sketch_on_face(source_face)
+        .map_err(|error| error.to_string())?;
+    let (feature, extrusion) = state
+        .workbench
+        .extrude_sketch_face(sketch.id, source_face, distance)
+        .map_err(|error| error.to_string())?;
+    state.mark_workbench_dirty();
+    state.wb_selected_targets = vec![GeometrySelectionTarget::Body(extrusion.body)];
+    state.selected_tree = tree_selection_for_target(GeometrySelectionTarget::Body(extrusion.body));
+    state.tree_dirty = true;
+    state.show_geometry_3d = true;
+    state.show_mesh = false;
+    Ok(format!(
+        "Extrude {} committed: Face {} → Body {}.",
+        feature.id.get(),
+        source_face.get(),
+        extrusion.body.get()
+    ))
+}
+
+fn translate_selected_body(
+    state: &mut AppState,
+    x: &str,
+    y: &str,
+    z: &str,
+) -> Result<String, String> {
+    let body = state
+        .wb_selected_targets
+        .iter()
+        .find_map(|target| match target {
+            GeometrySelectionTarget::Body(body) => Some(*body),
+            _ => None,
+        })
+        .ok_or_else(|| {
+            "Select one canonical Body in the project tree before translating.".to_string()
+        })?;
+    let displacement = Vec3::new(
+        parse_finite(x, "translate X")?,
+        parse_finite(y, "translate Y")?,
+        parse_finite(z, "translate Z")?,
+    );
+    if displacement.norm() == 0.0 {
+        return Err("Enter a non-zero body translation.".to_string());
+    }
+    state
+        .workbench
+        .translate_body(body, displacement)
+        .map_err(|error| error.to_string())?;
+    state.mark_workbench_dirty();
+    state.tree_dirty = true;
+    state.show_geometry_3d = true;
+    state.show_mesh = false;
+    Ok(format!(
+        "Translated Body {} by {:.6}, {:.6}, {:.6}.",
+        body.get(),
+        displacement.x,
+        displacement.y,
+        displacement.z
+    ))
+}
+
+fn canonical_plane_for_draft(plane: SketchPlane) -> CadSketchPlane {
+    match plane {
+        SketchPlane::Xy => CadSketchPlane::Xy,
+        SketchPlane::Yz => CadSketchPlane::Yz,
+        SketchPlane::Xz => CadSketchPlane::Zx,
+    }
+}
+
+fn draft_plane_from_ui_index(index: i32) -> SketchPlane {
+    match index {
+        1 => SketchPlane::Yz,
+        2 => SketchPlane::Xz,
+        _ => SketchPlane::Xy,
+    }
+}
+
+fn commit_draft_rectangle(state: &mut AppState) -> Result<String, String> {
+    let draft = state
+        .draft_sketch
+        .take()
+        .ok_or_else(|| "Start and draw a rectangle sketch before committing it.".to_string())?;
+    let plane = canonical_plane_for_draft(draft.plane);
+    let (width, height) = match draft.profile {
+        SketchProfileKind::Rectangle { width, height } => (width, height),
+        SketchProfileKind::Circle { .. } => {
+            state.draft_sketch = Some(draft);
+            return Err(
+                "Canonical circle profile materialization is not implemented yet.".to_string(),
+            );
+        }
+    };
+    let sketch = state
+        .workbench
+        .create_sketch_on_plane(plane)
+        .map_err(|error| error.to_string())?;
+    let face = state
+        .workbench
+        .materialize_sketch_rectangle(sketch.id, width, height)
+        .map_err(|error| error.to_string())?;
+    state.mark_workbench_dirty();
+    state.wb_selected_targets = vec![GeometrySelectionTarget::Face(face)];
+    state.geometry_editor.selection = state.wb_selected_targets.clone();
+    state.selected_tree = tree_selection_for_target(GeometrySelectionTarget::Face(face));
+    state.tree_dirty = true;
+    state.show_sketch_editor = false;
+    state.show_geometry_3d = true;
+    state.show_mesh = false;
+    Ok(format!(
+        "Committed draft rectangle as canonical Sketch {} and Face {}.",
+        sketch.id.get(),
+        face.get()
+    ))
+}
+
+struct BodyRotationInput<'a> {
+    pivot: [&'a str; 3],
+    axis: [&'a str; 3],
+    angle_degrees: &'a str,
+}
+
+fn rotate_selected_body(
+    state: &mut AppState,
+    input: BodyRotationInput<'_>,
+) -> Result<String, String> {
+    let body = state
+        .wb_selected_targets
+        .iter()
+        .find_map(|target| match target {
+            GeometrySelectionTarget::Body(body) => Some(*body),
+            _ => None,
+        })
+        .ok_or_else(|| {
+            "Select one canonical Body in the project tree before rotating.".to_string()
+        })?;
+    let pivot = Vec3::new(
+        parse_finite(input.pivot[0], "rotation pivot X")?,
+        parse_finite(input.pivot[1], "rotation pivot Y")?,
+        parse_finite(input.pivot[2], "rotation pivot Z")?,
+    );
+    let axis = Vec3::new(
+        parse_finite(input.axis[0], "rotation axis X")?,
+        parse_finite(input.axis[1], "rotation axis Y")?,
+        parse_finite(input.axis[2], "rotation axis Z")?,
+    );
+    let angle_degrees = parse_finite(input.angle_degrees, "rotation angle")?;
+    if angle_degrees == 0.0 {
+        return Err("Enter a non-zero rotation angle in degrees.".to_string());
+    }
+    state
+        .workbench
+        .rotate_body(body, pivot, axis, angle_degrees.to_radians())
+        .map_err(|error| error.to_string())?;
+    state.mark_workbench_dirty();
+    state.tree_dirty = true;
+    state.show_geometry_3d = true;
+    state.show_mesh = false;
+    Ok(format!(
+        "Rotated Body {} by {:.6}° about axis {:.6}, {:.6}, {:.6}.",
+        body.get(),
+        angle_degrees,
+        axis.x,
+        axis.y,
+        axis.z
+    ))
 }
 
 fn apply_axis_constraint(state: &mut AppState, axis: SketchAxis) {
@@ -414,6 +887,17 @@ fn main() -> Result<(), slint::PlatformError> {
         if state.drain_workbench_jobs() {
             changed = true;
         }
+        match state.autosave_workbench_if_needed() {
+            Ok(true) => {
+                state.log("Workspace recovery autosaved.");
+                changed = true;
+            }
+            Ok(false) => {}
+            Err(error) => {
+                state.log(format!("Workspace recovery autosave failed: {error}"));
+                changed = true;
+            }
+        }
         if state.animation_playing
             && state.frames.len() > 1
             && state.last_animation_tick.elapsed() >= Duration::from_millis(120)
@@ -430,31 +914,39 @@ fn main() -> Result<(), slint::PlatformError> {
     ui.run()
 }
 
-fn gallery_descriptors() -> Vec<ExampleDescriptor> {
-    example_descriptors()
+fn gallery_templates() -> (Vec<CaseTemplateManifest>, Vec<String>) {
+    discover_templates(&Path::new(env!("CARGO_MANIFEST_DIR")).join("cases/templates"))
+        .into_iter()
+        .fold(
+            (Vec::new(), Vec::new()),
+            |(mut templates, mut errors), entry| {
+                match entry {
+                    Ok(template) => templates.push(template),
+                    Err(error) => errors.push(error.to_string()),
+                }
+                (templates, errors)
+            },
+        )
+}
+
+fn gallery_descriptors(templates: &[CaseTemplateManifest]) -> Vec<ExampleDescriptor> {
+    templates
         .iter()
-        .map(|descriptor| ExampleDescriptor {
-            id: SharedString::from(format!("{:?}", descriptor.id)),
-            title: SharedString::from(descriptor.title),
+        .map(|template| ExampleDescriptor {
+            id: SharedString::from(&template.id),
+            title: SharedString::from(&template.name),
             category: SharedString::from(format!(
-                "{} · {:?} · {}",
-                descriptor.category, descriptor.dimension, descriptor.difficulty
+                "{} · {:?}",
+                template.category, template.project_template.mesh.dimension
             )),
-            summary: SharedString::from(descriptor.short_description),
+            summary: SharedString::from(&template.description),
             details: SharedString::from(format!(
-                "Demonstrates: {}\nExpected: {}",
-                descriptor.capabilities.join(" · "),
-                descriptor.expected_behavior
+                "Capabilities: {}\nTemplate ID: {}",
+                template.capabilities.join(" · "),
+                template.id
             )),
         })
         .collect()
-}
-
-fn example_id_from_index(index: i32) -> Option<ExampleProjectId> {
-    usize::try_from(index)
-        .ok()
-        .and_then(|index| example_descriptors().get(index))
-        .map(|descriptor| descriptor.id)
 }
 
 fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
@@ -500,6 +992,7 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
         match result {
             Ok(true) => {
                 state.workbench.geometry_changed();
+                state.mark_workbench_dirty();
                 state.wb_selected_targets.clear();
                 state.tree_dirty = true;
                 state.log("Geometry updated; dependent mesh and solution were invalidated.");
@@ -704,31 +1197,13 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
     ui.on_open_example(move |index| {
         let Some(ui) = weak_ui.upgrade() else { return };
         let mut state = examples_state.borrow_mut();
-        if let Some(id) = example_id_from_index(index) {
-            match build_example(id) {
-                Ok(session) => {
-                    state.workbench = session;
-                    state.geometry_editor = GeometryEditorState::new();
-                    state
-                        .geometry_editor
-                        .transform
-                        .set_viewport(f64::from(PREVIEW_WIDTH), f64::from(PREVIEW_HEIGHT));
-                    state.patch_names.clear();
-                    state.selected_tree = None;
-                    state.wb_selected_targets.clear();
-                    state.tree_dirty = true;
-                    state.show_mesh = false;
-                    state.show_geometry_3d = true;
-                    state.current_step = 0;
-                    ui.set_current_step(0);
-                    ui.set_examples_open(false);
-                    state.log(format!(
-                        "Opened editable example: {}.",
-                        example_descriptors()[index as usize].title
-                    ));
-                }
-                Err(error) => state.log(error.to_string()),
+        match state.open_gallery_template(index) {
+            Ok(title) => {
+                ui.set_current_step(0);
+                ui.set_examples_open(false);
+                state.log(format!("Opened editable case template: {title}."));
             }
+            Err(error) => state.log(error),
         }
         refresh_ui(&ui, &state);
     });
@@ -742,24 +1217,10 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
         if let Err(error) = state.controller.send(SolverCommand::Stop) {
             state.log(error);
         }
-        state.project = Project::default();
         state.project_loaded = true;
-        state.last_update = None;
-        state.residual_history.clear();
-        state.frames.clear();
-        state.frame_index = 0;
-        state.animation_playing = false;
-        state.show_mesh = false;
-        state.show_geometry_3d = true;
-        state.draft_sketch = None;
-        state.show_sketch_editor = false;
-        state.sketch_points.clear();
-        state.sketch_hover = None;
-        state.sketch_undo.clear();
-        state.sketch_redo.clear();
-        state.preflight_summary = "Run validation before starting the solver.".to_string();
-        state.log("Created a new editable project.");
-        write_project_to_ui(&ui, &state.project);
+        state.new_blank_workbench_project(MeshDimension::TwoD);
+        push_workbench_defaults(&ui, &state.workbench);
+        state.log("Created a new blank 2D workbench project.");
         refresh_ui(&ui, &state);
     });
 
@@ -829,29 +1290,21 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
             refresh_ui(&ui, &state);
             return;
         }
-        sync_project_from_ui(&ui, &mut state.project);
-        let sketch = state
-            .draft_sketch
-            .take()
-            .map(Ok)
-            .unwrap_or_else(|| sketch_from_ui(&ui));
-        match sketch.and_then(|sketch| {
-            feature_from_ui(&ui).and_then(|(name, feature)| {
-                state
-                    .project
-                    .preprocessing
-                    .geometry
-                    .add_sketch_feature(sketch, name, feature)
-            })
-        }) {
-            Ok(output) => {
-                state.log(format!("Built CAD feature output: {output}."));
-                state.show_geometry_3d = true;
-                state.show_mesh = false;
-                state.show_sketch_editor = false;
-                write_project_to_ui(&ui, &state.project);
+        if ui.get_feature_kind_index() != 0 {
+            state.log("Revolve is unavailable in the canonical CAD workflow.");
+        } else if state.draft_sketch.is_some() {
+            match commit_draft_rectangle(&mut state).and_then(|commit| {
+                build_canonical_extrude(&mut state, ui.get_feature_depth().as_str())
+                    .map(|extrude| (commit, extrude))
+            }) {
+                Ok((commit, extrude)) => state.log(format!("{commit} {extrude}")),
+                Err(error) => state.log(error),
             }
-            Err(error) => state.log(error),
+        } else {
+            match build_canonical_extrude(&mut state, ui.get_feature_depth().as_str()) {
+                Ok(message) => state.log(message),
+                Err(error) => state.log(error),
+            }
         }
         refresh_ui(&ui, &state);
     });
@@ -869,8 +1322,10 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
         }
         match sketch_from_ui(&ui) {
             Ok(mut sketch) => {
+                sketch.plane = draft_plane_from_ui_index(ui.get_sketch_plane_index());
                 sketch.entities.clear();
                 sketch.dimensions.clear();
+                let plane_label = sketch.plane.label();
                 state.draft_sketch = Some(sketch);
                 state.show_sketch_editor = true;
                 state.sketch_tool = SketchTool::Select;
@@ -878,7 +1333,10 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
                 state.sketch_hover = None;
                 state.sketch_undo.clear();
                 state.sketch_redo.clear();
-                state.log("Started an editable 2D sketch on the XY plane.");
+                state.log(format!(
+                    "Started an editable 2D sketch on the {} plane.",
+                    plane_label
+                ));
             }
             Err(error) => state.log(error),
         }
@@ -1212,26 +1670,108 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
     });
 
     let weak_ui = ui.as_weak();
+    let open_native_state = state.clone();
+    ui.on_open_project_native(move || {
+        let Some(ui) = weak_ui.upgrade() else {
+            return;
+        };
+        let Some(workspace) = choose_workspace_folder("Open FLURSYS Workspace") else {
+            return;
+        };
+        let mut state = open_native_state.borrow_mut();
+        match state.load_workbench_workspace(workspace) {
+            Ok(()) => {
+                state.project_loaded = true;
+                state.log("Workbench workspace loaded.");
+                push_workbench_defaults(&ui, &state.workbench);
+            }
+            Err(error) => state.log(error),
+        }
+        refresh_ui(&ui, &state);
+    });
+
+    let weak_ui = ui.as_weak();
+    let save_as_state = state.clone();
+    ui.on_save_project_as(move || {
+        let Some(ui) = weak_ui.upgrade() else {
+            return;
+        };
+        let Some(workspace) = choose_workspace_folder("Choose or Create FLURSYS Workspace") else {
+            return;
+        };
+        let mut state = save_as_state.borrow_mut();
+        if require_project(&mut state) {
+            match state.save_workbench_workspace_as(workspace) {
+                Ok(()) => state.log("Workbench workspace saved to a new folder."),
+                Err(error) => state.log(error),
+            }
+        }
+        refresh_ui(&ui, &state);
+    });
+
+    let weak_ui = ui.as_weak();
+    let save_native_state = state.clone();
+    ui.on_save_project_native(move || {
+        let Some(ui) = weak_ui.upgrade() else {
+            return;
+        };
+        let known_workspace = save_native_state.borrow().workspace_path.clone();
+        let route = workspace_save_route(known_workspace.as_deref());
+        let destination = match route {
+            WorkspaceSaveRoute::Existing(workspace) => Some((workspace, false)),
+            WorkspaceSaveRoute::SaveAsRequired => {
+                choose_workspace_folder("Choose or Create FLURSYS Workspace")
+                    .map(|workspace| (workspace, true))
+            }
+        };
+        let Some((workspace, save_as)) = destination else {
+            return;
+        };
+        let mut state = save_native_state.borrow_mut();
+        if require_project(&mut state) {
+            let result = if save_as {
+                state.save_workbench_workspace_as(workspace)
+            } else {
+                state.save_workbench_workspace(workspace)
+            };
+            match result {
+                Ok(()) if save_as => state.log("Workbench workspace saved to a new folder."),
+                Ok(()) => state.log("Workbench workspace saved."),
+                Err(error) => state.log(error),
+            }
+        }
+        refresh_ui(&ui, &state);
+    });
+
+    let weak_ui = ui.as_weak();
     let load_state = state.clone();
     ui.on_load_project(move || {
         let Some(ui) = weak_ui.upgrade() else {
             return;
         };
-        match Project::load(ui.get_project_path().as_str()) {
-            Ok(project) => {
-                let mut state = load_state.borrow_mut();
-                state.project = project;
-                state.project_loaded = true;
-                state.log("Project loaded.");
-                write_project_to_ui(&ui, &state.project);
-                refresh_ui(&ui, &state);
+        let path = PathBuf::from(ui.get_project_path().as_str());
+        let mut state = load_state.borrow_mut();
+        if path.is_dir() {
+            match state.load_workbench_workspace(path) {
+                Ok(()) => {
+                    state.project_loaded = true;
+                    state.log("Workbench workspace loaded.");
+                    push_workbench_defaults(&ui, &state.workbench);
+                }
+                Err(error) => state.log(error),
             }
-            Err(error) => {
-                let mut state = load_state.borrow_mut();
-                state.log(error);
-                refresh_ui(&ui, &state);
+        } else {
+            match Project::load(&path) {
+                Ok(project) => {
+                    state.project = project;
+                    state.project_loaded = true;
+                    state.log("Legacy project loaded. Save to a workspace folder to migrate it.");
+                    write_project_to_ui(&ui, &state.project);
+                }
+                Err(error) => state.log(error),
             }
         }
+        refresh_ui(&ui, &state);
     });
 
     let weak_ui = ui.as_weak();
@@ -1245,9 +1785,51 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
             refresh_ui(&ui, &state);
             return;
         }
-        sync_project_from_ui(&ui, &mut state.project);
-        match state.project.save(ui.get_project_path().as_str()) {
-            Ok(()) => state.log("Project saved."),
+        let workspace = PathBuf::from(ui.get_project_path().as_str());
+        if workspace.extension().is_some() {
+            state.log("Save requires a workspace folder path, not a legacy project file path.");
+        } else {
+            let save_as = state.workspace_path.as_deref() != Some(workspace.as_path());
+            let result = if save_as {
+                state.save_workbench_workspace_as(workspace)
+            } else {
+                state.save_workbench_workspace(workspace)
+            };
+            match result {
+                Ok(()) if save_as => state.log("Workbench workspace saved to a new folder."),
+                Ok(()) => state.log("Workbench workspace saved."),
+                Err(error) => state.log(error),
+            }
+        }
+        refresh_ui(&ui, &state);
+    });
+
+    let weak_ui = ui.as_weak();
+    let recovery_state = state.clone();
+    ui.on_recover_workspace(move || {
+        let Some(ui) = weak_ui.upgrade() else {
+            return;
+        };
+        let mut state = recovery_state.borrow_mut();
+        match state.recover_pending_workbench_workspace() {
+            Ok(()) => {
+                state.log("Workspace recovery loaded; save to make it canonical.");
+                push_workbench_defaults(&ui, &state.workbench);
+            }
+            Err(error) => state.log(error),
+        }
+        refresh_ui(&ui, &state);
+    });
+
+    let weak_ui = ui.as_weak();
+    let recovery_state = state.clone();
+    ui.on_discard_workspace_recovery(move || {
+        let Some(ui) = weak_ui.upgrade() else {
+            return;
+        };
+        let mut state = recovery_state.borrow_mut();
+        match state.discard_pending_workbench_recovery() {
+            Ok(()) => state.log("Workspace recovery discarded; saved project remains open."),
             Err(error) => state.log(error),
         }
         refresh_ui(&ui, &state);
@@ -1547,6 +2129,28 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
                 refresh_ui(&ui, &state);
                 return;
             }
+            if let Some(ray) = canonical_geometry_ray(
+                state.workbench.geometry(),
+                state.geometry_yaw,
+                state.geometry_pitch,
+                state.geometry_zoom,
+                point,
+            ) {
+                if let Some(hit) = state.workbench.geometry().pick_face(ray) {
+                    let target = GeometrySelectionTarget::Face(hit.face);
+                    state.wb_selected_targets = vec![target];
+                    state.geometry_editor.selection = vec![target];
+                    state.selected_tree = tree_selection_for_target(target);
+                    ui.set_inspector_mode(0);
+                    state.log(format!(
+                        "Selected canonical Face {} from the 3D view.",
+                        hit.face.get()
+                    ));
+                    rebuild_tree_rows(&mut state);
+                    refresh_ui(&ui, &state);
+                    return;
+                }
+            }
         }
         let selected = if state.show_mesh {
             pick_boundary_2d(&state.project, point)
@@ -1631,6 +2235,60 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
 
     // ---- Workbench pipeline ----
     let weak_ui = ui.as_weak();
+    let transform_state = state.clone();
+    ui.on_translate_selected_body(move || {
+        let Some(ui) = weak_ui.upgrade() else {
+            return;
+        };
+        let mut state = transform_state.borrow_mut();
+        match translate_selected_body(
+            &mut state,
+            ui.get_body_translate_x().as_str(),
+            ui.get_body_translate_y().as_str(),
+            ui.get_body_translate_z().as_str(),
+        ) {
+            Ok(message) => {
+                state.log(message);
+                rebuild_tree_rows(&mut state);
+            }
+            Err(error) => state.log(error),
+        }
+        refresh_ui(&ui, &state);
+    });
+
+    let weak_ui = ui.as_weak();
+    let transform_state = state.clone();
+    ui.on_rotate_selected_body(move || {
+        let Some(ui) = weak_ui.upgrade() else {
+            return;
+        };
+        let mut state = transform_state.borrow_mut();
+        match rotate_selected_body(
+            &mut state,
+            BodyRotationInput {
+                pivot: [
+                    ui.get_body_pivot_x().as_str(),
+                    ui.get_body_pivot_y().as_str(),
+                    ui.get_body_pivot_z().as_str(),
+                ],
+                axis: [
+                    ui.get_body_axis_x().as_str(),
+                    ui.get_body_axis_y().as_str(),
+                    ui.get_body_axis_z().as_str(),
+                ],
+                angle_degrees: ui.get_body_angle_degrees().as_str(),
+            },
+        ) {
+            Ok(message) => {
+                state.log(message);
+                rebuild_tree_rows(&mut state);
+            }
+            Err(error) => state.log(error),
+        }
+        refresh_ui(&ui, &state);
+    });
+
+    let weak_ui = ui.as_weak();
     let workflow_state = state.clone();
     ui.on_select_tree_row(move |index| {
         let Some(ui) = weak_ui.upgrade() else {
@@ -1666,6 +2324,16 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
                     kind: row.kind,
                     payload: row.payload,
                 });
+                ui.set_inspector_mode(0);
+                rebuild_tree_rows(&mut state);
+                refresh_ui(&ui, &state);
+            }
+            TREE_KIND_SKETCH | TREE_KIND_EXTRUDE_FEATURE => {
+                state.selected_tree = Some(TreeSelection {
+                    kind: row.kind,
+                    payload: row.payload,
+                });
+                state.wb_selected_targets.clear();
                 ui.set_inspector_mode(0);
                 rebuild_tree_rows(&mut state);
                 refresh_ui(&ui, &state);
@@ -1723,6 +2391,26 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
                 rebuild_tree_rows(&mut state);
                 refresh_ui(&ui, &state);
             }
+            TREE_KIND_RUN => {
+                let Some(run_id) = state
+                    .workbench_project
+                    .runs
+                    .get(usize::try_from(row.payload.max(0)).unwrap_or(usize::MAX))
+                    .map(|run| run.id.clone())
+                else {
+                    return;
+                };
+                state.selected_tree = Some(TreeSelection {
+                    kind: row.kind,
+                    payload: row.payload,
+                });
+                state.pending_run_delete = None;
+                state.wb_selected_targets.clear();
+                state.log(format!("Selected persisted run '{run_id}'."));
+                ui.set_inspector_mode(6);
+                rebuild_tree_rows(&mut state);
+                refresh_ui(&ui, &state);
+            }
             _ => {}
         }
     });
@@ -1749,6 +2437,7 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
         let targets = state.wb_selected_targets.clone();
         match state.workbench.create_named_selection(&name, targets) {
             Ok(()) => {
+                state.mark_workbench_dirty();
                 state.log(format!(
                     "Created Named Selection '{name}' with {count} entities."
                 ));
@@ -1776,6 +2465,7 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
         let new_name = ui.get_ns_edit_name().trim().to_string();
         match state.workbench.rename_named_selection(&old_name, &new_name) {
             Ok(()) => {
+                state.mark_workbench_dirty();
                 state.log(format!(
                     "Renamed Named Selection '{old_name}' to '{new_name}'."
                 ));
@@ -1801,6 +2491,7 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
             return;
         };
         if state.workbench.delete_named_selection(&name) {
+            state.mark_workbench_dirty();
             state.log(format!(
                 "Deleted Named Selection '{name}'. Its boundary assignment is dropped."
             ));
@@ -1842,6 +2533,7 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
             refresh_ui(&ui, &state);
             return;
         }
+        state.mark_workbench_dirty();
         match state.workbench.mesh_generation_inputs() {
             Ok((export, options)) => {
                 let (sender, receiver) = std::sync::mpsc::channel();
@@ -1899,6 +2591,7 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
         };
         match state.workbench.assign_boundary(&patch, condition) {
             Ok(()) => {
+                state.mark_workbench_dirty();
                 state.log(format!(
                     "Assigned {:?} to patch '{patch}'.",
                     bc_kind_label(condition)
@@ -1926,6 +2619,7 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
             return;
         };
         if state.workbench.unassign_boundary(&patch) {
+            state.mark_workbench_dirty();
             state.log(format!("Cleared the assignment on patch '{patch}'."));
             push_boundary_fields(&ui, &state.workbench, &patch);
             rebuild_tree_rows(&mut state);
@@ -1943,7 +2637,10 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
         };
         let mut state = solver_state_wb.borrow_mut();
         match sync_solver_panel(&ui, &mut state.workbench) {
-            Ok(()) => state.log("Applied material and SIMPLE solver settings."),
+            Ok(()) => {
+                state.mark_workbench_dirty();
+                state.log("Applied material and SIMPLE solver settings.");
+            }
             Err(error) => state.log(error),
         }
         refresh_ui(&ui, &state);
@@ -1966,6 +2663,7 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
             refresh_ui(&ui, &state);
             return;
         }
+        state.mark_workbench_dirty();
         if let Err(reason) = state.workbench.readiness() {
             state.log(format!("Run blocked: {reason}"));
             refresh_ui(&ui, &state);
@@ -1996,22 +2694,53 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
     });
 
     let weak_ui = ui.as_weak();
-    let vtk_state = state.clone();
-    ui.on_export_vtk_wb(move || {
+    let delete_run_state = state.clone();
+    ui.on_delete_run_wb(move || {
         let Some(ui) = weak_ui.upgrade() else {
             return;
         };
-        let mut state = vtk_state.borrow_mut();
-        let path = std::path::PathBuf::from("results/workbench-run/channel.vtk");
-        match state.workbench.export_vtk(&path) {
+        let mut state = delete_run_state.borrow_mut();
+        if state.meshing || state.solving {
+            state.log("Wait for the active job to finish before deleting a saved run.");
+            refresh_ui(&ui, &state);
+            return;
+        }
+        let Some(run_id) = selected_run(&state).map(|run| run.id.clone()) else {
+            state.log("Select a persisted run in the project tree first.");
+            refresh_ui(&ui, &state);
+            return;
+        };
+        if state.pending_run_delete.as_deref() != Some(run_id.as_str()) {
+            state.pending_run_delete = Some(run_id.clone());
+            state.log(format!(
+                "Delete for '{run_id}' is armed. Press DELETE RUN again to confirm permanently."
+            ));
+            refresh_ui(&ui, &state);
+            return;
+        }
+        let Some(workspace) = state.workspace_path.clone() else {
+            state.pending_run_delete = None;
+            state.log("Save this project to a workspace folder before deleting persisted runs.");
+            refresh_ui(&ui, &state);
+            return;
+        };
+        match flursys::delete_workspace_run(&workspace, &mut state.workbench_project, &run_id) {
             Ok(()) => {
+                state.pending_run_delete = None;
+                state.selected_tree = None;
+                state.workbench_dirty = false;
+                state.tree_dirty = true;
                 state.log(format!(
-                    "Exported legacy VTK unstructured grid to {}.",
-                    path.display()
+                    "Deleted persisted run '{run_id}' and its workspace artifacts."
                 ));
-                ui.set_visualization_title(SharedString::from("WORKBENCH RUN EXPORTED"));
+                rebuild_tree_rows(&mut state);
             }
-            Err(error) => state.log(format!("VTK export failed: {error}")),
+            Err(error) => {
+                state.pending_run_delete = None;
+                state.log(format!(
+                    "Could not delete persisted run '{run_id}': {error}"
+                ));
+            }
         }
         refresh_ui(&ui, &state);
     });
@@ -2150,6 +2879,23 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
             });
             state.workbench.set_mesh_hover(hover);
             refresh_ui(&ui, &state);
+        } else if state.show_geometry_3d && !state.show_sketch_editor {
+            let Some(point) = preview_image_point(x, y, width, height) else {
+                return;
+            };
+            let hover = canonical_geometry_ray(
+                state.workbench.geometry(),
+                state.geometry_yaw,
+                state.geometry_pitch,
+                state.geometry_zoom,
+                point,
+            )
+            .and_then(|ray| state.workbench.geometry().pick_face(ray))
+            .map(|hit| GeometrySelectionTarget::Face(hit.face));
+            if state.geometry_editor.hover_target != hover {
+                state.geometry_editor.hover_target = hover;
+                refresh_ui(&ui, &state);
+            }
         }
     });
 }
@@ -2210,6 +2956,18 @@ fn rebuild_tree_rows(state: &mut AppState) {
         .edges()
         .map(|edge| edge.id.get())
         .collect();
+    let sketches: Vec<u64> = state
+        .workbench
+        .geometry()
+        .sketches()
+        .map(|sketch| sketch.id.get())
+        .collect();
+    let extrude_features: Vec<(u64, u64)> = state
+        .workbench
+        .geometry()
+        .extrude_features()
+        .map(|feature| (feature.id.get(), feature.body.get()))
+        .collect();
     let mesh_cells = state
         .workbench
         .mesh()
@@ -2230,6 +2988,12 @@ fn rebuild_tree_rows(state: &mut AppState) {
             )
         })
         .collect();
+    let runs: Vec<(String, String)> = state
+        .workbench_project
+        .runs
+        .iter()
+        .map(|run| (run.id.clone(), run_status_label(&run.status).to_string()))
+        .collect();
     let solved = matches!(
         state.workbench.status(),
         SolveStatus::Converged | SolveStatus::MaxIterations
@@ -2239,9 +3003,12 @@ fn rebuild_tree_rows(state: &mut AppState) {
         &faces,
         &vertices,
         &edges,
+        &sketches,
+        &extrude_features,
         mesh_cells,
         &named_selections,
         &patches,
+        &runs,
         &status_label(&state.workbench),
         solved,
         state.current_step,
@@ -2307,6 +3074,14 @@ fn selected_patch_index(selection: Option<TreeSelection>) -> Option<usize> {
     selection
         .filter(|entry| entry.kind == TREE_KIND_PATCH && entry.payload >= 0)
         .map(|entry| entry.payload as usize)
+}
+
+fn selected_run(state: &AppState) -> Option<&flursys::RunRecord> {
+    let selection = state.selected_tree?;
+    (selection.kind == TREE_KIND_RUN)
+        .then(|| usize::try_from(selection.payload.max(0)).ok())
+        .flatten()
+        .and_then(|index| state.workbench_project.runs.get(index))
 }
 
 fn describe_targets(targets: &[GeometrySelectionTarget]) -> String {
@@ -2390,6 +3165,44 @@ fn geometry_target_inspector(
     }
 }
 
+fn canonical_design_inspector(
+    topology: &flursys::GeometryTopology,
+    selection: TreeSelection,
+) -> Option<String> {
+    match selection.kind {
+        TREE_KIND_SKETCH => topology
+            .sketches()
+            .find(|sketch| sketch.id.get() == selection.payload as u64)
+            .map(|sketch| {
+                format!(
+                    "Sketch {}\nPlane {:?}\nHost face {}\nOrigin {:.6}, {:.6}, {:.6}\nNormal {:.6}, {:.6}, {:.6}",
+                    sketch.id.get(),
+                    sketch.plane,
+                    sketch.host_face.map_or_else(|| "—".to_string(), |face| face.get().to_string()),
+                    sketch.frame.origin.x,
+                    sketch.frame.origin.y,
+                    sketch.frame.origin.z,
+                    sketch.frame.normal.x,
+                    sketch.frame.normal.y,
+                    sketch.frame.normal.z,
+                )
+            }),
+        TREE_KIND_EXTRUDE_FEATURE => topology
+            .extrude_features()
+            .find(|feature| feature.id.get() == selection.payload as u64)
+            .map(|feature| {
+                format!(
+                    "Extrude {}\nSketch {}\nSource face {}\nBody {}",
+                    feature.id.get(),
+                    feature.sketch.get(),
+                    feature.source_face.get(),
+                    feature.body.get(),
+                )
+            }),
+        _ => None,
+    }
+}
+
 fn selected_named_selection_name(state: &AppState) -> Option<String> {
     let selection = state.selected_tree?;
     if selection.kind != TREE_KIND_NAMED_SELECTION {
@@ -2413,6 +3226,36 @@ fn selection_memberships(
         .filter(|selection| selection.targets.contains(target))
         .map(|selection| selection.name.clone())
         .collect()
+}
+
+fn run_inspector_text(run: &flursys::RunRecord, delete_armed: bool) -> String {
+    let artifact = run
+        .solution_path
+        .as_ref()
+        .map_or_else(|| "— none".to_string(), |path| path.display().to_string());
+    format!(
+        "ID                 {}\nStatus             {}\nCreated (Unix ms)  {}\nMesh identity      {}\nIterations         {}\nContinuity         {}\nInflow / outflow   {} / {}\nNet boundary flux  {}\nReport             {}\nSolution           {}\n\n{}",
+        run.id,
+        run_status_label(&run.status),
+        run.created_unix_ms,
+        run.mesh_identity.map_or_else(|| "—".to_string(), |value| value.to_string()),
+        run.iterations.map_or_else(|| "—".to_string(), |value| value.to_string()),
+        run.continuity_residual.map_or_else(|| "—".to_string(), |value| format!("{value:.3e}")),
+        run.total_inflow.map_or_else(|| "—".to_string(), |value| format!("{value:.3e}")),
+        run.total_outflow.map_or_else(|| "—".to_string(), |value| format!("{value:.3e}")),
+        run.net_boundary_flux.map_or_else(|| "—".to_string(), |value| format!("{value:.3e}")),
+        run.report_path.display(),
+        artifact,
+        if delete_armed { "DELETE ARMED — press DELETE RUN again to confirm." } else { "Delete is not armed." },
+    )
+}
+
+fn run_status_label(status: &flursys::RunStatus) -> &'static str {
+    match status {
+        flursys::RunStatus::Converged => "Converged",
+        flursys::RunStatus::MaxIterations => "Iteration limit",
+        flursys::RunStatus::Failed => "Failed",
+    }
 }
 
 fn status_label(session: &WorkbenchSession) -> String {
@@ -2837,6 +3680,22 @@ fn sync_example_gallery(ui: &MainWindow, state: &AppState) {
 
 fn refresh_ui(ui: &MainWindow, state: &AppState) {
     ui.set_project_loaded(state.project_loaded);
+    ui.set_recovery_pending(state.pending_recovery_workspace.is_some());
+    ui.set_recovery_workspace(SharedString::from(
+        state
+            .pending_recovery_workspace
+            .as_ref()
+            .map_or_else(String::new, |workspace| workspace.display().to_string()),
+    ));
+    let project_name = if state.workbench_dirty {
+        format!("{} *", state.workbench_project.name)
+    } else {
+        state.workbench_project.name.clone()
+    };
+    ui.set_project_name(SharedString::from(project_name));
+    if let Some(workspace) = &state.workspace_path {
+        ui.set_project_path(SharedString::from(workspace.display().to_string()));
+    }
     sync_example_gallery(ui, state);
     if !state.project_loaded {
         ui.set_geometry_parts_summary(SharedString::from(
@@ -3086,12 +3945,24 @@ fn refresh_ui(ui: &MainWindow, state: &AppState) {
         2 => "MESH GENERATION",
         3 => "BOUNDARY CONDITIONS",
         4 => "SOLVER SETTINGS",
+        6 => "RUN HISTORY",
         _ => "RESULTS",
     }));
     let selected_target = state.selected_tree.and_then(|selection| {
         find_geometry_target(&state.workbench, selection.kind, selection.payload)
     });
     match (inspector_mode, selected_target) {
+        (6, _) => {
+            ui.set_inspector_info(SharedString::from(selected_run(state).map_or_else(
+                || "Select a persisted run in the project tree.".to_string(),
+                |run| {
+                    run_inspector_text(
+                        run,
+                        state.pending_run_delete.as_deref() == Some(run.id.as_str()),
+                    )
+                },
+            )));
+        }
         (0, _) if state.workbench.mesh_selection().is_some() => {
             if let (Some(generated), Some(selection)) =
                 (state.workbench.mesh(), state.workbench.mesh_selection())
@@ -3123,6 +3994,21 @@ fn refresh_ui(ui: &MainWindow, state: &AppState) {
                 state.wb_selected_targets.len()
             )));
         }
+        (0, _) => {
+            let detail = state
+                .selected_tree
+                .and_then(|selection| canonical_design_inspector(state.workbench.geometry(), selection))
+                .unwrap_or_else(|| {
+                    let bodies = state.workbench.geometry().bodies().count();
+                    let faces = state.workbench.geometry().faces().count();
+                    let edges = state.workbench.geometry().edges().count();
+                    format!(
+                        "Fluid domain: {bodies} body · {faces} face · {edges} edges.\nPick a workflow stage on the left or in the top bar."
+                    )
+                });
+            ui.set_ns_members(SharedString::from(""));
+            ui.set_inspector_info(SharedString::from(detail));
+        }
         (mode, _) => {
             let bodies = state.workbench.geometry().bodies().count();
             let faces = state.workbench.geometry().faces().count();
@@ -3144,38 +4030,35 @@ fn refresh_ui(ui: &MainWindow, state: &AppState) {
     }
 
     if state.show_geometry_3d && !state.show_sketch_editor {
-        ui.set_visualization_title(SharedString::from("3D GEOMETRY & MESH"));
-        let (length, height) = project_case_domain(&state.project.case);
-        let base = StructuredMesh2D::new(
-            state.project.solver.nx,
-            state.project.solver.ny,
-            length,
-            height,
-        )
-        .expect("project domain and UI grid are validated before rendering");
-        let mesh = ExtrudedMesh3D::new(
-            base,
-            state.project.preprocessing.mesh.cells_z,
-            state.project.preprocessing.geometry.extrusion_depth,
-        )
-        .expect("project extrusion settings are validated before rendering");
-        let z_exaggeration = preview_z_exaggeration(&mesh);
+        ui.set_visualization_title(SharedString::from("CANONICAL 3D CAD"));
+        let topology = state.workbench.geometry();
+        let selected_face = state
+            .wb_selected_targets
+            .iter()
+            .find_map(|target| match target {
+                GeometrySelectionTarget::Face(face) => Some(*face),
+                _ => None,
+            });
+        let hovered_face = match state.geometry_editor.hover_target {
+            Some(GeometrySelectionTarget::Face(face)) => Some(face),
+            _ => None,
+        };
         ui.set_animation_status(SharedString::from(format!(
-            "{} cells · {} layers · selected: {} · visual Z ×{:.1} · preview samples ≤28 × 28 × 16 · yaw {:.0}° · pitch {:.0}° · zoom {:.0}%",
-            mesh.cell_count(),
-            mesh.nz,
-            state.selected_boundary_face.label(),
-            z_exaggeration,
+            "{} bodies · {} renderable faces · selected: {} · yaw {:.0}° · pitch {:.0}° · zoom {:.0}%",
+            topology.bodies().count(),
+            topology.renderable_faces().len(),
+            selected_face.map_or_else(|| "none".to_string(), |face| format!("Face {}", face.get())),
             state.geometry_yaw.to_degrees(),
             state.geometry_pitch.to_degrees(),
             state.geometry_zoom * 100.0,
         )));
-        ui.set_visualization_image(render_geometry_3d(
-            &state.project,
+        ui.set_visualization_image(render_canonical_geometry_3d(
+            topology,
             state.geometry_yaw,
             state.geometry_pitch,
             state.geometry_zoom,
-            Some(state.selected_boundary_face),
+            selected_face,
+            hovered_face,
         ));
     } else if state.show_mesh {
         if let Some(generated) = state.workbench.mesh() {
@@ -3347,6 +4230,136 @@ mod tests {
     use flursys::{
         GeometryPart, GeometryPartKind, GeometrySketch, ProjectCase, SketchPlane, SketchProfileKind,
     };
+    use tempfile::tempdir;
+
+    #[test]
+    fn save_route_uses_existing_workspace_or_requests_save_as() {
+        let known = PathBuf::from("known-workspace");
+        assert_eq!(
+            workspace_save_route(Some(&known)),
+            WorkspaceSaveRoute::Existing(known)
+        );
+        assert_eq!(
+            workspace_save_route(None),
+            WorkspaceSaveRoute::SaveAsRequired
+        );
+    }
+
+    #[test]
+    fn save_as_rejects_workspace_that_already_contains_project_document() {
+        let directory = tempdir().unwrap();
+        fs::write(directory.path().join("project.json"), "{}").unwrap();
+
+        let error = validate_new_workspace_target(directory.path()).unwrap_err();
+
+        assert!(error.contains("already contains project.json"));
+    }
+
+    #[test]
+    fn workbench_workspace_save_and_load_uses_the_canonical_document() {
+        let directory = tempdir().unwrap();
+        let mut state = AppState::new();
+        let rectangle = state.workbench.add_rectangle(2.0, 1.0).unwrap();
+        state
+            .workbench
+            .create_named_selection("inlet", vec![GeometrySelectionTarget::Edge(rectangle.left)])
+            .unwrap();
+        state.mark_workbench_dirty();
+        state
+            .save_workbench_workspace(directory.path().to_path_buf())
+            .unwrap();
+        assert!(!state.workbench_dirty);
+
+        let mut reopened = AppState::new();
+        reopened
+            .load_workbench_workspace(directory.path().to_path_buf())
+            .unwrap();
+        assert_eq!(
+            reopened
+                .workbench
+                .geometry()
+                .face(rectangle.face)
+                .unwrap()
+                .id,
+            rectangle.face
+        );
+        assert!(reopened.workbench.named_selections().get("inlet").is_some());
+        assert!(!reopened.workbench_dirty);
+    }
+
+    #[test]
+    fn dirty_known_workspace_is_autosaved_without_clearing_canonical_dirty_state() {
+        let directory = tempdir().unwrap();
+        let mut state = AppState::new();
+        state
+            .save_workbench_workspace(directory.path().to_path_buf())
+            .unwrap();
+        state.workbench.add_rectangle(2.0, 1.0).unwrap();
+        state.mark_workbench_dirty();
+
+        assert!(state.autosave_workbench_if_needed().unwrap());
+        assert!(flursys::workbench::recovery_is_newer(directory.path()).unwrap());
+        assert!(state.workbench_dirty);
+        assert!(!state.workbench_autosave_needed);
+    }
+
+    #[test]
+    fn loading_a_workspace_preserves_canonical_project_until_recovery_is_explicitly_chosen() {
+        let directory = tempdir().unwrap();
+        let canonical = WorkbenchProject::blank("canonical");
+        flursys::save_workspace(directory.path(), &canonical).unwrap();
+        let recovered = WorkbenchProject::blank("recovered");
+        flursys::workbench::autosave_workspace(directory.path(), &recovered).unwrap();
+
+        let mut state = AppState::new();
+        state
+            .load_workbench_workspace(directory.path().to_path_buf())
+            .unwrap();
+
+        assert_eq!(state.workbench_project.name, "canonical");
+        assert_eq!(
+            state.pending_recovery_workspace.as_deref(),
+            Some(directory.path())
+        );
+        state.recover_pending_workbench_workspace().unwrap();
+        assert_eq!(state.workbench_project.name, "recovered");
+        assert!(state.workbench_dirty);
+    }
+
+    #[test]
+    fn gallery_templates_are_discovered_and_open_as_workbench_projects() {
+        let (templates, errors) = gallery_templates();
+        assert!(
+            errors.is_empty(),
+            "built-in templates must all be valid: {errors:?}"
+        );
+        assert_eq!(templates.len(), 2);
+        assert!(templates.iter().any(|template| template.id == "blank-2d"));
+        assert!(templates.iter().any(|template| template.id == "blank-3d"));
+        for template in templates {
+            let session = WorkbenchSession::from_project(&template.project_template)
+                .expect("discovered template converts into an editable session");
+            assert_eq!(
+                session.geometry().revision(),
+                template.project_template.geometry.revision()
+            );
+        }
+    }
+
+    #[test]
+    fn opening_gallery_template_uses_its_project_document() {
+        let mut state = AppState::new();
+        state.workspace_path = Some(PathBuf::from("previous-workspace"));
+        state.workbench_dirty = false;
+
+        let title = state.open_gallery_template(1).unwrap();
+
+        assert_eq!(title, "Blank 3D Project");
+        assert_eq!(state.workbench_project.name, "Blank 3D Project");
+        assert_eq!(state.workbench.mesh_dimension(), MeshDimension::ThreeD);
+        assert!(state.workspace_path.is_none());
+        assert!(state.workbench_dirty);
+    }
 
     #[test]
     fn residual_indicators_are_bounded() {
@@ -3406,7 +4419,207 @@ mod tests {
     fn gui_starts_with_a_new_editable_project() {
         let state = AppState::new();
         assert!(state.project_loaded);
-        assert_eq!(state.project.name, "Lid-driven cavity");
+        assert_eq!(state.workbench_project.name, "Untitled Project");
+        assert!(state.workbench_dirty);
+    }
+
+    #[test]
+    fn gui_extrude_command_uses_selected_canonical_face_and_marks_project_dirty() {
+        let mut state = AppState::new();
+        let rectangle = state.workbench.add_rectangle(2.0, 1.0).unwrap();
+        state.workbench_dirty = false;
+        state.wb_selected_targets = vec![GeometrySelectionTarget::Face(rectangle.face)];
+
+        let message = build_canonical_extrude(&mut state, "0.5").unwrap();
+
+        assert!(message.contains("Face"));
+        assert!(state.workbench_dirty);
+        assert_eq!(state.workbench.geometry().extrude_features().count(), 1);
+        assert!(matches!(
+            state.wb_selected_targets.as_slice(),
+            [GeometrySelectionTarget::Body(_)]
+        ));
+    }
+
+    #[test]
+    fn project_tree_lists_canonical_sketch_and_extrude_feature() {
+        let mut state = AppState::new();
+        let rectangle = state.workbench.add_rectangle(2.0, 1.0).unwrap();
+        state.wb_selected_targets = vec![GeometrySelectionTarget::Face(rectangle.face)];
+        build_canonical_extrude(&mut state, "0.5").unwrap();
+
+        rebuild_tree_rows(&mut state);
+
+        assert!(state.tree_rows.iter().any(|row| row.label == "Sketches"));
+        assert!(state.tree_rows.iter().any(|row| row.label == "Sketch 1"));
+        assert!(state.tree_rows.iter().any(|row| row.label == "Features"));
+        assert!(state.tree_rows.iter().any(|row| row.label == "Extrude 1"));
+    }
+
+    #[test]
+    fn canonical_design_inspector_reports_sketch_and_feature_links() {
+        let mut state = AppState::new();
+        let rectangle = state.workbench.add_rectangle(2.0, 1.0).unwrap();
+        state.wb_selected_targets = vec![GeometrySelectionTarget::Face(rectangle.face)];
+        build_canonical_extrude(&mut state, "0.5").unwrap();
+        let topology = state.workbench.geometry();
+
+        let sketch = canonical_design_inspector(
+            topology,
+            TreeSelection {
+                kind: TREE_KIND_SKETCH,
+                payload: 1,
+            },
+        )
+        .unwrap();
+        let feature = canonical_design_inspector(
+            topology,
+            TreeSelection {
+                kind: TREE_KIND_EXTRUDE_FEATURE,
+                payload: 1,
+            },
+        )
+        .unwrap();
+
+        assert!(sketch.contains("Host face"));
+        assert!(feature.contains("Source face"));
+        assert!(feature.contains("Body"));
+    }
+
+    #[test]
+    fn canonical_viewport_ray_hits_the_same_extruded_topology_it_renders() {
+        let mut state = AppState::new();
+        let rectangle = state.workbench.add_rectangle(2.0, 1.0).unwrap();
+        let extrusion = state.workbench.extrude_face(rectangle.face, 0.5).unwrap();
+
+        let ray = canonical_geometry_ray(state.workbench.geometry(), 0.0, 0.0, 1.0, (260.0, 160.0))
+            .unwrap();
+        let hit = state.workbench.geometry().pick_face(ray).unwrap();
+
+        assert_eq!(hit.body, Some(extrusion.body));
+    }
+
+    #[test]
+    fn translate_selected_body_uses_the_canonical_session_command() {
+        let mut state = AppState::new();
+        let rectangle = state.workbench.add_rectangle(2.0, 1.0).unwrap();
+        let extrusion = state.workbench.extrude_face(rectangle.face, 0.5).unwrap();
+        state.wb_selected_targets = vec![GeometrySelectionTarget::Body(extrusion.body)];
+        state.workbench_dirty = false;
+
+        let message = translate_selected_body(&mut state, "1.0", "0", "0").unwrap();
+
+        assert!(message.contains("Body"));
+        assert!(state.workbench_dirty);
+        assert_eq!(
+            state
+                .workbench
+                .geometry()
+                .vertex(rectangle.vertices[0])
+                .unwrap()
+                .position,
+            Vec3::new(1.0, 0.0, 0.0)
+        );
+    }
+
+    #[test]
+    fn rotate_selected_body_uses_the_canonical_session_command() {
+        let mut state = AppState::new();
+        let rectangle = state.workbench.add_rectangle(2.0, 1.0).unwrap();
+        let extrusion = state.workbench.extrude_face(rectangle.face, 0.5).unwrap();
+        state.wb_selected_targets = vec![GeometrySelectionTarget::Body(extrusion.body)];
+        state.workbench_dirty = false;
+
+        let message = rotate_selected_body(
+            &mut state,
+            BodyRotationInput {
+                pivot: ["0", "0", "0"],
+                axis: ["0", "0", "1"],
+                angle_degrees: "90",
+            },
+        )
+        .unwrap();
+
+        assert!(message.contains("Rotated Body"));
+        assert!(state.workbench_dirty);
+        let position = state
+            .workbench
+            .geometry()
+            .vertex(rectangle.vertices[1])
+            .unwrap()
+            .position;
+        assert!(position.x.abs() < 1.0e-12);
+        assert!((position.y - 2.0).abs() < 1.0e-12);
+    }
+
+    #[test]
+    fn committing_a_draft_rectangle_creates_a_canonical_profile_face() {
+        let mut state = AppState::new();
+        state.draft_sketch = Some(GeometrySketch::from_profile(
+            "draft".into(),
+            SketchPlane::Xy,
+            SketchProfileKind::Rectangle {
+                width: 2.0,
+                height: 1.0,
+            },
+            0.0,
+            0.0,
+            0.0,
+        ));
+
+        let message = commit_draft_rectangle(&mut state).unwrap();
+
+        assert!(message.contains("canonical Sketch"));
+        assert!(state.draft_sketch.is_none());
+        assert!(matches!(
+            state.wb_selected_targets.as_slice(),
+            [GeometrySelectionTarget::Face(_)]
+        ));
+    }
+
+    #[test]
+    fn draft_sketch_planes_map_to_the_matching_canonical_planes() {
+        assert_eq!(
+            canonical_plane_for_draft(SketchPlane::Xy),
+            CadSketchPlane::Xy
+        );
+        assert_eq!(
+            canonical_plane_for_draft(SketchPlane::Yz),
+            CadSketchPlane::Yz
+        );
+        assert_eq!(
+            canonical_plane_for_draft(SketchPlane::Xz),
+            CadSketchPlane::Zx
+        );
+    }
+
+    #[test]
+    fn new_blank_workbench_project_clears_runtime_state_and_marks_dirty() {
+        let mut state = AppState::new();
+        state.workbench.add_rectangle(2.0, 1.0).unwrap();
+        state.mark_workbench_dirty();
+        state.patch_names.push("stale".into());
+        state.sketch_undo.push(GeometrySketch::from_profile(
+            "stale".into(),
+            SketchPlane::Xy,
+            SketchProfileKind::Rectangle {
+                width: 1.0,
+                height: 1.0,
+            },
+            0.0,
+            0.0,
+            0.0,
+        ));
+
+        state.new_blank_workbench_project(MeshDimension::ThreeD);
+
+        assert_eq!(state.workbench_project.name, "Untitled 3D Project");
+        assert_eq!(state.workbench.mesh_dimension(), MeshDimension::ThreeD);
+        assert_eq!(state.workbench.geometry().faces().count(), 0);
+        assert!(state.patch_names.is_empty());
+        assert!(state.sketch_undo.is_empty());
+        assert!(state.workspace_path.is_none());
+        assert!(state.workbench_dirty);
     }
 
     #[test]
@@ -3713,14 +4926,33 @@ mod tests {
             &[1],
             &[1, 2, 3, 4],
             &[1, 2, 3, 4],
+            &[],
+            &[],
             None,
             &[("inlet".to_string(), 1)],
             patches,
+            &[],
             "idle",
             false,
             0,
             None,
         )
+    }
+
+    #[test]
+    fn project_tree_lists_persisted_run_history_entries() {
+        let mut state = AppState::new();
+        let mut run = state
+            .workbench_project
+            .next_run(flursys::RunStatus::Converged);
+        run.iterations = Some(12);
+        state.workbench_project.runs.push(run);
+
+        rebuild_tree_rows(&mut state);
+
+        assert!(state.tree_rows.iter().any(|row| {
+            row.kind == TREE_KIND_RUN && row.label == "run-0001" && row.note == "Converged"
+        }));
     }
 
     #[test]
@@ -3752,6 +4984,7 @@ mod tests {
                 "outlet",
                 "Solution",
                 "Results",
+                "Runs",
             ]
         );
         let inlet_patch = &rows[16];
@@ -3773,8 +5006,11 @@ mod tests {
             &[1],
             &[1, 2, 3, 4],
             &[1, 2, 3, 4],
+            &[],
+            &[],
             None,
             &[("inlet".to_string(), 1)],
+            &[],
             &[],
             "idle",
             false,
@@ -3829,9 +5065,12 @@ mod tests {
             &faces,
             &vertices,
             &edges,
+            &[],
+            &[],
             None,
             &named_selections,
             &patches,
+            &[],
             "idle",
             false,
             0,
