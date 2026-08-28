@@ -50,6 +50,7 @@ is_semver() {
 
 current_version() {
     awk '
+        { sub(/\r$/, "") }
         $0 == "[package]" { in_package = 1; next }
         /^\[/ { in_package = 0 }
         in_package && $1 == "version" {
@@ -149,6 +150,7 @@ replace_manifest_version() {
     local temporary
     temporary="$(mktemp "$REPO_ROOT/.release-version.XXXXXX")"
     awk -v next_version="$version" '
+        { sub(/\r$/, "") }
         $0 == "[package]" { in_package = 1 }
         /^\[/ && $0 != "[package]" { in_package = 0 }
         in_package && !replaced && $1 == "version" {
