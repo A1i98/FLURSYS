@@ -1,5 +1,5 @@
 {
-  "format_version": 1,
+  "format_version": 2,
   "id": "lid-driven-cavity",
   "name": "Lid-Driven Cavity",
   "category": "Internal Flow",
@@ -18,7 +18,7 @@
     "notes": "Closed-domain flux remains near zero while the top wall drives recirculation."
   },
   "project_template": {
-    "format_version": 1,
+    "format_version": 2,
     "project_id": "project-1787866351842220676-197841",
     "name": "Lid-Driven Cavity",
     "geometry": {

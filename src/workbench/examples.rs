@@ -3,7 +3,10 @@
 //! Examples construct the same stable geometry, Named Selections, meshing
 //! inputs, physical boundaries, and solver controls available to every user.
 
-use super::{GeometrySelectionTarget, WorkbenchError, WorkbenchSession};
+use super::{
+    BoundaryLayerControl, GeometrySelectionTarget, MeshControlTarget, MeshRecipe,
+    ThresholdRefinement, WorkbenchError, WorkbenchSession,
+};
 use crate::{IncompressibleBoundaryCondition, IncompressibleSolution, MeshDimension, Vec3};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -232,6 +235,21 @@ fn build_channel() -> Result<WorkbenchSession, ExampleProjectError> {
     let rectangle = session.add_rectangle(4.0, 1.0)?;
     configure_open_2d_boundaries(&mut session, &rectangle, 0.1)?;
     configure_2d(&mut session, 0.2)?;
+    session.set_mesh_recipe(MeshRecipe {
+        boundary_layers: vec![BoundaryLayerControl {
+            id: 1,
+            name: "channel-wall-layers".into(),
+            targets: vec![
+                MeshControlTarget::NamedSelection("top_wall".into()),
+                MeshControlTarget::NamedSelection("bottom_wall".into()),
+            ],
+            first_layer_height: 0.01,
+            growth_ratio: 1.2,
+            layer_count: 4,
+            enabled: true,
+        }],
+        ..MeshRecipe::default()
+    });
     Ok(session)
 }
 
@@ -272,6 +290,20 @@ fn build_cylinder(skewed: bool) -> Result<WorkbenchSession, ExampleProjectError>
     session.create_named_selection("cylinder", edge_targets(&hole.boundary))?;
     session.configure_named_boundary("cylinder", IncompressibleBoundaryCondition::NoSlipWall)?;
     configure_2d(&mut session, size)?;
+    session.set_mesh_recipe(MeshRecipe {
+        refinements: vec![ThresholdRefinement {
+            id: 1,
+            name: "cylinder-distance".into(),
+            targets: vec![MeshControlTarget::NamedSelection("cylinder".into())],
+            sampling: 64,
+            size_min: size * 0.35,
+            size_max: size,
+            distance_min: 0.0,
+            distance_max: radius * 2.0,
+            enabled: true,
+        }],
+        ..MeshRecipe::default()
+    });
     Ok(session)
 }
 
@@ -312,6 +344,20 @@ fn build_channel_3d() -> Result<WorkbenchSession, ExampleProjectError> {
     session.set_mesh_configuration(MeshDimension::ThreeD, 0.2, 0.1, 0.2, 1)?;
     session.set_material(1.0, 0.1)?;
     session.set_solver_controls(300, 0.6, 0.25, 1.0e-8)?;
+    session.set_mesh_recipe(MeshRecipe {
+        refinements: vec![ThresholdRefinement {
+            id: 1,
+            name: "inlet-distance".into(),
+            targets: vec![MeshControlTarget::NamedSelection("inlet".into())],
+            sampling: 48,
+            size_min: 0.1,
+            size_max: 0.2,
+            distance_min: 0.0,
+            distance_max: 0.4,
+            enabled: true,
+        }],
+        ..MeshRecipe::default()
+    });
     Ok(session)
 }
 

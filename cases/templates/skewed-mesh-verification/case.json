@@ -1,5 +1,5 @@
 {
-  "format_version": 1,
+  "format_version": 2,
   "id": "skewed-mesh-verification",
   "name": "Skewed-Mesh Verification",
   "category": "Verification",
@@ -18,7 +18,7 @@
     "notes": "Quality metrics are finite and nontrivial while the production flow path remains usable."
   },
   "project_template": {
-    "format_version": 1,
+    "format_version": 2,
     "project_id": "project-1787866351845625748-197841",
     "name": "Skewed-Mesh Verification",
     "geometry": {

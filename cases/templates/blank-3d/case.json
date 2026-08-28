@@ -1,5 +1,5 @@
 {
-  "format_version": 1,
+  "format_version": 2,
   "id": "blank-3d",
   "name": "Blank 3D Project",
   "category": "New Project",
@@ -9,7 +9,7 @@
     "notes": "Create a planar profile and extrude it before generating a volume mesh."
   },
   "project_template": {
-    "format_version": 1,
+    "format_version": 2,
     "project_id": "template-blank-3d",
     "name": "Blank 3D Project",
     "geometry": {

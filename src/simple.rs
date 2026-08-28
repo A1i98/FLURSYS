@@ -5,11 +5,11 @@
 //! segregated SIMPLE outer iteration.
 
 use crate::{
-    assemble_momentum_component, interpolate_scalar, interpolate_vector_into,
-    least_squares_gradient, momentum_component_field, pressure_gradient_source,
-    solve_momentum_velocity, CellField, CsrBuilder, CsrMatrix, DiffusionOptions, Diffusivity,
-    FaceField, FieldError, LeastSquaresGradientStencil, LinearAlgebraError, LinearSolveReport,
-    LinearSolverOptions, MomentumComponent, MomentumError, MomentumOptions, NumericsError,
+    assemble_momentum_component, interpolate_vector_into, least_squares_gradient,
+    momentum_component_field, pressure_gradient_source, solve_momentum_velocity, CellField,
+    CsrBuilder, CsrMatrix, DiffusionOptions, Diffusivity, FaceField, FieldError,
+    LeastSquaresGradientStencil, LinearAlgebraError, LinearSolveReport, LinearSolverOptions,
+    MomentumComponent, MomentumError, MomentumOptions, NumericsError,
     ResolvedScalarBoundaryConditions, ResolvedVelocityBoundaryConditions, ScalarBoundaryCondition,
     ScalarBoundaryValue, UnstructuredMesh, Vec3,
 };
@@ -331,6 +331,29 @@ pub fn momentum_inverse_diagonal(diagonal: &[f64]) -> Result<Vec<f64>, SimpleErr
         .collect()
 }
 
+/// Interpolates the positive momentum inverse diagonal for a pressure face.
+///
+/// The cell-to-face projection weight used for transported scalar fields can
+/// legitimately extrapolate on a skewed mesh. `rAU` is a positive response
+/// coefficient, so extrapolating it can make the pressure operator indefinite.
+/// Distance-to-face interpolation preserves constants and positivity without
+/// altering the geometric pressure projection itself.
+fn bounded_positive_face_r_au(
+    mesh: &UnstructuredMesh,
+    face_index: usize,
+    r_au: &CellField<f64>,
+) -> Result<f64, SimpleError> {
+    let face = &mesh.faces()[face_index];
+    let neighbour = face.neighbour.expect("internal face required");
+    let owner_distance = (face.center - mesh.cells()[face.owner].center).norm();
+    let neighbour_distance = (face.center - mesh.cells()[neighbour].center).norm();
+    let total_distance = owner_distance + neighbour_distance;
+    if !total_distance.is_finite() || total_distance <= f64::EPSILON {
+        return Err(NumericsError::DegenerateOwnerNeighbourDistance { face: face_index }.into());
+    }
+    Ok((neighbour_distance * r_au[face.owner] + owner_distance * r_au[neighbour]) / total_distance)
+}
+
 /// Builds the internal pressure-response coefficient `d_f` for a unit-density
 /// collocated SIMPLE discretization. `rAU` is linearly interpolated to the face
 /// with the established geometric interpolation weight and then multiplied by
@@ -344,7 +367,6 @@ pub fn pressure_face_coefficients(
     r_au: &CellField<f64>,
 ) -> Result<FaceField<f64>, SimpleError> {
     r_au.ensure_mesh(mesh)?;
-    let face_r_au = interpolate_scalar(mesh, r_au, ScalarBoundaryValue::OwnerValue)?;
     let mut coefficients = FaceField::filled(mesh, 0.0);
     for (face_index, face) in mesh.faces().iter().enumerate() {
         let Some(neighbour) = face.neighbour else {
@@ -357,7 +379,8 @@ pub fn pressure_face_coefficients(
                 NumericsError::DegenerateOwnerNeighbourDistance { face: face_index }.into(),
             );
         }
-        let coefficient = face_r_au[face_index] * face.area_vector.dot(d) / d2;
+        let face_r_au = bounded_positive_face_r_au(mesh, face_index, r_au)?;
+        let coefficient = face_r_au * face.area_vector.dot(d) / d2;
         if !coefficient.is_finite() || coefficient <= 0.0 {
             return Err(SimpleError::InvalidPressureFaceCoefficient {
                 face: face_index,

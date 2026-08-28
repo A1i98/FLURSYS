@@ -198,6 +198,13 @@ impl GmshGeoDocument {
     pub fn to_geo_string(&self) -> Result<String, MeshingError> {
         Ok(self.source.clone())
     }
+
+    /// Appends deterministic backend directives after geometry and physical
+    /// groups, preserving the document's declared dimensionality.
+    pub fn with_appended_source(mut self, suffix: impl AsRef<str>) -> Self {
+        self.source.push_str(suffix.as_ref());
+        self
+    }
 }
 
 fn validate_name(name: &str) -> Result<(), MeshingError> {

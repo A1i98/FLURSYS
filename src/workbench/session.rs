@@ -6,8 +6,9 @@
 //! what this module reports; it never stores duplicate geometry/mesh/BC state.
 
 use super::{
-    BoundaryAssignment, GeometrySelectionTarget, MeshRenderCache, MeshSelection,
-    NamedSelectionError, NamedSelectionStore, PhysicalBoundaryCondition, WorkbenchProject,
+    BoundaryAssignment, GeometrySelectionTarget, MeshControlTarget, MeshRecipe, MeshRenderCache,
+    MeshSelection, NamedSelectionError, NamedSelectionStore, PhysicalBoundaryCondition,
+    WorkbenchProject,
 };
 use crate::{
     output::write_unstructured_legacy_vtk, BodyId, BoxEntities, CadExtrudeFeature, CadSketch,
@@ -98,6 +99,7 @@ pub struct WorkbenchSession {
     min_size: f64,
     max_size: f64,
     element_order: u8,
+    mesh_recipe: MeshRecipe,
     mesher: GmshMesher,
     mesh: Option<GeneratedMesh>,
     mesh_render_cache: Option<MeshRenderCache>,
@@ -128,6 +130,7 @@ impl WorkbenchSession {
             min_size: 0.05,
             max_size: 0.2,
             element_order: 1,
+            mesh_recipe: MeshRecipe::default(),
             mesher: GmshMesher::auto(),
             mesh: None,
             mesh_render_cache: None,
@@ -161,6 +164,7 @@ impl WorkbenchSession {
             project.mesh.max_size,
             project.mesh.element_order,
         )?;
+        session.mesh_recipe = project.mesh_recipe.clone();
         session.set_material(
             project.material.density,
             project.material.kinematic_viscosity,
@@ -210,6 +214,7 @@ impl WorkbenchSession {
         project.mesh.min_size = self.min_size;
         project.mesh.max_size = self.max_size;
         project.mesh.element_order = self.element_order;
+        project.mesh_recipe = self.mesh_recipe.clone();
         project.material.density = self.material.density;
         project.material.kinematic_viscosity = self.material.kinematic_viscosity;
         project.solver.max_outer_iterations = self.solver.max_outer_iterations;
@@ -548,6 +553,155 @@ impl WorkbenchSession {
         Ok(groups)
     }
 
+    fn apply_mesh_recipe(
+        &self,
+        mut export: GeometryGmshExport,
+    ) -> Result<GeometryGmshExport, WorkbenchError> {
+        let mut source = String::from("\n// FLURSYS persisted advanced mesh recipe.\n");
+        let entity_kind = match self.mesh_dimension {
+            MeshDimension::TwoD => "Curve",
+            MeshDimension::ThreeD => "Surface",
+        };
+        let mut local_sizes = self
+            .mesh_recipe
+            .local_sizes
+            .iter()
+            .filter(|control| control.enabled)
+            .collect::<Vec<_>>();
+        local_sizes.sort_by_key(|control| control.id);
+        for control in local_sizes {
+            let tags = self.recipe_target_tags(&export, &control.targets)?;
+            let entity_kind = match self.mesh_dimension {
+                MeshDimension::TwoD => "Curve",
+                MeshDimension::ThreeD => "Surface",
+            };
+            source.push_str(&format!(
+                "MeshSize {{ PointsOf{{ {entity_kind}{{{}}}; }} }} = {};\n",
+                join_tags(&tags),
+                control.size
+            ));
+        }
+
+        let mut field_id = 1_u32;
+        let mut boundary_layers = self
+            .mesh_recipe
+            .boundary_layers
+            .iter()
+            .filter(|control| control.enabled)
+            .collect::<Vec<_>>();
+        boundary_layers.sort_by_key(|control| control.id);
+        for control in boundary_layers {
+            if self.mesh_dimension != MeshDimension::TwoD {
+                return Err(WorkbenchError::InvalidGrouping {
+                    message: "BoundaryLayer controls are currently supported only for 2D edges"
+                        .into(),
+                });
+            }
+            let tags = self.recipe_target_tags(&export, &control.targets)?;
+            let thickness = control.first_layer_height
+                * (control.growth_ratio.powi(control.layer_count as i32) - 1.0)
+                / (control.growth_ratio - 1.0);
+            source.push_str(&format!(
+                "Field[{field_id}] = BoundaryLayer;\nField[{field_id}].CurvesList = {{{}}};\nField[{field_id}].hwall_n = {};\nField[{field_id}].ratio = {};\nField[{field_id}].thickness = {thickness};\nField[{field_id}].Quads = 1;\nBoundaryLayer Field = {field_id};\n",
+                join_tags(&tags),
+                control.first_layer_height,
+                control.growth_ratio,
+            ));
+            field_id += 1;
+        }
+
+        let mut refinements = self
+            .mesh_recipe
+            .refinements
+            .iter()
+            .filter(|control| control.enabled)
+            .collect::<Vec<_>>();
+        refinements.sort_by_key(|control| control.id);
+        let mut threshold_fields = Vec::new();
+        for control in refinements {
+            let tags = self.recipe_target_tags(&export, &control.targets)?;
+            let distance_field = field_id;
+            let threshold_field = field_id + 1;
+            field_id += 2;
+            source.push_str(&format!(
+                "Field[{distance_field}] = Distance;\nField[{distance_field}].{entity_kind}sList = {{{}}};\nField[{distance_field}].Sampling = {};\nField[{threshold_field}] = Threshold;\nField[{threshold_field}].InField = {distance_field};\nField[{threshold_field}].SizeMin = {};\nField[{threshold_field}].SizeMax = {};\nField[{threshold_field}].DistMin = {};\nField[{threshold_field}].DistMax = {};\n",
+                join_tags(&tags),
+                control.sampling,
+                control.size_min,
+                control.size_max,
+                control.distance_min,
+                control.distance_max,
+            ));
+            threshold_fields.push(threshold_field);
+        }
+        match threshold_fields.as_slice() {
+            [] => {}
+            [field] => source.push_str(&format!("Background Field = {field};\n")),
+            fields => {
+                source.push_str(&format!(
+                    "Field[{field_id}] = Min;\nField[{field_id}].FieldsList = {{{}}};\nBackground Field = {field_id};\n",
+                    fields.iter().map(u32::to_string).collect::<Vec<_>>().join(", ")
+                ));
+            }
+        }
+        export.document = export.document.with_appended_source(source);
+        Ok(export)
+    }
+
+    fn recipe_target_tags(
+        &self,
+        export: &GeometryGmshExport,
+        targets: &[MeshControlTarget],
+    ) -> Result<Vec<usize>, WorkbenchError> {
+        let mut stable_targets = Vec::new();
+        for target in targets {
+            match target {
+                MeshControlTarget::Geometry(target) => stable_targets.push(*target),
+                MeshControlTarget::NamedSelection(name) => {
+                    let selection = self.named_selections.get(name).ok_or_else(|| {
+                        WorkbenchError::InvalidGrouping {
+                            message: format!(
+                                "mesh recipe references missing Named Selection {name:?}"
+                            ),
+                        }
+                    })?;
+                    stable_targets.extend(selection.targets.iter().copied());
+                }
+            }
+        }
+        let mut tags = stable_targets
+            .into_iter()
+            .map(|target| match (self.mesh_dimension, target) {
+                (MeshDimension::TwoD, GeometrySelectionTarget::Edge(edge)) => export
+                    .map
+                    .edge_tag(edge)
+                    .ok_or_else(|| WorkbenchError::InvalidGrouping {
+                        message: format!("mesh recipe edge {} is not exported", edge.get()),
+                    }),
+                (MeshDimension::ThreeD, GeometrySelectionTarget::Face(face)) => export
+                    .map
+                    .face_tag(face)
+                    .ok_or_else(|| WorkbenchError::InvalidGrouping {
+                        message: format!("mesh recipe face {} is not exported", face.get()),
+                    }),
+                (MeshDimension::TwoD, _) => Err(WorkbenchError::InvalidGrouping {
+                    message: "2D mesh recipe controls must target geometry edges".into(),
+                }),
+                (MeshDimension::ThreeD, _) => Err(WorkbenchError::InvalidGrouping {
+                    message: "3D mesh recipe controls must target geometry faces".into(),
+                }),
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        tags.sort_unstable();
+        tags.dedup();
+        if tags.is_empty() {
+            return Err(WorkbenchError::InvalidGrouping {
+                message: "mesh recipe control has no exported targets".into(),
+            });
+        }
+        Ok(tags)
+    }
+
     /// Builds the deterministic `.geo` export proving Named Selection →
     /// `GeometryToGmshMap` → Physical Curve/Surface mapping input correctness.
     pub fn build_gmsh_export(&self) -> Result<GeometryGmshExport, WorkbenchError> {
@@ -613,6 +767,25 @@ impl WorkbenchSession {
         self.element_order
     }
 
+    pub fn mesh_recipe(&self) -> &MeshRecipe {
+        &self.mesh_recipe
+    }
+
+    /// Replaces persisted advanced meshing intent and discards only current
+    /// derived state. Workspace run artifacts are project-owned and untouched.
+    pub fn set_mesh_recipe(&mut self, recipe: MeshRecipe) {
+        if self.mesh_recipe == recipe {
+            return;
+        }
+        self.mesh_recipe = recipe;
+        self.mesh = None;
+        self.mesh_render_cache = None;
+        self.mesh_selection = None;
+        self.mesh_hover = None;
+        self.solution = None;
+        self.status = SolveStatus::Idle;
+    }
+
     /// Validates and stores mesh configuration without invoking Gmsh.
     pub fn set_mesh_configuration(
         &mut self,
@@ -643,7 +816,7 @@ impl WorkbenchSession {
     pub fn mesh_generation_inputs(
         &self,
     ) -> Result<(GeometryGmshExport, GmshMeshOptions), WorkbenchError> {
-        let export = self.build_gmsh_export()?;
+        let export = self.apply_mesh_recipe(self.build_gmsh_export()?)?;
         let options = GmshMeshOptions {
             dimension: self.mesh_dimension,
             characteristic_length: self.global_size,
@@ -977,6 +1150,13 @@ impl WorkbenchSession {
         }
         write_unstructured_legacy_vtk(path, "FLURSYS workbench run", &generated.mesh, solution)
     }
+}
+
+fn join_tags(tags: &[usize]) -> String {
+    tags.iter()
+        .map(usize::to_string)
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 fn condition_values(condition: IncompressibleBoundaryCondition) -> [f64; 4] {

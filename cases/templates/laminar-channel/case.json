@@ -1,5 +1,5 @@
 {
-  "format_version": 1,
+  "format_version": 2,
   "id": "laminar-channel",
   "name": "Laminar Channel",
   "category": "Internal Flow",
@@ -18,7 +18,7 @@
     "notes": "Streamwise flow is positive with a small inlet/outlet mass imbalance."
   },
   "project_template": {
-    "format_version": 1,
+    "format_version": 2,
     "project_id": "project-1787866351843404054-197841",
     "name": "Laminar Channel",
     "geometry": {
@@ -173,6 +173,24 @@
       "min_size": 0.1,
       "max_size": 0.2,
       "element_order": 1
+    },
+    "mesh_recipe": {
+      "local_sizes": [],
+      "refinements": [],
+      "boundary_layers": [
+        {
+          "id": 1,
+          "name": "channel-wall-layers",
+          "targets": [
+            { "named-selection": "top_wall" },
+            { "named-selection": "bottom_wall" }
+          ],
+          "first_layer_height": 0.01,
+          "growth_ratio": 1.2,
+          "layer_count": 4,
+          "enabled": true
+        }
+      ]
     },
     "boundaries": [
       {

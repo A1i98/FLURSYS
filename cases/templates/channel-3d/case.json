@@ -1,5 +1,5 @@
 {
-  "format_version": 1,
+  "format_version": 2,
   "id": "channel-3d",
   "name": "3D Channel",
   "category": "3D",
@@ -18,7 +18,7 @@
     "notes": "Finite three-component velocity and pressure fields on a real volume mesh."
   },
   "project_template": {
-    "format_version": 1,
+    "format_version": 2,
     "project_id": "project-1787866351846645826-197841",
     "name": "3D Channel",
     "geometry": {
@@ -121,6 +121,23 @@
       "min_size": 0.1,
       "max_size": 0.2,
       "element_order": 1
+    },
+    "mesh_recipe": {
+      "local_sizes": [],
+      "refinements": [
+        {
+          "id": 1,
+          "name": "inlet-distance",
+          "targets": [{ "named-selection": "inlet" }],
+          "sampling": 48,
+          "size_min": 0.1,
+          "size_max": 0.2,
+          "distance_min": 0.0,
+          "distance_max": 0.4,
+          "enabled": true
+        }
+      ],
+      "boundary_layers": []
     },
     "boundaries": [
       {

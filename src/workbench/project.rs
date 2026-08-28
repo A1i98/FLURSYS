@@ -16,7 +16,7 @@ use std::io::Write;
 use std::path::{Component, Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-pub const WORKBENCH_PROJECT_FORMAT_VERSION: u32 = 1;
+pub const WORKBENCH_PROJECT_FORMAT_VERSION: u32 = 2;
 pub const PROJECT_DOCUMENT_FILE: &str = "project.json";
 pub const RECENT_PROJECTS_FILE: &str = "recent-projects.json";
 
@@ -92,6 +92,58 @@ impl Default for WorkbenchMeshSettings {
     }
 }
 
+/// Persisted advanced meshing intent. Generated meshes remain disposable
+/// artifacts; changing this recipe invalidates only the current mesh/solution.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MeshRecipe {
+    pub local_sizes: Vec<LocalMeshSize>,
+    pub refinements: Vec<ThresholdRefinement>,
+    pub boundary_layers: Vec<BoundaryLayerControl>,
+}
+
+/// Stable project targets; backend Gmsh entity tags are resolved only while a
+/// deterministic geometry export is being generated.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum MeshControlTarget {
+    Geometry(GeometrySelectionTarget),
+    NamedSelection(String),
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct LocalMeshSize {
+    pub id: u32,
+    pub name: String,
+    pub targets: Vec<MeshControlTarget>,
+    pub size: f64,
+    pub enabled: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ThresholdRefinement {
+    pub id: u32,
+    pub name: String,
+    pub targets: Vec<MeshControlTarget>,
+    pub sampling: u32,
+    pub size_min: f64,
+    pub size_max: f64,
+    pub distance_min: f64,
+    pub distance_max: f64,
+    pub enabled: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct BoundaryLayerControl {
+    pub id: u32,
+    pub name: String,
+    pub targets: Vec<MeshControlTarget>,
+    pub first_layer_height: f64,
+    pub growth_ratio: f64,
+    pub layer_count: u32,
+    pub enabled: bool,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct WorkbenchMaterial {
     pub density: f64,
@@ -160,6 +212,8 @@ pub struct WorkbenchProject {
     pub geometry: GeometryTopology,
     pub named_selections: Vec<NamedSelection>,
     pub mesh: WorkbenchMeshSettings,
+    #[serde(default)]
+    pub mesh_recipe: MeshRecipe,
     pub boundaries: Vec<BoundaryAssignment>,
     pub material: WorkbenchMaterial,
     pub solver: WorkbenchSolverSettings,
@@ -182,6 +236,7 @@ impl WorkbenchProject {
             geometry: GeometryTopology::new(),
             named_selections: Vec::new(),
             mesh: WorkbenchMeshSettings::default(),
+            mesh_recipe: MeshRecipe::default(),
             boundaries: Vec::new(),
             material: WorkbenchMaterial::default(),
             solver: WorkbenchSolverSettings::default(),
@@ -253,6 +308,7 @@ impl WorkbenchProject {
                 }
             }
         }
+        validate_mesh_recipe(&self.mesh_recipe, &self.geometry, &names)?;
         for assignment in &self.boundaries {
             if !names.contains(&assignment.selection) {
                 return Err(ProjectDocumentError::Invalid(format!(
@@ -384,10 +440,43 @@ pub fn save_workspace(
     Ok(())
 }
 
+fn migrate_project_json(value: &mut serde_json::Value) -> Result<(), ProjectDocumentError> {
+    let found = value
+        .get("format_version")
+        .and_then(serde_json::Value::as_u64)
+        .ok_or_else(|| ProjectDocumentError::Json("missing project format_version".into()))?
+        as u32;
+    match found {
+        WORKBENCH_PROJECT_FORMAT_VERSION => Ok(()),
+        1 => {
+            let object = value.as_object_mut().ok_or_else(|| {
+                ProjectDocumentError::Json("project document must be a JSON object".into())
+            })?;
+            object.insert(
+                "mesh_recipe".into(),
+                serde_json::to_value(MeshRecipe::default())
+                    .expect("default mesh recipe serializes"),
+            );
+            object.insert(
+                "format_version".into(),
+                serde_json::json!(WORKBENCH_PROJECT_FORMAT_VERSION),
+            );
+            Ok(())
+        }
+        _ => Err(ProjectDocumentError::UnsupportedVersion {
+            found,
+            supported: WORKBENCH_PROJECT_FORMAT_VERSION,
+        }),
+    }
+}
+
 pub fn load_workspace(workspace: &Path) -> Result<WorkbenchProject, ProjectDocumentError> {
     let path = workspace.join(PROJECT_DOCUMENT_FILE);
     let text = fs::read_to_string(&path).map_err(io_error)?;
-    let project: WorkbenchProject = serde_json::from_str(&text)
+    let mut value: serde_json::Value = serde_json::from_str(&text)
+        .map_err(|error| ProjectDocumentError::Json(error.to_string()))?;
+    migrate_project_json(&mut value)?;
+    let project: WorkbenchProject = serde_json::from_value(value)
         .map_err(|error| ProjectDocumentError::Json(error.to_string()))?;
     project.validate()?;
     Ok(project)
@@ -735,6 +824,83 @@ fn target_exists(geometry: &GeometryTopology, target: GeometrySelectionTarget) -
     }
 }
 
+fn validate_mesh_recipe(
+    recipe: &MeshRecipe,
+    geometry: &GeometryTopology,
+    named_selections: &BTreeSet<&String>,
+) -> Result<(), ProjectDocumentError> {
+    let mut ids = BTreeSet::new();
+    for control in &recipe.local_sizes {
+        if !ids.insert(control.id)
+            || control.name.trim().is_empty()
+            || control.targets.is_empty()
+            || !control.size.is_finite()
+            || control.size <= 0.0
+        {
+            return Err(ProjectDocumentError::Invalid(
+                "invalid local mesh size control".into(),
+            ));
+        }
+        validate_mesh_control_targets(&control.targets, geometry, named_selections)?;
+    }
+    for control in &recipe.refinements {
+        if !ids.insert(control.id)
+            || control.name.trim().is_empty()
+            || control.targets.is_empty()
+            || control.sampling == 0
+            || !control.size_min.is_finite()
+            || !control.size_max.is_finite()
+            || !control.distance_min.is_finite()
+            || !control.distance_max.is_finite()
+            || control.size_min <= 0.0
+            || control.size_min > control.size_max
+            || control.distance_min < 0.0
+            || control.distance_min >= control.distance_max
+        {
+            return Err(ProjectDocumentError::Invalid(
+                "invalid threshold refinement control".into(),
+            ));
+        }
+        validate_mesh_control_targets(&control.targets, geometry, named_selections)?;
+    }
+    for control in &recipe.boundary_layers {
+        if !ids.insert(control.id)
+            || control.name.trim().is_empty()
+            || control.targets.is_empty()
+            || !control.first_layer_height.is_finite()
+            || !control.growth_ratio.is_finite()
+            || control.first_layer_height <= 0.0
+            || control.growth_ratio <= 1.0
+            || control.layer_count == 0
+        {
+            return Err(ProjectDocumentError::Invalid(
+                "invalid boundary layer control".into(),
+            ));
+        }
+        validate_mesh_control_targets(&control.targets, geometry, named_selections)?;
+    }
+    Ok(())
+}
+
+fn validate_mesh_control_targets(
+    targets: &[MeshControlTarget],
+    geometry: &GeometryTopology,
+    named_selections: &BTreeSet<&String>,
+) -> Result<(), ProjectDocumentError> {
+    for target in targets {
+        match target {
+            MeshControlTarget::Geometry(target) if target_exists(geometry, *target) => {}
+            MeshControlTarget::NamedSelection(name) if named_selections.contains(name) => {}
+            _ => {
+                return Err(ProjectDocumentError::Invalid(
+                    "mesh control references a missing geometry ID or Named Selection".into(),
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
 fn validate_boundary(condition: &PhysicalBoundaryCondition) -> Result<(), ProjectDocumentError> {
     let values: &[f64] = match condition {
         PhysicalBoundaryCondition::NoSlipWall => &[],
@@ -787,8 +953,9 @@ mod tests {
     use super::*;
     use crate::workbench::examples::{build_example, ExampleProjectId};
     use crate::{
-        solve_incompressible, IncompressibleBoundaryCondition, ResultFieldKind, ResultRenderCache,
-        StreamlineDirection, StreamlineField, StreamlineOptions, Vec3, WorkbenchSession,
+        pressure_face_coefficients, solve_incompressible, CellField,
+        IncompressibleBoundaryCondition, ResultFieldKind, ResultRenderCache, StreamlineDirection,
+        StreamlineField, StreamlineOptions, Vec3, WorkbenchSession,
     };
     use tempfile::tempdir;
 
@@ -819,6 +986,129 @@ mod tests {
             .add_vertex(Vec3::new(9.0, 0.0, 0.0))
             .unwrap();
         assert!(next.get() > rectangle.vertices[3].get());
+    }
+
+    #[test]
+    fn mesh_recipe_rejects_invalid_size_and_stale_targets() {
+        let mut project = WorkbenchProject::blank("recipe validation");
+        project.mesh_recipe.local_sizes.push(LocalMeshSize {
+            id: 1,
+            name: "invalid".into(),
+            targets: vec![MeshControlTarget::NamedSelection("missing".into())],
+            size: 0.0,
+            enabled: true,
+        });
+
+        assert!(matches!(
+            project.validate(),
+            Err(ProjectDocumentError::Invalid(message)) if message.contains("local mesh size")
+        ));
+    }
+
+    #[test]
+    fn mesh_recipe_emits_deterministic_local_and_threshold_gmsh_fields() {
+        let mut session = WorkbenchSession::new();
+        let rectangle = session.add_rectangle(2.0, 1.0).unwrap();
+        session
+            .create_named_selection("inlet", vec![GeometrySelectionTarget::Edge(rectangle.left)])
+            .unwrap();
+        session.set_mesh_recipe(MeshRecipe {
+            local_sizes: vec![LocalMeshSize {
+                id: 1,
+                name: "inlet sizing".into(),
+                targets: vec![MeshControlTarget::NamedSelection("inlet".into())],
+                size: 0.025,
+                enabled: true,
+            }],
+            refinements: vec![ThresholdRefinement {
+                id: 2,
+                name: "inlet distance".into(),
+                targets: vec![MeshControlTarget::NamedSelection("inlet".into())],
+                sampling: 64,
+                size_min: 0.01,
+                size_max: 0.1,
+                distance_min: 0.05,
+                distance_max: 0.5,
+                enabled: true,
+            }],
+            ..MeshRecipe::default()
+        });
+
+        let (export, _) = session.mesh_generation_inputs().unwrap();
+        let geo = export.document.to_geo_string().unwrap();
+
+        assert!(geo.contains("MeshSize { PointsOf{ Curve{2003}; } } = 0.025"));
+        assert!(geo.contains("Field[1] = Distance"));
+        assert!(geo.contains("Field[2] = Threshold"));
+        assert!(geo.contains("Background Field = 2"));
+    }
+
+    #[test]
+    fn mesh_recipe_emits_real_2d_boundary_layer_field() {
+        let mut session = WorkbenchSession::new();
+        let rectangle = session.add_rectangle(2.0, 1.0).unwrap();
+        session
+            .create_named_selection(
+                "wall",
+                vec![GeometrySelectionTarget::Edge(rectangle.bottom)],
+            )
+            .unwrap();
+        session.set_mesh_recipe(MeshRecipe {
+            boundary_layers: vec![BoundaryLayerControl {
+                id: 3,
+                name: "wall layer".into(),
+                targets: vec![MeshControlTarget::NamedSelection("wall".into())],
+                first_layer_height: 0.005,
+                growth_ratio: 1.2,
+                layer_count: 5,
+                enabled: true,
+            }],
+            ..MeshRecipe::default()
+        });
+
+        let (export, _) = session.mesh_generation_inputs().unwrap();
+        let geo = export.document.to_geo_string().unwrap();
+
+        assert!(geo.contains("Field[1] = BoundaryLayer"));
+        assert!(geo.contains("Field[1].CurvesList = {2000}"));
+        assert!(geo.contains("BoundaryLayer Field = 1"));
+    }
+
+    #[test]
+    fn session_preserves_mesh_recipe_as_canonical_project_intent() {
+        let mut session = WorkbenchSession::new();
+        let recipe = MeshRecipe {
+            local_sizes: vec![LocalMeshSize {
+                id: 7,
+                name: "inlet sizing".into(),
+                targets: vec![MeshControlTarget::NamedSelection("inlet".into())],
+                size: 0.025,
+                enabled: true,
+            }],
+            ..MeshRecipe::default()
+        };
+
+        session.set_mesh_recipe(recipe.clone());
+
+        assert_eq!(session.to_project("recipe persistence").mesh_recipe, recipe);
+    }
+
+    #[test]
+    fn legacy_project_migrates_to_an_empty_mesh_recipe() {
+        let directory = tempdir().unwrap();
+        let project = WorkbenchProject::blank("legacy recipe migration");
+        save_workspace(directory.path(), &project).unwrap();
+        let path = directory.path().join(PROJECT_DOCUMENT_FILE);
+        let mut value: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        value["format_version"] = serde_json::json!(1);
+        value.as_object_mut().unwrap().remove("mesh_recipe");
+        fs::write(&path, serde_json::to_string(&value).unwrap()).unwrap();
+
+        let restored = load_workspace(directory.path()).unwrap();
+
+        assert_eq!(restored.format_version, WORKBENCH_PROJECT_FORMAT_VERSION);
+        assert_eq!(restored.mesh_recipe, MeshRecipe::default());
     }
 
     #[test]
@@ -953,6 +1243,188 @@ mod tests {
         assert_eq!(dataset.run_id(), "run-0001");
         assert_eq!(dataset.mesh().cell_count(), 1);
         assert_eq!(dataset.pressure(), &[2.0]);
+    }
+
+    #[test]
+    fn pressure_response_is_positive_for_the_real_boundary_layer_face_316() {
+        let session = build_example(ExampleProjectId::LaminarChannel2D).unwrap();
+        let (export, options) = session.mesh_generation_inputs().unwrap();
+        let generated = session
+            .mesher()
+            .generate(&export.document, &options)
+            .unwrap();
+        let mesh = &generated.mesh;
+        let non_positive_projection_count = mesh
+            .faces()
+            .iter()
+            .filter_map(|face| {
+                face.neighbour.map(|neighbour| {
+                    face.area_vector
+                        .dot(mesh.cells()[neighbour].center - mesh.cells()[face.owner].center)
+                })
+            })
+            .filter(|projection| *projection <= 0.0)
+            .count();
+        assert_eq!(non_positive_projection_count, 0);
+        let face = &mesh.faces()[316];
+        let neighbour = face.neighbour.unwrap();
+        let mut r_au = CellField::filled(mesh, 1.0);
+        r_au.values_mut()[face.owner] = 1.9144529309776508;
+        r_au.values_mut()[neighbour] = 1.243027278055116;
+
+        let coefficients = pressure_face_coefficients(mesh, &r_au).unwrap();
+        assert!(coefficients[316].is_finite() && coefficients[316] > 0.0);
+    }
+
+    #[test]
+    fn cylinder_and_channel_showcases_include_persisted_advanced_mesh_recipes() {
+        let cylinder = build_example(ExampleProjectId::CylinderFlow2D).unwrap();
+        let channel = build_example(ExampleProjectId::LaminarChannel2D).unwrap();
+        let channel_3d = build_example(ExampleProjectId::Channel3D).unwrap();
+
+        assert!(!cylinder.mesh_recipe().refinements.is_empty());
+        assert!(!channel.mesh_recipe().boundary_layers.is_empty());
+        assert!(!channel_3d.mesh_recipe().refinements.is_empty());
+    }
+
+    #[test]
+    fn real_gmsh_2d_boundary_layer_recipe_generates_mesh() {
+        let mut session = build_example(ExampleProjectId::LaminarChannel2D).unwrap();
+        session.set_mesh_recipe(MeshRecipe {
+            boundary_layers: vec![BoundaryLayerControl {
+                id: 1,
+                name: "wall layers".into(),
+                targets: vec![
+                    MeshControlTarget::NamedSelection("top_wall".into()),
+                    MeshControlTarget::NamedSelection("bottom_wall".into()),
+                ],
+                first_layer_height: 0.01,
+                growth_ratio: 1.2,
+                layer_count: 4,
+                enabled: true,
+            }],
+            ..MeshRecipe::default()
+        });
+
+        let (export, options) = session.mesh_generation_inputs().unwrap();
+        let generated = session
+            .mesher()
+            .generate(&export.document, &options)
+            .unwrap();
+
+        assert!(generated.mesh.cell_count() > 0);
+        assert!(generated.mesh.points().len() > 4);
+    }
+
+    #[test]
+    fn real_gmsh_3d_local_face_size_recipe_generates_mesh() {
+        let mut session = build_example(ExampleProjectId::Channel3D).unwrap();
+        session.set_mesh_recipe(MeshRecipe {
+            local_sizes: vec![LocalMeshSize {
+                id: 1,
+                name: "inlet sizing".into(),
+                targets: vec![MeshControlTarget::NamedSelection("inlet".into())],
+                size: 0.1,
+                enabled: true,
+            }],
+            ..MeshRecipe::default()
+        });
+
+        let (export, options) = session.mesh_generation_inputs().unwrap();
+        let geo = export.document.to_geo_string().unwrap();
+        let generated = session
+            .mesher()
+            .generate(&export.document, &options)
+            .unwrap();
+
+        assert!(geo.contains("MeshSize { PointsOf{ Surface{1}; } } = 0.1"));
+        assert!(generated.mesh.cell_count() > 0);
+    }
+
+    #[test]
+    fn real_gmsh_3d_distance_threshold_recipe_generates_mesh() {
+        let mut session = build_example(ExampleProjectId::Channel3D).unwrap();
+        session.set_mesh_recipe(MeshRecipe {
+            refinements: vec![ThresholdRefinement {
+                id: 2,
+                name: "inlet refinement".into(),
+                targets: vec![MeshControlTarget::NamedSelection("inlet".into())],
+                sampling: 48,
+                size_min: 0.1,
+                size_max: 0.2,
+                distance_min: 0.0,
+                distance_max: 0.4,
+                enabled: true,
+            }],
+            ..MeshRecipe::default()
+        });
+
+        let (export, options) = session.mesh_generation_inputs().unwrap();
+        let generated = session
+            .mesher()
+            .generate(&export.document, &options)
+            .unwrap();
+
+        assert!(generated.mesh.cell_count() > 0);
+    }
+
+    #[test]
+    fn mesh_recipe_remesh_preserves_historical_run_result_topology() {
+        let directory = tempdir().unwrap();
+        let mut session = build_example(ExampleProjectId::LaminarChannel2D).unwrap();
+        let (export, options) = session.mesh_generation_inputs().unwrap();
+        session.install_mesh(
+            session
+                .mesher()
+                .generate(&export.document, &options)
+                .unwrap(),
+        );
+        session.complete_solve(solve_incompressible(&session.prepare_case().unwrap()));
+        let mut project = session.to_project("remesh history");
+        let first = finalize_workspace_run(directory.path(), &mut project, &session)
+            .unwrap()
+            .unwrap();
+
+        session.set_mesh_recipe(MeshRecipe {
+            local_sizes: vec![LocalMeshSize {
+                id: 1,
+                name: "inlet refinement".into(),
+                targets: vec![MeshControlTarget::NamedSelection("inlet".into())],
+                size: 0.1,
+                enabled: true,
+            }],
+            ..MeshRecipe::default()
+        });
+        assert!(!session.has_mesh());
+        assert!(session.solution().is_none());
+        project.mesh_recipe = session.mesh_recipe().clone();
+
+        let (export, options) = session.mesh_generation_inputs().unwrap();
+        session.install_mesh(
+            session
+                .mesher()
+                .generate(&export.document, &options)
+                .unwrap(),
+        );
+        session.complete_solve(solve_incompressible(&session.prepare_case().unwrap()));
+        let second = finalize_workspace_run(directory.path(), &mut project, &session)
+            .unwrap()
+            .unwrap();
+        save_workspace(directory.path(), &project).unwrap();
+        let restored = load_workspace(directory.path()).unwrap();
+        let first_result = load_workspace_result(directory.path(), &restored, &first.id).unwrap();
+        let second_result = load_workspace_result(directory.path(), &restored, &second.id).unwrap();
+
+        assert_eq!(first_result.run_id(), "run-0001");
+        assert_eq!(second_result.run_id(), "run-0002");
+        assert_ne!(
+            ResultRenderCache::build(&first_result)
+                .unwrap()
+                .artifact_fingerprint(),
+            ResultRenderCache::build(&second_result)
+                .unwrap()
+                .artifact_fingerprint()
+        );
     }
 
     #[test]
@@ -1213,6 +1685,24 @@ mod tests {
         assert!(templates
             .iter()
             .all(|template| !template.expectations.notes.is_empty()));
+        let channel = templates
+            .iter()
+            .find(|template| template.id == "laminar-channel")
+            .unwrap();
+        let cylinder = templates
+            .iter()
+            .find(|template| template.id == "cylinder-flow")
+            .unwrap();
+        let channel_3d = templates
+            .iter()
+            .find(|template| template.id == "channel-3d")
+            .unwrap();
+        assert_eq!(
+            channel.project_template.mesh_recipe.boundary_layers.len(),
+            1
+        );
+        assert_eq!(cylinder.project_template.mesh_recipe.refinements.len(), 1);
+        assert_eq!(channel_3d.project_template.mesh_recipe.refinements.len(), 1);
     }
 
     #[test]
