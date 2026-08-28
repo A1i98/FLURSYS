@@ -3,8 +3,9 @@ use flursys::{
     BoundaryConditionKind, BoundaryFace, EnergyModel, ExtrudedMesh3D, FieldUpdate,
     GeometryEditorState, GeometryPart, GeometryPartKind, GeometrySelectionTarget, GeometrySketch,
     GeometryTopology, MeshDimension, MeshQualityMetric, MeshRenderCache, MeshSelection,
-    MeshSelectionTarget, PreviewPrimitive, Project, ProjectCase, Ray3, SketchAxis,
-    SketchEntityKind, StructuredMesh2D, UnstructuredMesh, Vec3, ViewTransform,
+    MeshSelectionTarget, PreviewPrimitive, Project, ProjectCase, Ray3, ResultFieldKind,
+    ResultRenderCache, SketchAxis, SketchEntityKind, StreamlinePath, StructuredMesh2D,
+    UnstructuredMesh, Vec3, ViewTransform,
 };
 use slint::{Image, Rgba8Pixel, SharedPixelBuffer};
 use std::collections::VecDeque;
@@ -224,6 +225,263 @@ pub(super) fn render_workbench_mesh(
         }
     }
     image_from_rgba(width, height, pixels)
+}
+
+/// Renders immutable archived or live unstructured result data. Surface values
+/// always come from the result dataset's mesh/cache, never from the editable
+/// workbench mesh currently in memory.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn render_persisted_result(
+    cache: &ResultRenderCache,
+    field: ResultFieldKind,
+    colormap: i32,
+    plot: i32,
+    vector_density: i32,
+    vector_scale: &str,
+    display_range: Option<(f64, f64)>,
+    view: &ViewTransform,
+    streamlines: &[StreamlinePath],
+) -> Image {
+    let (width, height) = (PREVIEW_WIDTH, PREVIEW_HEIGHT);
+    image_from_rgba(
+        width,
+        height,
+        render_persisted_pixels(
+            width,
+            height,
+            cache,
+            field,
+            colormap,
+            plot,
+            vector_density,
+            vector_scale,
+            display_range,
+            view,
+            streamlines,
+        ),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn render_persisted_pixels(
+    width: u32,
+    height: u32,
+    cache: &ResultRenderCache,
+    field: ResultFieldKind,
+    colormap: i32,
+    plot: i32,
+    vector_density: i32,
+    vector_scale: &str,
+    display_range: Option<(f64, f64)>,
+    view: &ViewTransform,
+    streamlines: &[StreamlinePath],
+) -> Vec<u8> {
+    let mut pixels = vec![0_u8; (width * height * 4) as usize];
+    fill(&mut pixels, [9, 16, 22, 255]);
+    let mesh_cache = cache.mesh_cache();
+    let values: Vec<f64> = (0..cache.cell_count())
+        .filter_map(|cell| cache.scalar_for_cell(field, cell))
+        .collect();
+    let (minimum, maximum) = display_range.unwrap_or_else(|| scalar_range(&values, false));
+    if mesh_cache.dimension() == MeshDimension::TwoD && plot != 3 {
+        for (cell, value) in values.iter().copied().enumerate() {
+            if let Some(polygon) = mesh_cache.cell_polygon(cell) {
+                let points: Vec<_> = polygon
+                    .iter()
+                    .map(|&point| view.world_to_screen(point))
+                    .collect();
+                draw_filled_polygon(
+                    &mut pixels,
+                    width,
+                    height,
+                    &points,
+                    scalar_color(normalize(value, minimum, maximum), colormap),
+                );
+            }
+        }
+    } else if mesh_cache.dimension() == MeshDimension::ThreeD && plot != 3 {
+        for (triangle, &face) in mesh_cache
+            .surface_triangles()
+            .iter()
+            .zip(mesh_cache.triangle_faces())
+        {
+            let Some(value) = cache.scalar_for_face(field, face) else {
+                continue;
+            };
+            let points = triangle.map(|index| project_mesh_3d(mesh_cache.positions()[index]));
+            draw_filled_triangle(
+                &mut pixels,
+                width,
+                height,
+                points,
+                scalar_color(normalize(value, minimum, maximum), colormap),
+            );
+        }
+    }
+    if matches!(plot, 2 | 3) {
+        match mesh_cache.dimension() {
+            MeshDimension::TwoD => draw_result_vectors(
+                &mut pixels,
+                width,
+                height,
+                cache,
+                view,
+                vector_density,
+                vector_scale,
+            ),
+            MeshDimension::ThreeD => draw_result_vectors_3d(
+                &mut pixels,
+                width,
+                height,
+                cache,
+                vector_density,
+                vector_scale,
+            ),
+        }
+    }
+    draw_streamlines(&mut pixels, width, height, streamlines, view);
+    draw_colormap_legend(&mut pixels, width, height, colormap);
+    pixels
+}
+
+fn draw_streamlines(
+    pixels: &mut [u8],
+    width: u32,
+    height: u32,
+    streamlines: &[StreamlinePath],
+    view: &ViewTransform,
+) {
+    for path in streamlines {
+        for pair in path.points.windows(2) {
+            let start = view.world_to_screen((pair[0].x, pair[0].y));
+            let end = view.world_to_screen((pair[1].x, pair[1].y));
+            draw_line(
+                pixels,
+                width,
+                height,
+                (start.0 as i32, start.1 as i32),
+                (end.0 as i32, end.1 as i32),
+                [255, 245, 157, 255],
+            );
+        }
+    }
+}
+
+fn draw_result_vectors(
+    pixels: &mut [u8],
+    width: u32,
+    height: u32,
+    cache: &ResultRenderCache,
+    view: &ViewTransform,
+    density: i32,
+    manual_scale: &str,
+) {
+    let mesh_cache = cache.mesh_cache();
+    let sample_stride = vector_sample_stride(cache.cell_count(), density);
+    let max_speed = (0..cache.cell_count())
+        .filter_map(|cell| cache.velocity_for_cell(cell))
+        .map(|velocity| velocity.norm())
+        .fold(0.0_f64, f64::max);
+    if max_speed <= f64::EPSILON {
+        return;
+    }
+    for cell in (0..cache.cell_count()).step_by(sample_stride) {
+        let (Some(polygon), Some(velocity)) =
+            (mesh_cache.cell_polygon(cell), cache.velocity_for_cell(cell))
+        else {
+            continue;
+        };
+        let summed_center = polygon
+            .iter()
+            .fold((0.0, 0.0), |sum, point| (sum.0 + point.0, sum.1 + point.1));
+        let center = (
+            summed_center.0 / polygon.len() as f64,
+            summed_center.1 / polygon.len() as f64,
+        );
+        let start = view.world_to_screen(center);
+        let scale =
+            (12.0 / view.pixels_per_unit) / max_speed * vector_scale_multiplier(manual_scale);
+        let end =
+            view.world_to_screen((center.0 + velocity.x * scale, center.1 + velocity.y * scale));
+        draw_line(
+            pixels,
+            width,
+            height,
+            (start.0 as i32, start.1 as i32),
+            (end.0 as i32, end.1 as i32),
+            [238, 246, 250, 255],
+        );
+    }
+}
+
+fn draw_result_vectors_3d(
+    pixels: &mut [u8],
+    width: u32,
+    height: u32,
+    cache: &ResultRenderCache,
+    density: i32,
+    manual_scale: &str,
+) {
+    let mesh_cache = cache.mesh_cache();
+    let samples: Vec<_> = mesh_cache
+        .surface_triangles()
+        .iter()
+        .zip(mesh_cache.triangle_faces())
+        .filter_map(|(&triangle, &face)| {
+            cache
+                .owner_for_face(face)
+                .and_then(|owner| cache.velocity_for_cell(owner))
+                .map(|velocity| (triangle, velocity))
+        })
+        .collect();
+    let max_speed = samples
+        .iter()
+        .map(|(_, velocity)| velocity.norm())
+        .fold(0.0_f64, f64::max);
+    if max_speed <= f64::EPSILON {
+        return;
+    }
+    let stride = vector_sample_stride(samples.len(), density);
+    for &(triangle, velocity) in samples.iter().step_by(stride) {
+        let positions = mesh_cache.positions();
+        let center = Vec3::new(
+            (positions[triangle[0]].x + positions[triangle[1]].x + positions[triangle[2]].x) / 3.0,
+            (positions[triangle[0]].y + positions[triangle[1]].y + positions[triangle[2]].y) / 3.0,
+            (positions[triangle[0]].z + positions[triangle[1]].z + positions[triangle[2]].z) / 3.0,
+        );
+        let scale = 0.08 / max_speed * vector_scale_multiplier(manual_scale);
+        let start = project_mesh_3d(center);
+        let end = project_mesh_3d(center + velocity * scale);
+        draw_line(
+            pixels,
+            width,
+            height,
+            (start.0 as i32, start.1 as i32),
+            (end.0 as i32, end.1 as i32),
+            [238, 246, 250, 255],
+        );
+    }
+}
+
+fn vector_sample_stride(cell_count: usize, density: i32) -> usize {
+    let target = match density.clamp(0, 2) {
+        0 => 48,
+        1 => 96,
+        _ => 192,
+    };
+    cell_count.div_ceil(target).max(1)
+}
+
+fn vector_scale_multiplier(text: &str) -> f64 {
+    match text.trim() {
+        "" => 1.0,
+        value => value
+            .parse::<f64>()
+            .ok()
+            .filter(|value| value.is_finite() && *value > 0.0)
+            .map(|value| value.clamp(0.05, 5.0))
+            .unwrap_or(1.0),
+    }
 }
 
 /// Orthographic ray matching the compact 3D mesh surface projection.
@@ -2655,4 +2913,128 @@ pub(super) fn image_from_rgba(width: u32, height: u32, pixels: Vec<u8>) -> Image
     let mut buffer = SharedPixelBuffer::<Rgba8Pixel>::new(width, height);
     buffer.make_mut_bytes().copy_from_slice(&pixels);
     Image::from_rgba8(buffer)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use flursys::{CellDefinition, Point, ResultDataset};
+
+    fn result_cache() -> ResultRenderCache {
+        let mesh = UnstructuredMesh::from_cells(
+            MeshDimension::TwoD,
+            vec![
+                Point::new(0.0, 0.0, 0.0),
+                Point::new(1.0, 0.0, 0.0),
+                Point::new(1.0, 1.0, 0.0),
+                Point::new(0.0, 1.0, 0.0),
+            ],
+            vec![CellDefinition::polygon(vec![0, 1, 2, 3])],
+        )
+        .unwrap();
+        let dataset = ResultDataset::from_values(
+            "render-test",
+            &mesh,
+            vec![2.0],
+            vec![Vec3::new(1.0, 0.5, 0.0)],
+        )
+        .unwrap();
+        ResultRenderCache::build(&dataset).unwrap()
+    }
+
+    #[test]
+    fn persisted_renderer_supports_every_palette_and_plot_mode() {
+        let cache = result_cache();
+        let view = ViewTransform::default();
+        for colormap in 0..=3 {
+            for plot in 0..=3 {
+                let pixels = render_persisted_pixels(
+                    240,
+                    160,
+                    &cache,
+                    ResultFieldKind::Pressure,
+                    colormap,
+                    plot,
+                    1,
+                    "",
+                    None,
+                    &view,
+                    &[],
+                );
+                assert_eq!(pixels.len(), 240 * 160 * 4);
+                assert!(pixels
+                    .chunks_exact(4)
+                    .any(|pixel| pixel != [9, 16, 22, 255]));
+            }
+        }
+    }
+
+    #[test]
+    fn three_dimensional_vectors_render_from_exterior_owner_cells() {
+        let mesh = UnstructuredMesh::from_cells(
+            MeshDimension::ThreeD,
+            vec![
+                Point::new(0.0, 0.0, 0.0),
+                Point::new(1.0, 0.0, 0.0),
+                Point::new(0.0, 1.0, 0.0),
+                Point::new(0.0, 0.0, 1.0),
+            ],
+            vec![CellDefinition::tetrahedron([0, 1, 2, 3])],
+        )
+        .unwrap();
+        let moving = ResultDataset::from_values(
+            "moving-3d",
+            &mesh,
+            vec![1.0],
+            vec![Vec3::new(1.0, 0.0, 0.0)],
+        )
+        .unwrap();
+        let still = ResultDataset::from_values(
+            "still-3d",
+            &mesh,
+            vec![1.0],
+            vec![Vec3::new(0.0, 0.0, 0.0)],
+        )
+        .unwrap();
+        let view = ViewTransform::default();
+        let moving_pixels = render_persisted_pixels(
+            PREVIEW_WIDTH,
+            PREVIEW_HEIGHT,
+            &ResultRenderCache::build(&moving).unwrap(),
+            ResultFieldKind::Pressure,
+            0,
+            3,
+            1,
+            "",
+            None,
+            &view,
+            &[],
+        );
+        let still_pixels = render_persisted_pixels(
+            PREVIEW_WIDTH,
+            PREVIEW_HEIGHT,
+            &ResultRenderCache::build(&still).unwrap(),
+            ResultFieldKind::Pressure,
+            0,
+            3,
+            1,
+            "",
+            None,
+            &view,
+            &[],
+        );
+
+        assert_ne!(moving_pixels, still_pixels);
+    }
+
+    #[test]
+    fn vector_sampling_and_manual_scale_are_bounded_and_deterministic() {
+        assert_eq!(vector_sample_stride(1_000, 0), 21);
+        assert_eq!(vector_sample_stride(1_000, 1), 11);
+        assert_eq!(vector_sample_stride(1_000, 2), 6);
+        assert_eq!(vector_scale_multiplier(""), 1.0);
+        assert_eq!(vector_scale_multiplier("2.5"), 2.5);
+        assert_eq!(vector_scale_multiplier("nan"), 1.0);
+        assert_eq!(vector_scale_multiplier("100"), 5.0);
+    }
 }
