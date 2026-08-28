@@ -1,14 +1,15 @@
 use flursys::runtime::{SolverCommand, SolverController, SolverState, SolverUpdate};
 use flursys::workbench::{discover_templates_from_roots, save_case_template, CaseTemplateManifest};
 use flursys::{
-    BoundaryConditionKind, BoundaryFace, CadSketchPlane, FieldUpdate, GeneratedMesh,
-    GeometryEditorState, GeometrySelectionTarget, GeometrySketch, GeometryTool, GmshMesher,
-    IncompressibleBoundaryCondition, IncompressibleSolution, IncompressibleSolveError,
-    MeshDimension, MeshQualityMetric, MeshSelection, MeshSelectionTarget, Project, ProjectCoupling,
-    RecentProjects, ResultDataset, ResultFieldKind, ResultProbe, ResultRenderCache, SketchAxis,
-    SketchEntityKind, SketchPlane, SketchProfileKind, SolveStatus, StreamlineDirection,
-    StreamlineField, StreamlineOptions, StreamlinePath, ThermalBoundaryCondition, Vec3,
-    ViewTransform, WorkbenchProject, WorkbenchSession,
+    BoundaryConditionKind, BoundaryFace, BoundaryLayerControl, CadSketchPlane, FieldUpdate,
+    GeneratedMesh, GeometryEditorState, GeometrySelectionTarget, GeometrySketch, GeometryTool,
+    GmshMesher, IncompressibleBoundaryCondition, IncompressibleSolution, IncompressibleSolveError,
+    LocalMeshSize, MeshControlTarget, MeshDimension, MeshQualityMetric, MeshSelection,
+    MeshSelectionTarget, Project, ProjectCoupling, RecentProjects, ResultDataset, ResultFieldKind,
+    ResultProbe, ResultRenderCache, SketchAxis, SketchEntityKind, SketchPlane, SketchProfileKind,
+    SolveStatus, StreamlineDirection, StreamlineField, StreamlineOptions, StreamlinePath,
+    ThermalBoundaryCondition, ThresholdRefinement, Vec3, ViewTransform, WorkbenchProject,
+    WorkbenchSession,
 };
 use slint::{ComponentHandle, ModelRc, SharedString, Timer, TimerMode, VecModel};
 use std::cell::RefCell;
@@ -3034,6 +3035,125 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
     });
 
     let weak_ui = ui.as_weak();
+    let recipe_state = state.clone();
+    ui.on_add_local_size_wb(move || {
+        let Some(ui) = weak_ui.upgrade() else {
+            return;
+        };
+        let mut state = recipe_state.borrow_mut();
+        let target = ui.get_wb_local_target().trim().to_string();
+        let size = parse_number(ui.get_wb_local_size().as_str(), 0.0);
+        if target.is_empty() || !size.is_finite() || size <= 0.0 {
+            state.log(
+                "Local mesh size requires an existing Named Selection and a finite positive size.",
+            );
+        } else if state.workbench.named_selections().get(&target).is_none() {
+            state.log(format!(
+                "Local mesh size target {target:?} is not a Named Selection."
+            ));
+        } else {
+            let mut recipe = state.workbench.mesh_recipe().clone();
+            let id = recipe
+                .local_sizes
+                .iter()
+                .map(|control| control.id)
+                .chain(recipe.refinements.iter().map(|control| control.id))
+                .chain(recipe.boundary_layers.iter().map(|control| control.id))
+                .max()
+                .unwrap_or(0)
+                + 1;
+            recipe.local_sizes.push(LocalMeshSize {
+                id,
+                name: format!("local-{target}"),
+                targets: vec![MeshControlTarget::NamedSelection(target.clone())],
+                size,
+                enabled: true,
+            });
+            state.workbench.set_mesh_recipe(recipe);
+            state.mark_workbench_dirty();
+            state.log(format!(
+                "Added local size {size} for Named Selection {target:?}; current mesh is outdated."
+            ));
+        }
+        refresh_ui(&ui, &state);
+    });
+
+    let weak_ui = ui.as_weak();
+    let refinement_state = state.clone();
+    ui.on_add_threshold_refinement_wb(move || {
+        let Some(ui) = weak_ui.upgrade() else { return; };
+        let mut state = refinement_state.borrow_mut();
+        let target = ui.get_wb_local_target().trim().to_string();
+        let min = parse_number(ui.get_wb_refine_min().as_str(), 0.0);
+        let max = parse_number(ui.get_wb_refine_max().as_str(), 0.0);
+        let distance = parse_number(ui.get_wb_refine_distance().as_str(), 0.0);
+        if target.is_empty() || state.workbench.named_selections().get(&target).is_none() || !(min > 0.0 && min <= max && distance > 0.0) {
+            state.log("Threshold refinement requires an existing Named Selection, 0 < min ≤ max, and positive distance.");
+        } else {
+            let mut recipe = state.workbench.mesh_recipe().clone();
+            let id = recipe.local_sizes.iter().map(|c| c.id).chain(recipe.refinements.iter().map(|c| c.id)).chain(recipe.boundary_layers.iter().map(|c| c.id)).max().unwrap_or(0) + 1;
+            recipe.refinements.push(ThresholdRefinement { id, name: format!("threshold-{target}"), targets: vec![MeshControlTarget::NamedSelection(target)], sampling: 64, size_min: min, size_max: max, distance_min: 0.0, distance_max: distance, enabled: true });
+            state.workbench.set_mesh_recipe(recipe);
+            state.mark_workbench_dirty();
+            state.log("Added persisted Distance/Threshold refinement; current mesh is outdated.");
+        }
+        refresh_ui(&ui, &state);
+    });
+
+    let weak_ui = ui.as_weak();
+    let layer_state = state.clone();
+    ui.on_add_boundary_layer_wb(move || {
+        let Some(ui) = weak_ui.upgrade() else { return; };
+        let mut state = layer_state.borrow_mut();
+        let target = ui.get_wb_local_target().trim().to_string();
+        let first = parse_number(ui.get_wb_layer_first().as_str(), 0.0);
+        let growth = parse_number(ui.get_wb_layer_growth().as_str(), 0.0);
+        let count = ui.get_wb_layer_count().max(0) as u32;
+        if state.workbench.mesh_dimension() != MeshDimension::TwoD || target.is_empty() || state.workbench.named_selections().get(&target).is_none() || !(first > 0.0 && growth > 1.0 && count > 0) {
+            state.log("2D BoundaryLayer requires an existing Named Selection, positive first height, growth > 1, and layers > 0.");
+        } else {
+            let mut recipe = state.workbench.mesh_recipe().clone();
+            let id = recipe.local_sizes.iter().map(|c| c.id).chain(recipe.refinements.iter().map(|c| c.id)).chain(recipe.boundary_layers.iter().map(|c| c.id)).max().unwrap_or(0) + 1;
+            recipe.boundary_layers.push(BoundaryLayerControl { id, name: format!("layer-{target}"), targets: vec![MeshControlTarget::NamedSelection(target)], first_layer_height: first, growth_ratio: growth, layer_count: count, enabled: true });
+            state.workbench.set_mesh_recipe(recipe);
+            state.mark_workbench_dirty();
+            state.log("Added persisted 2D BoundaryLayer; current mesh is outdated.");
+        }
+        refresh_ui(&ui, &state);
+    });
+
+    let weak_ui = ui.as_weak();
+    let remove_recipe_state = state.clone();
+    ui.on_remove_mesh_control_wb(move || {
+        let Some(ui) = weak_ui.upgrade() else {
+            return;
+        };
+        let mut state = remove_recipe_state.borrow_mut();
+        let id = ui.get_wb_recipe_control_id().trim().parse::<u32>();
+        let Ok(id) = id else {
+            state.log("Mesh control removal requires a positive persisted control ID.");
+            refresh_ui(&ui, &state);
+            return;
+        };
+        let mut recipe = state.workbench.mesh_recipe().clone();
+        let before = recipe.local_sizes.len() + recipe.refinements.len() + recipe.boundary_layers.len();
+        recipe.local_sizes.retain(|control| control.id != id);
+        recipe.refinements.retain(|control| control.id != id);
+        recipe.boundary_layers.retain(|control| control.id != id);
+        let after = recipe.local_sizes.len() + recipe.refinements.len() + recipe.boundary_layers.len();
+        if before == after {
+            state.log(format!("Mesh control ID {id} does not exist."));
+        } else {
+            state.workbench.set_mesh_recipe(recipe);
+            state.mark_workbench_dirty();
+            state.log(format!(
+                "Removed mesh control ID {id}; current mesh is outdated and historical Runs are retained."
+            ));
+        }
+        refresh_ui(&ui, &state);
+    });
+
+    let weak_ui = ui.as_weak();
     let mesh_state = state.clone();
     ui.on_generate_mesh_wb(move || {
         let Some(ui) = weak_ui.upgrade() else {
@@ -4415,6 +4535,13 @@ fn refresh_ui(ui: &MainWindow, state: &AppState) {
             },
         );
     ui.set_wb_mesh_summary(SharedString::from(mesh_summary));
+    let recipe = state.workbench.mesh_recipe();
+    ui.set_wb_mesh_recipe_summary(SharedString::from(format!(
+        "local={} · distance/threshold={} · boundary layers={} · targets use stable IDs / named selections",
+        recipe.local_sizes.iter().filter(|control| control.enabled).count(),
+        recipe.refinements.iter().filter(|control| control.enabled).count(),
+        recipe.boundary_layers.iter().filter(|control| control.enabled).count(),
+    )));
     let bad_cell_indices = state
         .workbench
         .mesh_render_cache()

@@ -214,6 +214,16 @@ export component MainWindow inherits Window {
     in-out property <string> wb-min-size: "0.05";
     in-out property <string> wb-max-size: "0.2";
     in-out property <string> wb-mesh-summary: "No mesh generated yet.";
+    in-out property <string> wb-mesh-recipe-summary: "Advanced controls: no persisted controls.";
+    in-out property <string> wb-local-target: "";
+    in-out property <string> wb-local-size: "0.05";
+    in-out property <string> wb-recipe-control-id: "";
+    in-out property <string> wb-refine-min: "0.025";
+    in-out property <string> wb-refine-max: "0.1";
+    in-out property <string> wb-refine-distance: "0.5";
+    in-out property <string> wb-layer-first: "0.005";
+    in-out property <string> wb-layer-growth: "1.2";
+    in-out property <int> wb-layer-count: 4;
     in-out property <int> mesh-display-index: 2;
     in-out property <int> mesh-selection-index: 0;
     in-out property <int> mesh-color-index: 0;
@@ -249,6 +259,10 @@ export component MainWindow inherits Window {
     callback translate-selected-body();
     callback rotate-selected-body();
     callback generate-mesh-wb();
+    callback add-local-size-wb();
+    callback add-threshold-refinement-wb();
+    callback add-boundary-layer-wb();
+    callback remove-mesh-control-wb();
     callback apply-boundary-wb();
     callback unassign-boundary-wb();
     callback apply-solver-settings-wb();
@@ -1056,8 +1070,21 @@ export component MainWindow inherits Window {
                                     InspectorLabel { text: "ELEMENT ORDER"; }
                                     InspectorValue { text: "1st order (linear) — only order supported by the importer"; }
                                     Button { text: root.wb-busy ? "GENERATING…" : "GENERATE MESH"; enabled: !root.wb-busy; clicked => { root.generate-mesh-wb(); } }
+                                    InspectorLabel { text: "ADVANCED MESH RECIPE"; }
+                                    InspectorValue { text: root.wb-mesh-recipe-summary; font-family: "monospace"; }
+                                    InspectorLabel { text: "LOCAL SIZE · NAMED SELECTION"; }
+                                    HorizontalLayout {
+                                        spacing: 6px;
+                                        LineEdit { text <=> root.wb-local-target; placeholder-text: "selection name"; }
+                                        LineEdit { text <=> root.wb-local-size; placeholder-text: "size"; }
+                                        Button { text: "ADD"; enabled: !root.wb-busy; clicked => { root.add-local-size-wb(); } }
+                                    }
+                                    InspectorLabel { text: "DISTANCE / THRESHOLD · SAME TARGET"; }
+                                    HorizontalLayout { LineEdit { text <=> root.wb-refine-min; } LineEdit { text <=> root.wb-refine-max; } LineEdit { text <=> root.wb-refine-distance; } Button { text: "ADD"; enabled: !root.wb-busy; clicked => { root.add-threshold-refinement-wb(); } } }
+                                    InspectorLabel { text: "2D BOUNDARY LAYER · SAME TARGET"; }
+                                    HorizontalLayout { LineEdit { text <=> root.wb-layer-first; } LineEdit { text <=> root.wb-layer-growth; } SpinBox { value <=> root.wb-layer-count; minimum: 1; maximum: 64; } Button { text: "ADD"; enabled: !root.wb-busy; clicked => { root.add-boundary-layer-wb(); } } }
+                                    HorizontalLayout { LineEdit { text <=> root.wb-recipe-control-id; placeholder-text: "control id"; } Button { text: "REMOVE CONTROL"; enabled: !root.wb-busy; clicked => { root.remove-mesh-control-wb(); } } }
                                     Rectangle { height: 1px; background: UiTheme.border; }
-                                    InspectorLabel { text: "GMSH BACKEND"; }
                                     HorizontalLayout {
                                         spacing: 6px;
                                         InspectorValue { text: root.wb-gmsh-status; vertical-stretch: 1; }
