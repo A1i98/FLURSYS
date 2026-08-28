@@ -1,0 +1,215 @@
+{
+  "format_version": 1,
+  "id": "lid-driven-cavity",
+  "name": "Lid-Driven Cavity",
+  "category": "Internal Flow",
+  "description": "Low-Re closed cavity with one moving wall.",
+  "capabilities": [
+    "2D",
+    "Moving Wall",
+    "Gmsh",
+    "Unstructured"
+  ],
+  "expectations": {
+    "closed_domain": true,
+    "positive_streamwise_flow": false,
+    "curved_boundary": false,
+    "non_ideal_mesh_quality": false,
+    "notes": "Closed-domain flux remains near zero while the top wall drives recirculation."
+  },
+  "project_template": {
+    "format_version": 1,
+    "project_id": "project-1787866351842220676-197841",
+    "name": "Lid-Driven Cavity",
+    "geometry": {
+      "revision": 9,
+      "next_vertex_id": 5,
+      "next_edge_id": 5,
+      "next_face_id": 2,
+      "next_body_id": 1,
+      "next_sketch_id": 1,
+      "next_feature_id": 1,
+      "vertices": {
+        "1": {
+          "id": 1,
+          "position": {
+            "x": 0.0,
+            "y": 0.0,
+            "z": 0.0
+          }
+        },
+        "2": {
+          "id": 2,
+          "position": {
+            "x": 1.0,
+            "y": 0.0,
+            "z": 0.0
+          }
+        },
+        "3": {
+          "id": 3,
+          "position": {
+            "x": 1.0,
+            "y": 1.0,
+            "z": 0.0
+          }
+        },
+        "4": {
+          "id": 4,
+          "position": {
+            "x": 0.0,
+            "y": 1.0,
+            "z": 0.0
+          }
+        }
+      },
+      "edges": {
+        "1": {
+          "id": 1,
+          "geometry": {
+            "Line": {
+              "start": 1,
+              "end": 2
+            }
+          }
+        },
+        "2": {
+          "id": 2,
+          "geometry": {
+            "Line": {
+              "start": 2,
+              "end": 3
+            }
+          }
+        },
+        "3": {
+          "id": 3,
+          "geometry": {
+            "Line": {
+              "start": 3,
+              "end": 4
+            }
+          }
+        },
+        "4": {
+          "id": 4,
+          "geometry": {
+            "Line": {
+              "start": 4,
+              "end": 1
+            }
+          }
+        }
+      },
+      "faces": {
+        "1": {
+          "id": 1,
+          "representation": {
+            "Planar": {
+              "outer_loop": [
+                {
+                  "edge": 1,
+                  "reversed": false
+                },
+                {
+                  "edge": 2,
+                  "reversed": false
+                },
+                {
+                  "edge": 3,
+                  "reversed": false
+                },
+                {
+                  "edge": 4,
+                  "reversed": false
+                }
+              ],
+              "inner_loops": []
+            }
+          }
+        }
+      },
+      "bodies": {},
+      "sketches": {},
+      "extrude_features": {}
+    },
+    "named_selections": [
+      {
+        "name": "top",
+        "targets": [
+          {
+            "Edge": 3
+          }
+        ]
+      },
+      {
+        "name": "bottom",
+        "targets": [
+          {
+            "Edge": 1
+          }
+        ]
+      },
+      {
+        "name": "left",
+        "targets": [
+          {
+            "Edge": 4
+          }
+        ]
+      },
+      {
+        "name": "right",
+        "targets": [
+          {
+            "Edge": 2
+          }
+        ]
+      }
+    ],
+    "mesh": {
+      "dimension": "two-d",
+      "global_size": 0.12,
+      "min_size": 0.06,
+      "max_size": 0.12,
+      "element_order": 1
+    },
+    "boundaries": [
+      {
+        "selection": "bottom",
+        "condition": "no-slip-wall"
+      },
+      {
+        "selection": "left",
+        "condition": "no-slip-wall"
+      },
+      {
+        "selection": "right",
+        "condition": "no-slip-wall"
+      },
+      {
+        "selection": "top",
+        "condition": {
+          "moving-wall": {
+            "velocity": {
+              "x": 1.0,
+              "y": 0.0,
+              "z": 0.0
+            }
+          }
+        }
+      }
+    ],
+    "material": {
+      "density": 1.0,
+      "kinematic_viscosity": 0.1
+    },
+    "solver": {
+      "max_outer_iterations": 400,
+      "continuity_absolute_tolerance": 1e-8,
+      "velocity_relaxation": 0.7,
+      "pressure_relaxation": 0.3
+    },
+    "runs": []
+  }
+}

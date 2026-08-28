@@ -5,6 +5,9 @@
   "category": "New Project",
   "description": "Empty editable three-dimensional workbench project.",
   "capabilities": ["Editable", "3D", "Gmsh", "Extrude"],
+  "expectations": {
+    "notes": "Create a planar profile and extrude it before generating a volume mesh."
+  },
   "project_template": {
     "format_version": 1,
     "project_id": "template-blank-3d",

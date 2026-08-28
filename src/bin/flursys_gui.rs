@@ -1,17 +1,16 @@
 use flursys::runtime::{SolverCommand, SolverController, SolverState, SolverUpdate};
-use flursys::workbench::{discover_templates, CaseTemplateManifest};
+use flursys::workbench::{discover_templates_from_roots, save_case_template, CaseTemplateManifest};
 use flursys::{
     BoundaryConditionKind, BoundaryFace, CadSketchPlane, FieldUpdate, GeneratedMesh,
     GeometryEditorState, GeometrySelectionTarget, GeometrySketch, GeometryTool, GmshMesher,
     IncompressibleBoundaryCondition, IncompressibleSolution, IncompressibleSolveError,
-    MeshDimension, MeshQualityMetric, MeshSelection, Project, ProjectCoupling, SketchAxis,
-    SketchEntityKind, SketchPlane, SketchProfileKind, SolveStatus, ThermalBoundaryCondition, Vec3,
-    ViewTransform, WorkbenchProject, WorkbenchSession,
+    MeshDimension, MeshQualityMetric, MeshSelection, Project, ProjectCoupling, RecentProjects,
+    SketchAxis, SketchEntityKind, SketchPlane, SketchProfileKind, SolveStatus,
+    ThermalBoundaryCondition, Vec3, ViewTransform, WorkbenchProject, WorkbenchSession,
 };
 use slint::{ComponentHandle, ModelRc, SharedString, Timer, TimerMode, VecModel};
 use std::cell::RefCell;
 use std::collections::VecDeque;
-use std::fs;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::mpsc::Receiver;
@@ -25,6 +24,13 @@ slint::include_modules!();
 enum WorkspaceSaveRoute {
     Existing(PathBuf),
     SaveAsRequired,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum PendingProjectReplacement {
+    NewBlank(MeshDimension),
+    OpenWorkspace(PathBuf),
+    OpenTemplate(usize),
 }
 
 fn workspace_save_route(workspace: Option<&Path>) -> WorkspaceSaveRoute {
@@ -53,11 +59,54 @@ fn validate_new_workspace_target(workspace: &Path) -> Result<(), String> {
     Ok(())
 }
 
+fn validate_legacy_project_load(path: &Path) -> Result<String, String> {
+    let project = Project::load(path)?;
+    Ok(format!(
+        "Legacy project {:?} was validated in compatibility mode. It remains a legacy structured project and was not opened as a workbench workspace; create or open a workspace folder for canonical workbench editing.",
+        project.name
+    ))
+}
+
 fn choose_workspace_folder(title: &str) -> Option<PathBuf> {
     rfd::FileDialog::new()
         .set_title(title)
         .set_can_create_directories(true)
         .pick_folder()
+}
+
+fn user_template_root() -> Option<PathBuf> {
+    std::env::var_os("XDG_DATA_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/share")))
+        .map(|root| root.join("flursys/cases/templates"))
+}
+
+fn user_settings_root() -> Option<PathBuf> {
+    std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))
+        .map(|root| root.join("flursys"))
+}
+
+fn template_id_from_name(name: &str) -> String {
+    let mut id = String::new();
+    let mut separator = false;
+    for character in name.chars() {
+        if character.is_ascii_alphanumeric() {
+            if separator && !id.is_empty() {
+                id.push('-');
+            }
+            id.push(character.to_ascii_lowercase());
+            separator = false;
+        } else {
+            separator = true;
+        }
+    }
+    if id.is_empty() {
+        "untitled-template".to_string()
+    } else {
+        id
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -143,6 +192,7 @@ struct AppState {
     workbench_dirty: bool,
     workbench_autosave_needed: bool,
     pending_recovery_workspace: Option<PathBuf>,
+    pending_project_replacement: Option<PendingProjectReplacement>,
     geometry_editor: GeometryEditorState,
     geometry_pan_anchor: Option<(f64, f64)>,
     mesh_view: ViewTransform,
@@ -169,6 +219,7 @@ struct AppState {
     templates: Vec<CaseTemplateManifest>,
     examples: Vec<ExampleDescriptor>,
     selected_example: Option<usize>,
+    recent_projects: RecentProjects,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -200,6 +251,10 @@ impl AppState {
                 .into_iter()
                 .map(|error| format!("Case template omitted from gallery: {error}")),
         );
+        let mut recent_projects = user_settings_root()
+            .and_then(|root| flursys::load_recent_projects(&root).ok())
+            .unwrap_or_default();
+        recent_projects.remove_missing();
         Self {
             controller: SolverController::spawn(),
             project: Project::default(),
@@ -233,6 +288,7 @@ impl AppState {
             workbench_dirty: true,
             workbench_autosave_needed: false,
             pending_recovery_workspace: None,
+            pending_project_replacement: None,
             geometry_editor: {
                 let mut editor = GeometryEditorState::new();
                 editor
@@ -267,6 +323,7 @@ impl AppState {
             examples: gallery_descriptors(&templates),
             templates,
             selected_example: Some(0),
+            recent_projects,
         }
     }
 
@@ -342,6 +399,53 @@ impl AppState {
         self.wb_selected_targets.clear();
         self.tree_dirty = true;
         self.preflight_summary = "Run validation before starting the solver.".to_string();
+    }
+
+    /// Starts a destructive project replacement only after the current dirty
+    /// workbench document has been explicitly saved or discarded.
+    fn request_project_replacement(
+        &mut self,
+        replacement: PendingProjectReplacement,
+    ) -> Option<PendingProjectReplacement> {
+        if self.workbench_dirty {
+            self.pending_project_replacement = Some(replacement);
+            None
+        } else {
+            Some(replacement)
+        }
+    }
+
+    fn cancel_project_replacement(&mut self) {
+        self.pending_project_replacement = None;
+    }
+
+    fn take_pending_project_replacement(&mut self) -> Option<PendingProjectReplacement> {
+        self.pending_project_replacement.take()
+    }
+
+    fn apply_project_replacement(
+        &mut self,
+        replacement: PendingProjectReplacement,
+    ) -> Result<String, String> {
+        if let Err(error) = self.controller.send(SolverCommand::Stop) {
+            self.log(error);
+        }
+        match replacement {
+            PendingProjectReplacement::NewBlank(dimension) => {
+                self.project_loaded = true;
+                self.new_blank_workbench_project(dimension);
+                Ok("Created a new blank 2D workbench project.".to_string())
+            }
+            PendingProjectReplacement::OpenWorkspace(workspace) => {
+                self.load_workbench_workspace(workspace)?;
+                self.project_loaded = true;
+                Ok("Workbench workspace loaded.".to_string())
+            }
+            PendingProjectReplacement::OpenTemplate(index) => {
+                let title = self.open_gallery_template(index as i32)?;
+                Ok(format!("Opened editable case template: {title}."))
+            }
+        }
     }
 
     fn spawn_gmsh_probe(&mut self) {
@@ -452,6 +556,9 @@ impl AppState {
                             flursys::IncompressibleCaseError::InvalidInitialConditions,
                         )));
                     self.log("Solve worker stopped without reporting a status.");
+                    if let Err(error) = self.persist_completed_workbench_run() {
+                        self.log(format!("Could not persist failed workbench run: {error}"));
+                    }
                     self.tree_dirty = true;
                     changed = true;
                 }
@@ -500,9 +607,10 @@ impl AppState {
         self.sync_workbench_project();
         flursys::save_workspace(&workspace, &self.workbench_project)
             .map_err(|error| error.to_string())?;
-        self.workspace_path = Some(workspace);
+        self.workspace_path = Some(workspace.clone());
         self.workbench_dirty = false;
         self.workbench_autosave_needed = false;
+        self.record_recent_workspace(&workspace)?;
         Ok(())
     }
 
@@ -527,7 +635,23 @@ impl AppState {
         self.wb_selected_targets.clear();
         self.tree_dirty = true;
         self.pending_recovery_workspace = recovery_available.then_some(workspace);
+        let workspace = self
+            .workspace_path
+            .clone()
+            .expect("workspace was just assigned");
+        self.record_recent_workspace(&workspace)?;
         Ok(())
+    }
+
+    fn record_recent_workspace(&mut self, workspace: &Path) -> Result<(), String> {
+        let Some(settings_root) = user_settings_root() else {
+            return Ok(());
+        };
+        self.recent_projects
+            .record(workspace, self.workbench_project.name.clone());
+        self.recent_projects.remove_missing();
+        flursys::save_recent_projects(&settings_root, &self.recent_projects)
+            .map_err(|error| format!("Could not update Recent Projects: {error}"))
     }
 
     fn recover_pending_workbench_workspace(&mut self) -> Result<(), String> {
@@ -565,54 +689,21 @@ impl AppState {
 
     fn persist_completed_workbench_run(&mut self) -> Result<(), String> {
         let Some(workspace) = self.workspace_path.clone() else {
-            return Ok(());
-        };
-        let status = match self.workbench.status() {
-            SolveStatus::Converged => flursys::RunStatus::Converged,
-            SolveStatus::MaxIterations => flursys::RunStatus::MaxIterations,
-            SolveStatus::Failed(_) => flursys::RunStatus::Failed,
-            SolveStatus::Idle | SolveStatus::Solving => return Ok(()),
+            return Err("Save this project to a workspace before finalizing a run.".into());
         };
         self.sync_workbench_project();
-        let mut record = self.workbench_project.next_run(status);
-        let run_directory = workspace.join(format!("runs/run-{:04}", record.ordinal));
-        fs::create_dir_all(&run_directory).map_err(|error| error.to_string())?;
-        if let (Some(mesh), Some(solution)) = (self.workbench.mesh(), self.workbench.solution()) {
-            record.mesh_identity = Some(mesh.mesh.id().get());
-            record.iterations = Some(solution.report.outer_iterations);
-            record.continuity_residual = Some(solution.report.final_continuity_rms);
-            record.total_inflow = Some(solution.report.total_inflow);
-            record.total_outflow = Some(solution.report.total_outflow);
-            record.net_boundary_flux = Some(solution.report.net_boundary_flux);
-            let solution_path = run_directory.join("solution.vtk");
-            self.workbench.export_vtk(&solution_path)?;
-            record.solution_path = Some(PathBuf::from(format!(
-                "runs/run-{:04}/solution.vtk",
-                record.ordinal
-            )));
-        }
-        let report = serde_json::json!({
-            "id": &record.id,
-            "ordinal": record.ordinal,
-            "status": &record.status,
-            "mesh_identity": record.mesh_identity,
-            "iterations": record.iterations,
-            "continuity_residual": record.continuity_residual,
-            "total_inflow": record.total_inflow,
-            "total_outflow": record.total_outflow,
-            "net_boundary_flux": record.net_boundary_flux,
-            "solution_path": &record.solution_path,
-        });
-        fs::write(
-            run_directory.join("report.json"),
-            format!(
-                "{}\n",
-                serde_json::to_string_pretty(&report).map_err(|error| error.to_string())?
-            ),
+        let finalized = flursys::workbench::finalize_workspace_run(
+            &workspace,
+            &mut self.workbench_project,
+            &self.workbench,
         )
         .map_err(|error| error.to_string())?;
-        self.workbench_project.runs.push(record);
-        self.save_workbench_workspace(workspace)
+        if finalized.is_some() {
+            self.workbench_dirty = false;
+            self.workbench_autosave_needed = false;
+            self.record_recent_workspace(&workspace)?;
+        }
+        Ok(())
     }
 
     fn push_update(&mut self, update: SolverUpdate) {
@@ -915,18 +1006,20 @@ fn main() -> Result<(), slint::PlatformError> {
 }
 
 fn gallery_templates() -> (Vec<CaseTemplateManifest>, Vec<String>) {
-    discover_templates(&Path::new(env!("CARGO_MANIFEST_DIR")).join("cases/templates"))
-        .into_iter()
-        .fold(
-            (Vec::new(), Vec::new()),
-            |(mut templates, mut errors), entry| {
-                match entry {
-                    Ok(template) => templates.push(template),
-                    Err(error) => errors.push(error.to_string()),
-                }
-                (templates, errors)
-            },
-        )
+    let built_in_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("cases/templates");
+    let roots = user_template_root()
+        .map(|user_root| vec![built_in_root.clone(), user_root])
+        .unwrap_or_else(|| vec![built_in_root]);
+    discover_templates_from_roots(&roots).into_iter().fold(
+        (Vec::new(), Vec::new()),
+        |(mut templates, mut errors), entry| {
+            match entry {
+                Ok(template) => templates.push(template),
+                Err(error) => errors.push(error.to_string()),
+            }
+            (templates, errors)
+        },
+    )
 }
 
 fn gallery_descriptors(templates: &[CaseTemplateManifest]) -> Vec<ExampleDescriptor> {
@@ -941,8 +1034,29 @@ fn gallery_descriptors(templates: &[CaseTemplateManifest]) -> Vec<ExampleDescrip
             )),
             summary: SharedString::from(&template.description),
             details: SharedString::from(format!(
-                "Capabilities: {}\nTemplate ID: {}",
+                "Capabilities: {}\nExpectations: {}{}{}{}\n{}\nTemplate ID: {}",
                 template.capabilities.join(" · "),
+                if template.expectations.closed_domain {
+                    "closed domain; "
+                } else {
+                    ""
+                },
+                if template.expectations.positive_streamwise_flow {
+                    "positive streamwise flow; "
+                } else {
+                    ""
+                },
+                if template.expectations.curved_boundary {
+                    "curved boundary; "
+                } else {
+                    ""
+                },
+                if template.expectations.non_ideal_mesh_quality {
+                    "non-ideal mesh quality; "
+                } else {
+                    ""
+                },
+                template.expectations.notes,
                 template.id
             )),
         })
@@ -1197,13 +1311,21 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
     ui.on_open_example(move |index| {
         let Some(ui) = weak_ui.upgrade() else { return };
         let mut state = examples_state.borrow_mut();
-        match state.open_gallery_template(index) {
-            Ok(title) => {
-                ui.set_current_step(0);
-                ui.set_examples_open(false);
-                state.log(format!("Opened editable case template: {title}."));
+        let Some(index) = usize::try_from(index).ok() else {
+            return;
+        };
+        if let Some(replacement) =
+            state.request_project_replacement(PendingProjectReplacement::OpenTemplate(index))
+        {
+            match state.apply_project_replacement(replacement) {
+                Ok(message) => {
+                    ui.set_current_step(0);
+                    ui.set_examples_open(false);
+                    state.log(message);
+                    push_workbench_defaults(&ui, &state.workbench);
+                }
+                Err(error) => state.log(error),
             }
-            Err(error) => state.log(error),
         }
         refresh_ui(&ui, &state);
     });
@@ -1214,13 +1336,17 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
             return;
         };
         let mut state = new_project_state.borrow_mut();
-        if let Err(error) = state.controller.send(SolverCommand::Stop) {
-            state.log(error);
+        if let Some(replacement) = state
+            .request_project_replacement(PendingProjectReplacement::NewBlank(MeshDimension::TwoD))
+        {
+            match state.apply_project_replacement(replacement) {
+                Ok(message) => {
+                    push_workbench_defaults(&ui, &state.workbench);
+                    state.log(message);
+                }
+                Err(error) => state.log(error),
+            }
         }
-        state.project_loaded = true;
-        state.new_blank_workbench_project(MeshDimension::TwoD);
-        push_workbench_defaults(&ui, &state.workbench);
-        state.log("Created a new blank 2D workbench project.");
         refresh_ui(&ui, &state);
     });
 
@@ -1679,13 +1805,48 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
             return;
         };
         let mut state = open_native_state.borrow_mut();
-        match state.load_workbench_workspace(workspace) {
-            Ok(()) => {
-                state.project_loaded = true;
-                state.log("Workbench workspace loaded.");
-                push_workbench_defaults(&ui, &state.workbench);
+        if let Some(replacement) =
+            state.request_project_replacement(PendingProjectReplacement::OpenWorkspace(workspace))
+        {
+            match state.apply_project_replacement(replacement) {
+                Ok(message) => {
+                    state.log(message);
+                    push_workbench_defaults(&ui, &state.workbench);
+                }
+                Err(error) => state.log(error),
             }
-            Err(error) => state.log(error),
+        }
+        refresh_ui(&ui, &state);
+    });
+
+    let weak_ui = ui.as_weak();
+    let recent_open_state = state.clone();
+    ui.on_open_recent_project(move |index| {
+        let Some(ui) = weak_ui.upgrade() else {
+            return;
+        };
+        let workspace = usize::try_from(index).ok().and_then(|index| {
+            recent_open_state
+                .borrow()
+                .recent_projects
+                .entries
+                .get(index)
+                .map(|entry| entry.workspace.clone())
+        });
+        let Some(workspace) = workspace else {
+            return;
+        };
+        let mut state = recent_open_state.borrow_mut();
+        if let Some(replacement) =
+            state.request_project_replacement(PendingProjectReplacement::OpenWorkspace(workspace))
+        {
+            match state.apply_project_replacement(replacement) {
+                Ok(message) => {
+                    state.log(message);
+                    push_workbench_defaults(&ui, &state.workbench);
+                }
+                Err(error) => state.log(error),
+            }
         }
         refresh_ui(&ui, &state);
     });
@@ -1705,6 +1866,116 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
                 Ok(()) => state.log("Workbench workspace saved to a new folder."),
                 Err(error) => state.log(error),
             }
+        }
+        refresh_ui(&ui, &state);
+    });
+
+    let weak_ui = ui.as_weak();
+    let template_state = state.clone();
+    ui.on_save_as_case_template(move || {
+        let Some(ui) = weak_ui.upgrade() else {
+            return;
+        };
+        let Some(template_root) = choose_workspace_folder("Choose Case Template Library") else {
+            return;
+        };
+        let mut state = template_state.borrow_mut();
+        state.sync_workbench_project();
+        let name = state.workbench_project.name.clone();
+        let manifest = CaseTemplateManifest {
+            format_version: flursys::workbench::WORKBENCH_PROJECT_FORMAT_VERSION,
+            id: template_id_from_name(&name),
+            name,
+            category: "User Template".into(),
+            description: "Reusable FLURSYS workbench project intent.".into(),
+            capabilities: vec!["Editable".into()],
+            expectations: Default::default(),
+            project_template: state.workbench_project.clone(),
+        };
+        match save_case_template(&template_root, &manifest) {
+            Ok(path) => {
+                let (templates, errors) = gallery_templates();
+                state.examples = gallery_descriptors(&templates);
+                state.templates = templates;
+                for error in errors {
+                    state.log(format!("Case template omitted from gallery: {error}"));
+                }
+                state.log(format!("Case template saved: {}", path.display()));
+            }
+            Err(error) => state.log(format!("Could not save Case Template: {error}")),
+        }
+        refresh_ui(&ui, &state);
+    });
+
+    let weak_ui = ui.as_weak();
+    let replacement_state = state.clone();
+    ui.on_cancel_project_replacement(move || {
+        let Some(ui) = weak_ui.upgrade() else {
+            return;
+        };
+        let mut state = replacement_state.borrow_mut();
+        state.cancel_project_replacement();
+        state.log("Project replacement cancelled; unsaved work remains open.");
+        refresh_ui(&ui, &state);
+    });
+
+    let weak_ui = ui.as_weak();
+    let replacement_state = state.clone();
+    ui.on_discard_before_project_replacement(move || {
+        let Some(ui) = weak_ui.upgrade() else {
+            return;
+        };
+        let mut state = replacement_state.borrow_mut();
+        let Some(replacement) = state.take_pending_project_replacement() else {
+            return;
+        };
+        match state.apply_project_replacement(replacement) {
+            Ok(message) => {
+                state.log(message);
+                push_workbench_defaults(&ui, &state.workbench);
+            }
+            Err(error) => state.log(error),
+        }
+        refresh_ui(&ui, &state);
+    });
+
+    let weak_ui = ui.as_weak();
+    let replacement_state = state.clone();
+    ui.on_save_before_project_replacement(move || {
+        let Some(ui) = weak_ui.upgrade() else {
+            return;
+        };
+        let known_workspace = replacement_state.borrow().workspace_path.clone();
+        let destination = match workspace_save_route(known_workspace.as_deref()) {
+            WorkspaceSaveRoute::Existing(workspace) => Some((workspace, false)),
+            WorkspaceSaveRoute::SaveAsRequired => {
+                choose_workspace_folder("Choose or Create FLURSYS Workspace")
+                    .map(|workspace| (workspace, true))
+            }
+        };
+        let Some((workspace, save_as)) = destination else {
+            return;
+        };
+        let mut state = replacement_state.borrow_mut();
+        let saved = if save_as {
+            state.save_workbench_workspace_as(workspace)
+        } else {
+            state.save_workbench_workspace(workspace)
+        };
+        match saved {
+            Ok(()) => {
+                let Some(replacement) = state.take_pending_project_replacement() else {
+                    return;
+                };
+                match state.apply_project_replacement(replacement) {
+                    Ok(message) => {
+                        state.log(message);
+                        push_workbench_defaults(&ui, &state.workbench);
+                    }
+                    Err(error) => state.log(error),
+                }
+            }
+            Err(error) => state.log(format!("Could not save before replacement: {error}")),
         }
         refresh_ui(&ui, &state);
     });
@@ -1761,13 +2032,8 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
                 Err(error) => state.log(error),
             }
         } else {
-            match Project::load(&path) {
-                Ok(project) => {
-                    state.project = project;
-                    state.project_loaded = true;
-                    state.log("Legacy project loaded. Save to a workspace folder to migrate it.");
-                    write_project_to_ui(&ui, &state.project);
-                }
+            match validate_legacy_project_load(&path) {
+                Ok(message) => state.log(message),
                 Err(error) => state.log(error),
             }
         }
@@ -2658,6 +2924,11 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
             refresh_ui(&ui, &state);
             return;
         }
+        if state.workspace_path.is_none() {
+            state.log("Save this project to a workspace folder before running so its RunRecord, report, and solution remain project-local.");
+            refresh_ui(&ui, &state);
+            return;
+        }
         if let Err(error) = sync_solver_panel(&ui, &mut state.workbench) {
             state.log(error);
             refresh_ui(&ui, &state);
@@ -3234,7 +3505,7 @@ fn run_inspector_text(run: &flursys::RunRecord, delete_armed: bool) -> String {
         .as_ref()
         .map_or_else(|| "— none".to_string(), |path| path.display().to_string());
     format!(
-        "ID                 {}\nStatus             {}\nCreated (Unix ms)  {}\nMesh identity      {}\nIterations         {}\nContinuity         {}\nInflow / outflow   {} / {}\nNet boundary flux  {}\nReport             {}\nSolution           {}\n\n{}",
+        "ID                 {}\nStatus             {}\nCreated (Unix ms)  {}\nMesh identity      {}\nIterations         {}\nContinuity         {}\nInflow / outflow   {} / {}\nNet boundary flux  {}\nFailure diagnostic {}\nReport             {}\nSolution           {}\n\n{}",
         run.id,
         run_status_label(&run.status),
         run.created_unix_ms,
@@ -3244,6 +3515,7 @@ fn run_inspector_text(run: &flursys::RunRecord, delete_armed: bool) -> String {
         run.total_inflow.map_or_else(|| "—".to_string(), |value| format!("{value:.3e}")),
         run.total_outflow.map_or_else(|| "—".to_string(), |value| format!("{value:.3e}")),
         run.net_boundary_flux.map_or_else(|| "—".to_string(), |value| format!("{value:.3e}")),
+        run.failure_diagnostic.as_deref().unwrap_or("—"),
         run.report_path.display(),
         artifact,
         if delete_armed { "DELETE ARMED — press DELETE RUN again to confirm." } else { "Delete is not armed." },
@@ -3678,9 +3950,32 @@ fn sync_example_gallery(ui: &MainWindow, state: &AppState) {
     }
 }
 
+fn recent_project_labels(state: &AppState) -> Vec<SharedString> {
+    state
+        .recent_projects
+        .entries
+        .iter()
+        .map(|entry| {
+            SharedString::from(format!(
+                "{} — {}",
+                entry.display_name,
+                entry.workspace.display()
+            ))
+        })
+        .collect()
+}
+
 fn refresh_ui(ui: &MainWindow, state: &AppState) {
     ui.set_project_loaded(state.project_loaded);
+    let recent_labels = recent_project_labels(state);
+    ui.set_recent_project_model(ModelRc::new(VecModel::from(recent_labels)));
+    ui.set_recent_project_index(if state.recent_projects.entries.is_empty() {
+        -1
+    } else {
+        0
+    });
     ui.set_recovery_pending(state.pending_recovery_workspace.is_some());
+    ui.set_unsaved_replacement_pending(state.pending_project_replacement.is_some());
     ui.set_recovery_workspace(SharedString::from(
         state
             .pending_recovery_workspace
@@ -4230,6 +4525,7 @@ mod tests {
     use flursys::{
         GeometryPart, GeometryPartKind, GeometrySketch, ProjectCase, SketchPlane, SketchProfileKind,
     };
+    use std::fs;
     use tempfile::tempdir;
 
     #[test]
@@ -4253,6 +4549,34 @@ mod tests {
         let error = validate_new_workspace_target(directory.path()).unwrap_err();
 
         assert!(error.contains("already contains project.json"));
+    }
+
+    #[test]
+    fn legacy_project_load_is_explicitly_compatibility_only() {
+        let directory = tempdir().unwrap();
+        let legacy_path = directory.path().join("legacy.flursys.json");
+        Project::default().save(&legacy_path).unwrap();
+
+        let message = validate_legacy_project_load(&legacy_path).unwrap();
+
+        assert!(message.contains("compatibility mode"));
+        assert!(message.contains("not opened as a workbench workspace"));
+    }
+
+    #[test]
+    fn recent_project_labels_include_the_workspace_name_and_path() {
+        let mut state = AppState::new();
+        state.recent_projects.entries = vec![flursys::RecentProjectEntry {
+            workspace: PathBuf::from("/tmp/channel-workspace"),
+            display_name: "Extruded channel".into(),
+            last_open_unix_ms: 1,
+        }];
+
+        let labels = recent_project_labels(&state);
+
+        assert_eq!(labels.len(), 1);
+        assert!(labels[0].contains("Extruded channel"));
+        assert!(labels[0].contains("/tmp/channel-workspace"));
     }
 
     #[test]
@@ -4285,6 +4609,32 @@ mod tests {
         );
         assert!(reopened.workbench.named_selections().get("inlet").is_some());
         assert!(!reopened.workbench_dirty);
+    }
+
+    #[test]
+    fn failed_workspace_run_persists_a_report_without_claiming_a_solution() {
+        let directory = tempdir().unwrap();
+        let mut state = AppState::new();
+        state
+            .save_workbench_workspace(directory.path().to_path_buf())
+            .unwrap();
+        state
+            .workbench
+            .complete_solve(Err(flursys::IncompressibleSolveError::Case(
+                flursys::IncompressibleCaseError::InvalidInitialConditions,
+            )));
+
+        state.persist_completed_workbench_run().unwrap();
+
+        let project = flursys::load_workspace(directory.path()).unwrap();
+        assert_eq!(project.runs.len(), 1);
+        let record = &project.runs[0];
+        assert_eq!(record.status, flursys::RunStatus::Failed);
+        assert!(record.solution_path.is_none());
+        let report = fs::read_to_string(directory.path().join(&record.report_path)).unwrap();
+        assert!(report.contains("solver_settings"));
+        assert!(report.contains("created_unix_ms"));
+        assert!(!directory.path().join("runs/run-0001/solution.vtk").exists());
     }
 
     #[test]
@@ -4333,9 +4683,18 @@ mod tests {
             errors.is_empty(),
             "built-in templates must all be valid: {errors:?}"
         );
-        assert_eq!(templates.len(), 2);
-        assert!(templates.iter().any(|template| template.id == "blank-2d"));
-        assert!(templates.iter().any(|template| template.id == "blank-3d"));
+        assert_eq!(templates.len(), 7);
+        for id in [
+            "blank-2d",
+            "blank-3d",
+            "lid-driven-cavity",
+            "laminar-channel",
+            "cylinder-flow",
+            "skewed-mesh-verification",
+            "channel-3d",
+        ] {
+            assert!(templates.iter().any(|template| template.id == id));
+        }
         for template in templates {
             let session = WorkbenchSession::from_project(&template.project_template)
                 .expect("discovered template converts into an editable session");
@@ -4620,6 +4979,24 @@ mod tests {
         assert!(state.sketch_undo.is_empty());
         assert!(state.workspace_path.is_none());
         assert!(state.workbench_dirty);
+    }
+
+    #[test]
+    fn dirty_project_replacement_requires_an_explicit_decision() {
+        let mut state = AppState::new();
+        let replacement = PendingProjectReplacement::NewBlank(MeshDimension::ThreeD);
+
+        assert_eq!(state.request_project_replacement(replacement.clone()), None);
+        assert_eq!(state.pending_project_replacement, Some(replacement.clone()));
+        state.cancel_project_replacement();
+        assert!(state.pending_project_replacement.is_none());
+
+        state.workbench_dirty = false;
+        assert_eq!(
+            state.request_project_replacement(replacement.clone()),
+            Some(replacement)
+        );
+        assert!(state.pending_project_replacement.is_none());
     }
 
     #[test]

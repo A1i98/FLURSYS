@@ -110,12 +110,14 @@ pub use unstructured_incompressible::{
 };
 pub use workbench::{
     build_example, delete_workspace_run, example_descriptor, example_descriptors, expectations,
-    load_workspace, save_workspace, verify_solution, AnalysisDimension, AnalysisKind, CadPickMode,
+    finalize_workspace_run, load_recent_projects, load_workspace, save_recent_projects,
+    save_workspace, verify_solution, AnalysisDimension, AnalysisKind, CadPickMode,
     CadSelectionState, ExampleCheck, ExampleExpectations, ExampleProjectDescriptor,
     ExampleProjectError, ExampleProjectId, ExampleVerificationReport, ExecutionPlan,
     GeometryEditorState, GeometrySelectionTarget, GeometryTool, MeshQualityMetric,
     MeshQualityValues, MeshRenderCache, MeshSelection, MeshSelectionTarget, NamedSelection,
     NamedSelectionError, NamedSelectionStore, PhysicalBoundaryCondition, PreviewPrimitive,
-    ProjectDocumentError, RenderRange, RunRecord, RunStatus, SolveStatus, SolverBackend,
-    ViewTransform, WorkbenchAnalysis, WorkbenchError, WorkbenchProject, WorkbenchSession,
+    ProjectDocumentError, RecentProjectEntry, RecentProjects, RenderRange, RunRecord, RunStatus,
+    SolveStatus, SolverBackend, TemplateExpectations, ViewTransform, WorkbenchAnalysis,
+    WorkbenchError, WorkbenchProject, WorkbenchSession,
 };

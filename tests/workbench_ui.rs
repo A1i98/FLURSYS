@@ -3,9 +3,9 @@
 //! inputs, and Run enable/disable rules.
 
 use flursys::{
-    CellDefinition, GeneratedMesh, GeometrySelectionTarget, GmshMeshOptions, GmshMesher,
-    GmshMeshingReport, GmshVersion, IncompressibleBoundaryCondition, MeshDimension, Point,
-    SolveStatus, UnstructuredMesh, WorkbenchSession,
+    finalize_workspace_run, load_workspace, CellDefinition, GeneratedMesh, GeometrySelectionTarget,
+    GmshMeshOptions, GmshMesher, GmshMeshingReport, GmshVersion, IncompressibleBoundaryCondition,
+    MeshDimension, Point, SolveStatus, UnstructuredMesh, WorkbenchSession,
 };
 use std::collections::BTreeSet;
 
@@ -230,6 +230,41 @@ fn full_channel_pipeline_generates_solves_and_exports_vtk() {
     let text = std::fs::read_to_string(&path).unwrap();
     assert!(text.contains("UNSTRUCTURED_GRID"));
     assert!(text.contains("SCALARS pressure"));
+}
+
+#[test]
+#[ignore = "requires a real gmsh executable on PATH"]
+fn successful_runs_preserve_project_local_artifacts_and_reload_history() {
+    let mut session = demo();
+    session
+        .set_mesh_configuration(MeshDimension::TwoD, 0.2, 0.05, 0.2, 1)
+        .unwrap();
+    let (export, options) = session.mesh_generation_inputs().unwrap();
+    session.install_mesh(
+        GmshMesher::auto()
+            .generate(&export.document, &options)
+            .expect("real Gmsh mesh"),
+    );
+    let mut project = session.to_project("Saved channel");
+    let workspace = tempfile::tempdir().unwrap();
+
+    for ordinal in 1..=2 {
+        let case = session.prepare_case().expect("runnable channel");
+        session.mark_solving();
+        session.complete_solve(flursys::solve_incompressible(&case));
+        let record = finalize_workspace_run(workspace.path(), &mut project, &session)
+            .unwrap()
+            .expect("terminal solve creates a run record");
+        assert_eq!(record.ordinal, ordinal);
+        let solution_path = record.solution_path.expect("successful run has VTK");
+        assert!(workspace.path().join(solution_path).is_file());
+        assert!(workspace.path().join(record.report_path).is_file());
+    }
+
+    let reopened = load_workspace(workspace.path()).unwrap();
+    assert_eq!(reopened.runs.len(), 2);
+    assert_eq!(reopened.runs[0].ordinal, 1);
+    assert_eq!(reopened.runs[1].ordinal, 2);
 }
 
 #[test]

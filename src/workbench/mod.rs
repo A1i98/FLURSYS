@@ -25,10 +25,12 @@ pub use mesh_viewport::{
 pub use picking::{CadPickMode, CadSelectionState};
 pub use project::{
     autosave_workspace, delete_workspace_run, discard_workspace_recovery, discover_templates,
-    load_workspace, recovery_is_newer, save_workspace, BoundaryAssignment, CaseTemplateManifest,
-    PhysicalBoundaryCondition, ProjectDocumentError, RunRecord, RunStatus, WorkbenchMaterial,
-    WorkbenchMeshSettings, WorkbenchProject, WorkbenchSolverSettings, PROJECT_DOCUMENT_FILE,
-    WORKBENCH_PROJECT_FORMAT_VERSION,
+    discover_templates_from_roots, finalize_workspace_run, load_recent_projects, load_workspace,
+    recovery_is_newer, save_case_template, save_recent_projects, save_workspace,
+    BoundaryAssignment, CaseTemplateManifest, PhysicalBoundaryCondition, ProjectDocumentError,
+    RecentProjectEntry, RecentProjects, RunRecord, RunStatus, TemplateExpectations,
+    WorkbenchMaterial, WorkbenchMeshSettings, WorkbenchProject, WorkbenchSolverSettings,
+    PROJECT_DOCUMENT_FILE, RECENT_PROJECTS_FILE, WORKBENCH_PROJECT_FORMAT_VERSION,
 };
 pub use selection::{
     GeometrySelectionTarget, NamedSelection, NamedSelectionError, NamedSelectionStore,

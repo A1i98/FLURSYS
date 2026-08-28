@@ -1,0 +1,163 @@
+{
+  "format_version": 1,
+  "id": "channel-3d",
+  "name": "3D Channel",
+  "category": "3D",
+  "description": "Small rectangular volume channel through the 3D Gmsh path.",
+  "capabilities": [
+    "3D",
+    "Volume Mesh",
+    "Pressure Outlet",
+    "U / V / W"
+  ],
+  "expectations": {
+    "closed_domain": false,
+    "positive_streamwise_flow": true,
+    "curved_boundary": false,
+    "non_ideal_mesh_quality": false,
+    "notes": "Finite three-component velocity and pressure fields on a real volume mesh."
+  },
+  "project_template": {
+    "format_version": 1,
+    "project_id": "project-1787866351846645826-197841",
+    "name": "3D Channel",
+    "geometry": {
+      "revision": 7,
+      "next_vertex_id": 1,
+      "next_edge_id": 1,
+      "next_face_id": 7,
+      "next_body_id": 2,
+      "next_sketch_id": 1,
+      "next_feature_id": 1,
+      "vertices": {},
+      "edges": {},
+      "faces": {
+        "1": {
+          "id": 1,
+          "representation": "PrimitiveSurface"
+        },
+        "2": {
+          "id": 2,
+          "representation": "PrimitiveSurface"
+        },
+        "3": {
+          "id": 3,
+          "representation": "PrimitiveSurface"
+        },
+        "4": {
+          "id": 4,
+          "representation": "PrimitiveSurface"
+        },
+        "5": {
+          "id": 5,
+          "representation": "PrimitiveSurface"
+        },
+        "6": {
+          "id": 6,
+          "representation": "PrimitiveSurface"
+        }
+      },
+      "bodies": {
+        "1": {
+          "id": 1,
+          "faces": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6
+          ],
+          "representation": {
+            "Box": {
+              "length": 2.0,
+              "width": 0.6,
+              "height": 0.5
+            }
+          }
+        }
+      },
+      "sketches": {},
+      "extrude_features": {}
+    },
+    "named_selections": [
+      {
+        "name": "inlet",
+        "targets": [
+          {
+            "Face": 1
+          }
+        ]
+      },
+      {
+        "name": "outlet",
+        "targets": [
+          {
+            "Face": 2
+          }
+        ]
+      },
+      {
+        "name": "walls",
+        "targets": [
+          {
+            "Face": 3
+          },
+          {
+            "Face": 4
+          },
+          {
+            "Face": 5
+          },
+          {
+            "Face": 6
+          }
+        ]
+      }
+    ],
+    "mesh": {
+      "dimension": "three-d",
+      "global_size": 0.2,
+      "min_size": 0.1,
+      "max_size": 0.2,
+      "element_order": 1
+    },
+    "boundaries": [
+      {
+        "selection": "inlet",
+        "condition": {
+          "velocity-inlet": {
+            "velocity": {
+              "x": 0.05,
+              "y": 0.0,
+              "z": 0.0
+            }
+          }
+        }
+      },
+      {
+        "selection": "outlet",
+        "condition": {
+          "pressure-outlet": {
+            "pressure": 0.0
+          }
+        }
+      },
+      {
+        "selection": "walls",
+        "condition": "no-slip-wall"
+      }
+    ],
+    "material": {
+      "density": 1.0,
+      "kinematic_viscosity": 0.1
+    },
+    "solver": {
+      "max_outer_iterations": 300,
+      "continuity_absolute_tolerance": 1e-8,
+      "velocity_relaxation": 0.6,
+      "pressure_relaxation": 0.25
+    },
+    "runs": []
+  }
+}

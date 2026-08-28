@@ -1,0 +1,339 @@
+{
+  "format_version": 1,
+  "id": "skewed-mesh-verification",
+  "name": "Skewed-Mesh Verification",
+  "category": "Verification",
+  "description": "Curved low-Re channel for non-ideal mesh-quality inspection.",
+  "capabilities": [
+    "2D",
+    "Curved Geometry",
+    "Non-orthogonality",
+    "SIMPLE"
+  ],
+  "expectations": {
+    "closed_domain": false,
+    "positive_streamwise_flow": true,
+    "curved_boundary": true,
+    "non_ideal_mesh_quality": true,
+    "notes": "Quality metrics are finite and nontrivial while the production flow path remains usable."
+  },
+  "project_template": {
+    "format_version": 1,
+    "project_id": "project-1787866351845625748-197841",
+    "name": "Skewed-Mesh Verification",
+    "geometry": {
+      "revision": 19,
+      "next_vertex_id": 10,
+      "next_edge_id": 9,
+      "next_face_id": 2,
+      "next_body_id": 1,
+      "next_sketch_id": 1,
+      "next_feature_id": 1,
+      "vertices": {
+        "1": {
+          "id": 1,
+          "position": {
+            "x": 0.0,
+            "y": 0.0,
+            "z": 0.0
+          }
+        },
+        "2": {
+          "id": 2,
+          "position": {
+            "x": 4.0,
+            "y": 0.0,
+            "z": 0.0
+          }
+        },
+        "3": {
+          "id": 3,
+          "position": {
+            "x": 4.0,
+            "y": 1.5,
+            "z": 0.0
+          }
+        },
+        "4": {
+          "id": 4,
+          "position": {
+            "x": 0.0,
+            "y": 1.5,
+            "z": 0.0
+          }
+        },
+        "5": {
+          "id": 5,
+          "position": {
+            "x": 1.55,
+            "y": 0.52,
+            "z": 0.0
+          }
+        },
+        "6": {
+          "id": 6,
+          "position": {
+            "x": 1.83,
+            "y": 0.52,
+            "z": 0.0
+          }
+        },
+        "7": {
+          "id": 7,
+          "position": {
+            "x": 1.55,
+            "y": 0.8,
+            "z": 0.0
+          }
+        },
+        "8": {
+          "id": 8,
+          "position": {
+            "x": 1.27,
+            "y": 0.52,
+            "z": 0.0
+          }
+        },
+        "9": {
+          "id": 9,
+          "position": {
+            "x": 1.55,
+            "y": 0.24,
+            "z": 0.0
+          }
+        }
+      },
+      "edges": {
+        "1": {
+          "id": 1,
+          "geometry": {
+            "Line": {
+              "start": 1,
+              "end": 2
+            }
+          }
+        },
+        "2": {
+          "id": 2,
+          "geometry": {
+            "Line": {
+              "start": 2,
+              "end": 3
+            }
+          }
+        },
+        "3": {
+          "id": 3,
+          "geometry": {
+            "Line": {
+              "start": 3,
+              "end": 4
+            }
+          }
+        },
+        "4": {
+          "id": 4,
+          "geometry": {
+            "Line": {
+              "start": 4,
+              "end": 1
+            }
+          }
+        },
+        "5": {
+          "id": 5,
+          "geometry": {
+            "CircularArc": {
+              "start": 6,
+              "center": 5,
+              "end": 7
+            }
+          }
+        },
+        "6": {
+          "id": 6,
+          "geometry": {
+            "CircularArc": {
+              "start": 7,
+              "center": 5,
+              "end": 8
+            }
+          }
+        },
+        "7": {
+          "id": 7,
+          "geometry": {
+            "CircularArc": {
+              "start": 8,
+              "center": 5,
+              "end": 9
+            }
+          }
+        },
+        "8": {
+          "id": 8,
+          "geometry": {
+            "CircularArc": {
+              "start": 9,
+              "center": 5,
+              "end": 6
+            }
+          }
+        }
+      },
+      "faces": {
+        "1": {
+          "id": 1,
+          "representation": {
+            "Planar": {
+              "outer_loop": [
+                {
+                  "edge": 1,
+                  "reversed": false
+                },
+                {
+                  "edge": 2,
+                  "reversed": false
+                },
+                {
+                  "edge": 3,
+                  "reversed": false
+                },
+                {
+                  "edge": 4,
+                  "reversed": false
+                }
+              ],
+              "inner_loops": [
+                [
+                  {
+                    "edge": 8,
+                    "reversed": true
+                  },
+                  {
+                    "edge": 7,
+                    "reversed": true
+                  },
+                  {
+                    "edge": 6,
+                    "reversed": true
+                  },
+                  {
+                    "edge": 5,
+                    "reversed": true
+                  }
+                ]
+              ]
+            }
+          }
+        }
+      },
+      "bodies": {},
+      "sketches": {},
+      "extrude_features": {}
+    },
+    "named_selections": [
+      {
+        "name": "inlet",
+        "targets": [
+          {
+            "Edge": 4
+          }
+        ]
+      },
+      {
+        "name": "outlet",
+        "targets": [
+          {
+            "Edge": 2
+          }
+        ]
+      },
+      {
+        "name": "top_wall",
+        "targets": [
+          {
+            "Edge": 3
+          }
+        ]
+      },
+      {
+        "name": "bottom_wall",
+        "targets": [
+          {
+            "Edge": 1
+          }
+        ]
+      },
+      {
+        "name": "cylinder",
+        "targets": [
+          {
+            "Edge": 5
+          },
+          {
+            "Edge": 6
+          },
+          {
+            "Edge": 7
+          },
+          {
+            "Edge": 8
+          }
+        ]
+      }
+    ],
+    "mesh": {
+      "dimension": "two-d",
+      "global_size": 0.16,
+      "min_size": 0.08,
+      "max_size": 0.16,
+      "element_order": 1
+    },
+    "boundaries": [
+      {
+        "selection": "bottom_wall",
+        "condition": "no-slip-wall"
+      },
+      {
+        "selection": "cylinder",
+        "condition": "no-slip-wall"
+      },
+      {
+        "selection": "inlet",
+        "condition": {
+          "velocity-inlet": {
+            "velocity": {
+              "x": 0.1,
+              "y": 0.0,
+              "z": 0.0
+            }
+          }
+        }
+      },
+      {
+        "selection": "outlet",
+        "condition": {
+          "pressure-outlet": {
+            "pressure": 0.0
+          }
+        }
+      },
+      {
+        "selection": "top_wall",
+        "condition": "no-slip-wall"
+      }
+    ],
+    "material": {
+      "density": 1.0,
+      "kinematic_viscosity": 0.1
+    },
+    "solver": {
+      "max_outer_iterations": 400,
+      "continuity_absolute_tolerance": 1e-8,
+      "velocity_relaxation": 0.7,
+      "pressure_relaxation": 0.3
+    },
+    "runs": []
+  }
+}

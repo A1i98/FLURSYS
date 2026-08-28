@@ -5,6 +5,9 @@
   "category": "New Project",
   "description": "Empty editable two-dimensional workbench project.",
   "capabilities": ["Editable", "2D", "Gmsh"],
+  "expectations": {
+    "notes": "No physical case is configured."
+  },
   "project_template": {
     "format_version": 1,
     "project_id": "template-blank-2d",

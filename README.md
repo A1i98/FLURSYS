@@ -5,8 +5,9 @@
 FLURSYS is a Rust-based scientific simulation project. It currently contains a finite-volume solver
 for incompressible fluid flow, with a few standard test cases and multi-core CPU support.
 
-The project is still under development. Future work will cover three-dimensional problems, additional
-numerical methods, other equation systems, and a graphical interface.
+The project is still under development. It includes structured and unstructured workflows,
+an initial three-dimensional cavity solver, and an optional graphical interface; broader CAD,
+physics, and result-visualization capabilities remain future work.
 
 ## Build
 
@@ -34,17 +35,18 @@ transient projection and a steady SIMPLE-style coupling for laminar incompressib
 The optional Slint desktop interface keeps the solver on a separate worker thread and shows live
 residual, force, and field updates.
 
-Simulation projects use versioned `.flursys.json` files, so supported cases can be created,
-shared, imported, and run after compilation from either the GUI or CLI.
-Their `solver` object supports `"convection": "first-order-upwind"` or `"convection": "central"`.
+Versioned `.flursys.json` files remain the legacy structured-case format accepted by the CLI.
+The unstructured workbench instead saves a portable directory workspace with `project.json`,
+separate autosave data, and per-run artifacts. It persists canonical geometry, Named Selections,
+mesh intent, physical boundaries, material, SIMPLE controls, and run metadata; generated meshes,
+solution fields, and UI caches are derived artifacts.
 
-The workbench persists named boundary conditions, CAD/sketch feature data, mesh intent, and
-solver-independent analysis intent in each project. Before a run, FLURSYS creates a capability
-checked execution plan rather than silently applying an incompatible solver. The supported
-backends are structured 2D incompressible flow and an initial real 3D lid-driven-cavity solver
-using a staggered MAC grid and pressure projection. CAD solids are retained as project data but
-are not yet meshed or solved; unstructured meshing and general 3D boundary workflows remain
-future milestones.
+The workbench can extrude a canonical planar face into stable cap/side faces and a body, pass
+Named-Selection physical surfaces through Gmsh, and generate a real 3D unstructured mesh.
+The workbench VTK writer supports 2D polygons and tetrahedral 3D cells. This is a scoped CFD
+preprocessing workflow, not a general CAD kernel or a completed 3D CAD GUI. See
+[`docs/WORKBENCH.md`](docs/WORKBENCH.md), [`docs/GEOMETRY.md`](docs/GEOMETRY.md), and
+[`docs/MESHING.md`](docs/MESHING.md) for the supported scope and limitations.
 
 ## License
 

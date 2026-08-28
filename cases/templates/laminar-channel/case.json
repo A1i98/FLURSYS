@@ -1,0 +1,219 @@
+{
+  "format_version": 1,
+  "id": "laminar-channel",
+  "name": "Laminar Channel",
+  "category": "Internal Flow",
+  "description": "Open low-Re channel with velocity inlet and pressure outlet.",
+  "capabilities": [
+    "2D",
+    "Pressure Outlet",
+    "Gmsh",
+    "Mesh Quality"
+  ],
+  "expectations": {
+    "closed_domain": false,
+    "positive_streamwise_flow": true,
+    "curved_boundary": false,
+    "non_ideal_mesh_quality": false,
+    "notes": "Streamwise flow is positive with a small inlet/outlet mass imbalance."
+  },
+  "project_template": {
+    "format_version": 1,
+    "project_id": "project-1787866351843404054-197841",
+    "name": "Laminar Channel",
+    "geometry": {
+      "revision": 9,
+      "next_vertex_id": 5,
+      "next_edge_id": 5,
+      "next_face_id": 2,
+      "next_body_id": 1,
+      "next_sketch_id": 1,
+      "next_feature_id": 1,
+      "vertices": {
+        "1": {
+          "id": 1,
+          "position": {
+            "x": 0.0,
+            "y": 0.0,
+            "z": 0.0
+          }
+        },
+        "2": {
+          "id": 2,
+          "position": {
+            "x": 4.0,
+            "y": 0.0,
+            "z": 0.0
+          }
+        },
+        "3": {
+          "id": 3,
+          "position": {
+            "x": 4.0,
+            "y": 1.0,
+            "z": 0.0
+          }
+        },
+        "4": {
+          "id": 4,
+          "position": {
+            "x": 0.0,
+            "y": 1.0,
+            "z": 0.0
+          }
+        }
+      },
+      "edges": {
+        "1": {
+          "id": 1,
+          "geometry": {
+            "Line": {
+              "start": 1,
+              "end": 2
+            }
+          }
+        },
+        "2": {
+          "id": 2,
+          "geometry": {
+            "Line": {
+              "start": 2,
+              "end": 3
+            }
+          }
+        },
+        "3": {
+          "id": 3,
+          "geometry": {
+            "Line": {
+              "start": 3,
+              "end": 4
+            }
+          }
+        },
+        "4": {
+          "id": 4,
+          "geometry": {
+            "Line": {
+              "start": 4,
+              "end": 1
+            }
+          }
+        }
+      },
+      "faces": {
+        "1": {
+          "id": 1,
+          "representation": {
+            "Planar": {
+              "outer_loop": [
+                {
+                  "edge": 1,
+                  "reversed": false
+                },
+                {
+                  "edge": 2,
+                  "reversed": false
+                },
+                {
+                  "edge": 3,
+                  "reversed": false
+                },
+                {
+                  "edge": 4,
+                  "reversed": false
+                }
+              ],
+              "inner_loops": []
+            }
+          }
+        }
+      },
+      "bodies": {},
+      "sketches": {},
+      "extrude_features": {}
+    },
+    "named_selections": [
+      {
+        "name": "inlet",
+        "targets": [
+          {
+            "Edge": 4
+          }
+        ]
+      },
+      {
+        "name": "outlet",
+        "targets": [
+          {
+            "Edge": 2
+          }
+        ]
+      },
+      {
+        "name": "top_wall",
+        "targets": [
+          {
+            "Edge": 3
+          }
+        ]
+      },
+      {
+        "name": "bottom_wall",
+        "targets": [
+          {
+            "Edge": 1
+          }
+        ]
+      }
+    ],
+    "mesh": {
+      "dimension": "two-d",
+      "global_size": 0.2,
+      "min_size": 0.1,
+      "max_size": 0.2,
+      "element_order": 1
+    },
+    "boundaries": [
+      {
+        "selection": "bottom_wall",
+        "condition": "no-slip-wall"
+      },
+      {
+        "selection": "inlet",
+        "condition": {
+          "velocity-inlet": {
+            "velocity": {
+              "x": 0.1,
+              "y": 0.0,
+              "z": 0.0
+            }
+          }
+        }
+      },
+      {
+        "selection": "outlet",
+        "condition": {
+          "pressure-outlet": {
+            "pressure": 0.0
+          }
+        }
+      },
+      {
+        "selection": "top_wall",
+        "condition": "no-slip-wall"
+      }
+    ],
+    "material": {
+      "density": 1.0,
+      "kinematic_viscosity": 0.1
+    },
+    "solver": {
+      "max_outer_iterations": 400,
+      "continuity_absolute_tolerance": 1e-8,
+      "velocity_relaxation": 0.7,
+      "pressure_relaxation": 0.3
+    },
+    "runs": []
+  }
+}

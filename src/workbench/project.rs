@@ -4,7 +4,7 @@
 //! metadata only. Meshes, VTK fields, renderer caches, and worker handles are
 //! project-local derived artifacts rather than JSON payloads.
 
-use super::{GeometrySelectionTarget, NamedSelection};
+use super::{GeometrySelectionTarget, NamedSelection, SolveStatus, WorkbenchSession};
 use crate::{GeometryTopology, MeshDimension, Vec3};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
@@ -15,6 +15,43 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 pub const WORKBENCH_PROJECT_FORMAT_VERSION: u32 = 1;
 pub const PROJECT_DOCUMENT_FILE: &str = "project.json";
+pub const RECENT_PROJECTS_FILE: &str = "recent-projects.json";
+
+/// Small application-owned index for workspace shortcuts. It contains only a
+/// canonical path, display name, and last-open timestamp; portable project
+/// intent remains exclusively in each workspace's `project.json`.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RecentProjects {
+    pub entries: Vec<RecentProjectEntry>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecentProjectEntry {
+    pub workspace: PathBuf,
+    pub display_name: String,
+    pub last_open_unix_ms: u128,
+}
+
+impl RecentProjects {
+    pub fn record(&mut self, workspace: &Path, display_name: impl Into<String>) {
+        let workspace = fs::canonicalize(workspace).unwrap_or_else(|_| workspace.to_path_buf());
+        self.entries.retain(|entry| entry.workspace != workspace);
+        self.entries.insert(
+            0,
+            RecentProjectEntry {
+                workspace,
+                display_name: display_name.into(),
+                last_open_unix_ms: now_ms(),
+            },
+        );
+        self.entries.truncate(10);
+    }
+
+    pub fn remove_missing(&mut self) {
+        self.entries.retain(|entry| entry.workspace.is_dir());
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -106,6 +143,8 @@ pub struct RunRecord {
     pub total_inflow: Option<f64>,
     pub total_outflow: Option<f64>,
     pub net_boundary_flux: Option<f64>,
+    #[serde(default)]
+    pub failure_diagnostic: Option<String>,
     pub report_path: PathBuf,
     pub solution_path: Option<PathBuf>,
 }
@@ -243,6 +282,7 @@ impl WorkbenchProject {
             total_inflow: None,
             total_outflow: None,
             net_boundary_flux: None,
+            failure_diagnostic: None,
             report_path: PathBuf::from(&directory).join("report.json"),
             solution_path: None,
         }
@@ -258,7 +298,21 @@ pub struct CaseTemplateManifest {
     pub description: String,
     #[serde(default)]
     pub capabilities: Vec<String>,
+    #[serde(default)]
+    pub expectations: TemplateExpectations,
     pub project_template: WorkbenchProject,
+}
+
+/// Human-readable, data-driven validation hints for a reusable case template.
+/// These are not solver inputs and never affect execution.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TemplateExpectations {
+    pub closed_domain: bool,
+    pub positive_streamwise_flow: bool,
+    pub curved_boundary: bool,
+    pub non_ideal_mesh_quality: bool,
+    pub notes: String,
 }
 
 impl CaseTemplateManifest {
@@ -283,6 +337,7 @@ pub enum ProjectDocumentError {
     Invalid(String),
     DanglingSelection { selection: String },
     UnsafeArtifactPath(PathBuf),
+    Artifact(String),
 }
 
 impl std::fmt::Display for ProjectDocumentError {
@@ -304,6 +359,7 @@ impl std::fmt::Display for ProjectDocumentError {
                 "project artifact path must be relative and contained in the workspace: {}",
                 path.display()
             ),
+            Self::Artifact(error) => write!(f, "workbench artifact error: {error}"),
         }
     }
 }
@@ -332,6 +388,55 @@ pub fn load_workspace(workspace: &Path) -> Result<WorkbenchProject, ProjectDocum
         .map_err(|error| ProjectDocumentError::Json(error.to_string()))?;
     project.validate()?;
     Ok(project)
+}
+
+/// Persists a terminal solve as a project-local run directory, complete report,
+/// and optional VTK solution. Idle and in-flight sessions have no terminal
+/// record and return `Ok(None)`.
+pub fn finalize_workspace_run(
+    workspace: &Path,
+    project: &mut WorkbenchProject,
+    session: &WorkbenchSession,
+) -> Result<Option<RunRecord>, ProjectDocumentError> {
+    let status = match session.status() {
+        SolveStatus::Converged => RunStatus::Converged,
+        SolveStatus::MaxIterations => RunStatus::MaxIterations,
+        SolveStatus::Failed(_) => RunStatus::Failed,
+        SolveStatus::Idle | SolveStatus::Solving => return Ok(None),
+    };
+    let mut record = project.next_run(status);
+    if let SolveStatus::Failed(diagnostic) = session.status() {
+        record.failure_diagnostic = Some(diagnostic.clone());
+    }
+    let run_directory = workspace.join(format!("runs/run-{:04}", record.ordinal));
+    fs::create_dir_all(&run_directory).map_err(io_error)?;
+    if let (Some(mesh), Some(solution)) = (session.mesh(), session.solution()) {
+        record.mesh_identity = Some(mesh.mesh.id().get());
+        record.iterations = Some(solution.report.outer_iterations);
+        record.continuity_residual = Some(solution.report.final_continuity_rms);
+        record.total_inflow = Some(solution.report.total_inflow);
+        record.total_outflow = Some(solution.report.total_outflow);
+        record.net_boundary_flux = Some(solution.report.net_boundary_flux);
+        let solution_path = run_directory.join("solution.vtk");
+        session
+            .export_vtk(&solution_path)
+            .map_err(ProjectDocumentError::Artifact)?;
+        record.solution_path = Some(PathBuf::from(format!(
+            "runs/run-{:04}/solution.vtk",
+            record.ordinal
+        )));
+    }
+    let report = serde_json::json!({
+        "run": &record,
+        "mesh_settings": &project.mesh,
+        "material": &project.material,
+        "solver_settings": &project.solver,
+        "boundaries": &project.boundaries,
+    });
+    atomic_json_write(&run_directory.join("report.json"), &report)?;
+    project.runs.push(record.clone());
+    save_workspace(workspace, project)?;
+    Ok(Some(record))
 }
 
 pub fn autosave_workspace(
@@ -448,7 +553,17 @@ pub fn save_case_template(
     manifest.validate()?;
     validate_template_id(&manifest.id)?;
     let destination = template_root.join(&manifest.id).join("case.json");
-    atomic_json_write(&destination, manifest)?;
+    if destination.exists() {
+        return Err(ProjectDocumentError::Invalid(format!(
+            "Case Template {:?} already exists; choose a different template ID",
+            manifest.id
+        )));
+    }
+    // A template is reusable initial intent, never a solved-artifact history.
+    // Keep the caller's document intact while enforcing that storage boundary.
+    let mut portable_manifest = manifest.clone();
+    portable_manifest.project_template.runs.clear();
+    atomic_json_write(&destination, &portable_manifest)?;
     Ok(destination)
 }
 
@@ -483,6 +598,32 @@ where
         discovered.extend(discover_templates_in_root(root, &mut ids));
     }
     discovered
+}
+
+/// Loads the local recent-workspace index. A missing settings file means there
+/// are no recent projects; malformed settings are reported rather than silently
+/// discarded.
+pub fn load_recent_projects(
+    settings_directory: &Path,
+) -> Result<RecentProjects, ProjectDocumentError> {
+    let path = settings_directory.join(RECENT_PROJECTS_FILE);
+    match fs::read_to_string(&path) {
+        Ok(text) => serde_json::from_str(&text)
+            .map_err(|error| ProjectDocumentError::Json(error.to_string())),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(RecentProjects::default()),
+        Err(error) => Err(io_error(error)),
+    }
+}
+
+/// Persists the local recent-workspace index atomically.
+pub fn save_recent_projects(
+    settings_directory: &Path,
+    recent_projects: &RecentProjects,
+) -> Result<(), ProjectDocumentError> {
+    atomic_json_write(
+        &settings_directory.join(RECENT_PROJECTS_FILE),
+        recent_projects,
+    )
 }
 
 fn discover_templates_in_root(
@@ -601,7 +742,11 @@ fn now_ms() -> u128 {
         .as_millis()
 }
 fn unique_id(prefix: &str) -> String {
-    format!("{prefix}-{}", now_ms())
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    format!("{prefix}-{nanos}-{}", std::process::id())
 }
 fn io_error(error: std::io::Error) -> ProjectDocumentError {
     ProjectDocumentError::Io(error.to_string())
@@ -726,6 +871,56 @@ mod tests {
     }
 
     #[test]
+    fn terminal_failure_is_finalized_as_a_project_local_record_and_report() {
+        let directory = tempdir().unwrap();
+        let mut project = WorkbenchProject::blank("failed run");
+        let mut session = WorkbenchSession::new();
+        session.complete_solve(Err(crate::IncompressibleSolveError::Case(
+            crate::IncompressibleCaseError::InvalidInitialConditions,
+        )));
+
+        let record = finalize_workspace_run(directory.path(), &mut project, &session)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(record.status, RunStatus::Failed);
+        assert!(record.solution_path.is_none());
+        assert!(record
+            .failure_diagnostic
+            .as_deref()
+            .is_some_and(|message| message.contains("InvalidInitialConditions")));
+        assert_eq!(
+            load_workspace(directory.path()).unwrap().runs,
+            vec![record.clone()]
+        );
+        let report = fs::read_to_string(directory.path().join(record.report_path)).unwrap();
+        assert!(report.contains("created_unix_ms"));
+        assert!(report.contains("solver_settings"));
+        assert!(!directory.path().join("runs/run-0001/solution.vtk").exists());
+    }
+
+    #[test]
+    fn recent_workspace_index_is_atomic_deduplicated_and_prunes_missing_paths() {
+        let directory = tempdir().unwrap();
+        let first = directory.path().join("first");
+        let second = directory.path().join("second");
+        fs::create_dir_all(&first).unwrap();
+        fs::create_dir_all(&second).unwrap();
+        let mut recent = RecentProjects::default();
+        recent.record(&first, "First");
+        recent.record(&second, "Second");
+        recent.record(&first, "First renamed");
+        save_recent_projects(directory.path(), &recent).unwrap();
+
+        let mut restored = load_recent_projects(directory.path()).unwrap();
+        assert_eq!(restored.entries.len(), 2);
+        assert_eq!(restored.entries[0].display_name, "First renamed");
+        fs::remove_dir_all(&second).unwrap();
+        restored.remove_missing();
+        assert_eq!(restored.entries.len(), 1);
+    }
+
+    #[test]
     fn deleting_a_persisted_run_removes_only_its_record_and_artifact_directory() {
         let directory = tempdir().unwrap();
         let mut project = WorkbenchProject::blank("run history");
@@ -778,6 +973,7 @@ mod tests {
                 category: "test".into(),
                 description: "test template".into(),
                 capabilities: Vec::new(),
+                expectations: TemplateExpectations::default(),
                 project_template: WorkbenchProject::blank(name),
             };
             fs::write(
@@ -802,8 +998,21 @@ mod tests {
             .into_iter()
             .collect::<Result<Vec<_>, _>>()
             .unwrap();
-        assert!(templates.iter().any(|template| template.id == "blank-2d"));
-        assert!(templates.iter().any(|template| template.id == "blank-3d"));
+        assert_eq!(templates.len(), 7);
+        for id in [
+            "blank-2d",
+            "blank-3d",
+            "lid-driven-cavity",
+            "laminar-channel",
+            "cylinder-flow",
+            "skewed-mesh-verification",
+            "channel-3d",
+        ] {
+            assert!(templates.iter().any(|template| template.id == id));
+        }
+        assert!(templates
+            .iter()
+            .all(|template| !template.expectations.notes.is_empty()));
     }
 
     #[test]
@@ -818,6 +1027,7 @@ mod tests {
             category: "test".into(),
             description: "built-in template".into(),
             capabilities: Vec::new(),
+            expectations: TemplateExpectations::default(),
             project_template: WorkbenchProject::blank("Built in"),
         };
         save_case_template(&built_in_root, &built_in).unwrap();
@@ -829,6 +1039,7 @@ mod tests {
             category: "test".into(),
             description: "saved user template".into(),
             capabilities: vec!["Editable".into()],
+            expectations: TemplateExpectations::default(),
             project_template: WorkbenchProject::blank("User Case"),
         };
         let saved_path = save_case_template(&user_root, &user).unwrap();
@@ -842,6 +1053,36 @@ mod tests {
     }
 
     #[test]
+    fn saving_a_case_template_omits_project_run_history() {
+        let directory = tempdir().unwrap();
+        let mut project = WorkbenchProject::blank("Reusable channel");
+        project.runs.push(project.next_run(RunStatus::Converged));
+        let manifest = CaseTemplateManifest {
+            format_version: WORKBENCH_PROJECT_FORMAT_VERSION,
+            id: "reusable-channel".into(),
+            name: "Reusable channel".into(),
+            category: "user".into(),
+            description: "intent only".into(),
+            capabilities: Vec::new(),
+            expectations: TemplateExpectations::default(),
+            project_template: project,
+        };
+
+        save_case_template(directory.path(), &manifest).unwrap();
+        let discovered = discover_templates(directory.path())
+            .into_iter()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+
+        assert!(discovered[0].project_template.runs.is_empty());
+        assert_eq!(manifest.project_template.runs.len(), 1);
+        assert!(matches!(
+            save_case_template(directory.path(), &manifest),
+            Err(ProjectDocumentError::Invalid(_))
+        ));
+    }
+
+    #[test]
     fn template_root_combination_deduplicates_roots_and_rejects_unsafe_ids() {
         let directory = tempdir().unwrap();
         let manifest = CaseTemplateManifest {
@@ -851,6 +1092,7 @@ mod tests {
             category: "test".into(),
             description: "safe template".into(),
             capabilities: Vec::new(),
+            expectations: TemplateExpectations::default(),
             project_template: WorkbenchProject::blank("Safe"),
         };
         save_case_template(directory.path(), &manifest).unwrap();
