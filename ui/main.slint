@@ -142,6 +142,10 @@ export component MainWindow inherits Window {
     in-out property <int> result-plot-index: 2;
     in-out property <int> result-colormap-index: 0;
     in-out property <int> result-contour-levels: 12;
+    in-out property <string> result-range-min: "";
+    in-out property <string> result-range-max: "";
+    in-out property <int> result-vector-density: 1;
+    in-out property <string> result-vector-scale: "";
     in-out property <string> residual-summary: "Waiting for a solver run.";
     in-out property <float> solver-physical-time: 0.0;
     in-out property <float> solver-time-step: 0.0;
@@ -179,7 +183,7 @@ export component MainWindow inherits Window {
     callback animation-play-pause(); callback animation-next(); callback show-geometry-3d();
     callback rotate-geometry-3d(); callback apply-boundary(); callback show-boundary-face(); callback select-step(int);
     callback select-case(); callback add-part(); callback build-feature(); callback duplicate-last-part(); callback remove-last-part();
-    callback apply-thermal-boundary(); callback select-result-field(int); callback apply-result-style();
+    callback apply-thermal-boundary(); callback select-result-field(int); callback apply-result-style(); callback apply-result-range(); callback reset-result-range(); callback seed-streamline(); callback clear-streamlines();
     callback geometry-drag(float, float, float, float); callback geometry-zoom(float); callback reset-geometry-view(); callback select-geometry-view-axis(int);
     callback pick-boundary(float, float, float, float);
     callback start-sketch(); callback select-sketch-tool(int); callback sketch-click(float, float, float, float); callback sketch-preview(float, float, float, float); callback sketch-undo(); callback sketch-redo(); callback apply-driving-dimension();
@@ -921,7 +925,10 @@ export component MainWindow inherits Window {
                                     VerticalLayout { Text { text: "Color map"; color: UiTheme.text-muted; font-size: 10px; } ComboBox { model: ["Turbo", "Viridis", "Plasma", "Blue–red"]; current-index <=> root.result-colormap-index; } }
                                     VerticalLayout { Text { text: "Levels"; color: UiTheme.text-muted; font-size: 10px; } SpinBox { value <=> root.result-contour-levels; minimum: 3; maximum: 32; } }
                                 }
-                                HorizontalLayout { Button { text: "APPLY STYLE"; clicked => { root.apply-result-style(); } } Text { text: "Vectors use cell-centred velocity; arrows are adaptively sampled for readability."; color: UiTheme.text-faint; font-size: 10px; wrap: word-wrap; vertical-stretch: 1; } }
+                                HorizontalLayout { Text { text: "Range"; color: UiTheme.text-muted; vertical-alignment: center; } LineEdit { text <=> root.result-range-min; placeholder-text: "Auto min"; } LineEdit { text <=> root.result-range-max; placeholder-text: "Auto max"; } Button { text: "APPLY RANGE"; clicked => { root.apply-result-range(); } } Button { text: "AUTO"; clicked => { root.reset-result-range(); } } }
+                                HorizontalLayout { Text { text: "Vectors"; color: UiTheme.text-muted; vertical-alignment: center; } ComboBox { model: ["Low", "Medium", "High"]; current-index <=> root.result-vector-density; } LineEdit { text <=> root.result-vector-scale; placeholder-text: "Auto scale"; } }
+                                HorizontalLayout { Button { text: "APPLY STYLE"; clicked => { root.apply-result-style(); } } Button { text: "SEED STREAMLINE"; clicked => { root.seed-streamline(); } } Button { text: "CLEAR STREAMLINES"; clicked => { root.clear-streamlines(); } } }
+                                Text { text: "Vectors use cell-centred velocity; arrows are adaptively sampled. Seed Streamline then click a 2D result cell."; color: UiTheme.text-faint; font-size: 10px; wrap: word-wrap; }
                                 HorizontalLayout { Button { text: "FIELD"; clicked => { root.show-field(); } } Button { text: "MESH"; clicked => { root.show-mesh(); } } Button { text: "PLAY / PAUSE"; clicked => { root.animation-play-pause(); } } Button { text: "NEXT"; clicked => { root.animation-next(); } } }
                             } }
                                 Card { min-width: 250px; preferred-width: 330px; max-width: 390px; horizontal-stretch: 1; VerticalLayout { padding: root.compact-ui ? 14px : 18px; spacing: 10px;

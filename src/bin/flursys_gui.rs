@@ -4,9 +4,11 @@ use flursys::{
     BoundaryConditionKind, BoundaryFace, CadSketchPlane, FieldUpdate, GeneratedMesh,
     GeometryEditorState, GeometrySelectionTarget, GeometrySketch, GeometryTool, GmshMesher,
     IncompressibleBoundaryCondition, IncompressibleSolution, IncompressibleSolveError,
-    MeshDimension, MeshQualityMetric, MeshSelection, Project, ProjectCoupling, RecentProjects,
-    SketchAxis, SketchEntityKind, SketchPlane, SketchProfileKind, SolveStatus,
-    ThermalBoundaryCondition, Vec3, ViewTransform, WorkbenchProject, WorkbenchSession,
+    MeshDimension, MeshQualityMetric, MeshSelection, MeshSelectionTarget, Project, ProjectCoupling,
+    RecentProjects, ResultDataset, ResultFieldKind, ResultProbe, ResultRenderCache, SketchAxis,
+    SketchEntityKind, SketchPlane, SketchProfileKind, SolveStatus, StreamlineDirection,
+    StreamlineField, StreamlineOptions, StreamlinePath, ThermalBoundaryCondition, Vec3,
+    ViewTransform, WorkbenchProject, WorkbenchSession,
 };
 use slint::{ComponentHandle, ModelRc, SharedString, Timer, TimerMode, VecModel};
 use std::cell::RefCell;
@@ -205,6 +207,12 @@ struct AppState {
     tree_dirty: bool,
     selected_tree: Option<TreeSelection>,
     pending_run_delete: Option<String>,
+    active_result: Option<ResultDataset>,
+    result_render_cache: Option<ResultRenderCache>,
+    active_result_probe: Option<ResultProbe>,
+    streamline_paths: Vec<StreamlinePath>,
+    streamline_seed_mode: bool,
+    result_manual_range: Option<(f64, f64)>,
     wb_selected_targets: Vec<GeometrySelectionTarget>,
     patch_names: Vec<String>,
     meshing: bool,
@@ -311,6 +319,12 @@ impl AppState {
             tree_dirty: true,
             selected_tree: None,
             pending_run_delete: None,
+            active_result: None,
+            result_render_cache: None,
+            active_result_probe: None,
+            streamline_paths: Vec::new(),
+            streamline_seed_mode: false,
+            result_manual_range: None,
             wb_selected_targets: Vec::new(),
             patch_names: Vec::new(),
             meshing: false,
@@ -344,6 +358,8 @@ impl AppState {
         self.workbench = session;
         self.workbench_project = template.project_template;
         self.workspace_path = None;
+        self.active_result = None;
+        self.result_render_cache = None;
         self.workbench_dirty = true;
         self.workbench_autosave_needed = false;
         self.pending_recovery_workspace = None;
@@ -372,6 +388,12 @@ impl AppState {
             .expect("a blank workbench project is always valid");
         self.workbench_project = project;
         self.workspace_path = None;
+        self.active_result = None;
+        self.result_render_cache = None;
+        self.active_result_probe = None;
+        self.streamline_paths.clear();
+        self.streamline_seed_mode = false;
+        self.result_manual_range = None;
         self.workbench_dirty = true;
         self.workbench_autosave_needed = false;
         self.pending_recovery_workspace = None;
@@ -628,6 +650,8 @@ impl AppState {
         self.workbench_project = document;
         self.workbench = session;
         self.workspace_path = Some(workspace.clone());
+        self.active_result = None;
+        self.result_render_cache = None;
         self.workbench_dirty = false;
         self.workbench_autosave_needed = false;
         self.patch_names.clear();
@@ -666,6 +690,8 @@ impl AppState {
         self.workbench_project = document;
         self.workbench = session;
         self.workspace_path = Some(workspace);
+        self.active_result = None;
+        self.result_render_cache = None;
         self.workbench_dirty = true;
         self.workbench_autosave_needed = false;
         self.pending_recovery_workspace = None;
@@ -703,6 +729,111 @@ impl AppState {
             self.workbench_autosave_needed = false;
             self.record_recent_workspace(&workspace)?;
         }
+        Ok(())
+    }
+
+    fn active_result(&self) -> Option<&ResultDataset> {
+        self.active_result.as_ref()
+    }
+
+    fn result_render_cache(&self) -> Option<&ResultRenderCache> {
+        self.result_render_cache.as_ref()
+    }
+
+    fn active_result_probe(&self) -> Option<&ResultProbe> {
+        self.active_result_probe.as_ref()
+    }
+
+    fn streamline_paths(&self) -> &[StreamlinePath] {
+        &self.streamline_paths
+    }
+
+    fn result_display_range(&self) -> Option<(f64, f64)> {
+        self.result_manual_range
+    }
+
+    fn set_result_manual_range(&mut self, minimum: &str, maximum: &str) -> Result<(), String> {
+        let minimum = minimum
+            .trim()
+            .parse::<f64>()
+            .map_err(|_| "Result minimum must be a finite number.".to_string())?;
+        let maximum = maximum
+            .trim()
+            .parse::<f64>()
+            .map_err(|_| "Result maximum must be a finite number.".to_string())?;
+        if !(minimum.is_finite() && maximum.is_finite() && minimum < maximum) {
+            return Err("Result range requires finite minimum < maximum.".to_string());
+        }
+        self.result_manual_range = Some((minimum, maximum));
+        Ok(())
+    }
+
+    fn seed_active_streamline(&mut self, seed: Vec3) -> Result<&StreamlinePath, String> {
+        let dataset = self
+            .active_result
+            .as_ref()
+            .ok_or_else(|| "Load a persisted 2D result before seeding a streamline.".to_string())?;
+        let field = StreamlineField::from_dataset(dataset).map_err(|error| error.to_string())?;
+        let characteristic_length = dataset
+            .mesh()
+            .cells()
+            .iter()
+            .map(|cell| cell.volume.sqrt())
+            .filter(|length| length.is_finite() && *length > 0.0)
+            .sum::<f64>()
+            / dataset.mesh().cell_count().max(1) as f64;
+        let characteristic_length = characteristic_length.max(1.0e-9);
+        let path = field
+            .integrate(
+                seed,
+                StreamlineDirection::Forward,
+                StreamlineOptions {
+                    step_size: characteristic_length * 0.1,
+                    max_steps: 1_024,
+                    max_length: characteristic_length * 100.0,
+                    stagnation_speed: 1.0e-12,
+                },
+            )
+            .map_err(|error| error.to_string())?;
+        self.streamline_paths.push(path);
+        Ok(self
+            .streamline_paths
+            .last()
+            .expect("a just-created streamline path exists"))
+    }
+
+    fn probe_active_result_cell(&mut self, cell: usize) -> Result<&ResultProbe, String> {
+        let probe = self
+            .active_result
+            .as_ref()
+            .ok_or_else(|| "Load a persisted result before probing.".to_string())?
+            .probe_cell(cell)
+            .ok_or_else(|| format!("Result cell {cell} does not exist."))?;
+        self.active_result_probe = Some(probe);
+        Ok(self
+            .active_result_probe()
+            .expect("a just-selected result probe exists"))
+    }
+
+    /// Replaces the complete result state with one immutable persisted run.
+    /// Clearing first prevents a failed selection from leaving fields from a
+    /// different run visible in the Results view.
+    fn activate_persisted_result(&mut self, run_id: &str) -> Result<(), String> {
+        self.active_result = None;
+        self.result_render_cache = None;
+        self.active_result_probe = None;
+        self.streamline_paths.clear();
+        self.streamline_seed_mode = false;
+        self.result_manual_range = None;
+        let workspace = self
+            .workspace_path
+            .as_deref()
+            .ok_or_else(|| "Open a saved workspace before loading a persisted run.".to_string())?;
+        let dataset = flursys::load_workspace_result(workspace, &self.workbench_project, run_id)
+            .map_err(|error| error.to_string())?;
+        let render_cache = ResultRenderCache::build(&dataset).map_err(|error| error.to_string())?;
+        self.active_result = Some(dataset);
+        self.result_render_cache = Some(render_cache);
         Ok(())
     }
 
@@ -2353,6 +2484,68 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
             return;
         };
         let mut state = pick_boundary_state.borrow_mut();
+        let result_cell = state.result_render_cache().and_then(|cache| {
+            let mesh_cache = cache.mesh_cache();
+            match mesh_cache.dimension() {
+                MeshDimension::TwoD => {
+                    let point = geometry_editor_point(x, y, preview_width, preview_height);
+                    mesh_cache
+                        .pick_cell_2d(state.mesh_view.screen_to_world(point))
+                        .and_then(|selection| match selection.target() {
+                            MeshSelectionTarget::Cell(cell) => Some(cell),
+                            MeshSelectionTarget::Face(_) => None,
+                        })
+                }
+                MeshDimension::ThreeD => {
+                    let point = geometry_editor_point(x, y, preview_width, preview_height);
+                    let (origin, direction) = mesh_screen_ray(point);
+                    mesh_cache
+                        .pick_face_3d(origin, direction)
+                        .and_then(|selection| match selection.target() {
+                            MeshSelectionTarget::Face(face) => cache.owner_for_face(face),
+                            MeshSelectionTarget::Cell(_) => None,
+                        })
+                }
+            }
+        });
+        if let Some(cell) = result_cell {
+            if state.streamline_seed_mode {
+                let is_2d = state
+                    .result_render_cache()
+                    .is_some_and(|cache| cache.mesh_cache().dimension() == MeshDimension::TwoD);
+                let message = if is_2d {
+                    let screen = geometry_editor_point(x, y, preview_width, preview_height);
+                    let world = state.mesh_view.screen_to_world(screen);
+                    state
+                        .seed_active_streamline(Vec3::new(world.0, world.1, 0.0))
+                        .map(|path| format!("Seeded streamline with {} points.", path.points.len()))
+                } else {
+                    Err("Streamline seeding is currently available for 2D results only.".to_string())
+                };
+                state.streamline_seed_mode = false;
+                state.log(message.unwrap_or_else(|error| error));
+                refresh_ui(&ui, &state);
+                return;
+            }
+            let message = state.probe_active_result_cell(cell).map(|probe| {
+                format!(
+                    "Result probe {} · cell {} · center ({:.4e}, {:.4e}, {:.4e}) · p {:.4e} · U ({:.4e}, {:.4e}, {:.4e}) · |U| {:.4e}",
+                    probe.run_id,
+                    probe.cell_index,
+                    probe.center.x,
+                    probe.center.y,
+                    probe.center.z,
+                    probe.pressure,
+                    probe.velocity.x,
+                    probe.velocity.y,
+                    probe.velocity.z,
+                    probe.velocity_magnitude,
+                )
+            });
+            state.log(message.unwrap_or_else(|error| error));
+            refresh_ui(&ui, &state);
+            return;
+        }
         if state.show_mesh {
             let point = geometry_editor_point(x, y, preview_width, preview_height);
             if let Some(cache) = state.workbench.mesh_render_cache() {
@@ -2496,6 +2689,64 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
             result_colormap_label(ui.get_result_colormap_index()),
             ui.get_result_contour_levels().clamp(3, 32),
         ));
+        refresh_ui(&ui, &state);
+    });
+
+    let weak_ui = ui.as_weak();
+    let range_state = state.clone();
+    ui.on_apply_result_range(move || {
+        let Some(ui) = weak_ui.upgrade() else {
+            return;
+        };
+        let mut state = range_state.borrow_mut();
+        match state.set_result_manual_range(
+            ui.get_result_range_min().as_str(),
+            ui.get_result_range_max().as_str(),
+        ) {
+            Ok(()) => state.log("Applied manual result display range."),
+            Err(error) => state.log(error),
+        }
+        refresh_ui(&ui, &state);
+    });
+
+    let weak_ui = ui.as_weak();
+    let range_state = state.clone();
+    ui.on_reset_result_range(move || {
+        let Some(ui) = weak_ui.upgrade() else {
+            return;
+        };
+        let mut state = range_state.borrow_mut();
+        state.result_manual_range = None;
+        ui.set_result_range_min(SharedString::from(""));
+        ui.set_result_range_max(SharedString::from(""));
+        state.log("Using automatic result display range.");
+        refresh_ui(&ui, &state);
+    });
+
+    let weak_ui = ui.as_weak();
+    let streamline_state = state.clone();
+    ui.on_seed_streamline(move || {
+        let Some(ui) = weak_ui.upgrade() else {
+            return;
+        };
+        let mut state = streamline_state.borrow_mut();
+        state.streamline_seed_mode = true;
+        state.show_mesh = false;
+        state.show_geometry_3d = false;
+        state.log("Click a 2D persisted result cell to seed a forward streamline.");
+        refresh_ui(&ui, &state);
+    });
+
+    let weak_ui = ui.as_weak();
+    let streamline_state = state.clone();
+    ui.on_clear_streamlines(move || {
+        let Some(ui) = weak_ui.upgrade() else {
+            return;
+        };
+        let mut state = streamline_state.borrow_mut();
+        state.streamline_paths.clear();
+        state.streamline_seed_mode = false;
+        state.log("Cleared result streamlines.");
         refresh_ui(&ui, &state);
     });
 
@@ -2672,7 +2923,19 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
                 });
                 state.pending_run_delete = None;
                 state.wb_selected_targets.clear();
-                state.log(format!("Selected persisted run '{run_id}'."));
+                match state.activate_persisted_result(&run_id) {
+                    Ok(()) => {
+                        state.show_mesh = false;
+                        state.show_geometry_3d = false;
+                        state.animation_playing = false;
+                        state.current_step = 4;
+                        ui.set_current_step(4);
+                        state.log(format!("Loaded persisted result run '{run_id}'."));
+                    }
+                    Err(error) => state.log(format!(
+                        "Could not load persisted result run '{run_id}': {error}"
+                    )),
+                }
                 ui.set_inspector_mode(6);
                 rebuild_tree_rows(&mut state);
                 refresh_ui(&ui, &state);
@@ -4392,6 +4655,60 @@ fn refresh_ui(ui: &MainWindow, state: &AppState) {
             ));
             ui.set_visualization_image(render_empty_image());
         }
+    } else if let (Some(result), Some(cache)) = (state.active_result(), state.result_render_cache())
+    {
+        let selected = ui.get_result_field_index();
+        let plot = ui.get_result_plot_index().clamp(0, 3);
+        let colormap = ui.get_result_colormap_index().clamp(0, 3);
+        let (title, field, unavailable) = match selected {
+            1 => ("PERSISTED PRESSURE", ResultFieldKind::Pressure, None),
+            2 => (
+                "VORTICITY UNAVAILABLE",
+                ResultFieldKind::VelocityMagnitude,
+                Some("persisted runs currently provide pressure and velocity only"),
+            ),
+            3 => (
+                "TEMPERATURE UNAVAILABLE",
+                ResultFieldKind::VelocityMagnitude,
+                Some("the active persisted run has no energy field"),
+            ),
+            _ => (
+                "PERSISTED VELOCITY MAGNITUDE",
+                ResultFieldKind::VelocityMagnitude,
+                None,
+            ),
+        };
+        let range = state
+            .result_display_range()
+            .map(Ok)
+            .unwrap_or_else(|| result.scalar_range(field))
+            .map(|(minimum, maximum)| format!(" · range {minimum:.4e}..{maximum:.4e}"))
+            .unwrap_or_default();
+        ui.set_visualization_title(SharedString::from(title));
+        ui.set_animation_status(SharedString::from(format!(
+            "Run {} · {} · {}{}{}",
+            result.run_id(),
+            result_plot_label(plot),
+            result_colormap_label(colormap),
+            range,
+            unavailable
+                .map(|message| format!(" · {message}"))
+                .unwrap_or_default(),
+        )));
+        ui.set_visualization_image(match unavailable {
+            Some(_) => render_empty_image(),
+            None => render_persisted_result(
+                cache,
+                field,
+                colormap,
+                plot,
+                ui.get_result_vector_density().clamp(0, 2),
+                ui.get_result_vector_scale().as_str(),
+                state.result_display_range(),
+                &state.mesh_view,
+                state.streamline_paths(),
+            ),
+        });
     } else if let Some(field) = state.frames.get(state.frame_index) {
         let selected = ui.get_result_field_index();
         let plot = ui.get_result_plot_index().clamp(0, 3);
@@ -4609,6 +4926,76 @@ mod tests {
         );
         assert!(reopened.workbench.named_selections().get("inlet").is_some());
         assert!(!reopened.workbench_dirty);
+    }
+
+    #[test]
+    fn selecting_a_persisted_run_replaces_the_active_result_with_its_artifact() {
+        let directory = tempdir().unwrap();
+        let mut state = AppState::new();
+        state
+            .save_workbench_workspace(directory.path().to_path_buf())
+            .unwrap();
+        let mut run = state
+            .workbench_project
+            .next_run(flursys::RunStatus::Converged);
+        run.solution_path = Some(PathBuf::from("runs/run-0001/solution.vtk"));
+        let artifact = directory.path().join(run.solution_path.as_ref().unwrap());
+        fs::create_dir_all(artifact.parent().unwrap()).unwrap();
+        fs::write(
+            artifact,
+            "# vtk DataFile Version 3.0\nrun\nASCII\nDATASET UNSTRUCTURED_GRID\nPOINTS 3 double\n0 0 0\n1 0 0\n0 1 0\nCELLS 1 4\n3 0 1 2\nCELL_TYPES 1\n7\nCELL_DATA 1\nSCALARS pressure double 1\nLOOKUP_TABLE default\n2\nSCALARS velocity_magnitude double 1\nLOOKUP_TABLE default\n5\nVECTORS velocity double\n3 4 0\n",
+        )
+        .unwrap();
+        state.workbench_project.runs.push(run);
+
+        state.activate_persisted_result("run-0001").unwrap();
+
+        assert_eq!(state.active_result().unwrap().run_id(), "run-0001");
+        assert_eq!(state.active_result().unwrap().pressure(), &[2.0]);
+        assert_eq!(state.result_render_cache().unwrap().run_id(), "run-0001");
+        assert_eq!(state.probe_active_result_cell(0).unwrap().velocity.x, 3.0);
+        assert_eq!(state.active_result_probe().unwrap().run_id, "run-0001");
+        state.set_result_manual_range("1.0", "3.0").unwrap();
+        assert_eq!(state.result_display_range(), Some((1.0, 3.0)));
+        assert!(state.set_result_manual_range("3.0", "1.0").is_err());
+        assert!(
+            state
+                .seed_active_streamline(Vec3::new(0.1, 0.1, 0.0))
+                .unwrap()
+                .points
+                .len()
+                > 1
+        );
+        assert_eq!(state.streamline_paths().len(), 1);
+
+        state.new_blank_workbench_project(MeshDimension::TwoD);
+
+        assert!(state.active_result().is_none());
+        assert!(state.result_render_cache().is_none());
+        assert!(state.active_result_probe().is_none());
+        assert!(state.streamline_paths().is_empty());
+    }
+
+    #[test]
+    fn failed_result_activation_clears_stale_result_state() {
+        let directory = tempdir().unwrap();
+        let mut state = AppState::new();
+        state
+            .save_workbench_workspace(directory.path().to_path_buf())
+            .unwrap();
+        let mut run = state
+            .workbench_project
+            .next_run(flursys::RunStatus::Converged);
+        run.solution_path = Some(PathBuf::from("runs/run-0001/solution.vtk"));
+        state.workbench_project.runs.push(run);
+
+        let error = state.activate_persisted_result("run-0001").unwrap_err();
+
+        assert!(error.contains("cannot read"));
+        assert!(state.active_result().is_none());
+        assert!(state.result_render_cache().is_none());
+        assert!(state.active_result_probe().is_none());
+        assert!(state.streamline_paths().is_empty());
     }
 
     #[test]
