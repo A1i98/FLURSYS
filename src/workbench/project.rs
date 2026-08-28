@@ -4,7 +4,10 @@
 //! metadata only. Meshes, VTK fields, renderer caches, and worker handles are
 //! project-local derived artifacts rather than JSON payloads.
 
-use super::{GeometrySelectionTarget, NamedSelection, SolveStatus, WorkbenchSession};
+use super::{
+    load_legacy_vtk_result, GeometrySelectionTarget, NamedSelection, ResultDataset, SolveStatus,
+    WorkbenchSession,
+};
 use crate::{GeometryTopology, MeshDimension, Vec3};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
@@ -390,6 +393,33 @@ pub fn load_workspace(workspace: &Path) -> Result<WorkbenchProject, ProjectDocum
     Ok(project)
 }
 
+/// Loads one persisted successful run from its canonical project-relative VTK
+/// artifact. The dataset owns its historical topology and never borrows the
+/// current in-memory mesh.
+pub fn load_workspace_result(
+    workspace: &Path,
+    project: &WorkbenchProject,
+    run_id: &str,
+) -> Result<ResultDataset, ProjectDocumentError> {
+    project.validate()?;
+    let run = project
+        .runs
+        .iter()
+        .find(|run| run.id == run_id)
+        .ok_or_else(|| ProjectDocumentError::Invalid(format!("run {run_id:?} does not exist")))?;
+    if matches!(run.status, RunStatus::Failed) {
+        return Err(ProjectDocumentError::Artifact(format!(
+            "run {run_id:?} failed and has no result fields"
+        )));
+    }
+    let solution = run.solution_path.as_ref().ok_or_else(|| {
+        ProjectDocumentError::Artifact(format!("run {run_id:?} has no solution artifact"))
+    })?;
+    validate_relative_artifact_path(solution)?;
+    load_legacy_vtk_result(&workspace.join(solution), &run.id)
+        .map_err(|error| ProjectDocumentError::Artifact(error.to_string()))
+}
+
 /// Persists a terminal solve as a project-local run directory, complete report,
 /// and optional VTK solution. Idle and in-flight sessions have no terminal
 /// record and return `Ok(None)`.
@@ -755,7 +785,11 @@ fn io_error(error: std::io::Error) -> ProjectDocumentError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{IncompressibleBoundaryCondition, WorkbenchSession};
+    use crate::workbench::examples::{build_example, ExampleProjectId};
+    use crate::{
+        solve_incompressible, IncompressibleBoundaryCondition, ResultFieldKind, ResultRenderCache,
+        StreamlineDirection, StreamlineField, StreamlineOptions, Vec3, WorkbenchSession,
+    };
     use tempfile::tempdir;
 
     #[test]
@@ -897,6 +931,172 @@ mod tests {
         assert!(report.contains("created_unix_ms"));
         assert!(report.contains("solver_settings"));
         assert!(!directory.path().join("runs/run-0001/solution.vtk").exists());
+    }
+
+    #[test]
+    fn historical_result_loader_uses_the_run_artifact_not_current_runtime_mesh() {
+        let directory = tempdir().unwrap();
+        let mut project = WorkbenchProject::blank("archived result");
+        let mut run = project.next_run(RunStatus::Converged);
+        run.solution_path = Some(PathBuf::from("runs/run-0001/solution.vtk"));
+        let artifact = directory.path().join(run.solution_path.as_ref().unwrap());
+        fs::create_dir_all(artifact.parent().unwrap()).unwrap();
+        fs::write(
+            &artifact,
+            "# vtk DataFile Version 3.0\nrun\nASCII\nDATASET UNSTRUCTURED_GRID\nPOINTS 3 double\n0 0 0\n1 0 0\n0 1 0\nCELLS 1 4\n3 0 1 2\nCELL_TYPES 1\n7\nCELL_DATA 1\nSCALARS pressure double 1\nLOOKUP_TABLE default\n2\nSCALARS velocity_magnitude double 1\nLOOKUP_TABLE default\n5\nVECTORS velocity double\n3 4 0\n",
+        )
+        .unwrap();
+        project.runs.push(run);
+
+        let dataset = load_workspace_result(directory.path(), &project, "run-0001").unwrap();
+
+        assert_eq!(dataset.run_id(), "run-0001");
+        assert_eq!(dataset.mesh().cell_count(), 1);
+        assert_eq!(dataset.pressure(), &[2.0]);
+    }
+
+    #[test]
+    fn real_gmsh_channel_run_survives_save_reload_and_postprocess_without_resolve() {
+        let directory = tempdir().unwrap();
+        let mut session = build_example(ExampleProjectId::LaminarChannel2D).unwrap();
+        let (export, options) = session.mesh_generation_inputs().unwrap();
+        let generated = session
+            .mesher()
+            .generate(&export.document, &options)
+            .unwrap();
+        session.install_mesh(generated);
+        let solution = solve_incompressible(&session.prepare_case().unwrap());
+        session.complete_solve(solution);
+
+        let mut project = session.to_project("channel postprocess acceptance");
+        let run = finalize_workspace_run(directory.path(), &mut project, &session)
+            .unwrap()
+            .unwrap();
+        drop(session);
+        let restored = load_workspace(directory.path()).unwrap();
+        let dataset = load_workspace_result(directory.path(), &restored, &run.id).unwrap();
+        let cache = ResultRenderCache::build(&dataset).unwrap();
+        let probe = dataset.probe_cell(0).unwrap();
+        let field = StreamlineField::from_dataset(&dataset).unwrap();
+        let path = field
+            .integrate(
+                probe.center,
+                StreamlineDirection::Forward,
+                StreamlineOptions {
+                    step_size: 0.05,
+                    max_steps: 16,
+                    max_length: 2.0,
+                    stagnation_speed: 1.0e-12,
+                },
+            )
+            .unwrap();
+
+        assert_eq!(dataset.run_id(), run.id);
+        assert_eq!(dataset.mesh().cell_count(), cache.cell_count());
+        assert!(dataset.pressure().iter().all(|value| value.is_finite()));
+        assert!(dataset
+            .velocity_magnitude()
+            .iter()
+            .all(|value| value.is_finite()));
+        assert!(cache.velocity_for_cell(probe.cell_index).is_some());
+        assert!(!path.points.is_empty());
+    }
+
+    #[test]
+    fn cylinder_streamline_locator_excludes_the_real_gmsh_hole() {
+        let session = build_example(ExampleProjectId::CylinderFlow2D).unwrap();
+        let (export, options) = session.mesh_generation_inputs().unwrap();
+        let generated = session
+            .mesher()
+            .generate(&export.document, &options)
+            .unwrap();
+        let cell_count = generated.mesh.cell_count();
+        let dataset = ResultDataset::from_values(
+            "cylinder-run",
+            &generated.mesh,
+            vec![0.0; cell_count],
+            vec![Vec3::new(1.0, 0.0, 0.0); cell_count],
+        )
+        .unwrap();
+        let field = StreamlineField::from_dataset(&dataset).unwrap();
+
+        assert!(field.locate_cell(Vec3::new(2.0, 1.0, 0.0)).is_none());
+        assert!(field
+            .integrate(
+                Vec3::new(2.0, 1.0, 0.0),
+                StreamlineDirection::Forward,
+                StreamlineOptions {
+                    step_size: 0.05,
+                    max_steps: 8,
+                    max_length: 1.0,
+                    stagnation_speed: 1.0e-12,
+                },
+            )
+            .is_err());
+    }
+
+    #[test]
+    fn real_gmsh_3d_channel_run_reloads_exterior_result_surface() {
+        let directory = tempdir().unwrap();
+        let mut session = build_example(ExampleProjectId::Channel3D).unwrap();
+        let (export, options) = session.mesh_generation_inputs().unwrap();
+        let generated = session
+            .mesher()
+            .generate(&export.document, &options)
+            .unwrap();
+        session.install_mesh(generated);
+        let solution = solve_incompressible(&session.prepare_case().unwrap());
+        session.complete_solve(solution);
+
+        let mut project = session.to_project("3d channel postprocess acceptance");
+        let run = finalize_workspace_run(directory.path(), &mut project, &session)
+            .unwrap()
+            .unwrap();
+        drop(session);
+        let restored = load_workspace(directory.path()).unwrap();
+        let dataset = load_workspace_result(directory.path(), &restored, &run.id).unwrap();
+        let cache = ResultRenderCache::build(&dataset).unwrap();
+
+        assert_eq!(dataset.mesh().dimension(), MeshDimension::ThreeD);
+        assert!(!cache.mesh_cache().surface_triangles().is_empty());
+        assert!(cache.mesh_cache().triangle_faces().iter().all(|&face| cache
+            .scalar_for_face(ResultFieldKind::Pressure, face)
+            .is_some()));
+    }
+
+    #[test]
+    fn real_gmsh_cavity_run_reloads_pressure_and_velocity_result_fields() {
+        let directory = tempdir().unwrap();
+        let mut session = build_example(ExampleProjectId::LidDrivenCavity2D).unwrap();
+        let (export, options) = session.mesh_generation_inputs().unwrap();
+        let generated = session
+            .mesher()
+            .generate(&export.document, &options)
+            .unwrap();
+        session.install_mesh(generated);
+        let solution = solve_incompressible(&session.prepare_case().unwrap());
+        session.complete_solve(solution);
+
+        let mut project = session.to_project("cavity postprocess acceptance");
+        let run = finalize_workspace_run(directory.path(), &mut project, &session)
+            .unwrap()
+            .unwrap();
+        drop(session);
+        let restored = load_workspace(directory.path()).unwrap();
+        let dataset = load_workspace_result(directory.path(), &restored, &run.id).unwrap();
+        let cache = ResultRenderCache::build(&dataset).unwrap();
+
+        assert!(dataset.pressure().iter().all(|value| value.is_finite()));
+        assert!(dataset
+            .velocity()
+            .iter()
+            .all(|value| value.norm().is_finite()));
+        assert!(cache
+            .scalar_for_cell(ResultFieldKind::Pressure, 0)
+            .is_some());
+        assert!(cache
+            .scalar_for_cell(ResultFieldKind::VelocityMagnitude, 0)
+            .is_some());
     }
 
     #[test]

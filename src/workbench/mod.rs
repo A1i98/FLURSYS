@@ -9,6 +9,7 @@ pub mod examples;
 pub mod mesh_viewport;
 pub mod picking;
 pub mod project;
+pub mod results;
 pub mod selection;
 pub mod session;
 
@@ -26,11 +27,19 @@ pub use picking::{CadPickMode, CadSelectionState};
 pub use project::{
     autosave_workspace, delete_workspace_run, discard_workspace_recovery, discover_templates,
     discover_templates_from_roots, finalize_workspace_run, load_recent_projects, load_workspace,
-    recovery_is_newer, save_case_template, save_recent_projects, save_workspace,
-    BoundaryAssignment, CaseTemplateManifest, PhysicalBoundaryCondition, ProjectDocumentError,
-    RecentProjectEntry, RecentProjects, RunRecord, RunStatus, TemplateExpectations,
-    WorkbenchMaterial, WorkbenchMeshSettings, WorkbenchProject, WorkbenchSolverSettings,
-    PROJECT_DOCUMENT_FILE, RECENT_PROJECTS_FILE, WORKBENCH_PROJECT_FORMAT_VERSION,
+    load_workspace_result, recovery_is_newer, save_case_template, save_recent_projects,
+    save_workspace, BoundaryAssignment, CaseTemplateManifest, PhysicalBoundaryCondition,
+    ProjectDocumentError, RecentProjectEntry, RecentProjects, RunRecord, RunStatus,
+    TemplateExpectations, WorkbenchMaterial, WorkbenchMeshSettings, WorkbenchProject,
+    WorkbenchSolverSettings, PROJECT_DOCUMENT_FILE, RECENT_PROJECTS_FILE,
+    WORKBENCH_PROJECT_FORMAT_VERSION,
+};
+pub use results::streamlines::{
+    StreamlineDirection, StreamlineField, StreamlineOptions, StreamlinePath,
+};
+pub use results::{
+    load_legacy_vtk_result, parse_legacy_vtk_result, ResultDataError, ResultDataset,
+    ResultFieldKind, ResultProbe, ResultRenderCache,
 };
 pub use selection::{
     GeometrySelectionTarget, NamedSelection, NamedSelectionError, NamedSelectionStore,
