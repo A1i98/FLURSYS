@@ -14,8 +14,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
-      - name: Install Linux GUI dependencies
-        run: sudo apt-get update && sudo apt-get install --yes libfontconfig1-dev
+      - name: Install Linux GUI and meshing dependencies
+        run: sudo apt-get update && sudo apt-get install --yes libfontconfig1-dev gmsh
       - run: cargo fmt --all -- --check
       - run: cargo check --all-targets --features gui --locked
       - run: cargo test --all-targets --features gui --locked
