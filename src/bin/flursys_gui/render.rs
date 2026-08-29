@@ -1,14 +1,16 @@
 use super::{residual_level, MeshColorMode, ResidualSample, PREVIEW_HEIGHT, PREVIEW_WIDTH};
 use flursys::{
-    BoundaryConditionKind, BoundaryFace, EnergyModel, ExtrudedMesh3D, FieldUpdate,
-    GeometryEditorState, GeometryPart, GeometryPartKind, GeometrySelectionTarget, GeometrySketch,
-    GeometryTopology, MeshDimension, MeshQualityMetric, MeshRenderCache, MeshSelection,
-    MeshSelectionTarget, PreviewPrimitive, Project, ProjectCase, Ray3, ResultFieldKind,
-    ResultRenderCache, SketchAxis, SketchEntityKind, StreamlinePath, StructuredMesh2D,
-    UnstructuredMesh, Vec3, ViewTransform,
+    BoundaryConditionKind, BoundaryFace, ExtrudedMesh3D, FieldUpdate, GeometryEditorState,
+    GeometryPart, GeometryPartKind, GeometrySelectionTarget, GeometrySketch, GeometryTopology,
+    MeshDimension, MeshQualityMetric, MeshRenderCache, MeshSelection, MeshSelectionTarget,
+    PreviewPrimitive, Project, ProjectCase, Ray3, ResultFieldKind, ResultRenderCache, SketchAxis,
+    SketchEntityKind, StreamlinePath, StructuredMesh2D, UnstructuredMesh, Vec3, ViewTransform,
 };
 use slint::{Image, Rgba8Pixel, SharedPixelBuffer};
 use std::collections::VecDeque;
+
+#[cfg(test)]
+use flursys::EnergyModel;
 
 type MeshNode = (usize, usize, usize);
 type BoundaryFaceNodes = (BoundaryFace, [MeshNode; 4]);
@@ -677,6 +679,7 @@ pub(super) fn mesh_inspection(project: &Project) -> String {
     )
 }
 
+#[cfg(test)]
 pub(super) fn preflight_report(project: &Project) -> Result<String, String> {
     project.validate()?;
     let (length, height) = project_case_domain(&project.case);

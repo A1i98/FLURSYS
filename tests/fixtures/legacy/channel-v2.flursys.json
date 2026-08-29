@@ -1,0 +1,7 @@
+{
+  "format_version": 2,
+  "name": "Historical channel",
+  "case": { "kind": "channel", "length": 4.0, "height": 1.0, "density": 1.0, "mean_velocity": 0.1, "reynolds": 100.0 },
+  "solver": { "nx": 40, "ny": 10, "dt": 0.001, "max_iterations": 80, "coupling": "simple", "convection": "first-order-upwind", "pressure_solver": "pcg", "pressure_tolerance": 0.00001, "pressure_iterations": 100, "velocity_relaxation": 0.7, "pressure_relaxation": 0.3, "steady_tolerance": 0.000001, "threads": 0 },
+  "preprocessing": { "geometry": { "dimension": "extruded-three-d", "extrusion_depth": 0.25, "parts": [] }, "mesh": { "topology": "structured", "cells_z": 8, "growth_rate": 1.0, "boundary_layers": 0 }, "boundaries": [{ "name": "inlet", "face": "left", "type": "velocity", "u": 0.1, "v": 0.0, "w": 0.0 }, { "name": "outlet", "face": "right", "type": "pressure-outlet", "pressure": 0.0 }, { "name": "bottom", "face": "bottom", "type": "case-default" }, { "name": "top", "face": "top", "type": "case-default" }, { "name": "front", "face": "front", "type": "symmetry" }, { "name": "back", "face": "back", "type": "symmetry" }] }
+}

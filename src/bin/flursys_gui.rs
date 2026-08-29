@@ -4,12 +4,12 @@ use flursys::{
     BoundaryConditionKind, BoundaryFace, BoundaryLayerControl, CadSketchPlane, FieldUpdate,
     GeneratedMesh, GeometryEditorState, GeometrySelectionTarget, GeometrySketch, GeometryTool,
     GmshMesher, IncompressibleBoundaryCondition, IncompressibleSolution, IncompressibleSolveError,
-    LocalMeshSize, MeshControlTarget, MeshDimension, MeshQualityMetric, MeshSelection,
-    MeshSelectionTarget, Project, ProjectCoupling, RecentProjects, ResultDataset, ResultFieldKind,
-    ResultProbe, ResultRenderCache, SketchAxis, SketchEntityKind, SketchPlane, SketchProfileKind,
-    SolveStatus, StreamlineDirection, StreamlineField, StreamlineOptions, StreamlinePath,
-    ThermalBoundaryCondition, ThresholdRefinement, Vec3, ViewTransform, WorkbenchProject,
-    WorkbenchSession,
+    LegacyProjectInspection, LocalMeshSize, MeshControlTarget, MeshDimension, MeshQualityMetric,
+    MeshSelection, MeshSelectionTarget, Project, ProjectCoupling, RecentProjects, ResultDataset,
+    ResultFieldKind, ResultProbe, ResultRenderCache, SketchAxis, SketchEntityKind, SketchPlane,
+    SketchProfileKind, SolveStatus, StreamlineDirection, StreamlineField, StreamlineOptions,
+    StreamlinePath, ThermalBoundaryCondition, ThresholdRefinement, Vec3, ViewTransform,
+    WorkbenchProject, WorkbenchSession,
 };
 use slint::{ComponentHandle, ModelRc, SharedString, Timer, TimerMode, VecModel};
 use std::cell::RefCell;
@@ -33,6 +33,10 @@ enum WorkspaceSaveRoute {
 enum PendingProjectReplacement {
     NewBlank(MeshDimension),
     OpenWorkspace(PathBuf),
+    ImportLegacy {
+        source: PathBuf,
+        destination: PathBuf,
+    },
     OpenTemplate(usize),
 }
 
@@ -62,12 +66,18 @@ fn validate_new_workspace_target(workspace: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn validate_legacy_project_load(path: &Path) -> Result<String, String> {
-    let project = Project::load(path)?;
-    Ok(format!(
-        "Legacy project {:?} was validated in compatibility mode. It remains a legacy structured project and was not opened as a workbench workspace; create or open a workspace folder for canonical workbench editing.",
-        project.name
-    ))
+fn suggested_legacy_import_destination(path: &Path) -> Result<PathBuf, String> {
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| format!("legacy project has no usable filename: {}", path.display()))?;
+    let stem = file_name.strip_suffix(".flursys.json").ok_or_else(|| {
+        format!(
+            "expected a .flursys.json legacy project: {}",
+            path.display()
+        )
+    })?;
+    Ok(path.with_file_name(format!("{stem}.flursys")))
 }
 
 fn choose_workspace_folder(title: &str) -> Option<PathBuf> {
@@ -196,6 +206,7 @@ struct AppState {
     workbench_autosave_needed: bool,
     pending_recovery_workspace: Option<PathBuf>,
     pending_project_replacement: Option<PendingProjectReplacement>,
+    pending_legacy_import: Option<(PendingProjectReplacement, LegacyProjectInspection)>,
     geometry_editor: GeometryEditorState,
     geometry_pan_anchor: Option<(f64, f64)>,
     mesh_view: ViewTransform,
@@ -250,6 +261,19 @@ struct ResidualSample {
 }
 
 impl AppState {
+    fn queue_legacy_import(&mut self, source: PathBuf) -> Result<(), String> {
+        let destination = suggested_legacy_import_destination(&source)?;
+        let inspection = flursys::inspect_legacy_project(&source)?;
+        self.pending_legacy_import = Some((
+            PendingProjectReplacement::ImportLegacy {
+                source,
+                destination,
+            },
+            inspection,
+        ));
+        Ok(())
+    }
+
     fn new() -> Self {
         let (templates, template_errors) = gallery_templates();
         let mut logs = VecDeque::from([
@@ -298,6 +322,7 @@ impl AppState {
             workbench_autosave_needed: false,
             pending_recovery_workspace: None,
             pending_project_replacement: None,
+            pending_legacy_import: None,
             geometry_editor: {
                 let mut editor = GeometryEditorState::new();
                 editor
@@ -463,6 +488,19 @@ impl AppState {
                 self.load_workbench_workspace(workspace)?;
                 self.project_loaded = true;
                 Ok("Workbench workspace loaded.".to_string())
+            }
+            PendingProjectReplacement::ImportLegacy {
+                source,
+                destination,
+            } => {
+                let result = flursys::import_legacy_project(&source, &destination)?;
+                self.load_workbench_workspace(destination)?;
+                self.project_loaded = true;
+                Ok(format!(
+                    "Imported legacy project as a modern workspace. Migrated: {}. Not migrated: {}. The original file was not modified.",
+                    result.report.migrated_items.join(", "),
+                    result.report.skipped_items.join(", "),
+                ))
             }
             PendingProjectReplacement::OpenTemplate(index) => {
                 let title = self.open_gallery_template(index as i32)?;
@@ -659,6 +697,7 @@ impl AppState {
         self.selected_tree = None;
         self.wb_selected_targets.clear();
         self.tree_dirty = true;
+        self.geometry_editor.fit_view(self.workbench.geometry());
         self.pending_recovery_workspace = recovery_available.then_some(workspace);
         let workspace = self
             .workspace_path
@@ -1832,34 +1871,7 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
             return;
         };
         let mut state = start_state.borrow_mut();
-        if !require_project(&mut state) {
-            refresh_ui(&ui, &state);
-            return;
-        }
-        sync_project_from_ui(&ui, &mut state.project);
-        match preflight_report(&state.project) {
-            Ok(report) => state.preflight_summary = report,
-            Err(error) => {
-                state.preflight_summary = format!("BLOCKED\n{error}");
-                state.log(error);
-                refresh_ui(&ui, &state);
-                return;
-            }
-        }
-        state.residual_history.clear();
-        state.frames.clear();
-        state.frame_index = 0;
-        state.animation_playing = false;
-        match state.project.simulation_config("results/gui-run") {
-            Ok(config) => match state
-                .controller
-                .send(SolverCommand::Start(Box::new(config)))
-            {
-                Ok(()) => state.log("Solver start requested."),
-                Err(error) => state.log(error),
-            },
-            Err(error) => state.log(error),
-        }
+        state.log("Legacy structured runs are retired. Configure the canonical Workbench mesh and boundaries, then use RUN WORKBENCH.");
         refresh_ui(&ui, &state);
     });
 
@@ -1870,21 +1882,11 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
             return;
         };
         let mut state = validate_state.borrow_mut();
-        if !require_project(&mut state) {
-            refresh_ui(&ui, &state);
-            return;
-        }
-        sync_project_from_ui(&ui, &mut state.project);
-        match preflight_report(&state.project) {
-            Ok(report) => {
-                state.preflight_summary = report;
-                state.log("Case validation passed.");
-            }
-            Err(error) => {
-                state.preflight_summary = format!("BLOCKED\n{error}");
-                state.log(error);
-            }
-        }
+        state.preflight_summary = match state.workbench.readiness() {
+            Ok(()) => "READY\nCanonical Workbench case is ready to run.".into(),
+            Err(reason) => format!("BLOCKED\n{reason}"),
+        };
+        state.log("Validated the canonical Workbench state.");
         refresh_ui(&ui, &state);
     });
 
@@ -1933,13 +1935,32 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
         let Some(ui) = weak_ui.upgrade() else {
             return;
         };
+        let legacy_file = rfd::FileDialog::new()
+            .add_filter("Legacy FLURSYS Project", &["json"])
+            .set_title("Import Legacy FLURSYS Project (Cancel to open workspace)")
+            .pick_file();
+        if let Some(path) = legacy_file {
+            if !flursys::is_legacy_project_path(&path) {
+                return;
+            }
+            let mut state = open_native_state.borrow_mut();
+            match state.queue_legacy_import(path) {
+                Ok(()) => {
+                    refresh_ui(&ui, &state);
+                }
+                Err(error) => {
+                    state.log(error);
+                    refresh_ui(&ui, &state);
+                }
+            }
+            return;
+        }
         let Some(workspace) = choose_workspace_folder("Open FLURSYS Workspace") else {
             return;
         };
+        let replacement = PendingProjectReplacement::OpenWorkspace(workspace);
         let mut state = open_native_state.borrow_mut();
-        if let Some(replacement) =
-            state.request_project_replacement(PendingProjectReplacement::OpenWorkspace(workspace))
-        {
+        if let Some(replacement) = state.request_project_replacement(replacement) {
             match state.apply_project_replacement(replacement) {
                 Ok(message) => {
                     state.log(message);
@@ -2113,6 +2134,40 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
     });
 
     let weak_ui = ui.as_weak();
+    let legacy_import_state = state.clone();
+    ui.on_cancel_legacy_import(move || {
+        let Some(ui) = weak_ui.upgrade() else {
+            return;
+        };
+        let mut state = legacy_import_state.borrow_mut();
+        state.pending_legacy_import = None;
+        state.log("Legacy project import cancelled; the original file was not modified.");
+        refresh_ui(&ui, &state);
+    });
+
+    let weak_ui = ui.as_weak();
+    let legacy_import_state = state.clone();
+    ui.on_confirm_legacy_import(move || {
+        let Some(ui) = weak_ui.upgrade() else {
+            return;
+        };
+        let mut state = legacy_import_state.borrow_mut();
+        let Some((replacement, _)) = state.pending_legacy_import.take() else {
+            return;
+        };
+        if let Some(replacement) = state.request_project_replacement(replacement) {
+            match state.apply_project_replacement(replacement) {
+                Ok(message) => {
+                    state.log(message);
+                    push_workbench_defaults(&ui, &state.workbench);
+                }
+                Err(error) => state.log(error),
+            }
+        }
+        refresh_ui(&ui, &state);
+    });
+
+    let weak_ui = ui.as_weak();
     let save_native_state = state.clone();
     ui.on_save_project_native(move || {
         let Some(ui) = weak_ui.upgrade() else {
@@ -2164,9 +2219,8 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
                 Err(error) => state.log(error),
             }
         } else {
-            match validate_legacy_project_load(&path) {
-                Ok(message) => state.log(message),
-                Err(error) => state.log(error),
+            if let Err(error) = state.queue_legacy_import(path) {
+                state.log(error);
             }
         }
         refresh_ui(&ui, &state);
@@ -4359,6 +4413,31 @@ fn refresh_ui(ui: &MainWindow, state: &AppState) {
     });
     ui.set_recovery_pending(state.pending_recovery_workspace.is_some());
     ui.set_unsaved_replacement_pending(state.pending_project_replacement.is_some());
+    ui.set_legacy_import_pending(state.pending_legacy_import.is_some());
+    ui.set_legacy_import_project_name(SharedString::from(
+        state
+            .pending_legacy_import
+            .as_ref()
+            .map_or_else(String::new, |(_, inspection)| {
+                inspection.detected_project_name.clone()
+            }),
+    ));
+    ui.set_legacy_import_recoverable_items(SharedString::from(
+        state
+            .pending_legacy_import
+            .as_ref()
+            .map_or_else(String::new, |(_, inspection)| {
+                inspection.recoverable_items.join(", ")
+            }),
+    ));
+    ui.set_legacy_import_skipped_items(SharedString::from(
+        state
+            .pending_legacy_import
+            .as_ref()
+            .map_or_else(String::new, |(_, inspection)| {
+                inspection.skipped_items.join(", ")
+            }),
+    ));
     ui.set_recovery_workspace(SharedString::from(
         state
             .pending_recovery_workspace
@@ -4377,7 +4456,7 @@ fn refresh_ui(ui: &MainWindow, state: &AppState) {
     sync_example_gallery(ui, state);
     if !state.project_loaded {
         ui.set_geometry_parts_summary(SharedString::from(
-            "No project is open. Choose a domain or load a .flursys.json project.",
+            "No project is open. Choose a domain or open a workspace/import a legacy file.",
         ));
         ui.set_visualization_title(SharedString::from("NO ACTIVE PROJECT"));
         ui.set_animation_status(SharedString::from(
@@ -4996,15 +5075,77 @@ mod tests {
     }
 
     #[test]
-    fn legacy_project_load_is_explicitly_compatibility_only() {
+    fn legacy_project_path_suggests_a_new_modern_workspace() {
         let directory = tempdir().unwrap();
         let legacy_path = directory.path().join("legacy.flursys.json");
         Project::default().save(&legacy_path).unwrap();
 
-        let message = validate_legacy_project_load(&legacy_path).unwrap();
+        let destination = suggested_legacy_import_destination(&legacy_path).unwrap();
 
-        assert!(message.contains("compatibility mode"));
-        assert!(message.contains("not opened as a workbench workspace"));
+        assert_eq!(destination, directory.path().join("legacy.flursys"));
+        assert!(!destination.exists());
+    }
+
+    #[test]
+    fn legacy_import_is_inspected_before_any_workspace_is_created() {
+        let directory = tempdir().unwrap();
+        let source = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/legacy/cavity-v2.flursys.json");
+        let destination = directory.path().join("cavity.flursys");
+        let copied_source = directory.path().join("cavity.flursys.json");
+        fs::copy(source, &copied_source).unwrap();
+        let mut state = AppState::new();
+
+        state.queue_legacy_import(copied_source).unwrap();
+
+        let Some((
+            PendingProjectReplacement::ImportLegacy {
+                destination: queued,
+                ..
+            },
+            inspection,
+        )) = state.pending_legacy_import.as_ref()
+        else {
+            panic!("legacy import confirmation was not queued");
+        };
+        assert_eq!(queued, &destination);
+        assert_eq!(inspection.detected_project_name, "Historical cavity");
+        assert!(!destination.exists());
+    }
+
+    #[test]
+    fn confirmed_legacy_import_installs_canonical_geometry_and_tree_state() {
+        let directory = tempdir().unwrap();
+        let source = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/legacy/cylinder-v2.flursys.json");
+        let copied_source = directory.path().join("cylinder.flursys.json");
+        fs::copy(source, &copied_source).unwrap();
+        let mut state = AppState::new();
+        state.queue_legacy_import(copied_source).unwrap();
+        let Some((replacement, _)) = state.pending_legacy_import.take() else {
+            panic!("legacy import confirmation was not queued");
+        };
+
+        state.apply_project_replacement(replacement).unwrap();
+        rebuild_tree_rows(&mut state);
+
+        assert!(state
+            .workspace_path
+            .as_ref()
+            .unwrap()
+            .join("project.json")
+            .is_file());
+        assert!(state.workbench.geometry().faces().next().is_some());
+        assert!(state
+            .workbench
+            .named_selections()
+            .iter()
+            .any(|selection| selection.name == "cylinder"));
+        assert!(state
+            .tree_rows
+            .iter()
+            .any(|row| row.label.contains("Geometry")));
+        assert!(!state.workbench.has_mesh());
     }
 
     #[test]

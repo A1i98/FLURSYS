@@ -110,16 +110,19 @@ pub use unstructured_incompressible::{
 };
 pub use workbench::{
     build_example, delete_workspace_run, example_descriptor, example_descriptors, expectations,
-    finalize_workspace_run, load_recent_projects, load_workspace, load_workspace_result,
+    finalize_workspace_run, import_legacy_project, inspect_legacy_project, is_legacy_project_path,
+    load_recent_projects, load_workspace, load_workspace_result, migrate_legacy_project,
     save_recent_projects, save_workspace, verify_solution, AnalysisDimension, AnalysisKind,
     BoundaryLayerControl, CadPickMode, CadSelectionState, ExampleCheck, ExampleExpectations,
     ExampleProjectDescriptor, ExampleProjectError, ExampleProjectId, ExampleVerificationReport,
-    ExecutionPlan, GeometryEditorState, GeometrySelectionTarget, GeometryTool, LocalMeshSize,
-    MeshControlTarget, MeshQualityMetric, MeshQualityValues, MeshRecipe, MeshRenderCache,
-    MeshSelection, MeshSelectionTarget, NamedSelection, NamedSelectionError, NamedSelectionStore,
+    ExecutionPlan, GeometryEditorState, GeometrySelectionTarget, GeometryTool,
+    LegacyProjectInspection, LocalMeshSize, MeshControlTarget, MeshQualityMetric,
+    MeshQualityValues, MeshRecipe, MeshRenderCache, MeshSelection, MeshSelectionTarget,
+    MigrationReport, MigrationResult, NamedSelection, NamedSelectionError, NamedSelectionStore,
     PhysicalBoundaryCondition, PreviewPrimitive, ProjectDocumentError, RecentProjectEntry,
     RecentProjects, RenderRange, ResultDataError, ResultDataset, ResultFieldKind, ResultProbe,
     ResultRenderCache, RunRecord, RunStatus, SolveStatus, SolverBackend, StreamlineDirection,
     StreamlineField, StreamlineOptions, StreamlinePath, TemplateExpectations, ThresholdRefinement,
     ViewTransform, WorkbenchAnalysis, WorkbenchError, WorkbenchProject, WorkbenchSession,
+    LEGACY_PROJECT_FORMATS,
 };

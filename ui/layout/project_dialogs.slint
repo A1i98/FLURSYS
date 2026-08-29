@@ -59,3 +59,37 @@ export component UnsavedChangesDialog inherits Rectangle {
         }
     }
 }
+
+export component LegacyImportDialog inherits Rectangle {
+    in property <bool> compact-ui;
+    in property <string> project-name;
+    in property <string> recoverable-items;
+    in property <string> skipped-items;
+    callback cancel();
+    callback import-project();
+    min-height: 300px;
+    max-height: 300px;
+    background: #000000b8;
+    VerticalLayout {
+        alignment: center;
+        Rectangle {
+            width: root.compact-ui ? 360px : 500px;
+            height: 300px;
+            background: UiTheme.toolbar;
+            border-color: UiTheme.accent;
+            border-width: 1px;
+            border-radius: 6px;
+            VerticalLayout {
+                padding: 20px;
+                spacing: 10px;
+                Text { text: "LEGACY FLURSYS PROJECT"; color: UiTheme.accent; font-size: 15px; font-weight: 800; }
+                Text { text: root.project-name; color: UiTheme.text-bright; font-size: 13px; }
+                Text { text: "This project will be imported into a new modern workspace. The original file will not be modified."; color: UiTheme.text-secondary; font-size: 12px; wrap: word-wrap; }
+                Text { text: "Recovered: " + root.recoverable-items; color: UiTheme.text-bright; font-size: 11px; wrap: word-wrap; }
+                Text { text: "Regenerate: " + root.skipped-items; color: UiTheme.text-muted; font-size: 11px; wrap: word-wrap; }
+                Rectangle { vertical-stretch: 1; }
+                HorizontalLayout { Rectangle { horizontal-stretch: 1; } Button { text: "CANCEL"; clicked => { root.cancel(); } } Button { text: "IMPORT AS MODERN PROJECT"; clicked => { root.import-project(); } } }
+            }
+        }
+    }
+}

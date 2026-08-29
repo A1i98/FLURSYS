@@ -4,7 +4,7 @@ import { TopBar } from "layout/topbar.slint";
 import { ProjectTree } from "layout/project_tree.slint";
 import { ExampleGallery, ExampleDescriptor } from "layout/example_gallery.slint";
 import { StatusBar } from "layout/status_bar.slint";
-import { RecoveryDialog, UnsavedChangesDialog } from "layout/project_dialogs.slint";
+import { LegacyImportDialog, RecoveryDialog, UnsavedChangesDialog } from "layout/project_dialogs.slint";
 
 export component MainWindow inherits Window {
     title: root.project-loaded ? "FLURSYS — " + root.project-name : "FLURSYS — CFD Workbench";
@@ -22,6 +22,10 @@ export component MainWindow inherits Window {
     in-out property <bool> recovery-pending: false;
     in-out property <string> recovery-workspace: "";
     in-out property <bool> unsaved-replacement-pending: false;
+    in-out property <bool> legacy-import-pending: false;
+    in-out property <string> legacy-import-project-name: "";
+    in-out property <string> legacy-import-recoverable-items: "";
+    in-out property <string> legacy-import-skipped-items: "";
     property <length> page-padding: root.compact-ui ? 14px : 24px;
     property <length> page-spacing: root.compact-ui ? 10px : 16px;
     property <length> sidebar-preferred-width: root.compact-ui ? 176px : 224px;
@@ -142,6 +146,7 @@ export component MainWindow inherits Window {
     callback load-project(); callback save-project(); callback show-mesh(); callback show-field();
     callback recover-workspace(); callback discard-workspace-recovery();
     callback save-before-project-replacement(); callback discard-before-project-replacement(); callback cancel-project-replacement();
+    callback confirm-legacy-import(); callback cancel-legacy-import();
     callback animation-play-pause(); callback animation-next(); callback show-geometry-3d();
     callback rotate-geometry-3d(); callback apply-boundary(); callback show-boundary-face(); callback select-step(int);
     callback select-case(); callback add-part(); callback build-feature(); callback duplicate-last-part(); callback remove-last-part();
@@ -421,7 +426,7 @@ export component MainWindow inherits Window {
                                         Text { text: "Project"; color: UiTheme.text-muted; font-size: 10px; }
                                         LineEdit { text <=> root.project-name; }
                                         Text { text: "ADVANCED PATH (manual load/save)"; color: UiTheme.text-muted; font-size: 10px; }
-                                        LineEdit { text <=> root.project-path; placeholder-text: "Workspace folder or legacy .flursys.json"; }
+                                        LineEdit { text <=> root.project-path; placeholder-text: "Workspace folder or legacy import file"; }
                                         HorizontalLayout { Button { text: "LOAD PATH"; clicked => { root.load-project(); } } Button { text: "SAVE PATH"; clicked => { root.save-project(); } } }
                                         Rectangle { vertical-stretch: 1; }
                                     }
@@ -981,6 +986,14 @@ export component MainWindow inherits Window {
             save => { root.save-before-project-replacement(); }
             discard => { root.discard-before-project-replacement(); }
             cancel => { root.cancel-project-replacement(); }
+        }
+        if root.legacy-import-pending : LegacyImportDialog {
+            compact-ui: root.compact-ui;
+            project-name: root.legacy-import-project-name;
+            recoverable-items: root.legacy-import-recoverable-items;
+            skipped-items: root.legacy-import-skipped-items;
+            cancel => { root.cancel-legacy-import(); }
+            import-project => { root.confirm-legacy-import(); }
         }
     }
 }

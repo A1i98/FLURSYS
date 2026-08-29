@@ -23,7 +23,7 @@ and transient UI state are deliberately excluded from `project.json`.
 
 ## Schema and versioning
 
-The current workspace format is version **1** (`WORKBENCH_PROJECT_FORMAT_VERSION`). A document
+The current workspace format is version **2** (`WORKBENCH_PROJECT_FORMAT_VERSION`). A document
 contains:
 
 - `format_version`, generated `project_id`, and display `name`;
@@ -35,10 +35,10 @@ contains:
 - persistent `runs` metadata.
 
 Loading validates the complete document, including geometry, selection targets, numerical
-settings, and artifact paths. Only version 1 is accepted: a newer or otherwise mismatched
-version returns a structured unsupported-version error rather than being interpreted as a
-compatible file. A saved project can therefore reconstruct a `WorkbenchSession`, but must
-regenerate its mesh and solution fields.
+settings, and artifact paths. Workspace v1 documents migrate their missing mesh recipe to the
+safe empty recipe; newer or otherwise mismatched versions return a structured error. A saved
+project can therefore reconstruct a `WorkbenchSession`, but must regenerate its mesh and
+solution fields.
 
 ## Save, open, and recovery API
 
@@ -107,13 +107,15 @@ Workbench result export is legacy ASCII VTK. It writes cell-centred `pressure`,
 
 ## Legacy project policy
 
-Existing versioned `.flursys.json` files remain the legacy structured-project format used by the
-CLI. The desktop validates a non-workspace path through `Project::load` in clearly labelled
-compatibility mode, but does not replace or mutate the canonical workbench workspace with it.
-A workspace directory is loaded through `load_workspace`. There is currently no automatic,
-lossless conversion of a legacy project into `WorkbenchProject`: the legacy project model and
-its structured-case semantics do not represent the complete canonical unstructured workspace
-state. Create or open a workspace directory for canonical workbench editing.
+`*.flursys.json` is import-only. Selecting a legacy file inspects it and imports recoverable
+intent into a new sibling workspace such as `channel.flursys/project.json`; the original file is
+never modified. The importer supports the repository's historical structured project v1 and v2
+schemas, recovering supported cavity, channel, cylinder, and backward-facing-step geometry into
+canonical topology with stable IDs, Named Selections, compatible boundary conditions, material,
+solver controls, and Gmsh mesh intent. Generated legacy meshes and historical runtime results are
+intentionally not carried forward: the imported workspace starts with no mesh and no solution,
+then uses the normal Gmsh, save, autosave, recovery, and run-artifact paths. All ongoing work is
+saved exclusively as a workspace `project.json`.
 
 ## Current CAD and UI limitations
 

@@ -35,8 +35,8 @@ transient projection and a steady SIMPLE-style coupling for laminar incompressib
 The optional Slint desktop interface keeps the solver on a separate worker thread and shows live
 residual, force, and field updates.
 
-Versioned `.flursys.json` files remain the legacy structured-case format accepted by the CLI.
-The unstructured workbench instead saves a portable directory workspace with `project.json`,
+Versioned `.flursys.json` files are read-only legacy import input. The workbench imports
+recoverable intent into a new portable directory workspace with `project.json`,
 separate autosave data, and per-run artifacts. It persists canonical geometry, Named Selections,
 mesh intent, physical boundaries, material, SIMPLE controls, and run metadata; generated meshes,
 solution fields, and UI caches are derived artifacts.

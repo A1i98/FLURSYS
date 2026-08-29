@@ -6,6 +6,7 @@
 
 pub mod editor;
 pub mod examples;
+pub mod legacy_import;
 pub mod mesh_viewport;
 pub mod picking;
 pub mod project;
@@ -18,6 +19,10 @@ pub use examples::{
     build_example, descriptor as example_descriptor, example_descriptors, expectations,
     verify_solution, ExampleCheck, ExampleExpectations, ExampleProjectDescriptor,
     ExampleProjectError, ExampleProjectId, ExampleVerificationReport,
+};
+pub use legacy_import::{
+    import_legacy_project, inspect_legacy_project, is_legacy_project_path, migrate_legacy_project,
+    LegacyProjectInspection, MigrationReport, MigrationResult, LEGACY_PROJECT_FORMATS,
 };
 pub use mesh_viewport::{
     MeshQualityMetric, MeshQualityValues, MeshRenderCache, MeshSelection, MeshSelectionTarget,

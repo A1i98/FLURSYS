@@ -1,0 +1,7 @@
+{
+  "format_version": 2,
+  "name": "Historical cylinder",
+  "case": { "kind": "cylinder", "length": 8.0, "height": 4.0, "diameter": 1.0, "center_x": 2.0, "center_y": 2.0, "density": 1.0, "freestream_velocity": 0.1, "reynolds": 20.0, "perturbation": 0.001 },
+  "solver": { "nx": 80, "ny": 40, "dt": 0.001, "max_iterations": 30, "coupling": "simple", "convection": "first-order-upwind", "pressure_solver": "pcg", "pressure_tolerance": 0.00001, "pressure_iterations": 100, "velocity_relaxation": 0.7, "pressure_relaxation": 0.3, "steady_tolerance": 0.000001, "threads": 0 },
+  "preprocessing": { "geometry": { "dimension": "extruded-three-d", "extrusion_depth": 0.25, "parts": [] }, "mesh": { "topology": "structured", "cells_z": 8, "growth_rate": 1.0, "boundary_layers": 0 }, "boundaries": [{ "name": "inlet", "face": "left", "type": "velocity", "u": 0.1, "v": 0.0, "w": 0.0 }, { "name": "outlet", "face": "right", "type": "pressure-outlet", "pressure": 0.0 }, { "name": "bottom", "face": "bottom", "type": "wall", "u": 0.0, "v": 0.0, "w": 0.0 }, { "name": "top", "face": "top", "type": "wall", "u": 0.0, "v": 0.0, "w": 0.0 }, { "name": "front", "face": "front", "type": "symmetry" }, { "name": "back", "face": "back", "type": "symmetry" }] }
+}

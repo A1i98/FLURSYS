@@ -1,8 +1,8 @@
 use flursys::cases::{BackwardStepCase, CavityCase, ChannelCase, CylinderCase};
 use flursys::{
-    Case, ConvectionScheme, ExecutionPlan, IncompressibleSolver, LidDrivenCavity3DConfig,
-    LidDrivenCavity3DSolver, PressureSolverKind, PressureVelocityCoupling, Project,
-    SimulationConfig, SolverBoundaryOverrides, TimeStepSettings,
+    Case, ConvectionScheme, IncompressibleSolver, LidDrivenCavity3DConfig, LidDrivenCavity3DSolver,
+    PressureSolverKind, PressureVelocityCoupling, SimulationConfig, SolverBoundaryOverrides,
+    TimeStepSettings,
 };
 use std::collections::HashMap;
 use std::env;
@@ -29,19 +29,6 @@ fn run_cli() -> Result<(), String> {
         println!("  channel        plane Poiseuille channel flow");
         println!("  cavity-3d      three-dimensional lid-driven cavity");
         return Ok(());
-    }
-    if args[0] == "--project" {
-        let path = args
-            .get(1)
-            .ok_or_else(|| "--project requires a .flursys.json path".to_string())?;
-        let output_dir = match args.get(2..).unwrap_or_default() {
-            [] => PathBuf::from("results/project-run"),
-            [flag, path] if flag == "--out" => PathBuf::from(path),
-            _ => return Err("Usage: flursys --project CASE.flursys.json [--out PATH]".to_string()),
-        };
-        let project = Project::load(path)?;
-        println!("Project: {}", project.name);
-        return run_execution_plan(project.execution_plan(output_dir)?);
     }
 
     let case_slug = args[0].as_str();
@@ -77,13 +64,6 @@ fn run_solver(config: SimulationConfig) -> Result<(), String> {
     println!("elapsed: {:.3} s", summary.elapsed.as_secs_f64());
     println!("steady convergence detected: {}", summary.converged);
     Ok(())
-}
-
-fn run_execution_plan(plan: ExecutionPlan) -> Result<(), String> {
-    match plan {
-        ExecutionPlan::StructuredIncompressible2D(config) => run_solver(*config),
-        ExecutionPlan::StructuredCavity3D(config) => run_3d_solver(config),
-    }
 }
 
 fn run_3d_solver(config: LidDrivenCavity3DConfig) -> Result<(), String> {
@@ -345,7 +325,7 @@ fn print_help() {
     println!("  flursys backward-step [options]");
     println!("  flursys channel [options]");
     println!("  flursys cavity-3d [options]");
-    println!("  flursys --project CASE.flursys.json [--out PATH]");
+
     println!();
     println!("Run `flursys <case> --help` for available options.");
 }
