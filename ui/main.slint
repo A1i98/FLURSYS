@@ -1,48 +1,10 @@
 import { Button, ComboBox, LineEdit, SpinBox, TextEdit, ScrollView, ListView } from "std-widgets.slint";
-import { SectionTitle, SectionHint, Card, MetricCard, InteractiveGeometryPreview, WorkflowItem, TreeRowView, InspectorLabel, InspectorValue, ProjectTreeRow } from "components.slint";
-
-// This is deliberately presentation-only data. Rust owns the example catalogue and
-// interprets the selected id; Slint never constructs projects or solver backends.
-export struct ExampleDescriptor {
-    id: string,
-    title: string,
-    category: string,
-    summary: string,
-    details: string,
-}
-
-global UiTheme {
-    in property <color> background: rgb(11, 19, 26);
-    in property <color> sidebar: rgb(14, 25, 34);
-    in property <color> toolbar: rgb(18, 32, 43);
-    in property <color> topbar: rgb(20, 37, 49);
-    in property <color> viewport: rgb(9, 16, 22);
-
-    in property <color> border: rgb(47, 74, 91);
-    in property <color> border-soft: rgb(37, 58, 73);
-    in property <color> border-strong: rgb(50, 79, 99);
-    in property <color> viewport-border: rgb(40, 66, 82);
-    in property <color> divider: rgb(58, 85, 102);
-    in property <color> divider-strong: rgb(65, 94, 112);
-
-    in property <color> accent: rgb(240, 195, 109);
-    in property <color> text-title: rgb(233, 242, 248);
-    in property <color> text-bright: rgb(226, 237, 245);
-    in property <color> text: rgb(213, 227, 236);
-    in property <color> text-alt: rgb(205, 220, 229);
-    in property <color> text-muted: rgb(140, 167, 185);
-    in property <color> text-dim: rgb(132, 161, 180);
-    in property <color> text-faint: rgb(126, 153, 170);
-    in property <color> text-soft: rgb(163, 188, 203);
-    in property <color> text-subtle: rgb(180, 202, 214);
-    in property <color> text-mid: rgb(190, 209, 220);
-    in property <color> text-secondary: rgb(198, 215, 224);
-    in property <color> text-tree: rgb(184, 207, 219);
-    in property <color> text-project: rgb(215, 229, 238);
-    in property <color> text-label: rgb(136, 164, 182);
-    in property <color> text-overlay: rgb(145, 174, 190);
-}
-
+import { SectionTitle, SectionHint, Card, MetricCard, InteractiveGeometryPreview, WorkflowItem, TreeRowView, InspectorLabel, InspectorValue, ProjectTreeRow, UiTheme } from "components.slint";
+import { TopBar } from "layout/topbar.slint";
+import { ProjectTree } from "layout/project_tree.slint";
+import { ExampleGallery, ExampleDescriptor } from "layout/example_gallery.slint";
+import { StatusBar } from "layout/status_bar.slint";
+import { RecoveryDialog, UnsavedChangesDialog } from "layout/project_dialogs.slint";
 
 export component MainWindow inherits Window {
     title: root.project-loaded ? "FLURSYS — " + root.project-name : "FLURSYS — CFD Workbench";
@@ -274,158 +236,32 @@ export component MainWindow inherits Window {
 
     VerticalLayout {
         spacing: 0px;
-        Rectangle {
-            min-height: 56px;
-            preferred-height: 60px;
-            max-height: 64px;
-            background: UiTheme.topbar;
-            border-color: UiTheme.border-strong;
-            border-width: 1px;
-
-            HorizontalLayout {
-                padding-left: root.compact-ui ? 10px : 14px;
-                padding-right: root.compact-ui ? 10px : 14px;
-                padding-top: 10px;
-                padding-bottom: 10px;
-                spacing: root.compact-ui ? 8px : 11px;
-
-                Text {
-                    text: "FLURSYS";
-                    color: UiTheme.text-title;
-                    font-size: root.compact-ui ? 19px : 23px;
-                    font-weight: 800;
-                    vertical-alignment: center;
-                }
-
-                if !root.compact-ui : Rectangle { width: 1px; background: UiTheme.divider-strong; }
-                if !root.compact-ui : Text {
-                    text: "CFD WORKBENCH";
-                    color: UiTheme.text-label;
-                    font-size: 12px;
-                    vertical-alignment: center;
-                }
-
-                Button { text: "NEW PROJECT"; clicked => { root.new-project(); } }
-                Button { text: "EXAMPLES"; clicked => { root.show-examples(); } }
-                Button { text: root.compact-ui ? "OPEN" : "OPEN PROJECT"; clicked => { root.open-project-native(); } }
-                if !root.compact-ui && root.recent-project-model.length > 0 : ComboBox {
-                    model: root.recent-project-model;
-                    current-index <=> root.recent-project-index;
-                    min-width: 170px;
-                }
-                if !root.compact-ui && root.recent-project-index >= 0 : Button {
-                    text: "OPEN RECENT";
-                    clicked => { root.open-recent-project(root.recent-project-index); }
-                }
-                Button { text: "SAVE"; clicked => { root.save-project-native(); } }
-                Button { text: root.compact-ui ? "SAVE AS" : "SAVE AS…"; clicked => { root.save-project-as(); } }
-                if !root.compact-ui : Button { text: "SAVE TEMPLATE…"; clicked => { root.save-as-case-template(); } }
-
-                Rectangle { width: 1px; background: UiTheme.divider-strong; }
-                Text { text: "WORKFLOW"; color: UiTheme.text-label; font-size: 10px; vertical-alignment: center; }
-                Button { text: "GEOMETRY"; clicked => { root.select-step(0); } }
-                Button { text: "MESH"; clicked => { root.select-step(1); } }
-                Button { text: "SETUP"; clicked => { root.select-step(2); } }
-                Button { text: "SOLUTION"; clicked => { root.select-step(3); } }
-                Button { text: "RESULTS"; clicked => { root.select-step(4); } }
-
-                Rectangle { horizontal-stretch: 1; }
-
-                Button {
-                    text: root.wb-busy ? "BUSY…" : "RUN";
-                    enabled: root.can-run-workbench && !root.wb-busy;
-                    clicked => { root.run-workbench(); }
-                }
-
-                Rectangle { width: 1px; background: UiTheme.divider-strong; }
-
-                if !root.compact-ui : Text {
-                    text: "PROJECT";
-                    color: UiTheme.text-label;
-                    font-size: 10px;
-                    vertical-alignment: center;
-                }
-
-                Text {
-                    text: root.project-loaded ? root.project-name : "No project loaded";
-                    color: UiTheme.text-project;
-                    font-size: 12px;
-                    max-width: root.compact-ui ? 170px : 260px;
-                    overflow: elide;
-                    vertical-alignment: center;
-                }
-
-                Rectangle { width: 1px; background: UiTheme.divider-strong; }
-
-                Text {
-                    text: "SOLVER";
-                    color: UiTheme.text-label;
-                    font-size: 10px;
-                    vertical-alignment: center;
-                }
-
-                Text {
-                    text: root.status;
-                    color: UiTheme.accent;
-                    font-size: 12px;
-                    font-weight: 700;
-                    max-width: root.compact-ui ? 100px : 160px;
-                    overflow: elide;
-                    vertical-alignment: center;
-                }
-            }
+        TopBar {
+            compact-ui: root.compact-ui;
+            project-loaded: root.project-loaded;
+            wb-busy: root.wb-busy;
+            can-run-workbench: root.can-run-workbench;
+            project-name: root.project-name;
+            status: root.status;
+            recent-project-model: root.recent-project-model;
+            recent-project-index <=> root.recent-project-index;
+            new-project => { root.new-project(); }
+            show-examples => { root.show-examples(); }
+            open-project => { root.open-project-native(); }
+            open-recent-project(index) => { root.open-recent-project(index); }
+            save-project => { root.save-project-native(); }
+            save-project-as => { root.save-project-as(); }
+            save-template => { root.save-as-case-template(); }
+            select-step(step) => { root.select-step(step); }
+            run-workbench => { root.run-workbench(); }
         }
 
         HorizontalLayout {
             spacing: 0px;
-            Rectangle {
-                min-width: root.compact-ui ? 176px : 208px;
-                preferred-width: root.compact-ui ? 200px : 244px;
-                max-width: root.compact-ui ? 220px : 268px;
-                background: UiTheme.sidebar;
-                border-color: UiTheme.border-soft;
-                border-width: 1px;
-
-                VerticalLayout {
-                    padding: root.compact-ui ? 9px : 12px;
-                    spacing: root.compact-ui ? 6px : 8px;
-
-                    Text {
-                        text: "PROJECT TREE";
-                        color: UiTheme.text-dim;
-                        font-size: 10px;
-                        font-weight: 700;
-                    }
-
-                    Rectangle {
-                        vertical-stretch: 1;
-                        border-color: UiTheme.border-soft;
-                        border-width: 1px;
-                        border-radius: 3px;
-                        background: rgb(12, 21, 28);
-                        ListView {
-                            for row in root.project-tree-model : TreeRowView {
-                                entry: row;
-                                select => { root.select-tree-row(row.index); }
-                            }
-                        }
-                    }
-
-                    Rectangle { height: 1px; background: UiTheme.border-soft; }
-
-                    if !root.compact-ui : Text {
-                        text: "Active numerical core";
-                        color: UiTheme.text-label;
-                        font-size: 10px;
-                    }
-
-                    Text {
-                        text: root.compact-ui ? "2D FVM · 3D preview" : "Unstructured Gmsh FVM\n2D structured FVM · 3D preview";
-                        color: UiTheme.text-mid;
-                        font-size: 10px;
-                        wrap: word-wrap;
-                    }
-                }
+            ProjectTree {
+                compact-ui: root.compact-ui;
+                project-tree-model: root.project-tree-model;
+                select-tree-row(index) => { root.select-tree-row(index); }
             }
 
             HorizontalLayout {
@@ -436,86 +272,21 @@ export component MainWindow inherits Window {
                     horizontal-stretch: 1;
                     background: UiTheme.background;
 
-                    if root.examples-open : Rectangle {
-                    width: parent.width; height: parent.height;
-                    gallery-scroll := ScrollView {
-                        width: parent.width;
-                        height: parent.height;
-                        horizontal-scrollbar-policy: as-needed;
-                        VerticalLayout {
-                            min-height: gallery-scroll.visible-height;
-                            padding: root.page-padding;
-                            spacing: root.page-spacing;
-                            HorizontalLayout {
-                                SectionTitle { text: "Example Gallery"; }
-                                Rectangle { horizontal-stretch: 1; }
-                                Button { text: "CLOSE"; clicked => { root.close-examples(); } }
-                            }
-                            SectionHint { text: "Start from a curated project setup. The catalogue and open action are supplied by Rust; this view only presents typed descriptors."; }
-                            HorizontalLayout {
-                                spacing: root.page-spacing;
-                                Card {
-                                    min-width: root.compact-ui ? 260px : 340px;
-                                    preferred-width: root.compact-ui ? 310px : 410px;
-                                    max-width: 470px;
-                                    horizontal-stretch: 1;
-                                    VerticalLayout {
-                                        padding: root.compact-ui ? 12px : 16px;
-                                        spacing: 7px;
-                                        Text { text: "CATALOGUE"; color: UiTheme.accent; font-size: 11px; font-weight: 800; }
-                                        if root.example-model.length == 0 : Text {
-                                            text: "No examples are currently available. Connect a Rust catalogue to populate this list.";
-                                            color: UiTheme.text-muted;
-                                            font-size: 11px;
-                                            wrap: word-wrap;
-                                        }
-                                        ScrollView {
-                                            vertical-stretch: 1;
-                                            horizontal-scrollbar-policy: always-off;
-                                            VerticalLayout {
-                                                spacing: 6px;
-                                                for example[index] in root.example-model : Rectangle {
-                                                    min-height: 72px;
-                                                    background: root.selected-example-index == index ? rgb(30, 61, 78) : rgb(17, 29, 38);
-                                                    border-color: root.selected-example-index == index ? UiTheme.accent : UiTheme.border-soft;
-                                                    border-width: 1px;
-                                                    border-radius: 4px;
-                                                    VerticalLayout {
-                                                        padding: 9px;
-                                                        spacing: 3px;
-                                                        Text { text: example.title; color: UiTheme.text-bright; font-size: 12px; font-weight: 700; overflow: elide; }
-                                                        Text { text: example.category; color: UiTheme.accent; font-size: 10px; font-weight: 700; overflow: elide; }
-                                                        Text { text: example.summary; color: UiTheme.text-muted; font-size: 10px; overflow: elide; }
-                                                    }
-                                                    TouchArea { clicked => { root.select-example(index); } }
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                                Card {
-                                    min-width: root.compact-ui ? 300px : 390px;
-                                    horizontal-stretch: 2;
-                                    VerticalLayout {
-                                        padding: root.compact-ui ? 12px : 16px;
-                                        spacing: 9px;
-                                        Text { text: "EXAMPLE DETAILS"; color: UiTheme.accent; font-size: 11px; font-weight: 800; }
-                                        Text { text: root.selected-example-title; color: UiTheme.text-bright; font-size: 19px; font-weight: 700; wrap: word-wrap; }
-                                        if root.selected-example-category != "" : Text { text: root.selected-example-category; color: UiTheme.text-dim; font-size: 11px; font-weight: 700; }
-                                        Text { text: root.selected-example-summary; color: UiTheme.text-secondary; font-size: 12px; wrap: word-wrap; }
-                                        Text { text: root.selected-example-details; color: UiTheme.text-muted; font-size: 11px; wrap: word-wrap; vertical-stretch: 1; }
-                                        HorizontalLayout {
-                                            spacing: 8px;
-                                            Button { text: "DETAILS"; enabled: root.selected-example-index >= 0; clicked => { root.show-example-details(root.selected-example-index); } }
-                                            Button { text: "OPEN EXAMPLE"; enabled: root.selected-example-index >= 0; clicked => { root.open-example(root.selected-example-index); } }
-                                            Rectangle { horizontal-stretch: 1; }
-                                        }
-                                    }
-                                }
-                            }
-                        }
+                    if root.examples-open : ExampleGallery {
+                        compact-ui: root.compact-ui;
+                        page-padding: root.page-padding;
+                        page-spacing: root.page-spacing;
+                        example-model: root.example-model;
+                        selected-example-index: root.selected-example-index;
+                        selected-example-title: root.selected-example-title;
+                        selected-example-category: root.selected-example-category;
+                        selected-example-summary: root.selected-example-summary;
+                        selected-example-details: root.selected-example-details;
+                        close => { root.close-examples(); }
+                        select-example(index) => { root.select-example(index); }
+                        show-details(index) => { root.show-example-details(index); }
+                        open-example(index) => { root.open-example(index); }
                     }
-                }
 
                     if !root.examples-open && root.current-step == 0 : Rectangle {
                     width: parent.width; height: parent.height;
@@ -1188,140 +959,28 @@ export component MainWindow inherits Window {
             }
         }
 
-        Rectangle {
-            min-height: 28px;
-            preferred-height: 30px;
-            max-height: 32px;
-            background: UiTheme.sidebar;
-            border-color: UiTheme.border-soft;
-            border-width: 1px;
-
-            HorizontalLayout {
-                padding-left: root.compact-ui ? 10px : 14px;
-                padding-right: root.compact-ui ? 10px : 14px;
-                spacing: 10px;
-
-                Text {
-                    text: root.status;
-                    color: UiTheme.accent;
-                    font-size: 10px;
-                    font-weight: 700;
-                    vertical-alignment: center;
-                }
-
-                Rectangle { width: 1px; background: UiTheme.border; }
-
-                Text {
-                    text: root.current-step == 0 ? "Geometry" :
-                          root.current-step == 1 ? "Mesh" :
-                          root.current-step == 2 ? "Setup" :
-                          root.current-step == 3 ? "Solution" : "Results";
-                    color: UiTheme.text-soft;
-                    font-size: 10px;
-                    vertical-alignment: center;
-                }
-
-                Rectangle { width: 1px; background: UiTheme.border; }
-
-                Text {
-                    text: root.status-cells;
-                    color: UiTheme.text-soft;
-                    font-size: 10px;
-                    vertical-alignment: center;
-                }
-
-                Text {
-                    text: root.status-iteration;
-                    color: UiTheme.text-soft;
-                    font-size: 10px;
-                    vertical-alignment: center;
-                }
-
-                Text {
-                    text: root.status-continuity;
-                    color: UiTheme.text-soft;
-                    font-size: 10px;
-                    vertical-alignment: center;
-                }
-
-                Rectangle { horizontal-stretch: 1; }
-
-                if !root.compact-ui : Text {
-                    text: root.project-loaded ? root.project-path : "No active project";
-                    color: UiTheme.text-muted;
-                    font-size: 10px;
-                    max-width: 260px;
-                    overflow: elide;
-                    vertical-alignment: center;
-                }
-
-                if !root.compact-ui : Rectangle { width: 1px; background: UiTheme.border; }
-
-                Text {
-                    text: root.threads == 0 ? "CPU AUTO" : "CPU MANUAL";
-                    color: UiTheme.text-muted;
-                    font-size: 10px;
-                    vertical-alignment: center;
-                }
-            }
+        StatusBar {
+            compact-ui: root.compact-ui;
+            project-loaded: root.project-loaded;
+            current-step: root.current-step;
+            threads: root.threads;
+            status: root.status;
+            status-cells: root.status-cells;
+            status-iteration: root.status-iteration;
+            status-continuity: root.status-continuity;
+            project-path: root.project-path;
         }
-        if root.recovery-pending : Rectangle {
-        min-height: 220px;
-        max-height: 220px;
-        background: #000000b8;
-        VerticalLayout {
-            alignment: center;
-            Rectangle {
-                width: root.compact-ui ? 360px : 460px;
-                height: 220px;
-                background: UiTheme.toolbar;
-                border-color: UiTheme.accent;
-                border-width: 1px;
-                border-radius: 6px;
-                VerticalLayout {
-                    padding: 20px;
-                    spacing: 12px;
-                    Text { text: "RECOVERY AVAILABLE"; color: UiTheme.accent; font-size: 15px; font-weight: 800; }
-                    Text { text: "A newer autosaved workspace was found. The saved project remains open until you choose."; color: UiTheme.text-bright; font-size: 12px; wrap: word-wrap; }
-                    Text { text: root.recovery-workspace; color: UiTheme.text-muted; font-size: 10px; overflow: elide; }
-                    Rectangle { vertical-stretch: 1; }
-                    HorizontalLayout {
-                        Rectangle { horizontal-stretch: 1; }
-                        Button { text: "DISCARD RECOVERY"; clicked => { root.discard-workspace-recovery(); } }
-                        Button { text: "RECOVER"; clicked => { root.recover-workspace(); } }
-                    }
-                }
-            }
+        if root.recovery-pending : RecoveryDialog {
+            compact-ui: root.compact-ui;
+            workspace: root.recovery-workspace;
+            recover => { root.recover-workspace(); }
+            discard => { root.discard-workspace-recovery(); }
         }
-    }
-        if root.unsaved-replacement-pending : Rectangle {
-        min-height: 220px;
-        max-height: 220px;
-        background: #000000b8;
-        VerticalLayout {
-            alignment: center;
-            Rectangle {
-                width: root.compact-ui ? 360px : 460px;
-                height: 220px;
-                background: UiTheme.toolbar;
-                border-color: UiTheme.accent;
-                border-width: 1px;
-                border-radius: 6px;
-                VerticalLayout {
-                    padding: 20px;
-                    spacing: 12px;
-                    Text { text: "UNSAVED PROJECT CHANGES"; color: UiTheme.accent; font-size: 15px; font-weight: 800; }
-                    Text { text: "Save the current project before replacing it, discard its changes, or cancel this action."; color: UiTheme.text-bright; font-size: 12px; wrap: word-wrap; }
-                    Rectangle { vertical-stretch: 1; }
-                    HorizontalLayout {
-                        Rectangle { horizontal-stretch: 1; }
-                        Button { text: "CANCEL"; clicked => { root.cancel-project-replacement(); } }
-                        Button { text: "DISCARD"; clicked => { root.discard-before-project-replacement(); } }
-                        Button { text: "SAVE"; clicked => { root.save-before-project-replacement(); } }
-                    }
-                }
-            }
+        if root.unsaved-replacement-pending : UnsavedChangesDialog {
+            compact-ui: root.compact-ui;
+            save => { root.save-before-project-replacement(); }
+            discard => { root.discard-before-project-replacement(); }
+            cancel => { root.cancel-project-replacement(); }
         }
-    }
     }
 }

@@ -1,0 +1,84 @@
+import { Button, ScrollView } from "std-widgets.slint";
+import { Card, SectionHint, SectionTitle, UiTheme } from "../components.slint";
+
+export struct ExampleDescriptor {
+    id: string,
+    title: string,
+    category: string,
+    summary: string,
+    details: string,
+}
+
+export component ExampleGallery inherits Rectangle {
+    in property <bool> compact-ui;
+    in property <length> page-padding;
+    in property <length> page-spacing;
+    in property <[ExampleDescriptor]> example-model;
+    in property <int> selected-example-index;
+    in property <string> selected-example-title;
+    in property <string> selected-example-category;
+    in property <string> selected-example-summary;
+    in property <string> selected-example-details;
+    callback close();
+    callback select-example(int);
+    callback show-details(int);
+    callback open-example(int);
+
+    gallery-scroll := ScrollView {
+        width: parent.width;
+        height: parent.height;
+        horizontal-scrollbar-policy: as-needed;
+        VerticalLayout {
+            min-height: gallery-scroll.visible-height;
+            padding: root.page-padding;
+            spacing: root.page-spacing;
+            HorizontalLayout { SectionTitle { text: "Example Gallery"; } Rectangle { horizontal-stretch: 1; } Button { text: "CLOSE"; clicked => { root.close(); } } }
+            SectionHint { text: "Start from a curated project setup. The catalogue and open action are supplied by Rust; this view only presents typed descriptors."; }
+            HorizontalLayout {
+                spacing: root.page-spacing;
+                Card {
+                    min-width: root.compact-ui ? 260px : 340px;
+                    preferred-width: root.compact-ui ? 310px : 410px;
+                    max-width: 470px;
+                    horizontal-stretch: 1;
+                    VerticalLayout {
+                        padding: root.compact-ui ? 12px : 16px;
+                        spacing: 7px;
+                        Text { text: "CATALOGUE"; color: UiTheme.accent; font-size: 11px; font-weight: 800; }
+                        if root.example-model.length == 0 : Text { text: "No examples are currently available. Connect a Rust catalogue to populate this list."; color: UiTheme.text-muted; font-size: 11px; wrap: word-wrap; }
+                        ScrollView {
+                            vertical-stretch: 1;
+                            horizontal-scrollbar-policy: always-off;
+                            VerticalLayout {
+                                spacing: 6px;
+                                for example[index] in root.example-model : Rectangle {
+                                    min-height: 72px;
+                                    background: root.selected-example-index == index ? rgb(30, 61, 78) : rgb(17, 29, 38);
+                                    border-color: root.selected-example-index == index ? UiTheme.accent : UiTheme.border-soft;
+                                    border-width: 1px;
+                                    border-radius: 4px;
+                                    VerticalLayout { padding: 9px; spacing: 3px; Text { text: example.title; color: UiTheme.text-bright; font-size: 12px; font-weight: 700; overflow: elide; } Text { text: example.category; color: UiTheme.accent; font-size: 10px; font-weight: 700; overflow: elide; } Text { text: example.summary; color: UiTheme.text-muted; font-size: 10px; overflow: elide; } }
+                                    TouchArea { clicked => { root.select-example(index); } }
+                                }
+                            }
+                        }
+                    }
+                }
+                Card {
+                    min-width: root.compact-ui ? 300px : 390px;
+                    horizontal-stretch: 2;
+                    VerticalLayout {
+                        padding: root.compact-ui ? 12px : 16px;
+                        spacing: 9px;
+                        Text { text: "EXAMPLE DETAILS"; color: UiTheme.accent; font-size: 11px; font-weight: 800; }
+                        Text { text: root.selected-example-title; color: UiTheme.text-bright; font-size: 19px; font-weight: 700; wrap: word-wrap; }
+                        if root.selected-example-category != "" : Text { text: root.selected-example-category; color: UiTheme.text-dim; font-size: 11px; font-weight: 700; }
+                        Text { text: root.selected-example-summary; color: UiTheme.text-secondary; font-size: 12px; wrap: word-wrap; }
+                        Text { text: root.selected-example-details; color: UiTheme.text-muted; font-size: 11px; wrap: word-wrap; vertical-stretch: 1; }
+                        HorizontalLayout { spacing: 8px; Button { text: "DETAILS"; enabled: root.selected-example-index >= 0; clicked => { root.show-details(root.selected-example-index); } } Button { text: "OPEN EXAMPLE"; enabled: root.selected-example-index >= 0; clicked => { root.open-example(root.selected-example-index); } } Rectangle { horizontal-stretch: 1; } }
+                    }
+                }
+            }
+        }
+    }
+}

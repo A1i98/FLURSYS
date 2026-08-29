@@ -1,0 +1,36 @@
+import { UiTheme } from "../components.slint";
+
+export component StatusBar inherits Rectangle {
+    in property <bool> compact-ui;
+    in property <bool> project-loaded;
+    in property <int> current-step;
+    in property <int> threads;
+    in property <string> status;
+    in property <string> status-cells;
+    in property <string> status-iteration;
+    in property <string> status-continuity;
+    in property <string> project-path;
+
+    min-height: 28px;
+    preferred-height: 30px;
+    max-height: 32px;
+    background: UiTheme.sidebar;
+    border-color: UiTheme.border-soft;
+    border-width: 1px;
+    HorizontalLayout {
+        padding-left: root.compact-ui ? 10px : 14px;
+        padding-right: root.compact-ui ? 10px : 14px;
+        spacing: 10px;
+        Text { text: root.status; color: UiTheme.accent; font-size: 10px; font-weight: 700; vertical-alignment: center; }
+        Rectangle { width: 1px; background: UiTheme.border; }
+        Text { text: root.current-step == 0 ? "Geometry" : root.current-step == 1 ? "Mesh" : root.current-step == 2 ? "Setup" : root.current-step == 3 ? "Solution" : "Results"; color: UiTheme.text-soft; font-size: 10px; vertical-alignment: center; }
+        Rectangle { width: 1px; background: UiTheme.border; }
+        Text { text: root.status-cells; color: UiTheme.text-soft; font-size: 10px; vertical-alignment: center; }
+        Text { text: root.status-iteration; color: UiTheme.text-soft; font-size: 10px; vertical-alignment: center; }
+        Text { text: root.status-continuity; color: UiTheme.text-soft; font-size: 10px; vertical-alignment: center; }
+        Rectangle { horizontal-stretch: 1; }
+        if !root.compact-ui : Text { text: root.project-loaded ? root.project-path : "No active project"; color: UiTheme.text-muted; font-size: 10px; max-width: 260px; overflow: elide; vertical-alignment: center; }
+        if !root.compact-ui : Rectangle { width: 1px; background: UiTheme.border; }
+        Text { text: root.threads == 0 ? "CPU AUTO" : "CPU MANUAL"; color: UiTheme.text-muted; font-size: 10px; vertical-alignment: center; }
+    }
+}

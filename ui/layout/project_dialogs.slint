@@ -1,0 +1,61 @@
+import { Button } from "std-widgets.slint";
+import { UiTheme } from "../components.slint";
+
+export component RecoveryDialog inherits Rectangle {
+    in property <bool> compact-ui;
+    in property <string> workspace;
+    callback recover();
+    callback discard();
+    min-height: 220px;
+    max-height: 220px;
+    background: #000000b8;
+    VerticalLayout {
+        alignment: center;
+        Rectangle {
+            width: root.compact-ui ? 360px : 460px;
+            height: 220px;
+            background: UiTheme.toolbar;
+            border-color: UiTheme.accent;
+            border-width: 1px;
+            border-radius: 6px;
+            VerticalLayout {
+                padding: 20px;
+                spacing: 12px;
+                Text { text: "RECOVERY AVAILABLE"; color: UiTheme.accent; font-size: 15px; font-weight: 800; }
+                Text { text: "A newer autosaved workspace was found. The saved project remains open until you choose."; color: UiTheme.text-bright; font-size: 12px; wrap: word-wrap; }
+                Text { text: root.workspace; color: UiTheme.text-muted; font-size: 10px; overflow: elide; }
+                Rectangle { vertical-stretch: 1; }
+                HorizontalLayout { Rectangle { horizontal-stretch: 1; } Button { text: "DISCARD RECOVERY"; clicked => { root.discard(); } } Button { text: "RECOVER"; clicked => { root.recover(); } } }
+            }
+        }
+    }
+}
+
+export component UnsavedChangesDialog inherits Rectangle {
+    in property <bool> compact-ui;
+    callback save();
+    callback discard();
+    callback cancel();
+    min-height: 220px;
+    max-height: 220px;
+    background: #000000b8;
+    VerticalLayout {
+        alignment: center;
+        Rectangle {
+            width: root.compact-ui ? 360px : 460px;
+            height: 220px;
+            background: UiTheme.toolbar;
+            border-color: UiTheme.accent;
+            border-width: 1px;
+            border-radius: 6px;
+            VerticalLayout {
+                padding: 20px;
+                spacing: 12px;
+                Text { text: "UNSAVED PROJECT CHANGES"; color: UiTheme.accent; font-size: 15px; font-weight: 800; }
+                Text { text: "Save the current project before replacing it, discard its changes, or cancel this action."; color: UiTheme.text-bright; font-size: 12px; wrap: word-wrap; }
+                Rectangle { vertical-stretch: 1; }
+                HorizontalLayout { Rectangle { horizontal-stretch: 1; } Button { text: "CANCEL"; clicked => { root.cancel(); } } Button { text: "DISCARD"; clicked => { root.discard(); } } Button { text: "SAVE"; clicked => { root.save(); } } }
+            }
+        }
+    }
+}

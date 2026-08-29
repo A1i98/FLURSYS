@@ -1,0 +1,63 @@
+import { Button, ComboBox } from "std-widgets.slint";
+import { UiTheme } from "../components.slint";
+
+export component TopBar inherits Rectangle {
+    in property <bool> compact-ui;
+    in property <bool> project-loaded;
+    in property <bool> wb-busy;
+    in property <bool> can-run-workbench;
+    in property <string> project-name;
+    in property <string> status;
+    in property <[string]> recent-project-model;
+    in-out property <int> recent-project-index;
+    callback new-project();
+    callback show-examples();
+    callback open-project();
+    callback open-recent-project(int);
+    callback save-project();
+    callback save-project-as();
+    callback save-template();
+    callback select-step(int);
+    callback run-workbench();
+
+    min-height: 56px;
+    preferred-height: 60px;
+    max-height: 64px;
+    background: UiTheme.topbar;
+    border-color: UiTheme.border-strong;
+    border-width: 1px;
+
+    HorizontalLayout {
+        padding-left: root.compact-ui ? 10px : 14px;
+        padding-right: root.compact-ui ? 10px : 14px;
+        padding-top: 10px;
+        padding-bottom: 10px;
+        spacing: root.compact-ui ? 8px : 11px;
+        Text { text: "FLURSYS"; color: UiTheme.text-title; font-size: root.compact-ui ? 19px : 23px; font-weight: 800; vertical-alignment: center; }
+        if !root.compact-ui : Rectangle { width: 1px; background: UiTheme.divider-strong; }
+        if !root.compact-ui : Text { text: "CFD WORKBENCH"; color: UiTheme.text-label; font-size: 12px; vertical-alignment: center; }
+        Button { text: "NEW PROJECT"; clicked => { root.new-project(); } }
+        Button { text: "EXAMPLES"; clicked => { root.show-examples(); } }
+        Button { text: root.compact-ui ? "OPEN" : "OPEN PROJECT"; clicked => { root.open-project(); } }
+        if !root.compact-ui && root.recent-project-model.length > 0 : ComboBox { model: root.recent-project-model; current-index <=> root.recent-project-index; min-width: 170px; }
+        if !root.compact-ui && root.recent-project-index >= 0 : Button { text: "OPEN RECENT"; clicked => { root.open-recent-project(root.recent-project-index); } }
+        Button { text: "SAVE"; clicked => { root.save-project(); } }
+        Button { text: root.compact-ui ? "SAVE AS" : "SAVE AS…"; clicked => { root.save-project-as(); } }
+        if !root.compact-ui : Button { text: "SAVE TEMPLATE…"; clicked => { root.save-template(); } }
+        Rectangle { width: 1px; background: UiTheme.divider-strong; }
+        Text { text: "WORKFLOW"; color: UiTheme.text-label; font-size: 10px; vertical-alignment: center; }
+        Button { text: "GEOMETRY"; clicked => { root.select-step(0); } }
+        Button { text: "MESH"; clicked => { root.select-step(1); } }
+        Button { text: "SETUP"; clicked => { root.select-step(2); } }
+        Button { text: "SOLUTION"; clicked => { root.select-step(3); } }
+        Button { text: "RESULTS"; clicked => { root.select-step(4); } }
+        Rectangle { horizontal-stretch: 1; }
+        Button { text: root.wb-busy ? "BUSY…" : "RUN"; enabled: root.can-run-workbench && !root.wb-busy; clicked => { root.run-workbench(); } }
+        Rectangle { width: 1px; background: UiTheme.divider-strong; }
+        if !root.compact-ui : Text { text: "PROJECT"; color: UiTheme.text-label; font-size: 10px; vertical-alignment: center; }
+        Text { text: root.project-loaded ? root.project-name : "No project loaded"; color: UiTheme.text-project; font-size: 12px; max-width: root.compact-ui ? 170px : 260px; overflow: elide; vertical-alignment: center; }
+        Rectangle { width: 1px; background: UiTheme.divider-strong; }
+        Text { text: "SOLVER"; color: UiTheme.text-label; font-size: 10px; vertical-alignment: center; }
+        Text { text: root.status; color: UiTheme.accent; font-size: 12px; font-weight: 700; max-width: root.compact-ui ? 100px : 160px; overflow: elide; vertical-alignment: center; }
+    }
+}

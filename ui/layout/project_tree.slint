@@ -1,0 +1,31 @@
+import { ListView } from "std-widgets.slint";
+import { ProjectTreeRow, TreeRowView, UiTheme } from "../components.slint";
+
+export component ProjectTree inherits Rectangle {
+    in property <bool> compact-ui;
+    in property <[ProjectTreeRow]> project-tree-model;
+    callback select-tree-row(int);
+
+    min-width: root.compact-ui ? 176px : 208px;
+    preferred-width: root.compact-ui ? 200px : 244px;
+    max-width: root.compact-ui ? 220px : 268px;
+    background: UiTheme.sidebar;
+    border-color: UiTheme.border-soft;
+    border-width: 1px;
+    VerticalLayout {
+        padding: root.compact-ui ? 9px : 12px;
+        spacing: root.compact-ui ? 6px : 8px;
+        Text { text: "PROJECT TREE"; color: UiTheme.text-dim; font-size: 10px; font-weight: 700; }
+        Rectangle {
+            vertical-stretch: 1;
+            border-color: UiTheme.border-soft;
+            border-width: 1px;
+            border-radius: 3px;
+            background: rgb(12, 21, 28);
+            ListView { for row in root.project-tree-model : TreeRowView { entry: row; select => { root.select-tree-row(row.index); } } }
+        }
+        Rectangle { height: 1px; background: UiTheme.border-soft; }
+        if !root.compact-ui : Text { text: "Active numerical core"; color: UiTheme.text-label; font-size: 10px; }
+        Text { text: root.compact-ui ? "2D FVM · 3D preview" : "Unstructured Gmsh FVM\n2D structured FVM · 3D preview"; color: UiTheme.text-mid; font-size: 10px; wrap: word-wrap; }
+    }
+}
