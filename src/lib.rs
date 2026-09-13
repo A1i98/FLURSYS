@@ -4,6 +4,7 @@
 //! capabilities. Its public contracts will evolve as the broader system is
 //! designed and validated.
 
+pub mod app;
 pub mod cases;
 pub mod field;
 pub mod fields;
@@ -94,8 +95,8 @@ pub use project::{
 pub use simple::{
     assemble_pressure_correction, continuity_rms, correct_cell_velocity_from_gradient,
     correct_face_flux, initial_face_flux, momentum_inverse_diagonal, pressure_face_coefficients,
-    rhie_chow_predicted_flux, solve_pressure_correction, solve_simple, PressureCorrectionSystem,
-    SimpleError, SimpleOptions, SimpleReport, SimpleState,
+    rhie_chow_predicted_flux, solve_pressure_correction, solve_simple, solve_simple_with_control,
+    PressureCorrectionSystem, SimpleError, SimpleOptions, SimpleReport, SimpleState,
 };
 pub use solver::{
     ConvectionScheme, FieldUpdate, IncompressibleSolver, LidDrivenCavity3DConfig,
@@ -103,10 +104,11 @@ pub use solver::{
     RunSummary3D, SimulationConfig, SolverStep, TimeStepSettings,
 };
 pub use unstructured_incompressible::{
-    patch_flux, solve_incompressible, IncompressibleBoundaryCondition, IncompressibleCase,
-    IncompressibleCaseError, IncompressibleInitialConditions, IncompressibleMaterial,
-    IncompressibleSolution, IncompressibleSolveError, IncompressibleSolveReport,
-    IncompressibleSolveStatus, IncompressibleSolverOptions, ResolvedIncompressibleBoundaries,
+    patch_flux, solve_incompressible, solve_incompressible_with_control,
+    IncompressibleBoundaryCondition, IncompressibleCase, IncompressibleCaseError,
+    IncompressibleInitialConditions, IncompressibleMaterial, IncompressibleSolution,
+    IncompressibleSolveError, IncompressibleSolveReport, IncompressibleSolveStatus,
+    IncompressibleSolverOptions, ResolvedIncompressibleBoundaries, SolveControl,
 };
 pub use workbench::{
     build_example, delete_workspace_run, example_descriptor, example_descriptors, expectations,

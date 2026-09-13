@@ -16,6 +16,7 @@ use crate::{
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum SimpleError {
+    Cancelled,
     Field(FieldError),
     Numerics(NumericsError),
     Linear(LinearAlgebraError),
@@ -24,6 +25,7 @@ pub enum SimpleError {
     InvalidPressureFaceCoefficient { face: usize, value: f64 },
     InvalidPressureReference { cell: usize, cell_count: usize },
     InvalidPressureRelaxation { value: f64 },
+    InvalidContinuityTolerance { value: f64 },
     InvalidOuterIterations { value: usize },
     MomentumLinearDidNotConverge,
     PressureLinearDidNotConverge,
@@ -150,6 +152,18 @@ pub fn solve_simple(
     state: &mut SimpleState,
     options: SimpleOptions<'_>,
 ) -> Result<SimpleReport, SimpleError> {
+    solve_simple_with_control(mesh, state, options, || false, |_, _| {})
+}
+
+/// Executes SIMPLE with UI-independent cooperative cancellation and iteration
+/// reporting hooks. Cancellation is checked before every outer iteration.
+pub fn solve_simple_with_control(
+    mesh: &UnstructuredMesh,
+    state: &mut SimpleState,
+    options: SimpleOptions<'_>,
+    mut is_cancelled: impl FnMut() -> bool,
+    mut on_iteration: impl FnMut(usize, f64),
+) -> Result<SimpleReport, SimpleError> {
     state.velocity.ensure_mesh(mesh)?;
     state.pressure.ensure_mesh(mesh)?;
     state.face_flux.ensure_mesh(mesh)?;
@@ -168,7 +182,7 @@ pub fn solve_simple(
     if !(options.continuity_absolute_tolerance.is_finite()
         && options.continuity_absolute_tolerance >= 0.0)
     {
-        return Err(SimpleError::InvalidPressureRelaxation {
+        return Err(SimpleError::InvalidContinuityTolerance {
             value: options.continuity_absolute_tolerance,
         });
     }
@@ -178,6 +192,9 @@ pub fn solve_simple(
     let mut last_momentum = None;
     let mut last_pressure = None;
     for iteration in 1..=options.max_outer_iterations {
+        if is_cancelled() {
+            return Err(SimpleError::Cancelled);
+        }
         let pressure_source =
             pressure_gradient_source(mesh, &state.pressure, options.pressure_stencil, 1.0)?;
         let source_x = momentum_component_field(mesh, &pressure_source, MomentumComponent::X)?;
@@ -288,6 +305,7 @@ pub fn solve_simple(
         };
         let continuity = continuity_rms(mesh, &state.face_flux)?;
         history.push(continuity);
+        on_iteration(iteration, continuity);
         last_momentum = Some(momentum_reports);
         last_pressure = Some(pressure_report);
         if continuity <= options.continuity_absolute_tolerance {
@@ -1253,6 +1271,36 @@ mod tests {
             .all(|value| *value == Vec3::ZERO));
         assert!(state.pressure.values().iter().all(|value| *value == 0.0));
         assert!(state.face_flux.values().iter().all(|value| *value == 0.0));
+    }
+
+    #[test]
+    fn simple_honors_cooperative_cancellation_before_an_iteration() {
+        let mesh = two_cells();
+        let pressure_boundary = ResolvedScalarBoundaryConditions::strict(
+            &mesh,
+            &[("wall", ScalarBoundaryCondition::FixedValue(0.0))],
+        )
+        .unwrap();
+        let stencil = LeastSquaresGradientStencil::new(&mesh, &pressure_boundary).unwrap();
+        let velocity_boundary = ResolvedVelocityBoundaryConditions::strict(
+            &mesh,
+            &[("wall", VelocityBoundaryCondition::FixedVelocity(Vec3::ZERO))],
+        )
+        .unwrap();
+        let mut state = SimpleState::new(
+            &mesh,
+            CellField::filled(&mesh, Vec3::ZERO),
+            CellField::filled(&mesh, 0.0),
+            FaceField::filled(&mesh, 0.0),
+        )
+        .unwrap();
+        let options =
+            SimpleOptions::steady(Diffusivity::Constant(1.0), &velocity_boundary, &stencil);
+
+        assert!(matches!(
+            solve_simple_with_control(&mesh, &mut state, options, || true, |_, _| {}),
+            Err(SimpleError::Cancelled)
+        ));
     }
 
     #[test]

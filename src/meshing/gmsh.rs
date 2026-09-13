@@ -4,7 +4,9 @@ use super::{GmshGeoDocument, MeshingError};
 use crate::{load_gmsh, MeshDimension, UnstructuredMesh};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::thread;
+use std::time::Duration;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum GmshExecutable {
@@ -175,6 +177,26 @@ impl GmshMesher {
         geometry: &GmshGeoDocument,
         options: &GmshMeshOptions,
     ) -> Result<GeneratedMesh, MeshingError> {
+        self.generate_with_cancellation(geometry, options, || false)
+    }
+
+    /// Generates a mesh while allowing a caller to cooperatively terminate the
+    /// owned Gmsh child process. The callback is intentionally UI-agnostic.
+    pub fn generate_cancellable(
+        &self,
+        geometry: &GmshGeoDocument,
+        options: &GmshMeshOptions,
+        is_cancelled: impl Fn() -> bool,
+    ) -> Result<GeneratedMesh, MeshingError> {
+        self.generate_with_cancellation(geometry, options, is_cancelled)
+    }
+
+    fn generate_with_cancellation(
+        &self,
+        geometry: &GmshGeoDocument,
+        options: &GmshMeshOptions,
+        is_cancelled: impl Fn() -> bool,
+    ) -> Result<GeneratedMesh, MeshingError> {
         if geometry.dimension() != options.dimension {
             return Err(MeshingError::InvalidOptions {
                 message: "geometry and mesh option dimensions differ".into(),
@@ -193,11 +215,35 @@ impl GmshMesher {
             message: error.to_string(),
         })?;
         let arguments = self.command_arguments(&geo_path, &mesh_path, options)?;
-        let output = self.command().args(arguments).output().map_err(|error| {
-            MeshingError::GmshExecutableNotFound {
+        let mut child = self
+            .command()
+            .args(arguments)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|error| MeshingError::GmshExecutableNotFound {
                 executable: self.executable_label(),
                 message: error.to_string(),
+            })?;
+        loop {
+            if is_cancelled() {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(MeshingError::Cancelled);
             }
+            if child
+                .try_wait()
+                .map_err(|error| MeshingError::Io {
+                    message: error.to_string(),
+                })?
+                .is_some()
+            {
+                break;
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+        let output = child.wait_with_output().map_err(|error| MeshingError::Io {
+            message: error.to_string(),
         })?;
         let stdout = text(&output.stdout);
         let stderr = text(&output.stderr);

@@ -5,10 +5,10 @@
 //! remains in `crate::simple`.
 
 use crate::{
-    initial_face_flux, solve_simple, CellField, Diffusivity, FaceField, FieldError,
-    LeastSquaresGradientStencil, LinearSolverOptions, ResolvedScalarBoundaryConditions,
-    ResolvedVelocityBoundaryConditions, ScalarBoundaryCondition, SimpleError, SimpleOptions,
-    SimpleReport, SimpleState, UnstructuredMesh, Vec3, VelocityBoundaryCondition,
+    initial_face_flux, CellField, Diffusivity, FaceField, FieldError, LeastSquaresGradientStencil,
+    LinearSolverOptions, ResolvedScalarBoundaryConditions, ResolvedVelocityBoundaryConditions,
+    ScalarBoundaryCondition, SimpleError, SimpleOptions, SimpleReport, SimpleState,
+    UnstructuredMesh, Vec3, VelocityBoundaryCondition,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -322,6 +322,35 @@ pub struct IncompressibleSolution {
     pub report: IncompressibleSolveReport,
 }
 
+/// Cooperative control hooks for an incompressible solve.
+///
+/// The solver owns no UI state; callers may use this to publish progress or
+/// stop between SIMPLE outer iterations.
+pub struct SolveControl<'a> {
+    is_cancelled: Box<dyn Fn() -> bool + Send + Sync + 'a>,
+    on_iteration: Box<dyn Fn(usize, usize, f64) + Send + Sync + 'a>,
+}
+
+impl<'a> SolveControl<'a> {
+    pub fn new(
+        is_cancelled: impl Fn() -> bool + Send + Sync + 'a,
+        on_iteration: impl Fn(usize, usize, f64) + Send + Sync + 'a,
+    ) -> Self {
+        Self {
+            is_cancelled: Box::new(is_cancelled),
+            on_iteration: Box::new(on_iteration),
+        }
+    }
+
+    fn cancelled(&self) -> bool {
+        (self.is_cancelled)()
+    }
+
+    fn report_iteration(&self, current: usize, max: usize, residual: f64) {
+        (self.on_iteration)(current, max, residual);
+    }
+}
+
 impl IncompressibleSolution {
     /// Returns the cell-centred velocity magnitude for result export and
     /// visualization without reconstructing fluxes or mutating solution state.
@@ -332,6 +361,7 @@ impl IncompressibleSolution {
 
 #[derive(Clone, Debug)]
 pub enum IncompressibleSolveError {
+    Cancelled,
     Case(IncompressibleCaseError),
     Simple(SimpleError),
     BackflowAtPressureOutlet {
@@ -367,6 +397,22 @@ impl From<SimpleError> for IncompressibleSolveError {
 /// anchoring is added with the open-boundary SIMPLE extension.
 pub fn solve_incompressible(
     case: &IncompressibleCase,
+) -> Result<IncompressibleSolution, IncompressibleSolveError> {
+    solve_incompressible_impl(case, None)
+}
+
+/// Runs an incompressible case with application-owned cancellation and progress
+/// hooks. This does not change numerical options or persistence semantics.
+pub fn solve_incompressible_with_control(
+    case: &IncompressibleCase,
+    control: &SolveControl<'_>,
+) -> Result<IncompressibleSolution, IncompressibleSolveError> {
+    solve_incompressible_impl(case, Some(control))
+}
+
+fn solve_incompressible_impl(
+    case: &IncompressibleCase,
+    control: Option<&SolveControl<'_>>,
 ) -> Result<IncompressibleSolution, IncompressibleSolveError> {
     let resolved = case.resolve_boundaries()?;
     let pressure_stencil =
@@ -419,7 +465,21 @@ pub fn solve_incompressible(
     options.pressure_relaxation = case.solver.pressure_relaxation;
     options.momentum_solver = case.solver.momentum_solver;
     options.pressure_solver = case.solver.pressure_solver;
-    let simple = solve_simple(&case.mesh, &mut state, options)?;
+    let simple = crate::solve_simple_with_control(
+        &case.mesh,
+        &mut state,
+        options,
+        || control.is_some_and(SolveControl::cancelled),
+        |iteration, residual| {
+            if let Some(control) = control {
+                control.report_iteration(iteration, case.solver.max_outer_iterations, residual);
+            }
+        },
+    )
+    .map_err(|error| match error {
+        SimpleError::Cancelled => IncompressibleSolveError::Cancelled,
+        error => IncompressibleSolveError::Simple(error),
+    })?;
     let status = if simple.converged {
         IncompressibleSolveStatus::Converged
     } else {

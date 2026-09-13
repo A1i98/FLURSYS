@@ -12,6 +12,7 @@ pub use gmsh::{
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum MeshingError {
+    Cancelled,
     InvalidOptions {
         message: String,
     },
@@ -54,6 +55,7 @@ pub enum MeshingError {
 impl std::fmt::Display for MeshingError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::Cancelled => write!(formatter, "Gmsh generation was cancelled"),
             Self::InvalidOptions { message } => {
                 write!(formatter, "invalid meshing options: {message}")
             }
