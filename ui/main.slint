@@ -234,6 +234,7 @@ export component MainWindow inherits Window {
     callback unassign-boundary-wb();
     callback apply-solver-settings-wb();
     callback run-workbench();
+    callback cancel-workbench-job();
     callback delete-run-wb();
     callback refresh-gmsh-status();
     callback mesh-display(int); callback mesh-select-mode(int); callback mesh-color(int); callback mesh-quality(int); callback mesh-threshold(); callback select-bad-cell(int);
@@ -845,7 +846,11 @@ export component MainWindow inherits Window {
                                     }
                                     InspectorLabel { text: "ELEMENT ORDER"; }
                                     InspectorValue { text: "1st order (linear) — only order supported by the importer"; }
-                                    Button { text: root.wb-busy ? "GENERATING…" : "GENERATE MESH"; enabled: !root.wb-busy; clicked => { root.generate-mesh-wb(); } }
+                                    HorizontalLayout {
+                                        spacing: 6px;
+                                        Button { text: root.wb-busy ? "GENERATING…" : "GENERATE MESH"; enabled: !root.wb-busy; clicked => { root.generate-mesh-wb(); } }
+                                        Button { text: "CANCEL JOB"; enabled: root.wb-busy; clicked => { root.cancel-workbench-job(); } }
+                                    }
                                     InspectorLabel { text: "ADVANCED MESH RECIPE"; }
                                     InspectorValue { text: root.wb-mesh-recipe-summary; font-family: "monospace"; }
                                     InspectorLabel { text: "LOCAL SIZE · NAMED SELECTION"; }
