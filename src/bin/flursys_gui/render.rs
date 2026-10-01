@@ -872,14 +872,15 @@ pub(super) fn render_canonical_geometry_3d(
     yaw: f32,
     pitch: f32,
     zoom: f32,
-    selected_face: Option<flursys::FaceId>,
-    hovered_face: Option<flursys::FaceId>,
+    selected_target: Option<GeometrySelectionTarget>,
+    hovered_target: Option<GeometrySelectionTarget>,
 ) -> Image {
     let (width, height) = (PREVIEW_WIDTH, PREVIEW_HEIGHT);
     let mut pixels = vec![0_u8; (width * height * 4) as usize];
     fill(&mut pixels, [9, 16, 22, 255]);
     let mut surfaces = topology.renderable_faces();
     if surfaces.is_empty() {
+        draw_canonical_orientation_triad(&mut pixels, width, height, yaw, pitch);
         return image_from_rgba(width, height, pixels);
     }
     let camera = CanonicalCamera::fit(
@@ -896,8 +897,8 @@ pub(super) fn render_canonical_geometry_3d(
             .total_cmp(&camera.depth(&right.vertices))
     });
     for surface in surfaces {
-        let selected = selected_face == Some(surface.face);
-        let hovered = hovered_face == Some(surface.face);
+        let selected = selected_target == Some(GeometrySelectionTarget::Face(surface.face));
+        let hovered = hovered_target == Some(GeometrySelectionTarget::Face(surface.face));
         let fill_color = if selected {
             [240, 195, 109, 255]
         } else if hovered {
@@ -962,11 +963,49 @@ pub(super) fn render_canonical_geometry_3d(
             draw_line(&mut pixels, width, height, start, end, edge_color);
         }
     }
+    // Entity picks use the same stable IDs and camera as the geometry tree.
+    for (target, color) in [
+        (hovered_target, [142, 232, 176, 255]),
+        (selected_target, [255, 226, 143, 255]),
+    ] {
+        match target {
+            Some(GeometrySelectionTarget::Vertex(id)) => {
+                if let Some(vertex) = topology.vertex(id) {
+                    let center = camera.project(vertex.position);
+                    draw_ellipse(&mut pixels, width, height, center, 6, 6, color);
+                    draw_marker(&mut pixels, width, height, center, color);
+                }
+            }
+            Some(GeometrySelectionTarget::Edge(id)) => {
+                if let Some(path) = topology
+                    .edge(id)
+                    .and_then(|edge| canonical_edge_path(topology, &edge.geometry))
+                {
+                    for segment in path.windows(2) {
+                        let (a, b) = (camera.project(segment[0]), camera.project(segment[1]));
+                        for offset in -1..=1 {
+                            draw_line(
+                                &mut pixels,
+                                width,
+                                height,
+                                (a.0 + offset, a.1),
+                                (b.0 + offset, b.1),
+                                color,
+                            );
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    draw_canonical_orientation_triad(&mut pixels, width, height, yaw, pitch);
     image_from_rgba(width, height, pixels)
 }
 
 /// Builds the orthographic canonical CAD ray for a viewport point using the
 /// exact camera transform shared by `render_canonical_geometry_3d`.
+#[cfg(test)]
 pub(super) fn canonical_geometry_ray(
     topology: &GeometryTopology,
     yaw: f32,
@@ -986,6 +1025,131 @@ pub(super) fn canonical_geometry_ray(
         )
         .ray(point)
     })?
+}
+
+fn canonical_camera(
+    topology: &GeometryTopology,
+    yaw: f32,
+    pitch: f32,
+    zoom: f32,
+) -> Option<CanonicalCamera> {
+    let surfaces = topology.renderable_faces();
+    (!surfaces.is_empty()).then(|| {
+        CanonicalCamera::fit(
+            surfaces
+                .iter()
+                .flat_map(|surface| surface.vertices.iter().copied()),
+            yaw,
+            pitch,
+            zoom,
+        )
+    })
+}
+
+/// Face, sketch-edge, or sketch-vertex selection in the same orthographic camera
+/// used for rendering. Candidates behind a nearer face are not selectable.
+pub(super) fn pick_canonical_geometry_target(
+    topology: &GeometryTopology,
+    yaw: f32,
+    pitch: f32,
+    zoom: f32,
+    point: (f64, f64),
+    mode: i32,
+) -> Option<GeometrySelectionTarget> {
+    let camera = canonical_camera(topology, yaw, pitch, zoom)?;
+    let ray = camera.ray(point)?;
+    if mode == 0 {
+        return topology
+            .pick_face(ray)
+            .map(|hit| GeometrySelectionTarget::Face(hit.face));
+    }
+    let front = topology.pick_face(ray).map(|hit| hit.distance);
+    let visible = |position: Vec3| {
+        front.is_none_or(|distance| {
+            (position - ray.origin).dot(ray.direction) <= distance + 8.0 / camera.scale
+        })
+    };
+    if mode == 2 {
+        return topology
+            .vertices()
+            .filter_map(|vertex| {
+                let position = camera.project(vertex.position);
+                let distance =
+                    (point.0 - f64::from(position.0)).hypot(point.1 - f64::from(position.1));
+                (distance <= 9.0 && visible(vertex.position))
+                    .then_some((distance, GeometrySelectionTarget::Vertex(vertex.id)))
+            })
+            .min_by(|a, b| a.0.total_cmp(&b.0))
+            .map(|(_, target)| target);
+    }
+    if mode != 1 {
+        return None;
+    }
+    topology
+        .edges()
+        .filter_map(|edge| {
+            let path = canonical_edge_path(topology, &edge.geometry)?;
+            path.windows(2)
+                .filter_map(|segment| {
+                    let (a, b) = (camera.project(segment[0]), camera.project(segment[1]));
+                    let dx = f64::from(b.0 - a.0);
+                    let dy = f64::from(b.1 - a.1);
+                    let t = if dx == 0.0 && dy == 0.0 {
+                        0.0
+                    } else {
+                        ((point.0 - f64::from(a.0)) * dx + (point.1 - f64::from(a.1)) * dy)
+                            / (dx * dx + dy * dy)
+                    }
+                    .clamp(0.0, 1.0);
+                    let closest = segment[0] + (segment[1] - segment[0]) * t;
+                    let distance = distance_to_segment(
+                        point,
+                        (f64::from(a.0), f64::from(a.1)),
+                        (f64::from(b.0), f64::from(b.1)),
+                    );
+                    (distance <= 8.0 && visible(closest)).then_some(distance)
+                })
+                .min_by(f64::total_cmp)
+                .map(|distance| (distance, GeometrySelectionTarget::Edge(edge.id)))
+        })
+        .min_by(|a, b| a.0.total_cmp(&b.0))
+        .map(|(_, target)| target)
+}
+
+fn canonical_edge_path(
+    topology: &GeometryTopology,
+    edge: &flursys::EdgeGeometry,
+) -> Option<Vec<Vec3>> {
+    match *edge {
+        flursys::EdgeGeometry::Line { start, end } => Some(vec![
+            topology.vertex(start)?.position,
+            topology.vertex(end)?.position,
+        ]),
+        flursys::EdgeGeometry::CircularArc { start, center, end } => {
+            let (start, center, end) = (
+                topology.vertex(start)?.position,
+                topology.vertex(center)?.position,
+                topology.vertex(end)?.position,
+            );
+            let delta = start - center;
+            let radius = delta.norm();
+            let first = delta.y.atan2(delta.x);
+            let sweep = ((end.y - center.y).atan2(end.x - center.x) - first)
+                .rem_euclid(std::f64::consts::TAU);
+            Some(
+                (0..=32)
+                    .map(|i| {
+                        let angle = first + sweep * f64::from(i) / 32.0;
+                        Vec3::new(
+                            center.x + radius * angle.cos(),
+                            center.y + radius * angle.sin(),
+                            start.z,
+                        )
+                    })
+                    .collect(),
+            )
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -1324,6 +1488,23 @@ pub(super) fn render_geometry_editor(
         }
     }
     for edge in topology.edges() {
+        let in_sketch_plane = match edge.geometry {
+            flursys::EdgeGeometry::Line { start, end } => [start, end].into_iter().all(|id| {
+                topology
+                    .vertex(id)
+                    .is_some_and(|v| v.position.z.abs() <= 1.0e-9)
+            }),
+            flursys::EdgeGeometry::CircularArc { start, center, end } => {
+                [start, center, end].into_iter().all(|id| {
+                    topology
+                        .vertex(id)
+                        .is_some_and(|v| v.position.z.abs() <= 1.0e-9)
+                })
+            }
+        };
+        if !in_sketch_plane {
+            continue;
+        }
         let belongs_to = |face_id| {
             topology.faces().any(|face| {
                 face.id == face_id
@@ -1403,6 +1584,9 @@ pub(super) fn render_geometry_editor(
         }
     }
     for vertex in topology.vertices() {
+        if vertex.position.z.abs() > 1.0e-9 {
+            continue;
+        }
         let p = to_screen((vertex.position.x, vertex.position.y));
         let selected = editor
             .selection
@@ -1491,6 +1675,7 @@ pub(super) fn render_geometry_editor(
             }
         }
     }
+    draw_sketch_orientation_triad(&mut pixels, width, height);
     image_from_rgba(width, height, pixels)
 }
 
@@ -2155,22 +2340,22 @@ impl MeshCamera {
             (160.0 - y * self.scale) as i32,
         )
     }
-
-    fn project_direction(&self, (x, y, z): (f64, f64, f64)) -> (f64, f64) {
-        let horizontal = x * self.yaw.cos() - y * self.yaw.sin();
-        let depth = x * self.yaw.sin() + y * self.yaw.cos();
-        (horizontal, z * self.pitch.cos() + depth * self.pitch.sin())
-    }
 }
 
 const TRIAD_ORIGIN: (i32, i32) = (478, 48);
 const TRIAD_LENGTH: f64 = 25.0;
-#[allow(dead_code)]
 const TRIAD_COLORS: [[u8; 4]; 3] = [[235, 91, 91, 255], [91, 210, 125, 255], [91, 144, 235, 255]];
 
 pub(super) fn orientation_triad_endpoints(camera: MeshCamera) -> [(i32, i32); 3] {
+    triad_endpoints(camera.yaw, camera.pitch)
+}
+
+fn triad_endpoints(yaw: f64, pitch: f64) -> [(i32, i32); 3] {
     [(1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0)].map(|direction| {
-        let (x, y) = camera.project_direction(direction);
+        let (x, y, z) = direction;
+        let horizontal = x * yaw.cos() - y * yaw.sin();
+        let depth = x * yaw.sin() + y * yaw.cos();
+        let (x, y) = (horizontal, z * pitch.cos() + depth * pitch.sin());
         let length = x.hypot(y).max(0.15);
         (
             TRIAD_ORIGIN.0 + (x / length * TRIAD_LENGTH) as i32,
@@ -2179,8 +2364,35 @@ pub(super) fn orientation_triad_endpoints(camera: MeshCamera) -> [(i32, i32); 3]
     })
 }
 
+#[cfg(test)]
 pub(super) fn pick_orientation_triad(point: (f64, f64), camera: MeshCamera) -> Option<i32> {
-    orientation_triad_endpoints(camera)
+    pick_triad_endpoints(point, orientation_triad_endpoints(camera))
+}
+
+pub(super) fn pick_canonical_orientation_axis(
+    yaw: f32,
+    pitch: f32,
+    point: (f64, f64),
+) -> Option<i32> {
+    pick_triad_endpoints(point, triad_endpoints(f64::from(yaw), f64::from(pitch)))
+}
+
+fn pick_triad_endpoints(point: (f64, f64), endpoints: [(i32, i32); 3]) -> Option<i32> {
+    if let Some((axis, _)) = endpoints
+        .into_iter()
+        .enumerate()
+        .map(|(axis, endpoint)| {
+            (
+                axis as i32,
+                (point.0 - f64::from(endpoint.0)).hypot(point.1 - f64::from(endpoint.1)),
+            )
+        })
+        .filter(|(_, distance)| *distance <= 10.0)
+        .min_by(|a, b| a.1.total_cmp(&b.1))
+    {
+        return Some(axis);
+    }
+    endpoints
         .into_iter()
         .enumerate()
         .map(|(axis, endpoint)| {
@@ -2194,21 +2406,136 @@ pub(super) fn pick_orientation_triad(point: (f64, f64), camera: MeshCamera) -> O
             )
         })
         .min_by(|(_, left), (_, right)| left.total_cmp(right))
-        .and_then(|(axis, distance)| (distance <= 10.0).then_some(axis))
+        .and_then(|(axis, distance)| (distance <= 6.0).then_some(axis))
 }
 
-#[allow(dead_code)]
 fn draw_orientation_triad(pixels: &mut [u8], width: u32, height: u32, camera: MeshCamera) {
+    draw_triad_endpoints(pixels, width, height, orientation_triad_endpoints(camera));
+}
+
+fn draw_canonical_orientation_triad(
+    pixels: &mut [u8],
+    width: u32,
+    height: u32,
+    yaw: f32,
+    pitch: f32,
+) {
+    draw_triad_endpoints(
+        pixels,
+        width,
+        height,
+        triad_endpoints(f64::from(yaw), f64::from(pitch)),
+    );
+}
+
+fn draw_sketch_orientation_triad(pixels: &mut [u8], width: u32, height: u32) {
+    // In a top-down sketch X points right, Y points up and Z points out of the canvas.
+    draw_triad_endpoints(
+        pixels,
+        width,
+        height,
+        [
+            (TRIAD_ORIGIN.0 + 25, TRIAD_ORIGIN.1),
+            (TRIAD_ORIGIN.0, TRIAD_ORIGIN.1 - 25),
+            TRIAD_ORIGIN,
+        ],
+    );
+    draw_ellipse(pixels, width, height, TRIAD_ORIGIN, 6, 6, TRIAD_COLORS[2]);
+}
+
+fn draw_triad_endpoints(pixels: &mut [u8], width: u32, height: u32, endpoints: [(i32, i32); 3]) {
+    draw_filled_polygon(
+        pixels,
+        width,
+        height,
+        &[(432.0, 8.0), (519.0, 8.0), (519.0, 85.0), (432.0, 85.0)],
+        [18, 35, 46, 255],
+    );
     draw_marker(pixels, width, height, TRIAD_ORIGIN, [224, 235, 242, 255]);
-    for (endpoint, color) in orientation_triad_endpoints(camera)
-        .into_iter()
-        .zip(TRIAD_COLORS)
-    {
+    for (axis, (endpoint, color)) in endpoints.into_iter().zip(TRIAD_COLORS).enumerate() {
         draw_line(pixels, width, height, TRIAD_ORIGIN, endpoint, color);
         draw_marker(pixels, width, height, endpoint, color);
+        let dx = f64::from(endpoint.0 - TRIAD_ORIGIN.0);
+        let dy = f64::from(endpoint.1 - TRIAD_ORIGIN.1);
+        let length = dx.hypot(dy).max(1.0);
+        let (ux, uy) = (dx / length, dy / length);
+        for sign in [-1.0, 1.0] {
+            let wing = (
+                endpoint.0 - (ux * 7.0 - sign * uy * 4.0) as i32,
+                endpoint.1 - (uy * 7.0 + sign * ux * 4.0) as i32,
+            );
+            draw_line(pixels, width, height, endpoint, wing, color);
+        }
+        let label = (endpoint.0 + 5, endpoint.1 - 5);
+        match axis {
+            0 => {
+                draw_line(
+                    pixels,
+                    width,
+                    height,
+                    label,
+                    (label.0 + 6, label.1 + 8),
+                    color,
+                );
+                draw_line(
+                    pixels,
+                    width,
+                    height,
+                    (label.0 + 6, label.1),
+                    (label.0, label.1 + 8),
+                    color,
+                );
+            }
+            1 => {
+                draw_line(
+                    pixels,
+                    width,
+                    height,
+                    label,
+                    (label.0 + 3, label.1 + 4),
+                    color,
+                );
+                draw_line(
+                    pixels,
+                    width,
+                    height,
+                    (label.0 + 6, label.1),
+                    (label.0 + 3, label.1 + 4),
+                    color,
+                );
+                draw_line(
+                    pixels,
+                    width,
+                    height,
+                    (label.0 + 3, label.1 + 4),
+                    (label.0 + 3, label.1 + 8),
+                    color,
+                );
+            }
+            _ => {
+                draw_line(pixels, width, height, label, (label.0 + 6, label.1), color);
+                draw_line(
+                    pixels,
+                    width,
+                    height,
+                    (label.0 + 6, label.1),
+                    (label.0, label.1 + 8),
+                    color,
+                );
+                draw_line(
+                    pixels,
+                    width,
+                    height,
+                    (label.0, label.1 + 8),
+                    (label.0 + 6, label.1 + 8),
+                    color,
+                );
+            }
+        }
     }
 }
 
+#[cfg(test)]
 pub(super) fn pick_orientation_axis_3d(
     project: &Project,
     yaw: f32,
@@ -3192,6 +3519,170 @@ pub(super) fn image_from_rgba(width: u32, height: u32, pixels: Vec<u8>) -> Image
 mod tests {
     use super::*;
     use flursys::{CellDefinition, Point, ResultDataset};
+
+    #[test]
+    fn three_dimensional_mouse_picking_distinguishes_faces_edges_and_vertices() {
+        let mut topology = GeometryTopology::new();
+        let rectangle = topology.add_rectangle(2.0, 1.0).unwrap();
+        let camera = canonical_camera(&topology, 0.65, 0.48, 1.0).unwrap();
+        let vertex = topology.vertex(rectangle.vertices[0]).unwrap().position;
+        let point = camera.project(vertex);
+        assert_eq!(
+            pick_canonical_geometry_target(
+                &topology,
+                0.65,
+                0.48,
+                1.0,
+                (f64::from(point.0), f64::from(point.1)),
+                2
+            ),
+            Some(GeometrySelectionTarget::Vertex(rectangle.vertices[0]))
+        );
+        let second = topology.vertex(rectangle.vertices[1]).unwrap().position;
+        let middle = camera.project((vertex + second) * 0.5);
+        assert_eq!(
+            pick_canonical_geometry_target(
+                &topology,
+                0.65,
+                0.48,
+                1.0,
+                (f64::from(middle.0), f64::from(middle.1)),
+                1
+            ),
+            Some(GeometrySelectionTarget::Edge(rectangle.bottom))
+        );
+        let center = camera.project(Vec3::new(1.0, 0.5, 0.0));
+        assert_eq!(
+            pick_canonical_geometry_target(
+                &topology,
+                0.65,
+                0.48,
+                1.0,
+                (f64::from(center.0), f64::from(center.1)),
+                0
+            ),
+            Some(GeometrySelectionTarget::Face(rectangle.face))
+        );
+    }
+
+    #[test]
+    fn extruded_model_still_supports_face_and_visible_sketch_edge_picking() {
+        let mut topology = GeometryTopology::new();
+        let rectangle = topology.add_rectangle(2.0, 1.0).unwrap();
+        let extrusion = topology.extrude_planar_face(rectangle.face, 0.5).unwrap();
+        let camera = canonical_camera(&topology, 0.65, 0.48, 1.0).unwrap();
+        let top = camera.project(Vec3::new(1.0, 0.5, 0.5));
+        assert_eq!(
+            pick_canonical_geometry_target(
+                &topology,
+                0.65,
+                0.48,
+                1.0,
+                (f64::from(top.0), f64::from(top.1)),
+                0
+            ),
+            Some(GeometrySelectionTarget::Face(extrusion.top_face))
+        );
+        let edges = [
+            rectangle.bottom,
+            rectangle.right,
+            rectangle.top,
+            rectangle.left,
+        ];
+        assert!(edges.into_iter().any(|id| {
+            let edge = topology.edge(id).unwrap();
+            let flursys::EdgeGeometry::Line { start, end } = edge.geometry else {
+                return false;
+            };
+            let (start, end) = (
+                topology.vertex(start).unwrap().position,
+                topology.vertex(end).unwrap().position,
+            );
+            let midpoint = camera.project((start + end) * 0.5);
+            pick_canonical_geometry_target(
+                &topology,
+                0.65,
+                0.48,
+                1.0,
+                (f64::from(midpoint.0), f64::from(midpoint.1)),
+                1,
+            ) == Some(GeometrySelectionTarget::Edge(id))
+        }));
+        assert!(extrusion.top_edges.iter().any(|id| {
+            let flursys::EdgeGeometry::Line { start, end } = topology.edge(*id).unwrap().geometry
+            else {
+                return false;
+            };
+            let (start, end) = (
+                topology.vertex(start).unwrap().position,
+                topology.vertex(end).unwrap().position,
+            );
+            let midpoint = camera.project((start + end) * 0.5);
+            pick_canonical_geometry_target(
+                &topology,
+                0.65,
+                0.48,
+                1.0,
+                (f64::from(midpoint.0), f64::from(midpoint.1)),
+                1,
+            ) == Some(GeometrySelectionTarget::Edge(*id))
+        }));
+        assert!(extrusion.vertical_edges.iter().any(|id| {
+            let flursys::EdgeGeometry::Line { start, end } = topology.edge(*id).unwrap().geometry
+            else {
+                return false;
+            };
+            let (start, end) = (
+                topology.vertex(start).unwrap().position,
+                topology.vertex(end).unwrap().position,
+            );
+            let midpoint = camera.project((start + end) * 0.5);
+            pick_canonical_geometry_target(
+                &topology,
+                0.65,
+                0.48,
+                1.0,
+                (f64::from(midpoint.0), f64::from(midpoint.1)),
+                1,
+            ) == Some(GeometrySelectionTarget::Edge(*id))
+        }));
+        let flursys::EdgeGeometry::Line { start, .. } =
+            topology.edge(extrusion.top_edges[0]).unwrap().geometry
+        else {
+            panic!("expected rim edge")
+        };
+        let point = camera.project(topology.vertex(start).unwrap().position);
+        assert_eq!(
+            pick_canonical_geometry_target(
+                &topology,
+                0.65,
+                0.48,
+                1.0,
+                (f64::from(point.0), f64::from(point.1)),
+                2
+            ),
+            Some(GeometrySelectionTarget::Vertex(start))
+        );
+    }
+
+    #[test]
+    fn canonical_cad_triad_is_drawn_in_the_viewport_corner_even_without_geometry() {
+        let mut pixels = vec![0_u8; (PREVIEW_WIDTH * PREVIEW_HEIGHT * 4) as usize];
+        draw_canonical_orientation_triad(&mut pixels, PREVIEW_WIDTH, PREVIEW_HEIGHT, 0.65, 0.48);
+        let endpoints = triad_endpoints(0.65, 0.48);
+        for (axis, endpoint) in endpoints.into_iter().enumerate() {
+            let index = ((endpoint.1 as u32 * PREVIEW_WIDTH + endpoint.0 as u32) * 4) as usize;
+            assert_eq!(&pixels[index..index + 4], &TRIAD_COLORS[axis]);
+            assert_eq!(
+                pick_canonical_orientation_axis(
+                    0.65,
+                    0.48,
+                    (f64::from(endpoint.0), f64::from(endpoint.1))
+                ),
+                Some(axis as i32)
+            );
+        }
+    }
 
     #[test]
     fn concave_sketch_faces_fill_only_their_interior() {

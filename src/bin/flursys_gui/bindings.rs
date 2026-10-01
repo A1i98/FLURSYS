@@ -407,6 +407,15 @@ pub(super) const TREE_KIND_RUN: i32 = 7;
 pub(super) const TREE_KIND_SKETCH: i32 = 8;
 pub(super) const TREE_KIND_EXTRUDE_FEATURE: i32 = 9;
 pub(super) const TREE_KIND_INERT: i32 = -1;
+pub(super) const TREE_GROUP_SKETCHES: i32 = 10;
+pub(super) const TREE_GROUP_FEATURES: i32 = 11;
+pub(super) const TREE_GROUP_BODIES: i32 = 12;
+pub(super) const TREE_GROUP_FACES: i32 = 13;
+pub(super) const TREE_GROUP_VERTICES: i32 = 14;
+pub(super) const TREE_GROUP_EDGES: i32 = 15;
+pub(super) const TREE_GROUP_NAMED: i32 = 16;
+pub(super) const TREE_GROUP_BOUNDARIES: i32 = 17;
+pub(super) const TREE_GROUP_RUNS: i32 = 18;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct TreeSelection {
@@ -485,7 +494,7 @@ pub(super) fn build_project_tree_rows(
             "Sketches".to_string(),
             format!("{} sketches", sketch_ids.len()),
             TREE_KIND_INERT,
-            0,
+            TREE_GROUP_SKETCHES,
         ));
         for id in sketch_ids {
             rows.push((
@@ -503,7 +512,7 @@ pub(super) fn build_project_tree_rows(
             "Features".to_string(),
             format!("{} features", extrude_features.len()),
             TREE_KIND_INERT,
-            0,
+            TREE_GROUP_FEATURES,
         ));
         for (feature, body) in extrude_features {
             rows.push((
@@ -515,36 +524,72 @@ pub(super) fn build_project_tree_rows(
             ));
         }
     }
-    for id in body_ids {
+    if !body_ids.is_empty() {
         rows.push((
             1,
+            "Bodies".to_string(),
+            format!("{} bodies", body_ids.len()),
+            TREE_KIND_INERT,
+            TREE_GROUP_BODIES,
+        ));
+    }
+    for id in body_ids {
+        rows.push((
+            2,
             format!("Body {id}"),
             String::new(),
             TREE_KIND_BODY,
             *id as i32,
         ));
     }
-    for id in face_ids {
+    if !face_ids.is_empty() {
         rows.push((
             1,
+            "Faces".to_string(),
+            format!("{} faces", face_ids.len()),
+            TREE_KIND_INERT,
+            TREE_GROUP_FACES,
+        ));
+    }
+    for id in face_ids {
+        rows.push((
+            2,
             format!("Face {id}"),
             String::new(),
             TREE_KIND_FACE,
             *id as i32,
         ));
     }
-    for id in vertex_ids {
+    if !vertex_ids.is_empty() {
         rows.push((
             1,
+            "Vertices".to_string(),
+            format!("{} vertices", vertex_ids.len()),
+            TREE_KIND_INERT,
+            TREE_GROUP_VERTICES,
+        ));
+    }
+    for id in vertex_ids {
+        rows.push((
+            2,
             format!("Vertex {id}"),
             String::new(),
             TREE_KIND_VERTEX,
             *id as i32,
         ));
     }
-    for id in edge_ids {
+    if !edge_ids.is_empty() {
         rows.push((
             1,
+            "Edges".to_string(),
+            format!("{} edges", edge_ids.len()),
+            TREE_KIND_INERT,
+            TREE_GROUP_EDGES,
+        ));
+    }
+    for id in edge_ids {
+        rows.push((
+            2,
             format!("Edge {id}"),
             String::new(),
             TREE_KIND_EDGE,
@@ -557,7 +602,7 @@ pub(super) fn build_project_tree_rows(
             "Named Selections".to_string(),
             format!("{} groups", named_selections.len()),
             TREE_KIND_INERT,
-            0,
+            TREE_GROUP_NAMED,
         ));
         for (name, members) in named_selections {
             rows.push((
@@ -594,7 +639,7 @@ pub(super) fn build_project_tree_rows(
             "Boundaries".to_string(),
             String::new(),
             TREE_KIND_INERT,
-            0,
+            TREE_GROUP_BOUNDARIES,
         ));
         for (name, assigned) in patches {
             rows.push((
@@ -630,7 +675,7 @@ pub(super) fn build_project_tree_rows(
         "Runs".to_string(),
         format!("{} saved", runs.len()),
         TREE_KIND_INERT,
-        0,
+        TREE_GROUP_RUNS,
     ));
     for (index, (id, status)) in runs.iter().enumerate() {
         rows.push((1, id.clone(), status.clone(), TREE_KIND_RUN, index as i32));

@@ -14,7 +14,7 @@ use flursys::{
 };
 use slint::{ComponentHandle, ModelRc, SharedString, Timer, TimerMode, VecModel};
 use std::cell::RefCell;
-use std::collections::VecDeque;
+use std::collections::{BTreeSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::mpsc::Receiver;
@@ -186,6 +186,7 @@ struct AppState {
     geometry_pitch: f32,
     geometry_zoom: f32,
     geometry_view_axis: i32,
+    geometry_pick_mode: i32,
     geometry_drag_anchor: Option<(f32, f32, f32, f32)>,
     selected_boundary_face: BoundaryFace,
     preflight_summary: String,
@@ -220,6 +221,7 @@ struct AppState {
     mesh_quality_metric: MeshQualityMetric,
     mesh_quality_threshold: f64,
     tree_rows: Vec<ProjectTreeRowData>,
+    collapsed_tree_groups: BTreeSet<(i32, i32)>,
     tree_dirty: bool,
     selected_tree: Option<TreeSelection>,
     pending_run_delete: Option<String>,
@@ -307,6 +309,7 @@ impl AppState {
             geometry_pitch: 0.48,
             geometry_zoom: 1.0,
             geometry_view_axis: 3,
+            geometry_pick_mode: 0,
             geometry_drag_anchor: None,
             selected_boundary_face: BoundaryFace::Left,
             preflight_summary: "Run validation before starting the solver.".to_string(),
@@ -348,6 +351,13 @@ impl AppState {
             mesh_quality_metric: MeshQualityMetric::AspectRatio,
             mesh_quality_threshold: 10.0,
             tree_rows: Vec::new(),
+            collapsed_tree_groups: [
+                (TREE_KIND_INERT, TREE_GROUP_VERTICES),
+                (TREE_KIND_INERT, TREE_GROUP_EDGES),
+                (TREE_KIND_INERT, TREE_GROUP_RUNS),
+            ]
+            .into_iter()
+            .collect(),
             tree_dirty: true,
             selected_tree: None,
             pending_run_delete: None,
@@ -1619,6 +1629,27 @@ fn gallery_descriptors(templates: &[CaseTemplateManifest]) -> Vec<ExampleDescrip
 
 fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
     // ---- Phase 9D stable geometry editor ----
+    let weak_ui = ui.as_weak();
+    let pick_state = state.clone();
+    ui.on_select_geometry_pick_mode(move |mode| {
+        let Some(ui) = weak_ui.upgrade() else { return };
+        let mut state = pick_state.borrow_mut();
+        state.geometry_pick_mode = mode.clamp(0, 2);
+        state.geometry_editor.hover_target = None;
+        refresh_ui(&ui, &state);
+    });
+    let weak_ui = ui.as_weak();
+    let pick_state = state.clone();
+    ui.on_clear_geometry_selection(move || {
+        let Some(ui) = weak_ui.upgrade() else { return };
+        let mut state = pick_state.borrow_mut();
+        state.wb_selected_targets.clear();
+        state.geometry_editor.selection.clear();
+        state.selected_tree = None;
+        state.geometry_editor.hover_target = None;
+        rebuild_tree_rows(&mut state);
+        refresh_ui(&ui, &state);
+    });
     let weak_ui = ui.as_weak();
     let editor_state = state.clone();
     ui.on_geometry_select_face_mode(move || {
@@ -2991,6 +3022,10 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
         state.show_mesh = false;
         refresh_ui(&ui, &state);
     });
+    let orbit_end_state = state.clone();
+    ui.on_geometry_drag_end(move || {
+        orbit_end_state.borrow_mut().geometry_drag_anchor = None;
+    });
 
     let weak_ui = ui.as_weak();
     let zoom_state = state.clone();
@@ -3202,13 +3237,7 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
             }
         }
         if state.show_geometry_3d {
-            if let Some(axis) = pick_orientation_axis_3d(
-                &state.project,
-                state.geometry_yaw,
-                state.geometry_pitch,
-                state.geometry_zoom,
-                point,
-            ) {
+            if let Some(axis) = pick_canonical_orientation_axis(state.geometry_yaw, state.geometry_pitch, point) {
                 let (yaw, pitch) = geometry_view_angles(axis);
                 state.geometry_yaw = yaw;
                 state.geometry_pitch = pitch;
@@ -3221,29 +3250,23 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
                 refresh_ui(&ui, &state);
                 return;
             }
-            if let Some(ray) = canonical_geometry_ray(
-                state.workbench.geometry(),
-                state.geometry_yaw,
-                state.geometry_pitch,
-                state.geometry_zoom,
-                point,
+            if let Some(target) = pick_canonical_geometry_target(
+                state.workbench.geometry(), state.geometry_yaw, state.geometry_pitch,
+                state.geometry_zoom, point, if state.current_step == 0 { state.geometry_pick_mode } else { 0 },
             ) {
-                if let Some(hit) = state.workbench.geometry().pick_face(ray) {
                     ui.set_geometry_feature_feedback(SharedString::default());
-                    let target = GeometrySelectionTarget::Face(hit.face);
                     state.wb_selected_targets = vec![target];
                     state.geometry_editor.selection = vec![target];
                     state.selected_tree = tree_selection_for_target(target);
+                    reveal_tree_target(&mut state, target);
                     ui.set_inspector_mode(0);
-                    state.log(format!(
-                        "Selected canonical Face {} from the 3D view.",
-                        hit.face.get()
-                    ));
+                    if state.current_step == 0 { ui.set_geometry_sidebar_tab(2); }
+                    state.log(format!("Selected {target:?} from the 3D view."));
                     rebuild_tree_rows(&mut state);
                     refresh_ui(&ui, &state);
                     return;
-                }
             }
+            if state.current_step == 0 { return }
         }
         let selected = if state.show_mesh {
             pick_boundary_2d(&state.project, point)
@@ -3441,7 +3464,17 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
 
     let weak_ui = ui.as_weak();
     let workflow_state = state.clone();
-    ui.on_select_tree_row(move |index| {
+    ui.on_toggle_tree_row(move |index| {
+        let Some(ui) = weak_ui.upgrade() else { return };
+        let mut state = workflow_state.borrow_mut();
+        if let Ok(index) = usize::try_from(index) {
+            toggle_tree_group(&mut state, index);
+            refresh_ui(&ui, &state);
+        }
+    });
+    let weak_ui = ui.as_weak();
+    let workflow_state = state.clone();
+    ui.on_select_tree_row(move |index, additive| {
         let Some(ui) = weak_ui.upgrade() else {
             return;
         };
@@ -3456,26 +3489,18 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
         };
         match row.kind {
             TREE_KIND_STAGE => apply_workflow_step(&ui, &mut state, row.payload),
+            TREE_KIND_INERT => {
+                toggle_tree_group(
+                    &mut state,
+                    usize::try_from(index.max(0)).unwrap_or(usize::MAX),
+                );
+                refresh_ui(&ui, &state);
+            }
             TREE_KIND_BODY | TREE_KIND_FACE | TREE_KIND_EDGE | TREE_KIND_VERTEX => {
                 if let Some(target) = find_geometry_target(&state.workbench, row.kind, row.payload)
                 {
-                    if let Some(existing) =
-                        state.wb_selected_targets.iter().position(|t| *t == target)
-                    {
-                        state.wb_selected_targets.remove(existing);
-                        state.log(format!(
-                            "Deselected {target:?} from the geometry selection."
-                        ));
-                    } else {
-                        state.wb_selected_targets.push(target);
-                        state.log(format!("Added {target:?} to the geometry selection."));
-                    }
-                    state.geometry_editor.selection = state.wb_selected_targets.clone();
+                    select_tree_geometry_target(&mut state, target, additive);
                 }
-                state.selected_tree = Some(TreeSelection {
-                    kind: row.kind,
-                    payload: row.payload,
-                });
                 ui.set_inspector_mode(0);
                 rebuild_tree_rows(&mut state);
                 refresh_ui(&ui, &state);
@@ -4184,21 +4209,57 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
             let Some(point) = preview_image_point(x, y, width, height) else {
                 return;
             };
-            let hover = canonical_geometry_ray(
-                state.workbench.geometry(),
-                state.geometry_yaw,
-                state.geometry_pitch,
-                state.geometry_zoom,
-                point,
-            )
-            .and_then(|ray| state.workbench.geometry().pick_face(ray))
-            .map(|hit| GeometrySelectionTarget::Face(hit.face));
+            let hover =
+                if pick_canonical_orientation_axis(state.geometry_yaw, state.geometry_pitch, point)
+                    .is_some()
+                {
+                    None
+                } else {
+                    pick_canonical_geometry_target(
+                        state.workbench.geometry(),
+                        state.geometry_yaw,
+                        state.geometry_pitch,
+                        state.geometry_zoom,
+                        point,
+                        if state.current_step == 0 {
+                            state.geometry_pick_mode
+                        } else {
+                            0
+                        },
+                    )
+                };
             if state.geometry_editor.hover_target != hover {
                 state.geometry_editor.hover_target = hover;
                 refresh_ui(&ui, &state);
             }
         }
     });
+}
+
+fn select_tree_geometry_target(
+    state: &mut AppState,
+    target: GeometrySelectionTarget,
+    additive: bool,
+) {
+    if additive {
+        if let Some(index) = state
+            .wb_selected_targets
+            .iter()
+            .position(|existing| *existing == target)
+        {
+            state.wb_selected_targets.remove(index);
+        } else {
+            state.wb_selected_targets.push(target);
+        }
+    } else {
+        state.wb_selected_targets = vec![target];
+    }
+    state.geometry_editor.selection = state.wb_selected_targets.clone();
+    state.selected_tree = state
+        .wb_selected_targets
+        .last()
+        .copied()
+        .and_then(tree_selection_for_target);
 }
 
 fn apply_workflow_step(ui: &MainWindow, state: &mut AppState, step: i32) {
@@ -4317,37 +4378,98 @@ fn rebuild_tree_rows(state: &mut AppState) {
     );
 }
 
+fn toggle_tree_group(state: &mut AppState, index: usize) {
+    let Some(row) = state.tree_rows.get(index) else {
+        return;
+    };
+    if !matches!(row.kind, TREE_KIND_STAGE | TREE_KIND_INERT)
+        || !state
+            .tree_rows
+            .get(index + 1)
+            .is_some_and(|next| next.depth > row.depth)
+    {
+        return;
+    }
+    let key = (row.kind, row.payload);
+    if !state.collapsed_tree_groups.remove(&key) {
+        state.collapsed_tree_groups.insert(key);
+    }
+}
+
+fn reveal_tree_target(state: &mut AppState, target: GeometrySelectionTarget) {
+    let section = match target {
+        GeometrySelectionTarget::Body(_) => TREE_GROUP_BODIES,
+        GeometrySelectionTarget::Face(_) => TREE_GROUP_FACES,
+        GeometrySelectionTarget::Edge(_) => TREE_GROUP_EDGES,
+        GeometrySelectionTarget::Vertex(_) => TREE_GROUP_VERTICES,
+    };
+    state.collapsed_tree_groups.remove(&(TREE_KIND_STAGE, 0));
+    state
+        .collapsed_tree_groups
+        .remove(&(TREE_KIND_INERT, section));
+}
+
+fn visible_project_tree_rows(
+    rows: &[ProjectTreeRowData],
+    collapsed: &BTreeSet<(i32, i32)>,
+) -> Vec<ProjectTreeRow> {
+    let mut hidden_below = None;
+    let mut visible = Vec::new();
+    for (index, row) in rows.iter().enumerate() {
+        if let Some(depth) = hidden_below {
+            if row.depth > depth {
+                continue;
+            }
+            hidden_below = None;
+        }
+        let expandable = rows
+            .get(index + 1)
+            .is_some_and(|next| next.depth > row.depth);
+        let expanded = !collapsed.contains(&(row.kind, row.payload));
+        visible.push(ProjectTreeRow {
+            index: index as i32,
+            depth: row.depth as i32,
+            label: SharedString::from(row.label.as_str()),
+            note: SharedString::from(row.note.as_str()),
+            kind: row.kind,
+            payload: row.payload,
+            active: row.active,
+            expandable,
+            expanded,
+        });
+        if expandable && !expanded {
+            hidden_below = Some(row.depth);
+        }
+    }
+    visible
+}
+
 fn find_geometry_target(
     session: &WorkbenchSession,
-    _kind: i32,
+    kind: i32,
     payload: i32,
 ) -> Option<GeometrySelectionTarget> {
-    session
-        .geometry()
-        .vertices()
-        .find(|vertex| vertex.id.get() == payload as u64)
-        .map(|vertex| GeometrySelectionTarget::Vertex(vertex.id))
-        .or_else(|| {
-            session
-                .geometry()
-                .edges()
-                .find(|edge| edge.id.get() == payload as u64)
-                .map(|edge| GeometrySelectionTarget::Edge(edge.id))
-        })
-        .or_else(|| {
-            session
-                .geometry()
-                .faces()
-                .find(|face| face.id.get() == payload as u64)
-                .map(|face| GeometrySelectionTarget::Face(face.id))
-        })
-        .or_else(|| {
-            session
-                .geometry()
-                .bodies()
-                .find(|body| body.id.get() == payload as u64)
-                .map(|body| GeometrySelectionTarget::Body(body.id))
-        })
+    let id = u64::try_from(payload).ok()?;
+    let geometry = session.geometry();
+    match kind {
+        TREE_KIND_VERTEX => geometry
+            .vertices()
+            .find(|vertex| vertex.id.get() == id)
+            .map(|vertex| GeometrySelectionTarget::Vertex(vertex.id)),
+        TREE_KIND_EDGE => geometry
+            .edges()
+            .find(|edge| edge.id.get() == id)
+            .map(|edge| GeometrySelectionTarget::Edge(edge.id)),
+        TREE_KIND_FACE => geometry
+            .faces()
+            .find(|face| face.id.get() == id)
+            .map(|face| GeometrySelectionTarget::Face(face.id)),
+        TREE_KIND_BODY => geometry
+            .bodies()
+            .find(|body| body.id.get() == id)
+            .map(|body| GeometrySelectionTarget::Body(body.id)),
+        _ => None,
+    }
 }
 
 fn tree_selection_for_target(target: GeometrySelectionTarget) -> Option<TreeSelection> {
@@ -4444,18 +4566,18 @@ fn geometry_target_inspector(
         ),
         GeometrySelectionTarget::Face(id) => topology.face(id).map_or_else(
             || format!("Face {} (deleted)", id.get()),
-            |face| match &face.representation {
-                flursys::GeometryFaceRepresentation::Planar {
-                    outer_loop,
-                    inner_loops,
-                } => format!(
-                    "Face {} · Planar\n{} outer edges · {} holes",
-                    id.get(),
-                    outer_loop.len(),
-                    inner_loops.len()
-                ),
-                flursys::GeometryFaceRepresentation::PrimitiveSurface => {
-                    format!("Face {} · Primitive surface", id.get())
+            |face| {
+                let boundary = match &face.representation {
+                    flursys::GeometryFaceRepresentation::Planar { outer_loop, inner_loops } =>
+                        format!("{} outer edges · {} holes", outer_loop.len(), inner_loops.len()),
+                    flursys::GeometryFaceRepresentation::PrimitiveSurface => "Generated surface".to_string(),
+                };
+                if let Ok(frame) = topology.sketch_frame_for_face(id) {
+                    format!("Face {} · Planar\n{}\nOrigin ({:.3}, {:.3}, {:.3}) mm\nNormal ({:.2}, {:.2}, {:.2})",
+                        id.get(), boundary, frame.origin.x, frame.origin.y, frame.origin.z,
+                        frame.normal.x, frame.normal.y, frame.normal.z)
+                } else {
+                    format!("Face {} · Curved\n{}\nA planar face is required for sketching.", id.get(), boundary)
                 }
             },
         ),
@@ -5161,20 +5283,10 @@ fn refresh_ui(ui: &MainWindow, state: &AppState) {
     ui.set_mesh_inspection(SharedString::from(mesh_inspection(&state.project)));
 
     // ---- Workbench pipeline ----
-    let tree_model: VecModel<ProjectTreeRow> = state
-        .tree_rows
-        .iter()
-        .enumerate()
-        .map(|(index, row)| ProjectTreeRow {
-            index: index as i32,
-            depth: row.depth as i32,
-            label: SharedString::from(row.label.as_str()),
-            note: SharedString::from(row.note.as_str()),
-            kind: row.kind,
-            payload: row.payload,
-            active: row.active,
-        })
-        .collect();
+    let tree_model: VecModel<ProjectTreeRow> =
+        visible_project_tree_rows(&state.tree_rows, &state.collapsed_tree_groups)
+            .into_iter()
+            .collect();
     ui.set_project_tree_model(ModelRc::new(tree_model));
 
     let patch_items: Vec<SharedString> = state
@@ -5243,6 +5355,18 @@ fn refresh_ui(ui: &MainWindow, state: &AppState) {
     ui.set_wb_solution_summary(SharedString::from(solution_summary_text(&state.workbench)));
     ui.set_can_run_workbench(!busy && state.workbench.readiness().is_ok());
     ui.set_geometry_face_sketch_editing(state.face_sketch_host.is_some());
+    ui.set_geometry_pick_mode(state.geometry_pick_mode);
+    ui.set_geometry_selection_detail(SharedString::from(
+        state
+            .wb_selected_targets
+            .first()
+            .copied()
+            .or(state.geometry_editor.hover_target)
+            .map_or_else(
+                || "Click a face, sketch edge, or vertex to inspect it.".to_string(),
+                |target| geometry_target_inspector(state.workbench.geometry(), target),
+            ),
+    ));
     ui.set_geometry_editor_image(if let Some(face) = state.face_sketch_host {
         render_face_sketch(
             state.workbench.geometry(),
@@ -5457,22 +5581,13 @@ fn refresh_ui(ui: &MainWindow, state: &AppState) {
     if state.show_geometry_3d && !state.show_sketch_editor {
         ui.set_visualization_title(SharedString::from("CANONICAL 3D CAD"));
         let topology = state.workbench.geometry();
-        let selected_face = state
-            .wb_selected_targets
-            .iter()
-            .find_map(|target| match target {
-                GeometrySelectionTarget::Face(face) => Some(*face),
-                _ => None,
-            });
-        let hovered_face = match state.geometry_editor.hover_target {
-            Some(GeometrySelectionTarget::Face(face)) => Some(face),
-            _ => None,
-        };
+        let selected_target = state.wb_selected_targets.first().copied();
+        let hovered_target = state.geometry_editor.hover_target;
         ui.set_animation_status(SharedString::from(format!(
             "{} bodies · {} renderable faces · selected: {} · yaw {:.0}° · pitch {:.0}° · zoom {:.0}%",
             topology.bodies().count(),
             topology.renderable_faces().len(),
-            selected_face.map_or_else(|| "none".to_string(), |face| format!("Face {}", face.get())),
+            selected_target.map_or_else(|| "none".to_string(), |target| format!("{target:?}")),
             state.geometry_yaw.to_degrees(),
             state.geometry_pitch.to_degrees(),
             state.geometry_zoom * 100.0,
@@ -5482,8 +5597,8 @@ fn refresh_ui(ui: &MainWindow, state: &AppState) {
             state.geometry_yaw,
             state.geometry_pitch,
             state.geometry_zoom,
-            selected_face,
-            hovered_face,
+            selected_target,
+            hovered_target,
         ));
     } else if state.show_mesh {
         if let Some(generated) = state.workbench.mesh() {
@@ -6089,6 +6204,14 @@ mod tests {
                     0.48,
                     1.0,
                     (f64::from(endpoint.0), f64::from(endpoint.1)),
+                ),
+                Some(axis as i32)
+            );
+            assert_eq!(
+                pick_canonical_orientation_axis(
+                    0.65,
+                    0.48,
+                    (f64::from(endpoint.0), f64::from(endpoint.1))
                 ),
                 Some(axis as i32)
             );
@@ -7065,12 +7188,16 @@ mod tests {
             labels,
             vec![
                 "Geometry",
+                "Bodies",
                 "Body 1",
+                "Faces",
                 "Face 1",
+                "Vertices",
                 "Vertex 1",
                 "Vertex 2",
                 "Vertex 3",
                 "Vertex 4",
+                "Edges",
                 "Edge 1",
                 "Edge 2",
                 "Edge 3",
@@ -7087,11 +7214,17 @@ mod tests {
                 "Runs",
             ]
         );
-        let inlet_patch = &rows[16];
+        let inlet_patch = rows
+            .iter()
+            .find(|row| row.kind == TREE_KIND_PATCH && row.label == "inlet")
+            .unwrap();
         assert_eq!(inlet_patch.kind, TREE_KIND_PATCH);
         assert_eq!(inlet_patch.payload, 0);
         assert_eq!(inlet_patch.note, "Assigned");
-        let outlet_patch = &rows[17];
+        let outlet_patch = rows
+            .iter()
+            .find(|row| row.kind == TREE_KIND_PATCH && row.label == "outlet")
+            .unwrap();
         assert_eq!(outlet_patch.payload, 1);
         assert_eq!(outlet_patch.note, "Unassigned");
         // Nothing is selected and the current step is Geometry.
@@ -7123,6 +7256,113 @@ mod tests {
         let active: Vec<&ProjectTreeRowData> = rows.iter().filter(|row| row.active).collect();
         assert_eq!(active.len(), 1);
         assert_eq!(active[0].label, "Edge 2");
+    }
+
+    #[test]
+    fn tree_selection_respects_entity_kind_when_stable_ids_overlap() {
+        let mut state = AppState::new();
+        let rectangle = state.workbench.add_rectangle(2.0, 1.0).unwrap();
+        let extrusion = state.workbench.extrude_face(rectangle.face, 0.5).unwrap();
+        let id = rectangle.face.get() as i32;
+        assert_eq!(
+            find_geometry_target(&state.workbench, TREE_KIND_FACE, id),
+            Some(GeometrySelectionTarget::Face(rectangle.face))
+        );
+        assert_eq!(
+            find_geometry_target(&state.workbench, TREE_KIND_VERTEX, id),
+            Some(GeometrySelectionTarget::Vertex(rectangle.vertices[0]))
+        );
+        assert_eq!(
+            find_geometry_target(&state.workbench, TREE_KIND_EDGE, id),
+            Some(GeometrySelectionTarget::Edge(rectangle.bottom))
+        );
+        assert_eq!(
+            find_geometry_target(
+                &state.workbench,
+                TREE_KIND_BODY,
+                extrusion.body.get() as i32
+            ),
+            Some(GeometrySelectionTarget::Body(extrusion.body))
+        );
+        assert_eq!(
+            find_geometry_target(
+                &state.workbench,
+                TREE_KIND_EDGE,
+                extrusion.top_edges[0].get() as i32
+            ),
+            Some(GeometrySelectionTarget::Edge(extrusion.top_edges[0]))
+        );
+    }
+
+    #[test]
+    fn tree_click_keeps_a_face_selected_and_control_click_toggles_multiselection() {
+        let mut state = AppState::new();
+        let rectangle = state.workbench.add_rectangle(2.0, 1.0).unwrap();
+        let face = GeometrySelectionTarget::Face(rectangle.face);
+        let edge = GeometrySelectionTarget::Edge(rectangle.bottom);
+        select_tree_geometry_target(&mut state, face, false);
+        select_tree_geometry_target(&mut state, face, false);
+        assert_eq!(state.wb_selected_targets, vec![face]);
+        select_tree_geometry_target(&mut state, edge, true);
+        assert_eq!(state.wb_selected_targets, vec![face, edge]);
+        select_tree_geometry_target(&mut state, edge, true);
+        assert_eq!(state.wb_selected_targets, vec![face]);
+        assert_eq!(state.selected_tree, tree_selection_for_target(face));
+    }
+
+    #[test]
+    fn collapsing_tree_sections_hides_only_descendants_and_preserves_original_indices() {
+        let mut state = AppState::new();
+        state.workbench.add_rectangle(2.0, 1.0).unwrap();
+        rebuild_tree_rows(&mut state);
+        let group = state
+            .tree_rows
+            .iter()
+            .position(|row| row.label == "Faces")
+            .unwrap();
+        let before = visible_project_tree_rows(&state.tree_rows, &state.collapsed_tree_groups);
+        assert!(before.iter().any(|row| row.label == "Face 1"));
+        toggle_tree_group(&mut state, group);
+        let collapsed = visible_project_tree_rows(&state.tree_rows, &state.collapsed_tree_groups);
+        assert!(!collapsed.iter().any(|row| row.label == "Face 1"));
+        assert!(collapsed.iter().any(|row| row.label == "Geometry"));
+        assert!(collapsed.iter().any(|row| row.label == "Mesh"));
+        assert_eq!(
+            collapsed
+                .iter()
+                .find(|row| row.label == "Faces")
+                .unwrap()
+                .index,
+            group as i32
+        );
+        toggle_tree_group(&mut state, group);
+        assert!(
+            visible_project_tree_rows(&state.tree_rows, &state.collapsed_tree_groups)
+                .iter()
+                .any(|row| row.label == "Face 1")
+        );
+        toggle_tree_group(&mut state, 0);
+        let hidden = visible_project_tree_rows(&state.tree_rows, &state.collapsed_tree_groups);
+        assert!(!hidden.iter().any(|row| row.label == "Faces"));
+        assert!(hidden.iter().any(|row| row.label == "Mesh"));
+    }
+
+    #[test]
+    fn picking_an_edge_on_the_model_reveals_its_project_tree_group() {
+        let mut state = AppState::new();
+        let rectangle = state.workbench.add_rectangle(2.0, 1.0).unwrap();
+        rebuild_tree_rows(&mut state);
+        assert!(
+            !visible_project_tree_rows(&state.tree_rows, &state.collapsed_tree_groups)
+                .iter()
+                .any(|row| row.label == "Edge 1")
+        );
+        reveal_tree_target(&mut state, GeometrySelectionTarget::Edge(rectangle.bottom));
+        assert!(
+            visible_project_tree_rows(&state.tree_rows, &state.collapsed_tree_groups)
+                .iter()
+                .any(|row| row.label == "Edge 1")
+        );
     }
 
     #[test]

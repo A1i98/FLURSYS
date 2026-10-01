@@ -68,6 +68,13 @@ export component MainWindow inherits Window {
     in-out property <string> geometry-model-tree: "▾ Geometry\n   ▾ Sketches (0)\n      — None\n   ▾ Features (0)\n      — None\n   ▾ Solids (0)\n      — None";
     in-out property <bool> project-loaded: false;
     in-out property <int> geometry-sidebar-tab: 0;
+    in-out property <bool> geometry-model-tree-open: true;
+    in-out property <bool> geometry-active-body-open: true;
+    in-out property <bool> geometry-primitive-open: false;
+    in-out property <bool> geometry-domain-open: true;
+    in-out property <bool> geometry-project-open: false;
+    in-out property <bool> geometry-sketch-open: true;
+    in-out property <bool> geometry-feature-open: true;
     in-out property <string> status: "Idle";
     in-out property <string> project-path: "case.flursys.json";
     in-out property <string> project-name: "Lid-driven cavity";
@@ -144,6 +151,8 @@ export component MainWindow inherits Window {
     in-out property <string> visualization-title: "MESH PREVIEW";
     in-out property <string> animation-status: "Frame 0 / 0";
     in-out property <int> geometry-view-axis: 3;
+    in-out property <int> geometry-pick-mode: 0;
+    in-out property <string> geometry-selection-detail: "Click a face in the 3D view to inspect it.";
     in-out property <string> log-text: "FLURSYS Slint workbench ready.";
 
     callback new-project(); callback start(); callback pause(); callback resume(); callback stop(); callback validate-case();
@@ -158,11 +167,13 @@ export component MainWindow inherits Window {
     callback select-case(); callback add-part(); callback build-feature(); callback duplicate-last-part(); callback remove-last-part();
     callback apply-thermal-boundary(); callback select-result-field(int); callback apply-result-style(); callback apply-result-range(); callback reset-result-range(); callback seed-streamline(); callback clear-streamlines();
     callback geometry-drag(float, float, float, float); callback geometry-zoom(float); callback reset-geometry-view(); callback select-geometry-view-axis(int);
+    callback geometry-drag-end();
     callback pick-boundary(float, float, float, float);
     callback start-sketch(); callback sketch-on-face(); callback sketch-on-plane(); callback draw-on-face(); callback select-sketch-tool(int); callback sketch-click(float, float, float, float); callback sketch-preview(float, float, float, float); callback sketch-undo(); callback sketch-redo(); callback apply-driving-dimension();
     callback geometry-tool(int); callback geometry-pointer-down(float, float, float, float) -> bool; callback geometry-pointer(float, float, float, float, bool); callback geometry-move(float, float, float, float); callback geometry-wheel(float, float, float, float, float); callback geometry-fit(); callback geometry-undo(); callback geometry-redo(); callback geometry-delete-selection(); callback geometry-toggle-snap(); callback geometry-toggle-grid();
     callback geometry-pan-begin(float, float, float, float); callback geometry-pan-move(float, float, float, float); callback geometry-shortcut(int);
     callback geometry-select-face-mode(); callback geometry-select-entity-mode();
+    callback select-geometry-pick-mode(int); callback clear-geometry-selection();
     callback show-examples(); callback close-examples(); callback select-example(int); callback show-example-details(int); callback open-example(int);
 
     // ---- Workbench pipeline (stable geometry → Named Selections → Gmsh → BCs → solve) ----
@@ -226,7 +237,8 @@ export component MainWindow inherits Window {
     in-out property <string> status-iteration: "iter —";
     in-out property <string> status-continuity: "continuity —";
 
-    callback select-tree-row(int);
+    callback select-tree-row(int, bool);
+    callback toggle-tree-row(int);
     callback create-named-selection();
     callback rename-named-selection();
     callback delete-named-selection();
@@ -274,7 +286,8 @@ export component MainWindow inherits Window {
             ProjectTree {
                 compact-ui: root.compact-ui;
                 project-tree-model: root.project-tree-model;
-                select-tree-row(index) => { root.select-tree-row(index); }
+                select-tree-row(index, additive) => { root.select-tree-row(index, additive); }
+                toggle-tree-row(index) => { root.toggle-tree-row(index); }
             }
 
             HorizontalLayout {
@@ -381,49 +394,63 @@ export component MainWindow inherits Window {
 
                                         VerticalLayout {
                                             spacing: 8px;
-                                    if root.geometry-sidebar-tab == 0 : VerticalLayout {
-                                        Text { text: "MODEL TREE"; color: UiTheme.accent; font-size: 11px; font-weight: 800; }
-                                        Text { text: "▾  " + root.project-name; color: UiTheme.text-bright; font-size: 13px; font-weight: 700; }
-                                        Text { text: root.geometry-model-tree; color: UiTheme.text-tree; font-family: "monospace"; font-size: 10px; wrap: word-wrap; }
-                                        Rectangle { height: 1px; background: UiTheme.border; }
-                                        Text { text: "ACTIVE BODY"; color: UiTheme.text-dim; font-size: 10px; font-weight: 700; }
-                                        Text { text: root.geometry-parts-summary; color: UiTheme.text-secondary; font-size: 11px; wrap: word-wrap; }
-                                        Rectangle { height: 1px; background: UiTheme.border; }
-                                        Text { text: "PRIMITIVE"; color: UiTheme.text-muted; font-size: 10px; font-weight: 700; }
-                                        ComboBox { model: ["Box", "Cylinder", "Cone", "Sphere", "Torus"]; current-index <=> root.part-kind-index; }
-                                        LineEdit { text <=> root.part-name; placeholder-text: "Solid name"; }
-                                        HorizontalLayout {
-                                            LineEdit { text <=> root.part-size-x; placeholder-text: "X / R"; }
-                                            LineEdit { text <=> root.part-size-y; placeholder-text: "Y"; }
-                                            LineEdit { text <=> root.part-size-z; placeholder-text: "Z / H"; }
-                                        }
-                                        Text { text: "POSITION (mm)"; color: UiTheme.text-faint; font-size: 10px; font-weight: 700; }
-                                        HorizontalLayout {
-                                            LineEdit { text <=> root.part-pos-x; placeholder-text: "X"; }
-                                            LineEdit { text <=> root.part-pos-y; placeholder-text: "Y"; }
-                                            LineEdit { text <=> root.part-pos-z; placeholder-text: "Z"; }
-                                        }
-                                        Button { text: "ADD SOLID"; clicked => { root.add-part(); } }
-                                        HorizontalLayout {
-                                            Button { text: "DUPLICATE"; clicked => { root.duplicate-last-part(); } }
-                                            Button { text: "DELETE"; clicked => { root.remove-last-part(); } }
-                                        }
+                                     if root.geometry-sidebar-tab == 0 : VerticalLayout {
+                                         Button { text: root.geometry-model-tree-open ? "▾  MODEL TREE" : "▸  MODEL TREE"; clicked => { root.geometry-model-tree-open = !root.geometry-model-tree-open; } }
+                                         if root.geometry-model-tree-open : VerticalLayout {
+                                             Text { text: root.project-name; color: UiTheme.text-bright; font-size: 13px; font-weight: 700; }
+                                             Text { text: root.geometry-model-tree; color: UiTheme.text-tree; font-family: "monospace"; font-size: 10px; wrap: word-wrap; }
+                                         }
+                                         Rectangle { height: 1px; background: UiTheme.border; }
+                                         Button { text: root.geometry-active-body-open ? "▾  ACTIVE BODY" : "▸  ACTIVE BODY"; clicked => { root.geometry-active-body-open = !root.geometry-active-body-open; } }
+                                         if root.geometry-active-body-open : Text { text: root.geometry-parts-summary; color: UiTheme.text-secondary; font-size: 11px; wrap: word-wrap; }
+                                         Rectangle { height: 1px; background: UiTheme.border; }
+                                         Button { text: root.geometry-primitive-open ? "▾  ADD PRIMITIVE" : "▸  ADD PRIMITIVE"; clicked => { root.geometry-primitive-open = !root.geometry-primitive-open; } }
+                                         if root.geometry-primitive-open : VerticalLayout {
+                                             spacing: 5px;
+                                             ComboBox { model: ["Box", "Cylinder", "Cone", "Sphere", "Torus"]; current-index <=> root.part-kind-index; }
+                                             LineEdit { text <=> root.part-name; placeholder-text: "Solid name"; }
+                                             HorizontalLayout {
+                                                 LineEdit { text <=> root.part-size-x; placeholder-text: "X / R"; }
+                                                 LineEdit { text <=> root.part-size-y; placeholder-text: "Y"; }
+                                                 LineEdit { text <=> root.part-size-z; placeholder-text: "Z / H"; }
+                                             }
+                                             Text { text: "POSITION (mm)"; color: UiTheme.text-faint; font-size: 10px; font-weight: 700; }
+                                             HorizontalLayout {
+                                                 LineEdit { text <=> root.part-pos-x; placeholder-text: "X"; }
+                                                 LineEdit { text <=> root.part-pos-y; placeholder-text: "Y"; }
+                                                 LineEdit { text <=> root.part-pos-z; placeholder-text: "Z"; }
+                                             }
+                                             Button { text: "ADD SOLID"; clicked => { root.add-part(); } }
+                                             HorizontalLayout {
+                                                 Button { text: "DUPLICATE"; clicked => { root.duplicate-last-part(); } }
+                                                 Button { text: "DELETE"; clicked => { root.remove-last-part(); } }
+                                             }
+                                         }
                                         Rectangle { vertical-stretch: 1; }
                                     }
-                                    if root.geometry-sidebar-tab == 1 : VerticalLayout {
-                                        Text { text: "CASE / DOMAIN"; color: UiTheme.accent; font-size: 11px; font-weight: 800; }
-                                        ComboBox { model: ["Lid-driven cavity", "Cylinder flow Re=100", "Backward-facing step", "Channel flow (Poiseuille)"]; current-index <=> root.case-index; }
-                                        Button { text: "SET ACTIVE DOMAIN"; clicked => { root.select-case(); } }
-                                        Text { text: "Project"; color: UiTheme.text-muted; font-size: 10px; }
-                                        LineEdit { text <=> root.project-name; }
-                                        Text { text: "ADVANCED PATH (manual load/save)"; color: UiTheme.text-muted; font-size: 10px; }
-                                        LineEdit { text <=> root.project-path; placeholder-text: "Workspace folder or legacy import file"; }
-                                        HorizontalLayout { Button { text: "LOAD PATH"; clicked => { root.load-project(); } } Button { text: "SAVE PATH"; clicked => { root.save-project(); } } }
+                                     if root.geometry-sidebar-tab == 1 : VerticalLayout {
+                                         Button { text: root.geometry-domain-open ? "▾  CASE / DOMAIN" : "▸  CASE / DOMAIN"; clicked => { root.geometry-domain-open = !root.geometry-domain-open; } }
+                                         if root.geometry-domain-open : VerticalLayout {
+                                             ComboBox { model: ["Lid-driven cavity", "Cylinder flow Re=100", "Backward-facing step", "Channel flow (Poiseuille)"]; current-index <=> root.case-index; }
+                                             Button { text: "SET ACTIVE DOMAIN"; clicked => { root.select-case(); } }
+                                         }
+                                         Button { text: root.geometry-project-open ? "▾  PROJECT / PATH" : "▸  PROJECT / PATH"; clicked => { root.geometry-project-open = !root.geometry-project-open; } }
+                                         if root.geometry-project-open : VerticalLayout {
+                                             Text { text: "Project"; color: UiTheme.text-muted; font-size: 10px; }
+                                             LineEdit { text <=> root.project-name; }
+                                             Text { text: "ADVANCED PATH (manual load/save)"; color: UiTheme.text-muted; font-size: 10px; }
+                                             LineEdit { text <=> root.project-path; placeholder-text: "Workspace folder or legacy import file"; }
+                                             HorizontalLayout { Button { text: "LOAD PATH"; clicked => { root.load-project(); } } Button { text: "SAVE PATH"; clicked => { root.save-project(); } } }
+                                         }
                                         Rectangle { vertical-stretch: 1; }
                                     }
-                                    if root.geometry-sidebar-tab == 2 : VerticalLayout {
-                                        Text { text: "INSPECTOR"; color: UiTheme.accent; font-size: 11px; font-weight: 800; }
-                                        Text { text: "SKETCH"; color: UiTheme.text-muted; font-size: 10px; font-weight: 700; }
+                                     if root.geometry-sidebar-tab == 2 : VerticalLayout {
+                                         Text { text: "INSPECTOR"; color: UiTheme.accent; font-size: 11px; font-weight: 800; }
+                                         Text { text: root.geometry-selection-detail; color: UiTheme.text-bright; font-size: 11px; wrap: word-wrap; }
+                                         Rectangle { height: 1px; background: UiTheme.border; }
+                                         Button { text: root.geometry-sketch-open ? "▾  SKETCH" : "▸  SKETCH"; clicked => { root.geometry-sketch-open = !root.geometry-sketch-open; } }
+                                         if root.geometry-sketch-open : VerticalLayout {
+                                         spacing: 5px;
                                         ComboBox { model: ["Rectangle", "Circle"]; current-index <=> root.sketch-kind-index; }
                                         Text { text: "SKETCH PLANE"; color: UiTheme.text-muted; font-size: 10px; font-weight: 700; }
                                         ComboBox { model: ["XY", "YZ", "ZX"]; current-index <=> root.sketch-plane-index; }
@@ -446,12 +473,15 @@ export component MainWindow inherits Window {
                                         Rectangle { height: 1px; background: UiTheme.border; }
                                         Text { text: "DRIVING DIMENSION (select a line/circle, mm)"; color: UiTheme.accent; font-size: 10px; font-weight: 700; wrap: word-wrap; }
                                         HorizontalLayout { LineEdit { text <=> root.driving-dimension; placeholder-text: "Length / radius"; } Button { text: "APPLY"; clicked => { root.apply-driving-dimension(); } } }
-                                        Text { text: "Selection fills the current value. Applying updates the same persistent driving dimension."; color: UiTheme.text-faint; font-size: 10px; wrap: word-wrap; }
-                                        Rectangle { height: 1px; background: UiTheme.border; }
-                                        Text { text: "FEATURE"; color: UiTheme.text-muted; font-size: 10px; font-weight: 700; }
-                                        Text { text: "Extrude selected planar face"; color: UiTheme.text-secondary; font-size: 11px; }
-                                        LineEdit { text <=> root.feature-depth; placeholder-text: "Extrude distance (mm)"; }
-                                        Text { text: "Select a shaded closed profile, then use EXTRUDE below the canvas."; color: UiTheme.text-faint; font-size: 10px; wrap: word-wrap; }
+                                         Text { text: "Selection fills the current value. Applying updates the same persistent driving dimension."; color: UiTheme.text-faint; font-size: 10px; wrap: word-wrap; }
+                                         }
+                                         Rectangle { height: 1px; background: UiTheme.border; }
+                                         Button { text: root.geometry-feature-open ? "▾  EXTRUDE" : "▸  EXTRUDE"; clicked => { root.geometry-feature-open = !root.geometry-feature-open; } }
+                                         if root.geometry-feature-open : VerticalLayout {
+                                             Text { text: "Extrude selected planar face"; color: UiTheme.text-secondary; font-size: 11px; }
+                                             LineEdit { text <=> root.feature-depth; placeholder-text: "Extrude distance (mm)"; }
+                                             Text { text: "Select a shaded closed profile, then use EXTRUDE below the canvas."; color: UiTheme.text-faint; font-size: 10px; wrap: word-wrap; }
+                                         }
                                         Rectangle { vertical-stretch: 1; }
                                     }
                                         }
@@ -468,13 +498,24 @@ export component MainWindow inherits Window {
                                          vertical-stretch: 1;
                                          preview-image: root.visualization-image;
                                          view-axis: root.geometry-view-axis;
-                                         help-text: "CLICK FACE: SELECT  ·  DRAG: ORBIT  ·  WHEEL: ZOOM  ·  DOUBLE-CLICK: FIT";
+                                         select-geometry: true;
+                                         help-text: root.geometry-pick-mode == 0 ? "CLICK FACE: SELECT  ·  DRAG: ORBIT  ·  WHEEL: ZOOM  ·  DOUBLE-CLICK: FIT" : root.geometry-pick-mode == 1 ? "CLICK A SKETCH EDGE: SELECT  ·  DRAG: ORBIT  ·  WHEEL: ZOOM" : "CLICK A SKETCH VERTEX: SELECT  ·  DRAG: ORBIT  ·  WHEEL: ZOOM";
                                          orbit(x, y, pressed-x, pressed-y) => { root.geometry-drag(x, y, pressed-x, pressed-y); }
+                                         orbit-end => { root.geometry-drag-end(); }
                                          zoom(delta) => { root.geometry-zoom(delta); }
                                          reset-view => { root.reset-geometry-view(); }
                                          select-view-axis(axis) => { root.select-geometry-view-axis(axis); }
                                          pick-boundary(x, y, w, h) => { root.pick-boundary(x, y, w, h); }
                                          hover(x, y, w, h) => { root.mesh-hover(x, y, w, h); }
+                                     }
+                                     if root.geometry-cad-view-3d : HorizontalLayout {
+                                         spacing: 6px;
+                                         Text { text: "PICK"; color: UiTheme.text-dim; font-size: 10px; font-weight: 700; vertical-alignment: center; }
+                                         Button { text: root.geometry-pick-mode == 0 ? "FACE ✓" : "FACE"; clicked => { root.select-geometry-pick-mode(0); } }
+                                         Button { text: root.geometry-pick-mode == 1 ? "EDGE ✓" : "EDGE"; clicked => { root.select-geometry-pick-mode(1); } }
+                                         Button { text: root.geometry-pick-mode == 2 ? "VERTEX ✓" : "VERTEX"; clicked => { root.select-geometry-pick-mode(2); } }
+                                         Rectangle { horizontal-stretch: 1; }
+                                         Button { text: "CLEAR"; clicked => { root.clear-geometry-selection(); } }
                                      }
                                      if !root.geometry-cad-view-3d : Rectangle {
                                         vertical-stretch: 1;
@@ -593,7 +634,7 @@ export component MainWindow inherits Window {
                                 HorizontalLayout { Text { text: "Threshold"; color: UiTheme.text-muted; vertical-alignment: center; } LineEdit { text <=> root.mesh-quality-threshold; } Button { text: "APPLY"; clicked => { root.mesh-threshold(); } } }
                                 if root.bad-cell-model.length > 0 : VerticalLayout { spacing: 3px; Text { text: "BAD CELLS (first " + root.bad-cell-model.length + ")"; color: UiTheme.text-muted; font-size: 10px; font-weight: 700; } ListView { min-height: 48px; max-height: 96px; for cell[index] in root.bad-cell-model : Button { text: cell; clicked => { root.select-bad-cell(index); } } } }
                                 Text { text: root.mesh-inspection; color: UiTheme.text-subtle; font-family: "monospace"; font-size: 11px; wrap: word-wrap; }
-                                InteractiveGeometryPreview { vertical-stretch: 1; preview-image: root.visualization-image; view-axis: root.geometry-view-axis; orbit(x, y, pressed-x, pressed-y) => { root.geometry-drag(x, y, pressed-x, pressed-y); } zoom(delta) => { root.geometry-zoom(delta); } reset-view => { root.reset-geometry-view(); } select-view-axis(axis) => { root.select-geometry-view-axis(axis); } pick-boundary(x, y, w, h) => { root.pick-boundary(x, y, w, h); } hover(x, y, w, h) => { root.mesh-hover(x, y, w, h); } }
+                                InteractiveGeometryPreview { vertical-stretch: 1; preview-image: root.visualization-image; view-axis: root.geometry-view-axis; orbit(x, y, pressed-x, pressed-y) => { root.geometry-drag(x, y, pressed-x, pressed-y); } orbit-end => { root.geometry-drag-end(); } zoom(delta) => { root.geometry-zoom(delta); } reset-view => { root.reset-geometry-view(); } select-view-axis(axis) => { root.select-geometry-view-axis(axis); } pick-boundary(x, y, w, h) => { root.pick-boundary(x, y, w, h); } hover(x, y, w, h) => { root.mesh-hover(x, y, w, h); } }
                                 Text { text: root.visualization-title + " · " + root.animation-status; color: UiTheme.text-soft; font-size: 11px; }
                                 HorizontalLayout { Button { text: "2D GRID"; clicked => { root.show-mesh(); } } Button { text: "3D VOLUME"; clicked => { root.show-geometry-3d(); } } }
                             } }
@@ -653,7 +694,7 @@ export component MainWindow inherits Window {
                             } }
                                 Card { min-width: 250px; horizontal-stretch: 2; VerticalLayout { padding: root.compact-ui ? 14px : 18px; spacing: 10px;
                                 Text { text: "BOUNDARY & VOLUME VIEW"; color: UiTheme.accent; font-size: 11px; font-weight: 700; }
-                                InteractiveGeometryPreview { vertical-stretch: 1; preview-image: root.visualization-image; view-axis: root.geometry-view-axis; orbit(x, y, pressed-x, pressed-y) => { root.geometry-drag(x, y, pressed-x, pressed-y); } zoom(delta) => { root.geometry-zoom(delta); } reset-view => { root.reset-geometry-view(); } select-view-axis(axis) => { root.select-geometry-view-axis(axis); } pick-boundary(x, y, w, h) => { root.pick-boundary(x, y, w, h); } hover(x, y, w, h) => { root.mesh-hover(x, y, w, h); } }
+                                InteractiveGeometryPreview { vertical-stretch: 1; preview-image: root.visualization-image; view-axis: root.geometry-view-axis; orbit(x, y, pressed-x, pressed-y) => { root.geometry-drag(x, y, pressed-x, pressed-y); } orbit-end => { root.geometry-drag-end(); } zoom(delta) => { root.geometry-zoom(delta); } reset-view => { root.reset-geometry-view(); } select-view-axis(axis) => { root.select-geometry-view-axis(axis); } pick-boundary(x, y, w, h) => { root.pick-boundary(x, y, w, h); } hover(x, y, w, h) => { root.mesh-hover(x, y, w, h); } }
                                 Text { text: "Cyan: left · Gold: right · Green: top · Magenta: bottom"; color: UiTheme.text-soft; font-size: 11px; }
                                 HorizontalLayout { Button { text: "SHOW 3D"; clicked => { root.show-geometry-3d(); } } Button { text: "ROTATE"; clicked => { root.rotate-geometry-3d(); } } }
                             } }

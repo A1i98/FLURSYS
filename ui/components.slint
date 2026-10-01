@@ -8,6 +8,8 @@
         kind: int,
         payload: int,
         active: bool,
+        expandable: bool,
+        expanded: bool,
     }
 
     export global UiTheme {
@@ -73,7 +75,9 @@
         in property <image> preview-image;
         in property <int> view-axis: 3;
         in property <string> help-text: "DRAG: ORBIT  ·  WHEEL: ZOOM  ·  CLICK RGB XYZ TRIAD: AXIS VIEW  ·  DOUBLE-CLICK: RESET";
+        in property <bool> select-geometry: false;
         callback orbit(float, float, float, float);
+        callback orbit-end();
         callback zoom(float);
         callback reset-view();
         callback select-view-axis(int);
@@ -90,17 +94,30 @@
             color: rgb(145, 174, 190); font-size: 10px; font-weight: 700;
         }
         TouchArea {
-            mouse-cursor: self.pressed ? grabbing : grab;
+            property <bool> dragged: false;
+            mouse-cursor: self.pressed ? grabbing : root.select-geometry ? crosshair : grab;
+            pointer-event(event) => {
+                if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
+                    self.dragged = false;
+                }
+                if event.kind == PointerEventKind.up && event.button == PointerEventButton.left && self.dragged {
+                    root.orbit-end();
+                }
+            }
             moved => {
-                root.hover(self.mouse-x / 1px, self.mouse-y / 1px, root.width / 1px, root.height / 1px);
                 if self.pressed {
+                    if Math.abs((self.mouse-x - self.pressed-x) / 1px) > 4 || Math.abs((self.mouse-y - self.pressed-y) / 1px) > 4 {
+                        self.dragged = true;
+                    }
                     root.orbit(self.mouse-x / 1px, self.mouse-y / 1px,
                         self.pressed-x / 1px, self.pressed-y / 1px);
+                } else {
+                    root.hover(self.mouse-x / 1px, self.mouse-y / 1px, root.width / 1px, root.height / 1px);
                 }
             }
             scroll-event(event) => { root.zoom(event.delta-y / 1px); accept }
             double-clicked => { root.reset-view(); }
-            clicked => { root.pick-boundary(self.mouse-x / 1px, self.mouse-y / 1px, root.width / 1px, root.height / 1px); }
+            clicked => { if !self.dragged { root.pick-boundary(self.mouse-x / 1px, self.mouse-y / 1px, root.width / 1px, root.height / 1px); } }
         }
     }
 
@@ -129,14 +146,33 @@
 
     export component TreeRowView inherits Rectangle {
         in property <ProjectTreeRow> entry;
-        callback select();
+        callback select(bool);
+        callback toggle();
         height: 23px;
         background: root.entry.active ? rgb(30, 61, 78) : transparent;
         border-radius: 3px;
+        TouchArea {
+            pointer-event(event) => {
+                if event.kind == PointerEventKind.up && event.button == PointerEventButton.left {
+                    root.select(event.modifiers.control);
+                }
+            }
+        }
         HorizontalLayout {
             padding-left: 6px + root.entry.depth * 12px;
             padding-right: 6px;
             spacing: 6px;
+            if root.entry.expandable : Rectangle {
+                width: 16px;
+                Text {
+                    text: root.entry.expanded ? "▾" : "▸";
+                    color: root.entry.active ? UiTheme.accent : UiTheme.text-muted;
+                    font-size: 13px;
+                    vertical-alignment: center;
+                }
+                TouchArea { clicked => { root.toggle(); } }
+            }
+            if !root.entry.expandable : Rectangle { width: 16px; }
             Text {
                 text: root.entry.label;
                 color: root.entry.active ? rgb(240, 195, 109) : root.entry.depth == 0 ? rgb(215, 229, 238) : rgb(184, 207, 219);
@@ -154,7 +190,6 @@
                 overflow: elide;
             }
         }
-        TouchArea { clicked => { root.select(); } }
     }
 
     export component InspectorLabel inherits Text {
