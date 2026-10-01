@@ -35,6 +35,16 @@ default = ["gui"]
 gui = ["dep:rfd", "dep:slint"]
 gui-live-preview = ["gui", "slint/live-preview"]
 
+# Slint and its rendering dependencies make full debug info and incremental
+# compilation caches disproportionately large in local builds.
+[profile.dev]
+debug = 0
+incremental = false
+
+[profile.test]
+debug = 0
+incremental = false
+
 [profile.release]
 lto = "thin"
 codegen-units = 1
