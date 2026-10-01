@@ -1273,6 +1273,32 @@ fn face_sketch_click(state: &mut AppState, point: (f64, f64)) -> Result<Option<S
     Ok(Some(format!("Drawn Sketch {} on Face {} → Face {} ({width:.3} × {height:.3} mm). Select EXTRUDE / BUILD to make a solid.", sketch.id.get(), host.get(), profile.get())))
 }
 
+/// Begin a press-and-drag stroke without committing geometry. A short press
+/// remains the first corner of the existing two-click drawing workflow.
+fn begin_geometry_stroke(state: &mut AppState, screen: (f64, f64)) -> Result<bool, String> {
+    if state.face_sketch_host.is_some() {
+        if state.face_sketch_start.is_some() {
+            return Ok(false);
+        }
+        let point = face_sketch_point(state, screen);
+        face_sketch_click(state, point)?;
+        return Ok(true);
+    }
+    if state.geometry_editor.active_tool == GeometryTool::Select
+        || state.geometry_editor.has_start()
+    {
+        return Ok(false);
+    }
+    let mut editor = std::mem::take(&mut state.geometry_editor);
+    let result = editor.click(state.workbench.geometry_mut(), screen, false);
+    state.geometry_editor = editor;
+    match result {
+        Ok(false) => Ok(true),
+        Ok(true) => unreachable!("first stroke point cannot commit geometry"),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
 fn sketch_rectangle_on_plane(
     state: &mut AppState,
     plane: CadSketchPlane,
@@ -1657,6 +1683,31 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
     });
     let weak_ui = ui.as_weak();
     let editor_state = state.clone();
+    ui.on_geometry_pointer_down(move |x, y, w, h| {
+        let Some(ui) = weak_ui.upgrade() else {
+            return false;
+        };
+        let Some(p) = preview_image_point(x, y, w, h) else {
+            return false;
+        };
+        let mut state = editor_state.borrow_mut();
+        match begin_geometry_stroke(&mut state, p) {
+            Ok(started) => {
+                if started {
+                    refresh_ui(&ui, &state);
+                }
+                started
+            }
+            Err(error) => {
+                ui.set_geometry_feature_feedback(SharedString::from(&error));
+                state.log(format!("Geometry edit rejected: {error}"));
+                refresh_ui(&ui, &state);
+                false
+            }
+        }
+    });
+    let weak_ui = ui.as_weak();
+    let editor_state = state.clone();
     ui.on_geometry_pointer(move |x, y, w, h, additive| {
         let Some(ui) = weak_ui.upgrade() else {
             return;
@@ -1675,7 +1726,10 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
                     rebuild_tree_rows(&mut state);
                 }
                 Ok(None) => {}
-                Err(error) => state.log(error),
+                Err(error) => {
+                    ui.set_geometry_feature_feedback(SharedString::from(&error));
+                    state.log(error);
+                }
             }
             refresh_ui(&ui, &state);
             return;
@@ -1702,7 +1756,10 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
                     .first()
                     .and_then(|target| tree_selection_for_target(*target));
             }
-            Err(error) => state.log(format!("Geometry edit rejected: {error}")),
+            Err(error) => {
+                ui.set_geometry_feature_feedback(SharedString::from(error.to_string()));
+                state.log(format!("Geometry edit rejected: {error}"));
+            }
         }
         rebuild_tree_rows(&mut state);
         refresh_ui(&ui, &state);
@@ -6096,6 +6153,77 @@ mod tests {
     }
 
     #[test]
+    fn dragging_a_rectangle_previews_before_committing_a_closed_profile() {
+        let mut state = AppState::new();
+        state.geometry_editor.set_tool(GeometryTool::Rectangle);
+        assert!(begin_geometry_stroke(&mut state, (200.0, 210.0)).unwrap());
+        assert_eq!(state.workbench.geometry().faces().count(), 0);
+        let topology = state.workbench.geometry().clone();
+        state
+            .geometry_editor
+            .cursor_moved(&topology, (310.0, 100.0));
+        assert!(matches!(
+            state.geometry_editor.preview(),
+            Some(flursys::PreviewPrimitive::Rectangle(_, _))
+        ));
+        let mut editor = std::mem::take(&mut state.geometry_editor);
+        assert!(editor
+            .click(state.workbench.geometry_mut(), (310.0, 100.0), false)
+            .unwrap());
+        state.geometry_editor = editor;
+        state.wb_selected_targets = state.geometry_editor.selection.clone();
+        assert!(matches!(
+            state.wb_selected_targets.as_slice(),
+            [GeometrySelectionTarget::Face(_)]
+        ));
+        build_canonical_extrude(&mut state, "0.5").unwrap();
+        assert_eq!(state.workbench.geometry().bodies().count(), 1);
+    }
+
+    #[test]
+    fn dragging_a_circle_creates_a_profile_that_can_be_extruded() {
+        let mut state = AppState::new();
+        state.geometry_editor.set_tool(GeometryTool::Circle);
+        state.geometry_editor.snap_enabled = false;
+        assert!(begin_geometry_stroke(&mut state, (260.0, 160.0)).unwrap());
+        let topology = state.workbench.geometry().clone();
+        state
+            .geometry_editor
+            .cursor_moved(&topology, (310.0, 160.0));
+        assert!(matches!(
+            state.geometry_editor.preview(),
+            Some(flursys::PreviewPrimitive::Circle(_, _))
+        ));
+        let mut editor = std::mem::take(&mut state.geometry_editor);
+        assert!(editor
+            .click(state.workbench.geometry_mut(), (310.0, 160.0), false)
+            .unwrap());
+        state.geometry_editor = editor;
+        state.wb_selected_targets = state.geometry_editor.selection.clone();
+        assert!(matches!(
+            state.wb_selected_targets.as_slice(),
+            [GeometrySelectionTarget::Face(_)]
+        ));
+        build_canonical_extrude(&mut state, "0.5").unwrap();
+        assert_eq!(state.workbench.geometry().bodies().count(), 1);
+    }
+
+    #[test]
+    fn two_click_rectangle_does_not_commit_on_first_press_release() {
+        let mut state = AppState::new();
+        state.geometry_editor.set_tool(GeometryTool::Rectangle);
+        assert!(begin_geometry_stroke(&mut state, (200.0, 210.0)).unwrap());
+        assert!(state.geometry_editor.has_start());
+        assert_eq!(state.workbench.geometry().faces().count(), 0);
+        assert!(!begin_geometry_stroke(&mut state, (310.0, 100.0)).unwrap());
+        let mut editor = std::mem::take(&mut state.geometry_editor);
+        assert!(editor
+            .click(state.workbench.geometry_mut(), (310.0, 100.0), false)
+            .unwrap());
+        assert_eq!(state.workbench.geometry().faces().count(), 1);
+    }
+
+    #[test]
     fn closed_line_sketch_can_be_extruded_without_selecting_a_face_manually() {
         let mut state = AppState::new();
         state.geometry_editor.set_tool(GeometryTool::Line);
@@ -6287,6 +6415,28 @@ mod tests {
             build_canonical_extrude(&mut state, "0.2").unwrap();
             assert_eq!(state.workbench.geometry().bodies().count(), 2);
         }
+    }
+
+    #[test]
+    fn press_drag_on_extruded_face_uses_the_same_local_sketch_workflow() {
+        let mut state = AppState::new();
+        let rectangle = state.workbench.add_rectangle(2.0, 1.0).unwrap();
+        let extrusion = state.workbench.extrude_face(rectangle.face, 0.5).unwrap();
+        state.wb_selected_targets = vec![GeometrySelectionTarget::Face(extrusion.top_face)];
+        begin_face_sketch(&mut state).unwrap();
+        state.geometry_editor.snap_enabled = false;
+        let start = state.geometry_editor.transform.world_to_screen((0.1, 0.1));
+        let end = state.geometry_editor.transform.world_to_screen((0.4, 0.3));
+        assert!(begin_geometry_stroke(&mut state, start).unwrap());
+        assert_eq!(state.workbench.geometry().sketches().count(), 0);
+        let point = face_sketch_point(&state, end);
+        state.face_sketch_cursor = Some(point);
+        assert!(face_sketch_click(&mut state, point).unwrap().is_some());
+        assert!(matches!(
+            state.wb_selected_targets.as_slice(),
+            [GeometrySelectionTarget::Face(_)]
+        ));
+        assert_eq!(state.workbench.geometry().sketches().count(), 1);
     }
 
     #[test]

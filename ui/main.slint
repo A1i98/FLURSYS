@@ -160,7 +160,7 @@ export component MainWindow inherits Window {
     callback geometry-drag(float, float, float, float); callback geometry-zoom(float); callback reset-geometry-view(); callback select-geometry-view-axis(int);
     callback pick-boundary(float, float, float, float);
     callback start-sketch(); callback sketch-on-face(); callback sketch-on-plane(); callback draw-on-face(); callback select-sketch-tool(int); callback sketch-click(float, float, float, float); callback sketch-preview(float, float, float, float); callback sketch-undo(); callback sketch-redo(); callback apply-driving-dimension();
-    callback geometry-tool(int); callback geometry-pointer(float, float, float, float, bool); callback geometry-move(float, float, float, float); callback geometry-wheel(float, float, float, float, float); callback geometry-fit(); callback geometry-undo(); callback geometry-redo(); callback geometry-delete-selection(); callback geometry-toggle-snap(); callback geometry-toggle-grid();
+    callback geometry-tool(int); callback geometry-pointer-down(float, float, float, float) -> bool; callback geometry-pointer(float, float, float, float, bool); callback geometry-move(float, float, float, float); callback geometry-wheel(float, float, float, float, float); callback geometry-fit(); callback geometry-undo(); callback geometry-redo(); callback geometry-delete-selection(); callback geometry-toggle-snap(); callback geometry-toggle-grid();
     callback geometry-pan-begin(float, float, float, float); callback geometry-pan-move(float, float, float, float); callback geometry-shortcut(int);
     callback geometry-select-face-mode(); callback geometry-select-entity-mode();
     callback show-examples(); callback close-examples(); callback select-example(int); callback show-example-details(int); callback open-example(int);
@@ -485,9 +485,10 @@ export component MainWindow inherits Window {
                                         editor-focus := FocusScope {
                                             width: parent.width; height: parent.height;
                                             key-pressed(event) => {
-                                                if event.modifiers.control && (event.text == "z" || event.text == "Z") && event.modifiers.shift { root.geometry-shortcut(7); accept }
-                                                else if event.modifiers.control && (event.text == "z" || event.text == "Z") { root.geometry-shortcut(6); accept }
-                                                else if event.modifiers.control && (event.text == "y" || event.text == "Y") { root.geometry-shortcut(7); accept }
+                                                 if event.modifiers.control && (event.text == "z" || event.text == "Z") && event.modifiers.shift { root.geometry-shortcut(7); accept }
+                                                 else if event.modifiers.control && (event.text == "z" || event.text == "Z") { root.geometry-shortcut(6); accept }
+                                                 else if event.modifiers.control && (event.text == "y" || event.text == "Y") { root.geometry-shortcut(7); accept }
+                                                 else if root.geometry-can-extrude && !event.modifiers.control && (event.text == "e" || event.text == "E" || event.text == Key.Return) { root.build-feature(); accept }
                                                 else if event.text == Key.Escape || event.text == "v" || event.text == "V" { root.geometry-shortcut(0); accept }
                                                 else if !event.modifiers.control && (event.text == "l" || event.text == "L") { root.geometry-shortcut(1); accept }
                                                 else if !event.modifiers.control && (event.text == "r" || event.text == "R") { root.geometry-shortcut(2); accept }
@@ -502,6 +503,7 @@ export component MainWindow inherits Window {
                                             width: parent.width; height: parent.height;
                                             property <length> press-x: 0px;
                                             property <length> press-y: 0px;
+                                            property <bool> started-on-down: false;
                                             mouse-cursor: root.geometry-editor-panning ? grabbing : root.geometry-active-tool == 0 ? default : crosshair;
                                             moved => {
                                                 if root.geometry-editor-panning {
@@ -515,11 +517,14 @@ export component MainWindow inherits Window {
                                                     editor-focus.focus();
                                                     self.press-x = self.mouse-x;
                                                     self.press-y = self.mouse-y;
+                                                    self.started-on-down = root.geometry-pointer-down(self.mouse-x / 1px, self.mouse-y / 1px, self.width / 1px, self.height / 1px);
                                                 }
                                                 if event.button == PointerEventButton.left && event.kind == PointerEventKind.up {
-                                                    if !root.geometry-editor-panning && Math.abs((self.mouse-x - self.press-x) / 1px) < 5 && Math.abs((self.mouse-y - self.press-y) / 1px) < 5 {
+                                                    let dragged = Math.abs((self.mouse-x - self.press-x) / 1px) >= 5 || Math.abs((self.mouse-y - self.press-y) / 1px) >= 5;
+                                                    if !root.geometry-editor-panning && (!self.started-on-down || dragged) && (!dragged || root.geometry-active-tool != 0) {
                                                         root.geometry-pointer(self.mouse-x / 1px, self.mouse-y / 1px, self.width / 1px, self.height / 1px, event.modifiers.control);
                                                     }
+                                                    self.started-on-down = false;
                                                 }
                                                 if event.button == PointerEventButton.middle && event.kind == PointerEventKind.down {
                                                     root.geometry-editor-panning = true;
@@ -546,7 +551,7 @@ export component MainWindow inherits Window {
                                         }
                                     }
                                     HorizontalLayout { Text { text: root.geometry-cad-view-3d ? root.animation-status : root.geometry-editor-status; color: UiTheme.text-soft; font-size: 11px; vertical-alignment: center; wrap: word-wrap; } Rectangle { horizontal-stretch: 1; } Button { text: "FIT VIEW"; clicked => { if root.geometry-cad-view-3d { root.reset-geometry-view(); } else { root.geometry-fit(); } } } }
-                                    Text { text: root.geometry-cad-view-3d ? "CLICK A FLAT FACE → DRAW ON FACE → CLICK TWO CORNERS → EXTRUDE   ·   DRAG: ORBIT" : root.geometry-face-sketch-editing ? "CLICK TWO OPPOSITE CORNERS · MIDDLE DRAG: PAN · WHEEL: ZOOM · ESC: CANCEL" : "RECT / CIRCLE: TWO CLICKS  ·  LINE: CLOSE THE LOOP  ·  FACE: PICK SHADED AREA  ·  EXTRUDE WHEN READY"; color: UiTheme.text-faint; font-size: 10px; wrap: word-wrap; }
+                                    Text { text: root.geometry-cad-view-3d ? "CLICK A FLAT FACE → DRAW ON FACE → DRAG A RECTANGLE → EXTRUDE   ·   DRAG: ORBIT" : root.geometry-face-sketch-editing ? "CLICK-DRAG A RECTANGLE OR CLICK TWO CORNERS · WHEEL: ZOOM · ESC: CANCEL" : "RECT / CIRCLE: DRAG OR CLICK TWICE  ·  LINE: CLOSE THE LOOP  ·  FACE: PICK SHADED AREA  ·  E / ENTER: EXTRUDE"; color: UiTheme.text-faint; font-size: 10px; wrap: word-wrap; }
                                 }
                             }
 
