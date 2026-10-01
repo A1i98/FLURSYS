@@ -289,6 +289,7 @@ impl GeometryEditorState {
         }
         topology
             .vertices()
+            .filter(|vertex| vertex.position.z.abs() <= MIN_GEOMETRY)
             .filter_map(|vertex| {
                 let d = distance((vertex.position.x, vertex.position.y), point);
                 (d <= tolerance).then_some((d, GeometrySelectionTarget::Vertex(vertex.id)))
@@ -298,6 +299,7 @@ impl GeometryEditorState {
             .or_else(|| {
                 topology
                     .edges()
+                    .filter(|edge| edge_on_xy(topology, &edge.geometry))
                     .filter_map(|edge| {
                         edge_distance(topology, edge.geometry.clone(), point)
                             .filter(|d| *d <= tolerance)
@@ -309,7 +311,10 @@ impl GeometryEditorState {
             .or_else(face_hit)
     }
     pub fn fit_view(&mut self, topology: &GeometryTopology) {
-        let mut points = topology.vertices().map(|v| (v.position.x, v.position.y));
+        let mut points = topology
+            .vertices()
+            .filter(|v| v.position.z.abs() <= MIN_GEOMETRY)
+            .map(|v| (v.position.x, v.position.y));
         let Some((x, y)) = points.next() else {
             self.transform.fit(None);
             return;
@@ -328,10 +333,14 @@ impl GeometryEditorState {
             return point;
         }
         let tolerance = 10.0 / self.transform.pixels_per_unit;
-        if let Some(vertex) = topology.vertices().min_by(|a, b| {
-            distance((a.position.x, a.position.y), point)
-                .total_cmp(&distance((b.position.x, b.position.y), point))
-        }) {
+        if let Some(vertex) = topology
+            .vertices()
+            .filter(|v| v.position.z.abs() <= MIN_GEOMETRY)
+            .min_by(|a, b| {
+                distance((a.position.x, a.position.y), point)
+                    .total_cmp(&distance((b.position.x, b.position.y), point))
+            })
+        {
             let p = (vertex.position.x, vertex.position.y);
             if distance(p, point) <= tolerance {
                 return p;
@@ -718,6 +727,18 @@ fn face_on_xy(topology: &GeometryTopology, representation: &GeometryFaceRepresen
             })
         })
 }
+
+fn edge_on_xy(topology: &GeometryTopology, geometry: &EdgeGeometry) -> bool {
+    let vertices = match *geometry {
+        EdgeGeometry::Line { start, end } => vec![start, end],
+        EdgeGeometry::CircularArc { start, center, end } => vec![start, center, end],
+    };
+    vertices.into_iter().all(|id| {
+        topology
+            .vertex(id)
+            .is_some_and(|vertex| vertex.position.z.abs() <= MIN_GEOMETRY)
+    })
+}
 fn point_in_loop(topology: &GeometryTopology, edges: &[OrientedEdge], point: (f64, f64)) -> bool {
     let polygon: Vec<_> = edges
         .iter()
@@ -1048,5 +1069,30 @@ mod tests {
             assert!((x / grid - (x / grid).round()).abs() < 1e-9);
             assert!((y / grid - (y / grid).round()).abs() < 1e-9);
         }
+    }
+
+    #[test]
+    fn xy_sketch_picker_does_not_select_vertices_or_edges_above_the_sketch_plane() {
+        let mut topology = GeometryTopology::new();
+        let rectangle = topology.add_rectangle(2.0, 1.0).unwrap();
+        let extrusion = topology.extrude_planar_face(rectangle.face, 0.5).unwrap();
+        let mut editor = GeometryEditorState::new();
+        editor.transform.set_viewport(1000.0, 800.0);
+        editor.prefer_faces = false;
+        let p = editor.transform.world_to_screen((0.0, 0.0));
+        assert_eq!(
+            editor.pick(&topology, p, 8.0),
+            Some(GeometrySelectionTarget::Vertex(rectangle.vertices[0]))
+        );
+        let top = topology.edge(extrusion.top_edges[0]).unwrap();
+        let EdgeGeometry::Line { start, .. } = top.geometry else {
+            panic!("expected edge")
+        };
+        assert_ne!(start, rectangle.vertices[0]);
+        let p = editor.transform.world_to_screen((1.0, 0.0));
+        assert_eq!(
+            editor.pick(&topology, p, 8.0),
+            Some(GeometrySelectionTarget::Edge(rectangle.bottom))
+        );
     }
 }

@@ -173,6 +173,10 @@ pub enum GeometryBodyRepresentation {
         distance: f64,
         top_face: FaceId,
         side_faces: Vec<FaceId>,
+        #[serde(default)]
+        top_edges: Vec<EdgeId>,
+        #[serde(default)]
+        vertical_edges: Vec<EdgeId>,
     },
 }
 
@@ -281,6 +285,8 @@ pub struct ExtrudeEntities {
     pub source_face: FaceId,
     pub top_face: FaceId,
     pub side_faces: Vec<FaceId>,
+    pub top_edges: Vec<EdgeId>,
+    pub vertical_edges: Vec<EdgeId>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -729,6 +735,7 @@ impl GeometryTopology {
                 distance,
                 top_face,
                 side_faces,
+                ..
             } = &body.representation
             else {
                 continue;
@@ -1117,6 +1124,17 @@ impl GeometryTopology {
                 message: "extrusion requires a planar source face".into(),
             });
         };
+        let outer =
+            self.loop_vertices(&outer_loop)
+                .ok_or_else(|| GeometryError::InvalidPrimitive {
+                    message: "extrusion profile has no valid outer loop".into(),
+                })?;
+        let normal = polygon_normal(&outer).ok_or_else(|| GeometryError::InvalidPrimitive {
+            message: "extrusion profile has no finite normal".into(),
+        })?;
+        let displacement = normal * distance;
+        let (top_edges, vertical_edges) =
+            self.add_extrusion_edges(&outer_loop, &inner_loops, displacement)?;
         let top_face = self.add_primitive_face()?;
         let side_count = outer_loop.len() + inner_loops.iter().map(Vec::len).sum::<usize>();
         let mut side_faces = Vec::with_capacity(side_count);
@@ -1132,6 +1150,8 @@ impl GeometryTopology {
                 distance,
                 top_face,
                 side_faces: side_faces.clone(),
+                top_edges: top_edges.clone(),
+                vertical_edges: vertical_edges.clone(),
             },
         )?;
         Ok(ExtrudeEntities {
@@ -1139,7 +1159,122 @@ impl GeometryTopology {
             source_face,
             top_face,
             side_faces,
+            top_edges,
+            vertical_edges,
         })
+    }
+
+    fn add_extrusion_edges(
+        &mut self,
+        outer_loop: &[OrientedEdge],
+        inner_loops: &[Vec<OrientedEdge>],
+        displacement: Vec3,
+    ) -> Result<(Vec<EdgeId>, Vec<EdgeId>), GeometryError> {
+        let boundary = outer_loop
+            .iter()
+            .chain(inner_loops.iter().flatten())
+            .copied()
+            .collect::<Vec<_>>();
+        let mut top_vertices = BTreeMap::new();
+        let mut rim_vertices = BTreeSet::new();
+        for oriented in &boundary {
+            let edge = self.require_edge(oriented.edge)?;
+            let (start, end, center) = match edge.geometry {
+                EdgeGeometry::Line { start, end } => (start, end, None),
+                EdgeGeometry::CircularArc { start, center, end } => (start, end, Some(center)),
+            };
+            rim_vertices.extend([start, end]);
+            for source in [Some(start), Some(end), center].into_iter().flatten() {
+                if !top_vertices.contains_key(&source) {
+                    let position = self.vertex_position(source)? + displacement;
+                    top_vertices.insert(source, self.add_vertex(position)?);
+                }
+            }
+        }
+        let mut top_edges = Vec::with_capacity(boundary.len());
+        for oriented in &boundary {
+            let edge = self.require_edge(oriented.edge)?;
+            let copy = match edge.geometry {
+                EdgeGeometry::Line { start, end } => {
+                    self.add_line(top_vertices[&start], top_vertices[&end])?
+                }
+                EdgeGeometry::CircularArc { start, center, end } => self.add_circular_arc(
+                    top_vertices[&start],
+                    top_vertices[&center],
+                    top_vertices[&end],
+                )?,
+            };
+            top_edges.push(copy);
+        }
+        let mut vertical_edges = Vec::with_capacity(rim_vertices.len());
+        for source in rim_vertices {
+            vertical_edges.push(self.add_line(source, top_vertices[&source])?);
+        }
+        Ok((top_edges, vertical_edges))
+    }
+
+    /// Upgrade older saved extrusions whose top and vertical edges were only
+    /// rendered as polygons and had no selectable stable topology IDs.
+    pub fn ensure_extrusion_edges(&mut self) -> Result<bool, GeometryError> {
+        let missing: Vec<_> = self
+            .bodies
+            .values()
+            .filter_map(|body| match &body.representation {
+                GeometryBodyRepresentation::Extrude {
+                    source_face,
+                    distance,
+                    top_edges,
+                    vertical_edges,
+                    ..
+                } if top_edges.is_empty() && vertical_edges.is_empty() => {
+                    Some((body.id, *source_face, *distance))
+                }
+                _ => None,
+            })
+            .collect();
+        if missing.is_empty() {
+            return Ok(false);
+        }
+        let mut upgraded = self.clone();
+        for (body, source_face, distance) in missing {
+            let source = upgraded.require_face(source_face)?.clone();
+            let GeometryFaceRepresentation::Planar {
+                outer_loop,
+                inner_loops,
+            } = source.representation
+            else {
+                return Err(GeometryError::InvalidPrimitive {
+                    message: "extrusion source is not planar".into(),
+                });
+            };
+            let outer = upgraded.loop_vertices(&outer_loop).ok_or_else(|| {
+                GeometryError::InvalidPrimitive {
+                    message: "extrusion has no valid profile".into(),
+                }
+            })?;
+            let normal = polygon_normal(&outer).ok_or_else(|| GeometryError::InvalidPrimitive {
+                message: "extrusion has no finite normal".into(),
+            })?;
+            let (top, vertical) =
+                upgraded.add_extrusion_edges(&outer_loop, &inner_loops, normal * distance)?;
+            let record = upgraded
+                .bodies
+                .get_mut(&body)
+                .expect("body was collected above");
+            if let GeometryBodyRepresentation::Extrude {
+                top_edges,
+                vertical_edges,
+                ..
+            } = &mut record.representation
+            {
+                *top_edges = top;
+                *vertical_edges = vertical;
+            }
+            upgraded.bump_revision();
+        }
+        upgraded.validate()?;
+        *self = upgraded;
+        Ok(true)
     }
 
     pub fn remove_vertex(&mut self, id: VertexId) -> Result<GeometryVertex, GeometryError> {
@@ -1171,6 +1306,17 @@ impl GeometryTopology {
                 entity: "edge",
                 id: id.get(),
                 used_by: "face",
+            });
+        }
+        if self.bodies.values().any(|body| {
+            matches!(&body.representation,
+            GeometryBodyRepresentation::Extrude { top_edges, vertical_edges, .. }
+            if top_edges.contains(&id) || vertical_edges.contains(&id))
+        }) {
+            return Err(GeometryError::EntityInUse {
+                entity: "edge",
+                id: id.get(),
+                used_by: "body",
             });
         }
         let removed = self.edges.remove(&id).expect("validated edge exists");
@@ -1341,6 +1487,8 @@ impl GeometryTopology {
                 distance,
                 top_face,
                 side_faces,
+                top_edges,
+                vertical_edges,
             } = &body.representation
             {
                 if !distance.is_finite()
@@ -1349,6 +1497,12 @@ impl GeometryTopology {
                     || !body.faces.contains(top_face)
                     || side_faces.is_empty()
                     || side_faces.iter().any(|face| !body.faces.contains(face))
+                    || ((!top_edges.is_empty() || !vertical_edges.is_empty())
+                        && (top_edges.len() != side_faces.len() || vertical_edges.len() < 3))
+                    || top_edges
+                        .iter()
+                        .chain(vertical_edges.iter())
+                        .any(|edge| self.edge(*edge).is_none())
                     || !matches!(
                         self.require_face(*source_face)?.representation,
                         GeometryFaceRepresentation::Planar { .. }
@@ -1459,6 +1613,16 @@ impl GeometryTopology {
         for &face in &body.faces {
             for edge in face_edges(&self.require_face(face)?.representation) {
                 vertices.extend(edge_vertices(&self.require_edge(edge)?.geometry));
+            }
+        }
+        if let GeometryBodyRepresentation::Extrude {
+            top_edges,
+            vertical_edges,
+            ..
+        } = &body.representation
+        {
+            for edge in top_edges.iter().chain(vertical_edges) {
+                vertices.extend(edge_vertices(&self.require_edge(*edge)?.geometry));
             }
         }
         Ok(vertices)

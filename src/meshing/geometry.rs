@@ -227,6 +227,7 @@ impl GmshGeometryExporter {
             distance,
             top_face,
             side_faces,
+            ..
         } = &body_entity.representation
         else {
             return Err(GeometryError::InvalidPrimitive {

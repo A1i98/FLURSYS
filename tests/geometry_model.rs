@@ -87,6 +87,81 @@ fn canonical_renderable_faces_include_stable_extrusion_surfaces() {
 }
 
 #[test]
+fn generated_extrusion_edges_have_stable_ids_and_follow_body_transforms() {
+    let mut geometry = GeometryTopology::new();
+    let rectangle = geometry.add_rectangle(2.0, 1.0).unwrap();
+    let extrusion = geometry.extrude_planar_face(rectangle.face, 0.5).unwrap();
+    assert_eq!(extrusion.top_edges.len(), 4);
+    assert_eq!(extrusion.vertical_edges.len(), 4);
+    let top = extrusion.top_edges[0];
+    assert!(matches!(
+        geometry.remove_edge(top),
+        Err(GeometryError::EntityInUse {
+            used_by: "body",
+            ..
+        })
+    ));
+    let flursys::EdgeGeometry::Line { start, end } = geometry.edge(top).unwrap().geometry else {
+        panic!("expected top edge")
+    };
+    assert_eq!(geometry.vertex(start).unwrap().position.z, 0.5);
+    assert_eq!(geometry.vertex(end).unwrap().position.z, 0.5);
+    geometry
+        .translate_body(extrusion.body, Vec3::new(1.0, 2.0, 3.0))
+        .unwrap();
+    assert!((geometry.vertex(start).unwrap().position.z - 3.5).abs() < 1e-9);
+    let restored: GeometryTopology =
+        serde_json::from_str(&serde_json::to_string(&geometry).unwrap()).unwrap();
+    restored.validate().unwrap();
+    assert_eq!(restored.edge(top), geometry.edge(top));
+    assert!(restored.body(extrusion.body).is_some());
+}
+
+#[test]
+fn older_saved_extrusion_without_edge_ids_is_upgraded_once() {
+    let mut geometry = GeometryTopology::new();
+    let rectangle = geometry.add_rectangle(2.0, 1.0).unwrap();
+    let extrusion = geometry.extrude_planar_face(rectangle.face, 0.5).unwrap();
+    let mut document = serde_json::to_value(&geometry).unwrap();
+    let representation = document["bodies"][extrusion.body.get().to_string()]["representation"]
+        ["Extrude"]
+        .as_object_mut()
+        .unwrap();
+    representation.remove("top_edges");
+    representation.remove("vertical_edges");
+    let mut restored: GeometryTopology = serde_json::from_value(document).unwrap();
+    let mut project = flursys::WorkbenchProject::blank("legacy extrusion");
+    project.mesh.dimension = flursys::MeshDimension::ThreeD;
+    project.geometry = restored.clone();
+    let reopened = flursys::WorkbenchSession::from_project(&project).unwrap();
+    let flursys::GeometryBodyRepresentation::Extrude {
+        top_edges: reopened_top,
+        ..
+    } = &reopened
+        .geometry()
+        .body(extrusion.body)
+        .unwrap()
+        .representation
+    else {
+        panic!("expected extrusion")
+    };
+    assert_eq!(reopened_top.len(), 4);
+    assert!(restored.ensure_extrusion_edges().unwrap());
+    assert!(!restored.ensure_extrusion_edges().unwrap());
+    restored.validate().unwrap();
+    let flursys::GeometryBodyRepresentation::Extrude {
+        top_edges,
+        vertical_edges,
+        ..
+    } = &restored.body(extrusion.body).unwrap().representation
+    else {
+        panic!("expected extrusion")
+    };
+    assert_eq!(top_edges.len(), 4);
+    assert_eq!(vertical_edges.len(), 4);
+}
+
+#[test]
 fn curved_profile_extrusion_renders_smooth_arcs_with_stable_side_ids() {
     let mut geometry = GeometryTopology::new();
     let (rectangle, hole) = geometry

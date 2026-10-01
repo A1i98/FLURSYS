@@ -157,6 +157,7 @@ impl WorkbenchSession {
             })?;
         let mut session = Self::new();
         session.geometry = project.geometry.clone();
+        session.geometry.ensure_extrusion_edges()?;
         session.set_mesh_configuration(
             project.mesh.dimension,
             project.mesh.global_size,

@@ -72,6 +72,7 @@ impl GeometryTopology {
                 distance,
                 top_face,
                 side_faces,
+                ..
             } = &body.representation
             else {
                 continue;
