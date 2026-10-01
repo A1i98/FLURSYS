@@ -941,15 +941,87 @@ fn require_project(state: &mut AppState) -> bool {
     }
 }
 
-fn build_canonical_extrude(state: &mut AppState, distance_text: &str) -> Result<String, String> {
-    let source_face = state
+fn selected_extrusion_face(state: &AppState) -> Result<flursys::FaceId, String> {
+    let geometry = state.workbench.geometry();
+    let selected_faces: Vec<_> = state
         .wb_selected_targets
         .iter()
-        .find_map(|target| match target {
-            GeometrySelectionTarget::Face(face) => Some(*face),
+        .filter_map(|target| match target {
+            GeometrySelectionTarget::Face(id) => Some(*id),
             _ => None,
         })
-        .ok_or_else(|| "Select one planar canonical face before extruding.".to_string())?;
+        .collect();
+    if selected_faces.len() == 1 {
+        return Ok(selected_faces[0]);
+    }
+    if selected_faces.len() > 1 {
+        return Err("Select only one face to extrude.".to_string());
+    }
+    let selected_edges: Vec<_> = state
+        .wb_selected_targets
+        .iter()
+        .filter_map(|target| match target {
+            GeometrySelectionTarget::Edge(id) => Some(*id),
+            _ => None,
+        })
+        .collect();
+    let selected_vertices: Vec<_> = state
+        .wb_selected_targets
+        .iter()
+        .filter_map(|target| match target {
+            GeometrySelectionTarget::Vertex(id) => Some(*id),
+            _ => None,
+        })
+        .collect();
+    if !state.wb_selected_targets.is_empty()
+        && selected_edges.is_empty()
+        && selected_vertices.is_empty()
+    {
+        return Err("Select a closed sketch profile to extrude, not a body.".to_string());
+    }
+    let candidates: Vec<_> = geometry
+        .faces()
+        .filter(|face| {
+            let flursys::GeometryFaceRepresentation::Planar {
+                outer_loop,
+                inner_loops,
+            } = &face.representation
+            else {
+                return false;
+            };
+            if selected_edges.is_empty() && selected_vertices.is_empty() {
+                return !geometry.bodies().any(|body| body.faces.contains(&face.id));
+            }
+            outer_loop
+                .iter()
+                .chain(inner_loops.iter().flatten())
+                .any(|oriented| {
+                    if selected_edges.contains(&oriented.edge) {
+                        return true;
+                    }
+                    let Some(edge) = geometry.edge(oriented.edge) else {
+                        return false;
+                    };
+                    let (start, end) = match edge.geometry {
+                        flursys::EdgeGeometry::Line { start, end }
+                        | flursys::EdgeGeometry::CircularArc { start, end, .. } => (start, end),
+                    };
+                    selected_vertices.contains(&start) || selected_vertices.contains(&end)
+                })
+        })
+        .map(|face| face.id)
+        .collect();
+    match candidates.as_slice() {
+        [face] => Ok(*face),
+        [] => Err("Draw a closed profile or select its face before extruding.".to_string()),
+        _ => {
+            Err("The selection belongs to multiple faces; select one face to extrude.".to_string())
+        }
+    }
+}
+
+fn build_canonical_extrude(state: &mut AppState, distance_text: &str) -> Result<String, String> {
+    let source_face = selected_extrusion_face(state)?;
     let distance = parse_positive(distance_text, "extrusion distance")?;
     if !matches!(
         state
@@ -983,6 +1055,7 @@ fn build_canonical_extrude(state: &mut AppState, distance_text: &str) -> Result<
         .map_err(|error| error.to_string())?;
     state.mark_workbench_dirty();
     state.wb_selected_targets = vec![GeometrySelectionTarget::Body(extrusion.body)];
+    state.geometry_editor.selection = state.wb_selected_targets.clone();
     state.selected_tree = tree_selection_for_target(GeometrySelectionTarget::Body(extrusion.body));
     state.tree_dirty = true;
     state.show_geometry_3d = true;
@@ -1525,7 +1598,11 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
             Ok(true) => {
                 state.workbench.geometry_changed();
                 state.mark_workbench_dirty();
-                state.wb_selected_targets.clear();
+                state.wb_selected_targets = state.geometry_editor.selection.clone();
+                state.selected_tree = state
+                    .wb_selected_targets
+                    .first()
+                    .and_then(|target| tree_selection_for_target(*target));
                 state.tree_dirty = true;
                 state.log("Geometry updated; dependent mesh and solution were invalidated.");
             }
@@ -1869,12 +1946,18 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
                 build_canonical_extrude(&mut state, ui.get_feature_depth().as_str())
                     .map(|extrude| (commit, extrude))
             }) {
-                Ok((commit, extrude)) => state.log(format!("{commit} {extrude}")),
+                Ok((commit, extrude)) => {
+                    state.log(format!("{commit} {extrude}"));
+                    ui.set_geometry_cad_view_3d(true);
+                }
                 Err(error) => state.log(error),
             }
         } else {
             match build_canonical_extrude(&mut state, ui.get_feature_depth().as_str()) {
-                Ok(message) => state.log(message),
+                Ok(message) => {
+                    state.log(message);
+                    ui.set_geometry_cad_view_3d(true);
+                }
                 Err(error) => state.log(error),
             }
         }
@@ -5851,6 +5934,88 @@ mod tests {
             state.wb_selected_targets.as_slice(),
             [GeometrySelectionTarget::Body(_)]
         ));
+    }
+
+    #[test]
+    fn drawn_rectangle_extrudes_without_manual_face_selection() {
+        let mut state = AppState::new();
+        state.geometry_editor.set_tool(GeometryTool::Rectangle);
+        let mut editor = std::mem::take(&mut state.geometry_editor);
+        editor
+            .click(state.workbench.geometry_mut(), (200.0, 210.0), false)
+            .unwrap();
+        assert!(editor
+            .click(state.workbench.geometry_mut(), (310.0, 100.0), false)
+            .unwrap());
+        state.geometry_editor = editor;
+        state.wb_selected_targets = state.geometry_editor.selection.clone();
+        let face = state.workbench.geometry().faces().next().unwrap().id;
+        assert_eq!(
+            state.wb_selected_targets,
+            vec![GeometrySelectionTarget::Face(face)]
+        );
+        build_canonical_extrude(&mut state, "0.5").unwrap();
+        assert_eq!(state.workbench.geometry().bodies().count(), 1);
+    }
+
+    #[test]
+    fn only_unowned_closed_profile_is_inferred_without_selection() {
+        let mut state = AppState::new();
+        let rectangle = state.workbench.add_rectangle(2.0, 1.0).unwrap();
+        assert_eq!(selected_extrusion_face(&state).unwrap(), rectangle.face);
+        state.workbench.extrude_face(rectangle.face, 0.5).unwrap();
+        assert!(selected_extrusion_face(&state).is_err());
+    }
+
+    #[test]
+    fn selecting_an_edge_or_vertex_of_a_closed_rectangle_can_extrude_its_face() {
+        for select_vertex in [false, true] {
+            let mut state = AppState::new();
+            let rectangle = state.workbench.add_rectangle(2.0, 1.0).unwrap();
+            state.wb_selected_targets = vec![if select_vertex {
+                GeometrySelectionTarget::Vertex(rectangle.vertices[0])
+            } else {
+                GeometrySelectionTarget::Edge(rectangle.bottom)
+            }];
+            build_canonical_extrude(&mut state, "0.5").unwrap();
+            assert_eq!(state.workbench.geometry().bodies().count(), 1);
+        }
+    }
+
+    #[test]
+    fn ambiguous_edge_selection_does_not_extrude_an_arbitrary_face() {
+        let mut state = AppState::new();
+        let rectangle = state.workbench.add_rectangle(2.0, 1.0).unwrap();
+        state
+            .workbench
+            .geometry_mut()
+            .add_planar_face(
+                vec![
+                    flursys::OrientedEdge {
+                        edge: rectangle.bottom,
+                        reversed: false,
+                    },
+                    flursys::OrientedEdge {
+                        edge: rectangle.right,
+                        reversed: false,
+                    },
+                    flursys::OrientedEdge {
+                        edge: rectangle.top,
+                        reversed: false,
+                    },
+                    flursys::OrientedEdge {
+                        edge: rectangle.left,
+                        reversed: false,
+                    },
+                ],
+                Vec::new(),
+            )
+            .unwrap();
+        state.wb_selected_targets = vec![GeometrySelectionTarget::Edge(rectangle.bottom)];
+        assert!(build_canonical_extrude(&mut state, "0.5")
+            .unwrap_err()
+            .contains("multiple faces"));
+        assert_eq!(state.workbench.geometry().bodies().count(), 0);
     }
 
     #[test]

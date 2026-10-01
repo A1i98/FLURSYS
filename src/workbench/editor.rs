@@ -216,6 +216,11 @@ impl GeometryEditorState {
                 *topology = before;
                 return Err(error);
             }
+            self.selection = topology
+                .faces()
+                .find(|face| before.face(face.id).is_none())
+                .map(|face| vec![GeometrySelectionTarget::Face(face.id)])
+                .unwrap_or_default();
             self.start = None;
             self.push_undo(before);
             self.redo.clear();
@@ -627,6 +632,10 @@ mod tests {
         assert!(!e.click(&mut t, (400.0, 500.0), false).unwrap());
         assert!(e.click(&mut t, (600.0, 300.0), false).unwrap());
         assert_eq!(t.faces().count(), 1);
+        assert_eq!(
+            e.selection,
+            vec![GeometrySelectionTarget::Face(t.faces().next().unwrap().id)]
+        );
         e.set_tool(GeometryTool::Select);
         let hit = e.pick(&t, (500.0, 400.0), 8.0);
         assert!(matches!(hit, Some(GeometrySelectionTarget::Face(_))));

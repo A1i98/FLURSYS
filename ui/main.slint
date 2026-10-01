@@ -343,7 +343,7 @@ export component MainWindow inherits Window {
 
                                     Rectangle { width: 1px; background: UiTheme.divider; }
 
-                                    Button { text: "EXTRUDE"; clicked => { root.feature-kind-index = 0; } }
+                                    Button { text: "EXTRUDE"; clicked => { root.feature-kind-index = 0; root.build-feature(); } }
                                     Button { text: "BUILD"; clicked => { root.build-feature(); } }
 
                                     Rectangle { horizontal-stretch: 1; }
