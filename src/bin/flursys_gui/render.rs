@@ -897,7 +897,35 @@ pub(super) fn render_canonical_geometry_3d(
             .iter()
             .map(|&(x, y)| (f64::from(x), f64::from(y)))
             .collect::<Vec<_>>();
+        let before = (!surface.holes.is_empty()).then(|| pixels.clone());
         draw_filled_polygon(&mut pixels, width, height, &fill_polygon, fill_color);
+        if let Some(before) = before {
+            let mut mask = vec![0_u8; pixels.len()];
+            for hole in &surface.holes {
+                let projected: Vec<_> = hole.iter().map(|point| camera.project(*point)).collect();
+                let polygon: Vec<_> = projected
+                    .iter()
+                    .map(|&(x, y)| (f64::from(x), f64::from(y)))
+                    .collect();
+                draw_filled_polygon(&mut mask, width, height, &polygon, [255, 255, 255, 255]);
+            }
+            for (index, pixel) in pixels.chunks_exact_mut(4).enumerate() {
+                if mask[index * 4 + 3] != 0 {
+                    pixel.copy_from_slice(&before[index * 4..index * 4 + 4]);
+                }
+            }
+            for hole in &surface.holes {
+                let projected: Vec<_> = hole.iter().map(|point| camera.project(*point)).collect();
+                for (start, end) in projected
+                    .iter()
+                    .copied()
+                    .zip(projected.iter().copied().cycle().skip(1))
+                    .take(projected.len())
+                {
+                    draw_line(&mut pixels, width, height, start, end, edge_color);
+                }
+            }
+        }
         for (start, end) in polygon
             .iter()
             .copied()
@@ -1047,6 +1075,122 @@ pub(super) fn render_empty_preview() -> Image {
     image_from_rgba(PREVIEW_WIDTH, PREVIEW_HEIGHT, pixels)
 }
 
+pub(super) fn render_face_sketch(
+    topology: &GeometryTopology,
+    face: flursys::FaceId,
+    editor: &GeometryEditorState,
+    start: Option<(f64, f64)>,
+    cursor: Option<(f64, f64)>,
+) -> Image {
+    let (width, height) = (PREVIEW_WIDTH, PREVIEW_HEIGHT);
+    let mut pixels = vec![0_u8; (width * height * 4) as usize];
+    fill(&mut pixels, [9, 16, 22, 255]);
+    let Ok(frame) = topology.sketch_frame_for_face(face) else {
+        return image_from_rgba(width, height, pixels);
+    };
+    let Some(surface) = topology
+        .renderable_faces()
+        .into_iter()
+        .find(|entry| entry.face == face)
+    else {
+        return image_from_rgba(width, height, pixels);
+    };
+    let project = |point: Vec3| {
+        let delta = point - frame.origin;
+        editor
+            .transform
+            .world_to_screen((delta.dot(frame.x_axis), delta.dot(frame.y_axis)))
+    };
+    let points: Vec<_> = surface.vertices.iter().copied().map(project).collect();
+    draw_filled_polygon(&mut pixels, width, height, &points, [22, 48, 60, 255]);
+    if editor.grid_enabled {
+        let spacing = editor.grid_spacing();
+        let (left, bottom) = editor.transform.screen_to_world((0.0, f64::from(height)));
+        let (right, top) = editor.transform.screen_to_world((f64::from(width), 0.0));
+        for index in (left / spacing).floor() as i32..=(right / spacing).ceil() as i32 {
+            let x = editor
+                .transform
+                .world_to_screen((index as f64 * spacing, 0.0))
+                .0 as i32;
+            draw_line(
+                &mut pixels,
+                width,
+                height,
+                (x, 0),
+                (x, height as i32),
+                [31, 58, 69, 255],
+            );
+        }
+        for index in (bottom / spacing).floor() as i32..=(top / spacing).ceil() as i32 {
+            let y = editor
+                .transform
+                .world_to_screen((0.0, index as f64 * spacing))
+                .1 as i32;
+            draw_line(
+                &mut pixels,
+                width,
+                height,
+                (0, y),
+                (width as i32, y),
+                [31, 58, 69, 255],
+            );
+        }
+    }
+    for polygon in std::iter::once(&surface.vertices).chain(surface.holes.iter()) {
+        let outline: Vec<_> = polygon.iter().copied().map(project).collect();
+        for index in 0..outline.len() {
+            let a = outline[index];
+            let b = outline[(index + 1) % outline.len()];
+            draw_line(
+                &mut pixels,
+                width,
+                height,
+                (a.0 as i32, a.1 as i32),
+                (b.0 as i32, b.1 as i32),
+                [112, 221, 232, 255],
+            );
+        }
+    }
+    if let (Some(a), Some(b)) = (start, cursor) {
+        let corners = [a, (b.0, a.1), b, (a.0, b.1)];
+        for index in 0..4 {
+            let p = editor.transform.world_to_screen(corners[index]);
+            let q = editor.transform.world_to_screen(corners[(index + 1) % 4]);
+            draw_line(
+                &mut pixels,
+                width,
+                height,
+                (p.0 as i32, p.1 as i32),
+                (q.0 as i32, q.1 as i32),
+                [255, 181, 88, 255],
+            );
+        }
+    }
+    if let Some(point) = cursor {
+        let (x, y) = editor.transform.world_to_screen(point);
+        if (0.0..f64::from(width)).contains(&x) && (0.0..f64::from(height)).contains(&y) {
+            let (x, y) = (x as i32, y as i32);
+            draw_line(
+                &mut pixels,
+                width,
+                height,
+                (x - 6, y),
+                (x + 6, y),
+                [255, 181, 88, 255],
+            );
+            draw_line(
+                &mut pixels,
+                width,
+                height,
+                (x, y - 6),
+                (x, y + 6),
+                [255, 181, 88, 255],
+            );
+        }
+    }
+    image_from_rgba(width, height, pixels)
+}
+
 /// Raster preview of the Rust-owned stable geometry editor.  It is deliberately
 /// a compact render model: topology remains in `GeometryTopology`, while Slint
 /// receives only an image and sends pointer gestures back to the controller.
@@ -1060,7 +1204,7 @@ pub(super) fn render_geometry_editor(
     fill(&mut pixels, [9, 16, 22, 255]);
     let to_screen = |p: (f64, f64)| editor.transform.world_to_screen(p);
     if editor.grid_enabled {
-        let grid = (60.0 / editor.transform.pixels_per_unit).max(1.0e-6);
+        let grid = editor.grid_spacing();
         let (left, bottom) = editor.transform.screen_to_world((0.0, f64::from(height)));
         let (right, top) = editor.transform.screen_to_world((f64::from(width), 0.0));
         let first_x = (left / grid).floor() as i32;
@@ -1089,6 +1233,27 @@ pub(super) fn render_geometry_editor(
                 [22, 40, 51, 255],
             );
         }
+    }
+    let origin = to_screen((0.0, 0.0));
+    if origin.0 >= 0.0 && origin.0 < f64::from(width) {
+        draw_line(
+            &mut pixels,
+            width,
+            height,
+            (origin.0 as i32, 0),
+            (origin.0 as i32, height as i32),
+            [53, 81, 96, 255],
+        );
+    }
+    if origin.1 >= 0.0 && origin.1 < f64::from(height) {
+        draw_line(
+            &mut pixels,
+            width,
+            height,
+            (0, origin.1 as i32),
+            (width as i32, origin.1 as i32),
+            [53, 81, 96, 255],
+        );
     }
     for edge in topology.edges() {
         let belongs_to = |face_id| {
@@ -1139,19 +1304,32 @@ pub(super) fn render_geometry_editor(
                     topology.vertex(center),
                     topology.vertex(end),
                 ) {
-                    let r = ((a.position.x - c.position.x).hypot(a.position.y - c.position.y)
-                        * editor.transform.pixels_per_unit) as i32;
-                    let center = to_screen((c.position.x, c.position.y));
-                    let _ = b;
-                    draw_ellipse(
-                        &mut pixels,
-                        width,
-                        height,
-                        (center.0 as i32, center.1 as i32),
-                        r,
-                        r,
-                        color,
-                    );
+                    let radius = (a.position.x - c.position.x).hypot(a.position.y - c.position.y);
+                    let start_angle =
+                        (a.position.y - c.position.y).atan2(a.position.x - c.position.x);
+                    let sweep = ((b.position.y - c.position.y).atan2(b.position.x - c.position.x)
+                        - start_angle)
+                        .rem_euclid(std::f64::consts::TAU);
+                    let segments = (sweep * radius * editor.transform.pixels_per_unit / 5.0)
+                        .ceil()
+                        .clamp(8.0, 256.0) as usize;
+                    let mut previous = to_screen((a.position.x, a.position.y));
+                    for i in 1..=segments {
+                        let angle = start_angle + sweep * i as f64 / segments as f64;
+                        let next = to_screen((
+                            c.position.x + radius * angle.cos(),
+                            c.position.y + radius * angle.sin(),
+                        ));
+                        draw_line(
+                            &mut pixels,
+                            width,
+                            height,
+                            (previous.0 as i32, previous.1 as i32),
+                            (next.0 as i32, next.1 as i32),
+                            color,
+                        );
+                        previous = next;
+                    }
                 }
             }
         }
@@ -1218,6 +1396,30 @@ pub(super) fn render_geometry_editor(
                     r,
                     color,
                 )
+            }
+        }
+    }
+    if editor.active_tool != flursys::GeometryTool::Select {
+        if let Some(cursor) = editor.cursor_world() {
+            let (x, y) = to_screen(cursor);
+            if (0.0..f64::from(width)).contains(&x) && (0.0..f64::from(height)).contains(&y) {
+                let (x, y) = (x as i32, y as i32);
+                draw_line(
+                    &mut pixels,
+                    width,
+                    height,
+                    (x - 6, y),
+                    (x + 6, y),
+                    [255, 181, 88, 255],
+                );
+                draw_line(
+                    &mut pixels,
+                    width,
+                    height,
+                    (x, y - 6),
+                    (x, y + 6),
+                    [255, 181, 88, 255],
+                );
             }
         }
     }

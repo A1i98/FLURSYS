@@ -209,6 +209,9 @@ struct AppState {
     pending_project_replacement: Option<PendingProjectReplacement>,
     pending_legacy_import: Option<(PendingProjectReplacement, LegacyProjectInspection)>,
     geometry_editor: GeometryEditorState,
+    face_sketch_host: Option<flursys::FaceId>,
+    face_sketch_start: Option<(f64, f64)>,
+    face_sketch_cursor: Option<(f64, f64)>,
     geometry_pan_anchor: Option<(f64, f64)>,
     mesh_view: ViewTransform,
     mesh_display_mode: MeshDisplayMode,
@@ -330,6 +333,9 @@ impl AppState {
                     .set_viewport(f64::from(PREVIEW_WIDTH), f64::from(PREVIEW_HEIGHT));
                 editor
             },
+            face_sketch_host: None,
+            face_sketch_start: None,
+            face_sketch_cursor: None,
             geometry_pan_anchor: None,
             mesh_view: {
                 let mut view = ViewTransform::default();
@@ -389,6 +395,9 @@ impl AppState {
         self.workbench_autosave_needed = false;
         self.pending_recovery_workspace = None;
         self.geometry_editor = GeometryEditorState::new();
+        self.face_sketch_host = None;
+        self.face_sketch_start = None;
+        self.face_sketch_cursor = None;
         self.geometry_editor
             .transform
             .set_viewport(f64::from(PREVIEW_WIDTH), f64::from(PREVIEW_HEIGHT));
@@ -430,6 +439,9 @@ impl AppState {
         self.show_mesh = false;
         self.show_geometry_3d = true;
         self.geometry_editor = GeometryEditorState::new();
+        self.face_sketch_host = None;
+        self.face_sketch_start = None;
+        self.face_sketch_cursor = None;
         self.geometry_editor
             .transform
             .set_viewport(f64::from(PREVIEW_WIDTH), f64::from(PREVIEW_HEIGHT));
@@ -697,6 +709,9 @@ impl AppState {
         self.workbench_project = document;
         self.workbench = session;
         self.workspace_path = Some(workspace.clone());
+        self.face_sketch_host = None;
+        self.face_sketch_start = None;
+        self.face_sketch_cursor = None;
         self.active_result = None;
         self.result_render_cache = None;
         self.workbench_dirty = false;
@@ -738,6 +753,9 @@ impl AppState {
         self.workbench_project = document;
         self.workbench = session;
         self.workspace_path = Some(workspace);
+        self.face_sketch_host = None;
+        self.face_sketch_start = None;
+        self.face_sketch_cursor = None;
         self.active_result = None;
         self.result_render_cache = None;
         self.workbench_dirty = true;
@@ -933,13 +951,35 @@ fn build_canonical_extrude(state: &mut AppState, distance_text: &str) -> Result<
         })
         .ok_or_else(|| "Select one planar canonical face before extruding.".to_string())?;
     let distance = parse_positive(distance_text, "extrusion distance")?;
-    let sketch = state
+    if !matches!(
+        state
+            .workbench
+            .geometry()
+            .face(source_face)
+            .map(|face| &face.representation),
+        Some(flursys::GeometryFaceRepresentation::Planar { .. })
+    ) {
+        return Err("Select a planar sketch profile. To extrude from a solid face, create a rectangle sketch on that face first.".to_string());
+    }
+    let existing_sketch = state
         .workbench
-        .create_sketch_on_face(source_face)
-        .map_err(|error| error.to_string())?;
+        .geometry()
+        .sketches()
+        .find(|sketch| sketch.profile_face == Some(source_face))
+        .map(|sketch| sketch.id);
+    let sketch_id = match existing_sketch {
+        Some(id) => id,
+        None => {
+            state
+                .workbench
+                .create_sketch_on_face(source_face)
+                .map_err(|error| error.to_string())?
+                .id
+        }
+    };
     let (feature, extrusion) = state
         .workbench
-        .extrude_sketch_face(sketch.id, source_face, distance)
+        .extrude_sketch_face(sketch_id, source_face, distance)
         .map_err(|error| error.to_string())?;
     state.mark_workbench_dirty();
     state.wb_selected_targets = vec![GeometrySelectionTarget::Body(extrusion.body)];
@@ -953,6 +993,172 @@ fn build_canonical_extrude(state: &mut AppState, distance_text: &str) -> Result<
         source_face.get(),
         extrusion.body.get()
     ))
+}
+
+fn sketch_rectangle_on_selected_face(
+    state: &mut AppState,
+    width_text: &str,
+    height_text: &str,
+) -> Result<String, String> {
+    let face = state
+        .wb_selected_targets
+        .iter()
+        .find_map(|target| match target {
+            GeometrySelectionTarget::Face(face) => Some(*face),
+            _ => None,
+        })
+        .ok_or_else(|| "Select a planar face in the 3D view or project tree first.".to_string())?;
+    let width = parse_positive(width_text, "sketch width")?;
+    let height = parse_positive(height_text, "sketch height")?;
+    if width <= 1.0e-9 || height <= 1.0e-9 {
+        return Err("Sketch dimensions must exceed 1e-9 mm.".to_string());
+    }
+    let sketch = state
+        .workbench
+        .create_sketch_on_face(face)
+        .map_err(|error| error.to_string())?;
+    let profile = state
+        .workbench
+        .materialize_sketch_rectangle(sketch.id, width, height)
+        .map_err(|error| error.to_string())?;
+    state.mark_workbench_dirty();
+    state.wb_selected_targets = vec![GeometrySelectionTarget::Face(profile)];
+    state.geometry_editor.selection = state.wb_selected_targets.clone();
+    state.selected_tree = tree_selection_for_target(GeometrySelectionTarget::Face(profile));
+    state.tree_dirty = true;
+    state.show_geometry_3d = true;
+    state.show_mesh = false;
+    Ok(format!("Sketch {} on Face {}: rectangle {:.3} × {:.3} mm → profile Face {}. Extrude the selected profile to create a body.", sketch.id.get(), face.get(), width, height, profile.get()))
+}
+
+fn begin_face_sketch(state: &mut AppState) -> Result<String, String> {
+    let face = state
+        .wb_selected_targets
+        .iter()
+        .find_map(|target| match target {
+            GeometrySelectionTarget::Face(face) => Some(*face),
+            _ => None,
+        })
+        .ok_or_else(|| "Select a flat face in the 3D viewport first.".to_string())?;
+    let geometry = state.workbench.geometry();
+    let frame = geometry
+        .sketch_frame_for_face(face)
+        .map_err(|error| error.to_string())?;
+    let surface = geometry
+        .renderable_faces()
+        .into_iter()
+        .find(|entry| entry.face == face)
+        .ok_or_else(|| "Selected face cannot be displayed as a sketch plane.".to_string())?;
+    let local: Vec<_> = surface
+        .vertices
+        .iter()
+        .map(|point| {
+            let delta = *point - frame.origin;
+            (delta.dot(frame.x_axis), delta.dot(frame.y_axis))
+        })
+        .collect();
+    let (mut min_x, mut min_y, mut max_x, mut max_y) = (
+        f64::INFINITY,
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+        f64::NEG_INFINITY,
+    );
+    for (x, y) in local {
+        min_x = min_x.min(x);
+        min_y = min_y.min(y);
+        max_x = max_x.max(x);
+        max_y = max_y.max(y);
+    }
+    state
+        .geometry_editor
+        .transform
+        .fit(Some((min_x, min_y, max_x, max_y)));
+    state.geometry_editor.set_tool(GeometryTool::Rectangle);
+    state.face_sketch_host = Some(face);
+    state.face_sketch_start = None;
+    state.face_sketch_cursor = None;
+    Ok(format!(
+        "Sketch on Face {}: click two opposite corners on the face plane. Esc cancels.",
+        face.get()
+    ))
+}
+
+fn face_sketch_point(state: &AppState, screen: (f64, f64)) -> (f64, f64) {
+    let editor = &state.geometry_editor;
+    let (x, y) = editor.transform.screen_to_world(screen);
+    if !editor.snap_enabled {
+        return (x, y);
+    }
+    let grid = editor.grid_spacing();
+    ((x / grid).round() * grid, (y / grid).round() * grid)
+}
+
+fn face_sketch_click(state: &mut AppState, point: (f64, f64)) -> Result<Option<String>, String> {
+    let host = state
+        .face_sketch_host
+        .ok_or_else(|| "No active face sketch.".to_string())?;
+    state.face_sketch_cursor = Some(point);
+    let Some(start) = state.face_sketch_start else {
+        state.face_sketch_start = Some(point);
+        return Ok(None);
+    };
+    let (x, y) = (start.0.min(point.0), start.1.min(point.1));
+    let (width, height) = ((start.0 - point.0).abs(), (start.1 - point.1).abs());
+    if width <= 1.0e-9 || height <= 1.0e-9 {
+        return Err(
+            "Rectangle needs non-zero width and height; choose another corner.".to_string(),
+        );
+    }
+    // Commit sketch and profile together so a failed materialization leaves no orphan sketch.
+    let mut geometry = state.workbench.geometry().clone();
+    let sketch = geometry
+        .create_sketch_on_face(host)
+        .map_err(|error| error.to_string())?;
+    let profile = geometry
+        .materialize_sketch_rectangle_at(sketch.id, x, y, width, height)
+        .map_err(|error| error.to_string())?;
+    *state.workbench.geometry_mut() = geometry;
+    state.workbench.geometry_changed();
+    state.mark_workbench_dirty();
+    state.wb_selected_targets = vec![GeometrySelectionTarget::Face(profile)];
+    state.geometry_editor.selection = state.wb_selected_targets.clone();
+    state.selected_tree = tree_selection_for_target(GeometrySelectionTarget::Face(profile));
+    state.tree_dirty = true;
+    state.face_sketch_host = None;
+    state.face_sketch_start = None;
+    state.face_sketch_cursor = None;
+    state.show_geometry_3d = true;
+    state.show_mesh = false;
+    Ok(Some(format!("Drawn Sketch {} on Face {} → Face {} ({width:.3} × {height:.3} mm). Select EXTRUDE / BUILD to make a solid.", sketch.id.get(), host.get(), profile.get())))
+}
+
+fn sketch_rectangle_on_plane(
+    state: &mut AppState,
+    plane: CadSketchPlane,
+    width_text: &str,
+    height_text: &str,
+) -> Result<String, String> {
+    let width = parse_positive(width_text, "sketch width")?;
+    let height = parse_positive(height_text, "sketch height")?;
+    if width <= 1.0e-9 || height <= 1.0e-9 {
+        return Err("Sketch dimensions must exceed 1e-9 mm.".to_string());
+    }
+    let sketch = state
+        .workbench
+        .create_sketch_on_plane(plane)
+        .map_err(|error| error.to_string())?;
+    let profile = state
+        .workbench
+        .materialize_sketch_rectangle(sketch.id, width, height)
+        .map_err(|error| error.to_string())?;
+    state.mark_workbench_dirty();
+    state.wb_selected_targets = vec![GeometrySelectionTarget::Face(profile)];
+    state.geometry_editor.selection = state.wb_selected_targets.clone();
+    state.selected_tree = tree_selection_for_target(GeometrySelectionTarget::Face(profile));
+    state.tree_dirty = true;
+    state.show_geometry_3d = true;
+    state.show_mesh = false;
+    Ok(format!("Sketch {} on {:?}: rectangle {:.3} × {:.3} mm → profile Face {}. Extrude the selected profile to create a body.", sketch.id.get(), plane, width, height, profile.get()))
 }
 
 fn translate_selected_body(
@@ -1253,6 +1459,11 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
             return;
         };
         let mut state = editor_state.borrow_mut();
+        if state.face_sketch_host.is_some() && tool != 2 {
+            state.face_sketch_host = None;
+            state.face_sketch_start = None;
+            state.face_sketch_cursor = None;
+        }
         state.geometry_editor.set_tool(match tool {
             1 => GeometryTool::Line,
             2 => GeometryTool::Rectangle,
@@ -1267,8 +1478,18 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
     let editor_state = state.clone();
     ui.on_geometry_move(move |x, y, w, h| {
         let Some(ui) = weak_ui.upgrade() else { return };
+        let Some(p) = preview_image_point(x, y, w, h) else {
+            return;
+        };
         let mut state = editor_state.borrow_mut();
-        let p = geometry_editor_point(x, y, w, h);
+        if state.face_sketch_host.is_some() {
+            let point = face_sketch_point(&state, p);
+            if state.face_sketch_cursor != Some(point) {
+                state.face_sketch_cursor = Some(point);
+                refresh_ui(&ui, &state);
+            }
+            return;
+        }
         let geometry = state.workbench.geometry().clone();
         state.geometry_editor.cursor_moved(&geometry, p);
         refresh_ui(&ui, &state);
@@ -1279,8 +1500,24 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
         let Some(ui) = weak_ui.upgrade() else {
             return;
         };
+        let Some(p) = preview_image_point(x, y, w, h) else {
+            return;
+        };
         let mut state = editor_state.borrow_mut();
-        let p = geometry_editor_point(x, y, w, h);
+        if state.face_sketch_host.is_some() {
+            let point = face_sketch_point(&state, p);
+            match face_sketch_click(&mut state, point) {
+                Ok(Some(message)) => {
+                    state.log(message);
+                    ui.set_geometry_cad_view_3d(true);
+                    rebuild_tree_rows(&mut state);
+                }
+                Ok(None) => {}
+                Err(error) => state.log(error),
+            }
+            refresh_ui(&ui, &state);
+            return;
+        }
         let mut editor = std::mem::take(&mut state.geometry_editor);
         let result = editor.click(state.workbench.geometry_mut(), p, additive);
         state.geometry_editor = editor;
@@ -1306,13 +1543,13 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
     });
     let weak_ui = ui.as_weak();
     let editor_state = state.clone();
-    ui.on_geometry_wheel(move |x, y, w, delta| {
+    ui.on_geometry_wheel(move |x, y, w, h, delta| {
         let Some(ui) = weak_ui.upgrade() else { return };
+        let Some(p) = preview_image_point(x, y, w, h) else {
+            return;
+        };
         let mut state = editor_state.borrow_mut();
-        state.geometry_editor.transform.zoom_at(
-            geometry_editor_point(x, y, w, PREVIEW_HEIGHT as f32),
-            f64::from(delta),
-        );
+        state.geometry_editor.transform.zoom_at(p, f64::from(delta));
         refresh_ui(&ui, &state);
     });
     let weak_ui = ui.as_weak();
@@ -1320,8 +1557,18 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
     ui.on_geometry_fit(move || {
         let Some(ui) = weak_ui.upgrade() else { return };
         let mut state = editor_state.borrow_mut();
-        let geometry = state.workbench.geometry().clone();
-        state.geometry_editor.fit_view(&geometry);
+        if state.face_sketch_host.is_some() {
+            let start = state.face_sketch_start;
+            let cursor = state.face_sketch_cursor;
+            if let Err(error) = begin_face_sketch(&mut state) {
+                state.log(error);
+            }
+            state.face_sketch_start = start;
+            state.face_sketch_cursor = cursor;
+        } else {
+            let geometry = state.workbench.geometry().clone();
+            state.geometry_editor.fit_view(&geometry);
+        }
         refresh_ui(&ui, &state);
     });
     let weak_ui = ui.as_weak();
@@ -1373,6 +1620,20 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
             return;
         };
         let mut state = editor_state.borrow_mut();
+        if state.face_sketch_host.is_some() {
+            if action == 0 {
+                state.face_sketch_host = None;
+                state.face_sketch_start = None;
+                state.face_sketch_cursor = None;
+                state.geometry_editor.cancel();
+                ui.set_geometry_cad_view_3d(true);
+                state.log("Face sketch cancelled.");
+            } else if action != 2 {
+                state.log("Finish the face rectangle or press Esc to cancel first.");
+            }
+            refresh_ui(&ui, &state);
+            return;
+        }
         match action {
             0 => state.geometry_editor.cancel(),
             1 => state.geometry_editor.set_tool(GeometryTool::Line),
@@ -1389,6 +1650,7 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
                 state.geometry_editor = editor;
                 if changed {
                     state.workbench.geometry_changed();
+                    state.mark_workbench_dirty();
                     state.wb_selected_targets.clear();
                     rebuild_tree_rows(&mut state);
                 }
@@ -1399,6 +1661,7 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
                 state.geometry_editor = editor;
                 if changed {
                     state.workbench.geometry_changed();
+                    state.mark_workbench_dirty();
                     state.wb_selected_targets.clear();
                     rebuild_tree_rows(&mut state);
                 }
@@ -1417,6 +1680,7 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
         state.geometry_editor = editor;
         if changed {
             state.workbench.geometry_changed();
+            state.mark_workbench_dirty();
             state.wb_selected_targets.clear();
             state.log("Geometry undo restored stable topology IDs.");
             rebuild_tree_rows(&mut state);
@@ -1433,6 +1697,7 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
         state.geometry_editor = editor;
         if changed {
             state.workbench.geometry_changed();
+            state.mark_workbench_dirty();
             state.wb_selected_targets.clear();
             state.log("Geometry redo restored stable topology IDs.");
             rebuild_tree_rows(&mut state);
@@ -1612,6 +1877,78 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
                 Ok(message) => state.log(message),
                 Err(error) => state.log(error),
             }
+        }
+        rebuild_tree_rows(&mut state);
+        refresh_ui(&ui, &state);
+    });
+
+    let weak_ui = ui.as_weak();
+    let face_sketch_state = state.clone();
+    ui.on_sketch_on_face(move || {
+        let Some(ui) = weak_ui.upgrade() else { return };
+        let mut state = face_sketch_state.borrow_mut();
+        if !require_project(&mut state) {
+            refresh_ui(&ui, &state);
+            return;
+        }
+        match sketch_rectangle_on_selected_face(
+            &mut state,
+            ui.get_sketch_size_x().as_str(),
+            ui.get_sketch_size_y().as_str(),
+        ) {
+            Ok(message) => {
+                state.log(message);
+                rebuild_tree_rows(&mut state);
+            }
+            Err(error) => state.log(error),
+        }
+        refresh_ui(&ui, &state);
+    });
+
+    let weak_ui = ui.as_weak();
+    let face_draw_state = state.clone();
+    ui.on_draw_on_face(move || {
+        let Some(ui) = weak_ui.upgrade() else { return };
+        let mut state = face_draw_state.borrow_mut();
+        if !require_project(&mut state) {
+            refresh_ui(&ui, &state);
+            return;
+        }
+        match begin_face_sketch(&mut state) {
+            Ok(message) => {
+                ui.set_geometry_cad_view_3d(false);
+                state.log(message);
+            }
+            Err(error) => state.log(error),
+        }
+        refresh_ui(&ui, &state);
+    });
+
+    let weak_ui = ui.as_weak();
+    let plane_sketch_state = state.clone();
+    ui.on_sketch_on_plane(move || {
+        let Some(ui) = weak_ui.upgrade() else { return };
+        let mut state = plane_sketch_state.borrow_mut();
+        if !require_project(&mut state) {
+            refresh_ui(&ui, &state);
+            return;
+        }
+        let plane = match ui.get_sketch_plane_index() {
+            1 => CadSketchPlane::Yz,
+            2 => CadSketchPlane::Zx,
+            _ => CadSketchPlane::Xy,
+        };
+        match sketch_rectangle_on_plane(
+            &mut state,
+            plane,
+            ui.get_sketch_size_x().as_str(),
+            ui.get_sketch_size_y().as_str(),
+        ) {
+            Ok(message) => {
+                state.log(message);
+                rebuild_tree_rows(&mut state);
+            }
+            Err(error) => state.log(error),
         }
         refresh_ui(&ui, &state);
     });
@@ -4213,11 +4550,11 @@ fn sketch_viewport_point(
 /// render buffer. The domain transform itself remains centralized in the
 /// editor and is never duplicated in UI callbacks.
 fn geometry_editor_point(x: f32, y: f32, width: f32, height: f32) -> (f64, f64) {
-    let width = width.max(1.0);
-    let height = height.max(1.0);
+    let scale =
+        (width.max(1.0) / PREVIEW_WIDTH as f32).min(height.max(1.0) / PREVIEW_HEIGHT as f32);
     (
-        f64::from(x / width * PREVIEW_WIDTH as f32),
-        f64::from(y / height * PREVIEW_HEIGHT as f32),
+        f64::from((x - (width - PREVIEW_WIDTH as f32 * scale) * 0.5) / scale),
+        f64::from((y - (height - PREVIEW_HEIGHT as f32 * scale) * 0.5) / scale),
     )
 }
 
@@ -4240,6 +4577,7 @@ fn delete_editor_selection(state: &mut AppState) {
         }
     }
     if deleted > 0 {
+        state.mark_workbench_dirty();
         state.geometry_editor.selection.clear();
         state.wb_selected_targets.clear();
         state.log(format!("Deleted {deleted} geometry entities."));
@@ -4670,10 +5008,18 @@ fn refresh_ui(ui: &MainWindow, state: &AppState) {
     });
     ui.set_wb_solution_summary(SharedString::from(solution_summary_text(&state.workbench)));
     ui.set_can_run_workbench(!busy && state.workbench.readiness().is_ok());
-    ui.set_geometry_editor_image(render_geometry_editor(
-        state.workbench.geometry(),
-        &state.geometry_editor,
-    ));
+    ui.set_geometry_face_sketch_editing(state.face_sketch_host.is_some());
+    ui.set_geometry_editor_image(if let Some(face) = state.face_sketch_host {
+        render_face_sketch(
+            state.workbench.geometry(),
+            face,
+            &state.geometry_editor,
+            state.face_sketch_start,
+            state.face_sketch_cursor,
+        )
+    } else {
+        render_geometry_editor(state.workbench.geometry(), &state.geometry_editor)
+    });
     ui.set_geometry_active_tool(match state.geometry_editor.active_tool {
         GeometryTool::Select => 0,
         GeometryTool::Line => 1,
@@ -4683,20 +5029,35 @@ fn refresh_ui(ui: &MainWindow, state: &AppState) {
     ui.set_geometry_snap(state.geometry_editor.snap_enabled);
     ui.set_geometry_grid(state.geometry_editor.grid_enabled);
     ui.set_geometry_editor_status(SharedString::from(
-        match state.geometry_editor.active_tool {
-            GeometryTool::Select => match state.geometry_editor.hover_target {
-                Some(target) => format!("Hover: {target:?} · click to select"),
-                None if state.workbench.geometry().vertices().next().is_none() => {
-                    "Start by drawing a Line, Rectangle, or Circle.".to_string()
-                }
-                None => "SELECT · click an entity; vertex > edge > face priority".to_string(),
-            },
-            GeometryTool::Line => "LINE · click start, then end · Esc cancels".to_string(),
-            GeometryTool::Rectangle => {
-                "RECTANGLE · click opposite corners · Esc cancels".to_string()
+        if let Some(face) = state.face_sketch_host {
+            match (state.face_sketch_start, state.face_sketch_cursor) {
+                (Some((x, y)), Some((cx, cy))) => format!(
+                    "Face {} · rectangle {:.3} × {:.3} mm · click to finish",
+                    face.get(),
+                    (cx - x).abs(),
+                    (cy - y).abs()
+                ),
+                _ => format!(
+                    "Face {} · click the first rectangle corner · Esc cancels",
+                    face.get()
+                ),
             }
-            GeometryTool::Circle => {
-                "CIRCLE · click centre then radius inside a planar face".to_string()
+        } else {
+            match state.geometry_editor.active_tool {
+                GeometryTool::Select => match state.geometry_editor.hover_target {
+                    Some(target) => format!("Hover: {target:?} · click to select"),
+                    None if state.workbench.geometry().vertices().next().is_none() => {
+                        "Start by drawing a Line, Rectangle, or Circle.".to_string()
+                    }
+                    None => "SELECT · click an entity; vertex > edge > face priority".to_string(),
+                },
+                GeometryTool::Line => "LINE · click start, then end · Esc cancels".to_string(),
+                GeometryTool::Rectangle => {
+                    "RECTANGLE · click opposite corners · Esc cancels".to_string()
+                }
+                GeometryTool::Circle => {
+                    "CIRCLE · click centre then radius · inside a face creates a hole".to_string()
+                }
             }
         },
     ));
@@ -5073,6 +5434,20 @@ mod tests {
     };
     use std::fs;
     use tempfile::tempdir;
+
+    #[test]
+    fn geometry_editor_mapping_respects_contained_image_and_letterboxing() {
+        assert_eq!(
+            geometry_editor_point(800.0, 500.0, 1600.0, 1000.0),
+            (260.0, 160.0)
+        );
+        // Wide viewport: the image is centred with left/right margins.
+        assert_eq!(
+            geometry_editor_point(150.0, 320.0, 1340.0, 640.0),
+            (0.0, 160.0)
+        );
+        assert!(preview_image_point(20.0, 320.0, 1340.0, 640.0).is_none());
+    }
 
     #[test]
     fn save_route_uses_existing_workspace_or_requests_save_as() {
@@ -5476,6 +5851,185 @@ mod tests {
             state.wb_selected_targets.as_slice(),
             [GeometrySelectionTarget::Body(_)]
         ));
+    }
+
+    #[test]
+    fn face_sketch_on_extruded_top_and_side_can_be_extruded_again() {
+        for side in [false, true] {
+            let mut state = AppState::new();
+            let rectangle = state.workbench.add_rectangle(2.0, 1.0).unwrap();
+            let extrusion = state.workbench.extrude_face(rectangle.face, 0.5).unwrap();
+            let host = if side {
+                extrusion.side_faces[0]
+            } else {
+                extrusion.top_face
+            };
+            state.wb_selected_targets = vec![GeometrySelectionTarget::Face(host)];
+            let message = sketch_rectangle_on_selected_face(&mut state, "0.25", "0.25").unwrap();
+            assert!(message.contains(&format!("Face {}", host.get())));
+            let sketch = state.workbench.geometry().sketches().last().unwrap();
+            let sketch_id = sketch.id;
+            assert_eq!(sketch.host_face, Some(host));
+            let profile = sketch.profile_face.unwrap();
+            let profile_face = state
+                .workbench
+                .geometry()
+                .renderable_faces()
+                .into_iter()
+                .find(|face| face.face == profile)
+                .unwrap();
+            let host_face = state
+                .workbench
+                .geometry()
+                .renderable_faces()
+                .into_iter()
+                .find(|face| face.face == host)
+                .unwrap();
+            let normal = sketch.frame.normal;
+            for point in &profile_face.vertices {
+                assert!(((*point - host_face.vertices[0]).dot(normal)).abs() < 1e-9);
+            }
+            build_canonical_extrude(&mut state, "0.2").unwrap();
+            assert_eq!(state.workbench.geometry().bodies().count(), 2);
+            assert!(state
+                .workbench
+                .geometry()
+                .extrude_features()
+                .any(|feature| feature.sketch == sketch_id && feature.source_face == profile));
+            let document = serde_json::to_string(&state.workbench_project).unwrap();
+            let restored: WorkbenchProject = serde_json::from_str(&document).unwrap();
+            let reopened = WorkbenchSession::from_project(&restored).unwrap();
+            assert_eq!(
+                reopened.geometry().sketch(sketch_id).unwrap().host_face,
+                Some(host)
+            );
+            assert_eq!(reopened.geometry().bodies().count(), 2);
+        }
+    }
+
+    #[test]
+    fn drawing_on_a_selected_face_uses_mouse_corners_in_its_local_plane() {
+        for side in [false, true] {
+            let mut state = AppState::new();
+            let rectangle = state.workbench.add_rectangle(2.0, 1.0).unwrap();
+            let extrusion = state.workbench.extrude_face(rectangle.face, 0.5).unwrap();
+            let host = if side {
+                extrusion.side_faces[0]
+            } else {
+                extrusion.top_face
+            };
+            state.wb_selected_targets = vec![GeometrySelectionTarget::Face(host)];
+            begin_face_sketch(&mut state).unwrap();
+            state.geometry_editor.snap_enabled = false;
+            let transform = state.geometry_editor.transform;
+            let first = face_sketch_point(&state, transform.world_to_screen((0.4, 0.3)));
+            let second = face_sketch_point(&state, transform.world_to_screen((0.1, 0.1)));
+            assert_eq!(face_sketch_click(&mut state, first).unwrap(), None);
+            let result = face_sketch_click(&mut state, second).unwrap().unwrap();
+            assert!(result.contains("Drawn Sketch"));
+            assert_eq!(state.face_sketch_host, None);
+            let sketch = state.workbench.geometry().sketches().last().unwrap();
+            assert_eq!(sketch.host_face, Some(host));
+            let frame = sketch.frame;
+            let profile = sketch.profile_face.unwrap();
+            let surface = state
+                .workbench
+                .geometry()
+                .renderable_faces()
+                .into_iter()
+                .find(|surface| surface.face == profile)
+                .unwrap();
+            let origin = surface.vertices[0] - frame.origin;
+            assert!((origin.dot(frame.x_axis) - 0.1).abs() < 1e-9);
+            assert!((origin.dot(frame.y_axis) - 0.1).abs() < 1e-9);
+            assert!((origin.dot(frame.normal)).abs() < 1e-9);
+            build_canonical_extrude(&mut state, "0.2").unwrap();
+            assert_eq!(state.workbench.geometry().bodies().count(), 2);
+        }
+    }
+
+    #[test]
+    fn invalid_second_corner_keeps_face_sketch_active_without_changing_topology() {
+        let mut state = AppState::new();
+        let rectangle = state.workbench.add_rectangle(2.0, 1.0).unwrap();
+        state.wb_selected_targets = vec![GeometrySelectionTarget::Face(rectangle.face)];
+        begin_face_sketch(&mut state).unwrap();
+        let revision = state.workbench.geometry().revision();
+        face_sketch_click(&mut state, (0.1, 0.1)).unwrap();
+        assert!(face_sketch_click(&mut state, (0.1, 0.2)).is_err());
+        assert_eq!(state.face_sketch_start, Some((0.1, 0.1)));
+        assert_eq!(state.workbench.geometry().revision(), revision);
+        assert_eq!(state.workbench.geometry().sketches().count(), 0);
+    }
+
+    #[test]
+    fn invalid_face_sketch_dimensions_do_not_create_a_sketch() {
+        let mut state = AppState::new();
+        let rectangle = state.workbench.add_rectangle(2.0, 1.0).unwrap();
+        let extrusion = state.workbench.extrude_face(rectangle.face, 0.5).unwrap();
+        state.wb_selected_targets = vec![GeometrySelectionTarget::Face(extrusion.top_face)];
+        let revision = state.workbench.geometry().revision();
+        assert!(sketch_rectangle_on_selected_face(&mut state, "0", "1").is_err());
+        assert_eq!(state.workbench.geometry().revision(), revision);
+        assert_eq!(state.workbench.geometry().sketches().count(), 0);
+    }
+
+    #[test]
+    fn extruding_a_generated_face_requires_a_profile_and_leaves_no_orphan_sketch() {
+        let mut state = AppState::new();
+        let rectangle = state.workbench.add_rectangle(2.0, 1.0).unwrap();
+        let extrusion = state.workbench.extrude_face(rectangle.face, 0.5).unwrap();
+        state.wb_selected_targets = vec![GeometrySelectionTarget::Face(extrusion.top_face)];
+        let revision = state.workbench.geometry().revision();
+        assert!(build_canonical_extrude(&mut state, "0.2").is_err());
+        assert_eq!(state.workbench.geometry().sketches().count(), 0);
+        assert_eq!(state.workbench.geometry().revision(), revision);
+    }
+
+    #[test]
+    fn plane_sketch_profiles_extrude_along_their_local_normals() {
+        for (plane, expected) in [
+            (CadSketchPlane::Xy, Vec3::new(0.0, 0.0, 1.0)),
+            (CadSketchPlane::Yz, Vec3::new(1.0, 0.0, 0.0)),
+            (CadSketchPlane::Zx, Vec3::new(0.0, 1.0, 0.0)),
+        ] {
+            let mut state = AppState::new();
+            sketch_rectangle_on_plane(&mut state, plane, "2", "1").unwrap();
+            let profile = match state.wb_selected_targets[0] {
+                GeometrySelectionTarget::Face(id) => id,
+                _ => panic!("expected selected profile"),
+            };
+            let sketch = state.workbench.geometry().sketches().next().unwrap();
+            assert_eq!(sketch.frame.normal, expected);
+            assert_eq!(sketch.profile_face, Some(profile));
+            build_canonical_extrude(&mut state, "0.5").unwrap();
+            let top = state
+                .workbench
+                .geometry()
+                .renderable_faces()
+                .into_iter()
+                .find(|surface| {
+                    surface.face
+                        == state
+                            .workbench
+                            .geometry()
+                            .extrude_features()
+                            .next()
+                            .and_then(|feature| {
+                                let body = state.workbench.geometry().body(feature.body)?;
+                                match &body.representation {
+                                    flursys::GeometryBodyRepresentation::Extrude {
+                                        top_face,
+                                        ..
+                                    } => Some(*top_face),
+                                    _ => None,
+                                }
+                            })
+                            .unwrap()
+                })
+                .unwrap();
+            assert!((top.vertices[0].dot(expected) - 0.5).abs() < 1e-9);
+        }
     }
 
     #[test]
