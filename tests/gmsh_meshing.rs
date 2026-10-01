@@ -160,6 +160,74 @@ fn successful_process_without_a_mesh_returns_missing_output_error() {
     ));
 }
 
+#[cfg(unix)]
+#[test]
+fn verbose_gmsh_process_does_not_block_on_full_stdout_or_stderr_pipes() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let directory = tempfile::tempdir().unwrap();
+    let executable = directory.path().join("verbose-gmsh");
+    std::fs::write(
+        &executable,
+        r#"#!/bin/sh
+if [ "$1" = "--version" ]; then printf '4.15.2\n'; exit 0; fi
+i=0
+while [ "$i" -lt 5000 ]; do
+  printf 'Gmsh generated diagnostic output line 1234567890\n'
+  printf 'Gmsh generated error output line 1234567890\n' >&2
+  i=$((i + 1))
+done
+exit 1
+"#,
+    )
+    .unwrap();
+    let mut permissions = std::fs::metadata(&executable).unwrap().permissions();
+    permissions.set_mode(0o700);
+    std::fs::set_permissions(&executable, permissions).unwrap();
+    let geometry =
+        GmshGeoDocument::rectangle(1.0, 1.0, [("walls", vec![1, 2, 3, 4])], "fluid").unwrap();
+
+    let error = GmshMesher::from_executable(&executable)
+        .generate(&geometry, &GmshMeshOptions::two_d(0.25).unwrap())
+        .unwrap_err();
+    assert!(
+        matches!(error, MeshingError::GmshProcessFailed { stdout, stderr, .. }
+        if stdout.len() > 65536 && stderr.len() > 65536)
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn cancelling_meshing_reaps_its_running_child() {
+    use std::os::unix::fs::PermissionsExt;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let directory = tempfile::tempdir().unwrap();
+    let executable = directory.path().join("running-gmsh");
+    std::fs::write(
+        &executable,
+        r#"#!/bin/sh
+if [ "$1" = "--version" ]; then printf '4.15.2\n'; exit 0; fi
+while :; do :; done
+"#,
+    )
+    .unwrap();
+    let mut permissions = std::fs::metadata(&executable).unwrap().permissions();
+    permissions.set_mode(0o700);
+    std::fs::set_permissions(&executable, permissions).unwrap();
+    let geometry =
+        GmshGeoDocument::rectangle(1.0, 1.0, [("walls", vec![1, 2, 3, 4])], "fluid").unwrap();
+    let polls = AtomicUsize::new(0);
+    assert!(matches!(
+        GmshMesher::from_executable(&executable).generate_cancellable(
+            &geometry,
+            &GmshMeshOptions::two_d(0.25).unwrap(),
+            || polls.fetch_add(1, Ordering::Relaxed) >= 2
+        ),
+        Err(MeshingError::Cancelled)
+    ));
+}
+
 #[test]
 #[ignore = "requires a real gmsh executable on PATH"]
 fn real_gmsh_generates_a_2d_rectangle_with_ascii_msh4_physical_patches() {

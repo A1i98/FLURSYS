@@ -4,9 +4,107 @@ use super::{GmshGeoDocument, MeshingError};
 use crate::{load_gmsh, MeshDimension, UnstructuredMesh};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
+
+const TEMP_PREFIX: &str = "flursys-gmsh-";
+const STALE_WORKSPACE_AGE: Duration = Duration::from_secs(24 * 60 * 60);
+
+/// Ensure an interrupted meshing job cannot outlive its temporary input files.
+struct GmshChild {
+    process: Child,
+    reaped: bool,
+}
+
+impl Drop for GmshChild {
+    fn drop(&mut self) {
+        if !self.reaped {
+            let _ = self.process.kill();
+            let _ = self.process.wait();
+        }
+    }
+}
+
+/// Only remove this application's old, process-owned scratch directories. The
+/// project workspace and saved run artifacts are never considered here.
+#[cfg(target_os = "linux")]
+fn prune_stale_gmsh_workspaces(root: &Path, now: SystemTime) {
+    let Ok(entries) = fs::read_dir(root) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else { continue };
+        let Some((pid, _random)) = name
+            .strip_prefix(TEMP_PREFIX)
+            .and_then(|name| name.split_once('-'))
+        else {
+            continue;
+        };
+        let Ok(pid) = pid.parse::<u32>() else {
+            continue;
+        };
+        if Path::new("/proc").join(pid.to_string()).exists() {
+            continue;
+        }
+        let path = entry.path();
+        let Ok(metadata) = fs::symlink_metadata(&path) else {
+            continue;
+        };
+        if !metadata.is_dir()
+            || !metadata
+                .modified()
+                .ok()
+                .and_then(|modified| now.duration_since(modified).ok())
+                .is_some_and(|age| age >= STALE_WORKSPACE_AGE)
+        {
+            continue;
+        }
+        let Ok(files) = fs::read_dir(&path) else {
+            continue;
+        };
+        let mut safe = true;
+        for file in files {
+            let Ok(file) = file else {
+                safe = false;
+                break;
+            };
+            let file_name = file.file_name();
+            let Some(file_name) = file_name.to_str() else {
+                safe = false;
+                break;
+            };
+            if !matches!(
+                file_name,
+                "case.geo" | "case.msh" | "gmsh.stdout" | "gmsh.stderr" | "gmsh.pid"
+            ) || !fs::symlink_metadata(file.path()).is_ok_and(|metadata| metadata.is_file())
+            {
+                safe = false;
+                break;
+            }
+            if file_name == "gmsh.pid" {
+                let Some(child_pid) = fs::read_to_string(file.path())
+                    .ok()
+                    .and_then(|text| text.trim().parse::<u32>().ok())
+                else {
+                    safe = false;
+                    break;
+                };
+                if Path::new("/proc").join(child_pid.to_string()).exists() {
+                    safe = false;
+                    break;
+                }
+            }
+        }
+        if safe {
+            let _ = fs::remove_dir_all(path);
+        }
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn prune_stale_gmsh_workspaces(_root: &Path, _now: SystemTime) {}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum GmshExecutable {
@@ -203,53 +301,67 @@ impl GmshMesher {
             });
         }
         let version = self.version()?;
+        let temporary_root = std::env::temp_dir();
+        prune_stale_gmsh_workspaces(&temporary_root, SystemTime::now());
         let workspace = tempfile::Builder::new()
-            .prefix("flursys-gmsh-")
-            .tempdir()
+            .prefix(&format!("{TEMP_PREFIX}{}-", std::process::id()))
+            .tempdir_in(&temporary_root)
             .map_err(|error| MeshingError::Io {
                 message: error.to_string(),
             })?;
         let geo_path = workspace.path().join("case.geo");
         let mesh_path = workspace.path().join("case.msh");
+        let stdout_path = workspace.path().join("gmsh.stdout");
+        let stderr_path = workspace.path().join("gmsh.stderr");
         fs::write(&geo_path, geometry.to_geo_string()?).map_err(|error| MeshingError::Io {
             message: error.to_string(),
         })?;
         let arguments = self.command_arguments(&geo_path, &mesh_path, options)?;
-        let mut child = self
+        let stdout_file = fs::File::create(&stdout_path).map_err(|error| MeshingError::Io {
+            message: error.to_string(),
+        })?;
+        let stderr_file = fs::File::create(&stderr_path).map_err(|error| MeshingError::Io {
+            message: error.to_string(),
+        })?;
+        let process = self
             .command()
             .args(arguments)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
+            .stdout(Stdio::from(stdout_file))
+            .stderr(Stdio::from(stderr_file))
             .spawn()
             .map_err(|error| MeshingError::GmshExecutableNotFound {
                 executable: self.executable_label(),
                 message: error.to_string(),
             })?;
-        loop {
+        let mut child = GmshChild {
+            process,
+            reaped: false,
+        };
+        let _ = fs::write(
+            workspace.path().join("gmsh.pid"),
+            child.process.id().to_string(),
+        );
+        let status = loop {
             if is_cancelled() {
-                let _ = child.kill();
-                let _ = child.wait();
                 return Err(MeshingError::Cancelled);
             }
-            if child
-                .try_wait()
-                .map_err(|error| MeshingError::Io {
-                    message: error.to_string(),
-                })?
-                .is_some()
-            {
-                break;
+            if let Some(status) = child.process.try_wait().map_err(|error| MeshingError::Io {
+                message: error.to_string(),
+            })? {
+                child.reaped = true;
+                break status;
             }
             thread::sleep(Duration::from_millis(20));
-        }
-        let output = child.wait_with_output().map_err(|error| MeshingError::Io {
+        };
+        let stdout = text(&fs::read(&stdout_path).map_err(|error| MeshingError::Io {
             message: error.to_string(),
-        })?;
-        let stdout = text(&output.stdout);
-        let stderr = text(&output.stderr);
-        if !output.status.success() {
+        })?);
+        let stderr = text(&fs::read(&stderr_path).map_err(|error| MeshingError::Io {
+            message: error.to_string(),
+        })?);
+        if !status.success() {
             return Err(MeshingError::GmshProcessFailed {
-                status: output.status.code(),
+                status: status.code(),
                 stdout,
                 stderr,
             });
@@ -327,4 +439,35 @@ fn verify_ascii_msh4(path: &Path) -> Result<String, MeshingError> {
         });
     }
     Ok(format.to_owned())
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stale_scratch_cleanup_ignores_live_processes_and_unfamiliar_contents() {
+        let root = tempfile::tempdir().unwrap();
+        let abandoned = root.path().join("flursys-gmsh-4294967295-abandoned");
+        fs::create_dir(&abandoned).unwrap();
+        fs::write(abandoned.join("case.geo"), "Point(1) = {0,0,0,1};").unwrap();
+        let live = root
+            .path()
+            .join(format!("flursys-gmsh-{}-running", std::process::id()));
+        fs::create_dir(&live).unwrap();
+        let live_child = root.path().join("flursys-gmsh-4294967295-child-running");
+        fs::create_dir(&live_child).unwrap();
+        fs::write(live_child.join("gmsh.pid"), std::process::id().to_string()).unwrap();
+        let project = root.path().join("flursys-gmsh-4294967295-project");
+        fs::create_dir(&project).unwrap();
+        fs::write(project.join("project.json"), "do not delete").unwrap();
+        let cutoff = SystemTime::now() + STALE_WORKSPACE_AGE + Duration::from_secs(1);
+
+        prune_stale_gmsh_workspaces(root.path(), cutoff);
+
+        assert!(!abandoned.exists());
+        assert!(live.exists());
+        assert!(live_child.exists());
+        assert!(project.join("project.json").exists());
+    }
 }
