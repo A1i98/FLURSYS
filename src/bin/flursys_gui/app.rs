@@ -1020,6 +1020,74 @@ fn selected_extrusion_face(state: &AppState) -> Result<flursys::FaceId, String> 
     }
 }
 
+fn canonical_geometry_sidebar(state: &AppState) -> (String, String) {
+    let topology = state.workbench.geometry();
+    if topology.faces().next().is_none() && topology.edges().next().is_none() {
+        return (
+            geometry_model_tree(&state.project),
+            geometry_parts_summary(&state.project),
+        );
+    }
+    let free_faces: Vec<_> = topology
+        .faces()
+        .filter(|face| {
+            matches!(
+                face.representation,
+                flursys::GeometryFaceRepresentation::Planar { .. }
+            ) && !topology.bodies().any(|body| body.faces.contains(&face.id))
+        })
+        .collect();
+    let sketches: Vec<_> = topology.sketches().collect();
+    let features: Vec<_> = topology.extrude_features().collect();
+    let bodies: Vec<_> = topology.bodies().collect();
+    let mut lines = vec![
+        "▾ Geometry".to_string(),
+        format!("   ▾ Profiles ({})", free_faces.len()),
+    ];
+    lines.extend(
+        free_faces
+            .iter()
+            .take(12)
+            .map(|face| format!("      Face {} · closed", face.id.get())),
+    );
+    lines.push(format!("   ▾ Sketches ({})", sketches.len()));
+    lines.extend(
+        sketches
+            .iter()
+            .take(12)
+            .map(|sketch| format!("      Sketch {}", sketch.id.get())),
+    );
+    lines.push(format!("   ▾ Extrusions ({})", features.len()));
+    lines.extend(features.iter().take(12).map(|feature| {
+        format!(
+            "      Extrude {} · Body {}",
+            feature.id.get(),
+            feature.body.get()
+        )
+    }));
+    lines.push(format!("   ▾ Solids ({})", bodies.len()));
+    lines.extend(
+        bodies
+            .iter()
+            .take(12)
+            .map(|body| format!("      Body {}", body.id.get())),
+    );
+    let legacy = state.project.preprocessing.geometry.parts.len();
+    let summary = format!(
+        "{} closed profiles · {} sketches · {} extrusions · {} solids{}",
+        free_faces.len(),
+        sketches.len(),
+        features.len(),
+        bodies.len(),
+        if legacy == 0 {
+            String::new()
+        } else {
+            format!(" · {legacy} primitive parts")
+        }
+    );
+    (lines.join("\n"), summary)
+}
+
 fn build_canonical_extrude(state: &mut AppState, distance_text: &str) -> Result<String, String> {
     let source_face = selected_extrusion_face(state)?;
     let distance = parse_positive(distance_text, "extrusion distance")?;
@@ -1527,6 +1595,26 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
     // ---- Phase 9D stable geometry editor ----
     let weak_ui = ui.as_weak();
     let editor_state = state.clone();
+    ui.on_geometry_select_face_mode(move || {
+        let Some(ui) = weak_ui.upgrade() else { return };
+        ui.set_geometry_feature_feedback(SharedString::default());
+        let mut state = editor_state.borrow_mut();
+        state.geometry_editor.prefer_faces = true;
+        state.geometry_editor.set_tool(GeometryTool::Select);
+        refresh_ui(&ui, &state);
+    });
+    let weak_ui = ui.as_weak();
+    let editor_state = state.clone();
+    ui.on_geometry_select_entity_mode(move || {
+        let Some(ui) = weak_ui.upgrade() else { return };
+        ui.set_geometry_feature_feedback(SharedString::default());
+        let mut state = editor_state.borrow_mut();
+        state.geometry_editor.prefer_faces = false;
+        state.geometry_editor.set_tool(GeometryTool::Select);
+        refresh_ui(&ui, &state);
+    });
+    let weak_ui = ui.as_weak();
+    let editor_state = state.clone();
     ui.on_geometry_tool(move |tool| {
         let Some(ui) = weak_ui.upgrade() else {
             return;
@@ -1576,6 +1664,7 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
         let Some(p) = preview_image_point(x, y, w, h) else {
             return;
         };
+        ui.set_geometry_feature_feedback(SharedString::default());
         let mut state = editor_state.borrow_mut();
         if state.face_sketch_host.is_some() {
             let point = face_sketch_point(&state, p);
@@ -1936,29 +2025,31 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
         };
         let mut state = feature_state.borrow_mut();
         if !require_project(&mut state) {
+            ui.set_geometry_feature_feedback(SharedString::from(
+                "Open or create a project before extruding.",
+            ));
             refresh_ui(&ui, &state);
             return;
         }
-        if ui.get_feature_kind_index() != 0 {
-            state.log("Revolve is unavailable in the canonical CAD workflow.");
+        let result = if ui.get_feature_kind_index() != 0 {
+            Err("Revolve is unavailable in the canonical CAD workflow.".to_string())
         } else if state.draft_sketch.is_some() {
-            match commit_draft_rectangle(&mut state).and_then(|commit| {
+            commit_draft_rectangle(&mut state).and_then(|commit| {
                 build_canonical_extrude(&mut state, ui.get_feature_depth().as_str())
-                    .map(|extrude| (commit, extrude))
-            }) {
-                Ok((commit, extrude)) => {
-                    state.log(format!("{commit} {extrude}"));
-                    ui.set_geometry_cad_view_3d(true);
-                }
-                Err(error) => state.log(error),
-            }
+                    .map(|extrude| format!("{commit} {extrude}"))
+            })
         } else {
-            match build_canonical_extrude(&mut state, ui.get_feature_depth().as_str()) {
-                Ok(message) => {
-                    state.log(message);
-                    ui.set_geometry_cad_view_3d(true);
-                }
-                Err(error) => state.log(error),
+            build_canonical_extrude(&mut state, ui.get_feature_depth().as_str())
+        };
+        match result {
+            Ok(message) => {
+                ui.set_geometry_feature_feedback(SharedString::from(&message));
+                state.log(message);
+                ui.set_geometry_cad_view_3d(true);
+            }
+            Err(error) => {
+                ui.set_geometry_feature_feedback(SharedString::from(&error));
+                state.log(error);
             }
         }
         rebuild_tree_rows(&mut state);
@@ -3081,6 +3172,7 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
                 point,
             ) {
                 if let Some(hit) = state.workbench.geometry().pick_face(ray) {
+                    ui.set_geometry_feature_feedback(SharedString::default());
                     let target = GeometrySelectionTarget::Face(hit.face);
                     state.wb_selected_targets = vec![target];
                     state.geometry_editor.selection = vec![target];
@@ -3296,6 +3388,7 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
         let Some(ui) = weak_ui.upgrade() else {
             return;
         };
+        ui.set_geometry_feature_feedback(SharedString::default());
         let mut state = workflow_state.borrow_mut();
         let Some(row) = state
             .tree_rows
@@ -4946,8 +5039,9 @@ fn refresh_ui(ui: &MainWindow, state: &AppState) {
     } else {
         ui.set_sketch_status(SharedString::from("Start a sketch to edit a 2D profile."));
     }
-    ui.set_geometry_parts_summary(SharedString::from(geometry_parts_summary(&state.project)));
-    ui.set_geometry_model_tree(SharedString::from(geometry_model_tree(&state.project)));
+    let (model_tree, parts_summary) = canonical_geometry_sidebar(state);
+    ui.set_geometry_parts_summary(SharedString::from(parts_summary));
+    ui.set_geometry_model_tree(SharedString::from(model_tree));
     ui.set_boundary_summary(SharedString::from(boundary_summary(&state.project)));
     ui.set_preflight_summary(SharedString::from(state.preflight_summary.as_str()));
     let update = state.last_update.as_ref();
@@ -5111,6 +5205,44 @@ fn refresh_ui(ui: &MainWindow, state: &AppState) {
     });
     ui.set_geometry_snap(state.geometry_editor.snap_enabled);
     ui.set_geometry_grid(state.geometry_editor.grid_enabled);
+    ui.set_geometry_prefer_faces(state.geometry_editor.prefer_faces);
+    let extrusion_face = selected_extrusion_face(state).ok().filter(|face| {
+        matches!(
+            state
+                .workbench
+                .geometry()
+                .face(*face)
+                .map(|face| &face.representation),
+            Some(flursys::GeometryFaceRepresentation::Planar { .. })
+        )
+    });
+    let ready = state.face_sketch_host.is_none()
+        && !busy
+        && (extrusion_face.is_some() || state.draft_sketch.is_some());
+    ui.set_geometry_can_extrude(ready);
+    ui.set_geometry_selection_summary(SharedString::from(if let Some(face) = extrusion_face {
+        format!("Face {} selected · set depth and extrude", face.get())
+    } else if state.face_sketch_host.is_some() {
+        "Finish the rectangle with a second click.".to_string()
+    } else if let Some(face) = state
+        .wb_selected_targets
+        .iter()
+        .find_map(|target| match target {
+            GeometrySelectionTarget::Face(face) => Some(*face),
+            _ => None,
+        })
+    {
+        format!(
+            "Solid Face {} selected · use DRAW ON FACE to sketch a new profile",
+            face.get()
+        )
+    } else if ui.get_geometry_cad_view_3d() {
+        "Click a flat face on the model, then use DRAW ON FACE.".to_string()
+    } else if state.workbench.geometry().faces().next().is_some() {
+        "Click inside a shaded face in FACE mode, or draw a profile on a solid face.".to_string()
+    } else {
+        "Draw a closed rectangle or circle; the face will be selected automatically.".to_string()
+    }));
     ui.set_geometry_editor_status(SharedString::from(
         if let Some(face) = state.face_sketch_host {
             match (state.face_sketch_start, state.face_sketch_cursor) {
@@ -5132,7 +5264,12 @@ fn refresh_ui(ui: &MainWindow, state: &AppState) {
                     None if state.workbench.geometry().vertices().next().is_none() => {
                         "Start by drawing a Line, Rectangle, or Circle.".to_string()
                     }
-                    None => "SELECT · click an entity; vertex > edge > face priority".to_string(),
+                    None if state.geometry_editor.prefer_faces => {
+                        "FACE · click inside a shaded profile to select its face".to_string()
+                    }
+                    None => {
+                        "EDGE · select vertices and edges; switch to FACE for profiles".to_string()
+                    }
                 },
                 GeometryTool::Line => "LINE · click start, then end · Esc cancels".to_string(),
                 GeometryTool::Rectangle => {
@@ -5956,6 +6093,45 @@ mod tests {
         );
         build_canonical_extrude(&mut state, "0.5").unwrap();
         assert_eq!(state.workbench.geometry().bodies().count(), 1);
+    }
+
+    #[test]
+    fn closed_line_sketch_can_be_extruded_without_selecting_a_face_manually() {
+        let mut state = AppState::new();
+        state.geometry_editor.set_tool(GeometryTool::Line);
+        let corners = [
+            (200.0, 210.0),
+            (310.0, 210.0),
+            (310.0, 100.0),
+            (200.0, 100.0),
+        ];
+        let mut editor = std::mem::take(&mut state.geometry_editor);
+        for i in 0..corners.len() {
+            editor
+                .click(state.workbench.geometry_mut(), corners[i], false)
+                .unwrap();
+            editor
+                .click(
+                    state.workbench.geometry_mut(),
+                    corners[(i + 1) % corners.len()],
+                    false,
+                )
+                .unwrap();
+        }
+        state.geometry_editor = editor;
+        state.wb_selected_targets = state.geometry_editor.selection.clone();
+        assert!(matches!(
+            state.wb_selected_targets.as_slice(),
+            [GeometrySelectionTarget::Face(_)]
+        ));
+        let (tree, summary) = canonical_geometry_sidebar(&state);
+        assert!(tree.contains("Profiles (1)"));
+        assert!(summary.contains("1 closed profiles"));
+        build_canonical_extrude(&mut state, "0.5").unwrap();
+        assert_eq!(state.workbench.geometry().bodies().count(), 1);
+        let (tree, summary) = canonical_geometry_sidebar(&state);
+        assert!(tree.contains("Extrusions (1)"));
+        assert!(summary.contains("1 solids"));
     }
 
     #[test]

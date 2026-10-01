@@ -510,14 +510,41 @@ fn draw_filled_polygon(
     points: &[(f64, f64)],
     color: [u8; 4],
 ) {
-    for index in 1..points.len().saturating_sub(1) {
-        draw_filled_triangle(
-            pixels,
-            width,
-            height,
-            [points[0], points[index], points[index + 1]],
-            color,
-        );
+    if points.len() < 3 {
+        return;
+    }
+    let first_y = points
+        .iter()
+        .map(|point| point.1.floor() as i32)
+        .min()
+        .unwrap_or(0)
+        .max(0);
+    let last_y = points
+        .iter()
+        .map(|point| point.1.ceil() as i32)
+        .max()
+        .unwrap_or(-1)
+        .min(height as i32 - 1);
+    for y in first_y..=last_y {
+        let scan_y = f64::from(y) + 0.5;
+        let mut crossings = Vec::new();
+        for (a, b) in points
+            .iter()
+            .zip(points.iter().cycle().skip(1))
+            .take(points.len())
+        {
+            if (a.1 > scan_y) != (b.1 > scan_y) {
+                crossings.push(a.0 + (b.0 - a.0) * (scan_y - a.1) / (b.1 - a.1));
+            }
+        }
+        crossings.sort_by(f64::total_cmp);
+        for pair in crossings.chunks_exact(2) {
+            let first_x = pair[0].floor().max(0.0) as i32;
+            let last_x = pair[1].ceil().min(f64::from(width) - 1.0) as i32;
+            for x in first_x..=last_x {
+                set_pixel(pixels, width, height, x as u32, y as u32, color);
+            }
+        }
     }
 }
 
@@ -1254,6 +1281,47 @@ pub(super) fn render_geometry_editor(
             (width as i32, origin.1 as i32),
             [53, 81, 96, 255],
         );
+    }
+    // A closed profile is a selectable area, not just four thin edges.
+    for face in topology.renderable_faces().into_iter().filter(|face| {
+        matches!(
+            topology.face(face.face).map(|face| &face.representation),
+            Some(flursys::GeometryFaceRepresentation::Planar { .. })
+        ) && face.vertices.iter().all(|vertex| vertex.z.abs() <= 1.0e-9)
+    }) {
+        let selected = editor
+            .selection
+            .contains(&GeometrySelectionTarget::Face(face.face));
+        let hovered = editor.hover_target == Some(GeometrySelectionTarget::Face(face.face));
+        let color = if selected {
+            [72, 60, 38, 255]
+        } else if hovered {
+            [36, 76, 67, 255]
+        } else {
+            [26, 53, 65, 255]
+        };
+        let points: Vec<_> = face
+            .vertices
+            .iter()
+            .map(|vertex| to_screen((vertex.x, vertex.y)))
+            .collect();
+        let before = (!face.holes.is_empty()).then(|| pixels.clone());
+        draw_filled_polygon(&mut pixels, width, height, &points, color);
+        if let Some(before) = before {
+            let mut mask = vec![0_u8; pixels.len()];
+            for hole in &face.holes {
+                let points: Vec<_> = hole
+                    .iter()
+                    .map(|vertex| to_screen((vertex.x, vertex.y)))
+                    .collect();
+                draw_filled_polygon(&mut mask, width, height, &points, [255, 255, 255, 255]);
+            }
+            for (index, pixel) in pixels.chunks_exact_mut(4).enumerate() {
+                if mask[index * 4 + 3] != 0 {
+                    pixel.copy_from_slice(&before[index * 4..index * 4 + 4]);
+                }
+            }
+        }
     }
     for edge in topology.edges() {
         let belongs_to = |face_id| {
@@ -3124,6 +3192,29 @@ pub(super) fn image_from_rgba(width: u32, height: u32, pixels: Vec<u8>) -> Image
 mod tests {
     use super::*;
     use flursys::{CellDefinition, Point, ResultDataset};
+
+    #[test]
+    fn concave_sketch_faces_fill_only_their_interior() {
+        let mut pixels = vec![0_u8; 12 * 12 * 4];
+        draw_filled_polygon(
+            &mut pixels,
+            12,
+            12,
+            &[
+                (1.0, 1.0),
+                (9.0, 1.0),
+                (9.0, 4.0),
+                (4.0, 4.0),
+                (4.0, 9.0),
+                (1.0, 9.0),
+            ],
+            [50, 80, 90, 255],
+        );
+        let pixel = |x: usize, y: usize| &pixels[(y * 12 + x) * 4..(y * 12 + x + 1) * 4];
+        assert_eq!(pixel(2, 7), [50, 80, 90, 255]);
+        assert_eq!(pixel(7, 2), [50, 80, 90, 255]);
+        assert_eq!(pixel(7, 7), [0, 0, 0, 0]);
+    }
 
     fn result_cache() -> ResultRenderCache {
         let mesh = UnstructuredMesh::from_cells(

@@ -132,6 +132,10 @@ export component MainWindow inherits Window {
     in-out property <int> geometry-active-tool: 0;
     in-out property <bool> geometry-snap: true;
     in-out property <bool> geometry-grid: true;
+    in-out property <bool> geometry-prefer-faces: true;
+    in-out property <bool> geometry-can-extrude: false;
+    in-out property <string> geometry-selection-summary: "Draw a closed profile to extrude.";
+    in-out property <string> geometry-feature-feedback: "";
     in-out property <bool> geometry-editor-panning: false;
     in-out property <bool> geometry-cad-view-3d: false;
     in-out property <bool> geometry-face-sketch-editing: false;
@@ -158,6 +162,7 @@ export component MainWindow inherits Window {
     callback start-sketch(); callback sketch-on-face(); callback sketch-on-plane(); callback draw-on-face(); callback select-sketch-tool(int); callback sketch-click(float, float, float, float); callback sketch-preview(float, float, float, float); callback sketch-undo(); callback sketch-redo(); callback apply-driving-dimension();
     callback geometry-tool(int); callback geometry-pointer(float, float, float, float, bool); callback geometry-move(float, float, float, float); callback geometry-wheel(float, float, float, float, float); callback geometry-fit(); callback geometry-undo(); callback geometry-redo(); callback geometry-delete-selection(); callback geometry-toggle-snap(); callback geometry-toggle-grid();
     callback geometry-pan-begin(float, float, float, float); callback geometry-pan-move(float, float, float, float); callback geometry-shortcut(int);
+    callback geometry-select-face-mode(); callback geometry-select-entity-mode();
     callback show-examples(); callback close-examples(); callback select-example(int); callback show-example-details(int); callback open-example(int);
 
     // ---- Workbench pipeline (stable geometry → Named Selections → Gmsh → BCs → solve) ----
@@ -301,9 +306,9 @@ export component MainWindow inherits Window {
                     VerticalLayout {
                         padding: 8px; spacing: 6px;
                         Rectangle {
-                            min-height: 102px;
-                            preferred-height: root.compact-ui ? 108px : 112px;
-                            max-height: 116px;
+                            min-height: 75px;
+                            preferred-height: root.compact-ui ? 78px : 82px;
+                            max-height: 92px;
                             background: UiTheme.toolbar;
                             border-color: UiTheme.border;
                             border-width: 1px;
@@ -318,7 +323,8 @@ export component MainWindow inherits Window {
                                     Text { text: "GEOMETRY"; color: UiTheme.accent; font-size: 10px; font-weight: 800; vertical-alignment: center; }
                                     Rectangle { width: 1px; background: UiTheme.divider; }
 
-                                    Button { text: root.geometry-active-tool == 0 ? "SELECT ✓" : "SELECT"; clicked => { root.geometry-cad-view-3d = false; root.geometry-tool(0); } }
+                                    Button { text: root.geometry-active-tool == 0 && root.geometry-prefer-faces ? "FACE ✓" : "FACE"; enabled: !root.geometry-face-sketch-editing; clicked => { root.geometry-cad-view-3d = false; root.geometry-select-face-mode(); } }
+                                    Button { text: root.geometry-active-tool == 0 && !root.geometry-prefer-faces ? "EDGE ✓" : "EDGE"; enabled: !root.geometry-face-sketch-editing; clicked => { root.geometry-cad-view-3d = false; root.geometry-select-entity-mode(); } }
                                     Button { text: root.geometry-active-tool == 1 ? "LINE ✓" : "LINE"; clicked => { root.geometry-cad-view-3d = false; root.geometry-tool(1); } }
                                     Button { text: root.geometry-active-tool == 2 ? "RECT ✓" : "RECT"; clicked => { root.geometry-cad-view-3d = false; root.geometry-tool(2); } }
                                     Button { text: root.geometry-active-tool == 3 ? "CIRCLE ✓" : "CIRCLE"; clicked => { root.geometry-cad-view-3d = false; root.geometry-tool(3); } }
@@ -343,36 +349,11 @@ export component MainWindow inherits Window {
 
                                     Rectangle { width: 1px; background: UiTheme.divider; }
 
-                                    Button { text: "EXTRUDE"; clicked => { root.feature-kind-index = 0; root.build-feature(); } }
-                                    Button { text: "BUILD"; clicked => { root.build-feature(); } }
+                                    Button { text: "EXTRUDE"; enabled: root.geometry-can-extrude; clicked => { root.feature-kind-index = 0; root.build-feature(); } }
 
                                     Rectangle { horizontal-stretch: 1; }
                                 }
 
-                                HorizontalLayout {
-                                    spacing: 5px;
-
-                                    Text { text: "SOLID"; color: UiTheme.text-dim; font-size: 10px; font-weight: 700; vertical-alignment: center; }
-                                    Button { text: "BOX"; clicked => { root.part-kind-index = 0; } }
-                                    Button { text: "CYL"; clicked => { root.part-kind-index = 1; } }
-
-                                    if !root.compact-ui : Button { text: "CONE"; clicked => { root.part-kind-index = 2; } }
-                                    if !root.compact-ui : Button { text: "SPHERE"; clicked => { root.part-kind-index = 3; } }
-                                    if !root.compact-ui : Button { text: "TORUS"; clicked => { root.part-kind-index = 4; } }
-
-                                    Button { text: "ADD SOLID"; clicked => { root.add-part(); } }
-
-                                    Rectangle { width: 1px; background: UiTheme.divider; }
-
-                                    Button { text: "DUPLICATE"; clicked => { root.duplicate-last-part(); } }
-                                    Button { text: "DELETE"; clicked => { root.remove-last-part(); } }
-
-                                    Rectangle { horizontal-stretch: 1; }
-
-                                    Text { text: "VIEW"; color: UiTheme.text-dim; font-size: 10px; font-weight: 700; vertical-alignment: center; }
-                                    Button { text: "FIT"; clicked => { root.reset-geometry-view(); } }
-                                    Button { text: "3D"; clicked => { root.show-geometry-3d(); } }
-                                }
                             }
                         }
                         HorizontalLayout {
@@ -423,6 +404,10 @@ export component MainWindow inherits Window {
                                             LineEdit { text <=> root.part-pos-z; placeholder-text: "Z"; }
                                         }
                                         Button { text: "ADD SOLID"; clicked => { root.add-part(); } }
+                                        HorizontalLayout {
+                                            Button { text: "DUPLICATE"; clicked => { root.duplicate-last-part(); } }
+                                            Button { text: "DELETE"; clicked => { root.remove-last-part(); } }
+                                        }
                                         Rectangle { vertical-stretch: 1; }
                                     }
                                     if root.geometry-sidebar-tab == 1 : VerticalLayout {
@@ -466,11 +451,7 @@ export component MainWindow inherits Window {
                                         Text { text: "FEATURE"; color: UiTheme.text-muted; font-size: 10px; font-weight: 700; }
                                         Text { text: "Extrude selected planar face"; color: UiTheme.text-secondary; font-size: 11px; }
                                         LineEdit { text <=> root.feature-depth; placeholder-text: "Extrude distance (mm)"; }
-                                        HorizontalLayout {
-                                            Button { text: "BUILD"; clicked => { root.build-feature(); } }
-                                            Button { text: "DUPLICATE"; clicked => { root.duplicate-last-part(); } }
-                                            Button { text: "DELETE"; clicked => { root.remove-last-part(); } }
-                                        }
+                                        Text { text: "Select a shaded closed profile, then use EXTRUDE below the canvas."; color: UiTheme.text-faint; font-size: 10px; wrap: word-wrap; }
                                         Rectangle { vertical-stretch: 1; }
                                     }
                                         }
@@ -487,6 +468,7 @@ export component MainWindow inherits Window {
                                          vertical-stretch: 1;
                                          preview-image: root.visualization-image;
                                          view-axis: root.geometry-view-axis;
+                                         help-text: "CLICK FACE: SELECT  ·  DRAG: ORBIT  ·  WHEEL: ZOOM  ·  DOUBLE-CLICK: FIT";
                                          orbit(x, y, pressed-x, pressed-y) => { root.geometry-drag(x, y, pressed-x, pressed-y); }
                                          zoom(delta) => { root.geometry-zoom(delta); }
                                          reset-view => { root.reset-geometry-view(); }
@@ -550,8 +532,21 @@ export component MainWindow inherits Window {
                                             scroll-event(event) => { root.geometry-wheel(self.mouse-x / 1px, self.mouse-y / 1px, self.width / 1px, self.height / 1px, event.delta-y / 1px); accept }
                                         }
                                     }
+                                    Rectangle {
+                                        background: UiTheme.toolbar; border-color: root.geometry-can-extrude ? UiTheme.accent : UiTheme.border; border-width: 1px; border-radius: 4px;
+                                        HorizontalLayout {
+                                            padding: 8px; spacing: 8px;
+                                            VerticalLayout {
+                                                horizontal-stretch: 1;
+                                                Text { text: root.geometry-can-extrude ? "CLOSED PROFILE · READY" : "SKETCH PROFILE"; color: root.geometry-can-extrude ? UiTheme.accent : UiTheme.text-dim; font-size: 10px; font-weight: 800; }
+                                                Text { text: root.geometry-feature-feedback != "" ? root.geometry-feature-feedback : root.geometry-selection-summary; color: UiTheme.text-soft; font-size: 11px; wrap: word-wrap; }
+                                            }
+                                            LineEdit { text <=> root.feature-depth; preferred-width: 80px; placeholder-text: "Depth mm"; }
+                                            Button { text: "EXTRUDE"; enabled: root.geometry-can-extrude; clicked => { root.build-feature(); } }
+                                        }
+                                    }
                                     HorizontalLayout { Text { text: root.geometry-cad-view-3d ? root.animation-status : root.geometry-editor-status; color: UiTheme.text-soft; font-size: 11px; vertical-alignment: center; wrap: word-wrap; } Rectangle { horizontal-stretch: 1; } Button { text: "FIT VIEW"; clicked => { if root.geometry-cad-view-3d { root.reset-geometry-view(); } else { root.geometry-fit(); } } } }
-                                    Text { text: root.geometry-cad-view-3d ? "CLICK A FLAT FACE → DRAW ON FACE → CLICK TWO CORNERS → BUILD   ·   DRAG: ORBIT" : root.geometry-face-sketch-editing ? "CLICK TWO OPPOSITE CORNERS · MIDDLE DRAG: PAN · WHEEL: ZOOM · ESC: CANCEL" : "CLICK: DRAW / SELECT   ·   MIDDLE DRAG: PAN   ·   WHEEL: ZOOM   ·   L / R / C: TOOLS   ·   ESC: CANCEL   ·   CTRL+Z / Y: HISTORY"; color: UiTheme.text-faint; font-size: 10px; wrap: word-wrap; }
+                                    Text { text: root.geometry-cad-view-3d ? "CLICK A FLAT FACE → DRAW ON FACE → CLICK TWO CORNERS → EXTRUDE   ·   DRAG: ORBIT" : root.geometry-face-sketch-editing ? "CLICK TWO OPPOSITE CORNERS · MIDDLE DRAG: PAN · WHEEL: ZOOM · ESC: CANCEL" : "RECT / CIRCLE: TWO CLICKS  ·  LINE: CLOSE THE LOOP  ·  FACE: PICK SHADED AREA  ·  EXTRUDE WHEN READY"; color: UiTheme.text-faint; font-size: 10px; wrap: word-wrap; }
                                 }
                             }
 

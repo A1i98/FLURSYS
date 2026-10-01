@@ -72,6 +72,7 @@
     export component InteractiveGeometryPreview inherits Rectangle {
         in property <image> preview-image;
         in property <int> view-axis: 3;
+        in property <string> help-text: "DRAG: ORBIT  ·  WHEEL: ZOOM  ·  CLICK RGB XYZ TRIAD: AXIS VIEW  ·  DOUBLE-CLICK: RESET";
         callback orbit(float, float, float, float);
         callback zoom(float);
         callback reset-view();
@@ -85,7 +86,7 @@
         Image { source: root.preview-image; width: parent.width; height: parent.height; image-fit: contain; }
         Text {
             x: 10px; y: parent.height - self.height - 8px;
-            text: "DRAG: ORBIT  ·  WHEEL: ZOOM  ·  CLICK RGB XYZ TRIAD: AXIS VIEW  ·  DOUBLE-CLICK: RESET";
+            text: root.help-text;
             color: rgb(145, 174, 190); font-size: 10px; font-weight: 700;
         }
         TouchArea {
@@ -167,4 +168,3 @@
         font-size: 11px;
         wrap: word-wrap;
     }
-
