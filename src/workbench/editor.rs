@@ -153,6 +153,15 @@ impl GeometryEditorState {
             GeometryTool::Select => None,
         }
     }
+    pub fn has_start(&self) -> bool {
+        self.start.is_some()
+    }
+    pub fn cursor_world(&self) -> Option<(f64, f64)> {
+        self.cursor
+    }
+    pub fn grid_spacing(&self) -> f64 {
+        adaptive_grid(self.transform.pixels_per_unit)
+    }
     pub fn set_tool(&mut self, tool: GeometryTool) {
         self.active_tool = tool;
         self.start = None;
@@ -195,16 +204,19 @@ impl GeometryEditorState {
             }
             return Ok(false);
         }
-        if let Some(start) = self.start.take() {
+        if let Some(start) = self.start {
             let before = topology.clone();
-            match self.active_tool {
-                GeometryTool::Line => add_line_at(topology, start, world)?,
-                GeometryTool::Rectangle => {
-                    add_rectangle_at(topology, start, world)?;
-                }
-                GeometryTool::Circle => add_circle(topology, start, world)?,
+            let result = match self.active_tool {
+                GeometryTool::Line => add_line_at(topology, start, world),
+                GeometryTool::Rectangle => add_rectangle_at(topology, start, world),
+                GeometryTool::Circle => add_circle(topology, start, world),
                 GeometryTool::Select => unreachable!(),
+            };
+            if let Err(error) = result {
+                *topology = before;
+                return Err(error);
             }
+            self.start = None;
             self.push_undo(before);
             self.redo.clear();
             Ok(true)
@@ -214,6 +226,7 @@ impl GeometryEditorState {
         }
     }
     pub fn undo(&mut self, topology: &mut GeometryTopology) -> bool {
+        self.start = None;
         let Some(before) = self.undo.pop() else {
             return false;
         };
@@ -224,6 +237,7 @@ impl GeometryEditorState {
         true
     }
     pub fn redo(&mut self, topology: &mut GeometryTopology) -> bool {
+        self.start = None;
         let Some(after) = self.redo.pop() else {
             return false;
         };
@@ -411,7 +425,7 @@ fn add_circle(
             message: "circle radius must be positive".into(),
         });
     }
-    let (face, representation) = topology
+    let containing_face = topology
         .faces()
         .find(|face| {
             matches!(
@@ -419,12 +433,32 @@ fn add_circle(
                 GeometryFaceRepresentation::Planar { .. }
             ) && face_contains(topology, &face.representation, center)
         })
-        .map(|face| (face.id, face.representation.clone()))
-        .ok_or_else(|| GeometryError::InvalidPrimitive {
-            message:
-                "circle must be placed inside an existing planar face; it becomes a compatible hole"
-                    .into(),
-        })?;
+        .map(|face| (face.id, face.representation.clone()));
+    let Some((face, representation)) = containing_face else {
+        let center_id = topology.add_vertex(Vec3::new(center.0, center.1, 0.0))?;
+        let vertices = [
+            (center.0 + radius, center.1),
+            (center.0, center.1 + radius),
+            (center.0 - radius, center.1),
+            (center.0, center.1 - radius),
+        ]
+        .map(|point| topology.add_vertex(Vec3::new(point.0, point.1, 0.0)))
+        .into_iter()
+        .collect::<Result<Vec<_>, _>>()?;
+        let mut boundary = Vec::new();
+        for index in 0..4 {
+            boundary.push(OrientedEdge {
+                edge: topology.add_circular_arc(
+                    vertices[index],
+                    center_id,
+                    vertices[(index + 1) % 4],
+                )?,
+                reversed: false,
+            });
+        }
+        topology.add_planar_face(boundary, Vec::new())?;
+        return Ok(());
+    };
     // A circular hole must remain wholly inside the selected planar domain.
     // Sampling is sufficient for this phase's deterministic arcs and avoids
     // claiming a general CAD curve-intersection kernel.
@@ -513,26 +547,32 @@ fn face_contains(
 fn point_in_loop(topology: &GeometryTopology, edges: &[OrientedEdge], point: (f64, f64)) -> bool {
     let polygon: Vec<_> = edges
         .iter()
-        .filter_map(|oriented| {
-            let edge = topology.edge(oriented.edge)?;
+        .flat_map(|oriented| {
+            let Some(edge) = topology.edge(oriented.edge) else {
+                return Vec::new();
+            };
             match edge.geometry {
                 EdgeGeometry::Line { start, end } => {
                     vertex_point(topology, if oriented.reversed { end } else { start })
+                        .into_iter()
+                        .collect()
                 }
                 EdgeGeometry::CircularArc { start, center, end } => {
-                    let a = vertex_point(topology, start)?;
-                    let c = vertex_point(topology, center)?;
-                    let b = vertex_point(topology, end)?;
-                    let mut points = Vec::new();
-                    for i in 0..8 {
-                        let t = i as f64 / 8.0;
+                    let (Some(a), Some(c), Some(b)) = (
+                        vertex_point(topology, start),
+                        vertex_point(topology, center),
+                        vertex_point(topology, end),
+                    ) else {
+                        return Vec::new();
+                    };
+                    let mut points = Vec::with_capacity(16);
+                    for i in 0..16 {
+                        let t = i as f64 / 16.0;
                         let sa = (a.1 - c.1).atan2(a.0 - c.0);
-                        let mut delta = (b.1 - c.1).atan2(b.0 - c.0) - sa;
-                        if delta <= 0.0 {
-                            delta += std::f64::consts::TAU
-                        }
+                        let delta =
+                            ((b.1 - c.1).atan2(b.0 - c.0) - sa).rem_euclid(std::f64::consts::TAU);
                         let angle = if oriented.reversed {
-                            sa - delta * t
+                            sa + delta * (1.0 - t)
                         } else {
                             sa + delta * t
                         };
@@ -541,7 +581,7 @@ fn point_in_loop(topology: &GeometryTopology, edges: &[OrientedEdge], point: (f6
                             c.1 + distance(a, c) * angle.sin(),
                         ));
                     }
-                    points.into_iter().next()
+                    points
                 }
             }
         })
@@ -679,5 +719,55 @@ mod tests {
         let revision = topology.revision();
         assert!(editor.click(&mut topology, (610.0, 400.0), false).is_err());
         assert_eq!(topology.revision(), revision);
+    }
+
+    #[test]
+    fn invalid_rectangle_keeps_first_corner_and_does_not_leave_orphan_vertices() {
+        let mut topology = GeometryTopology::new();
+        let mut editor = GeometryEditorState::new();
+        editor.transform.set_viewport(1000.0, 800.0);
+        editor.set_tool(GeometryTool::Rectangle);
+        editor.click(&mut topology, (400.0, 500.0), false).unwrap();
+        let revision = topology.revision();
+        assert!(editor.click(&mut topology, (400.0, 300.0), false).is_err());
+        assert!(editor.has_start());
+        assert_eq!(topology.revision(), revision);
+        assert_eq!(topology.vertices().count(), 0);
+        assert!(editor.click(&mut topology, (600.0, 300.0), false).unwrap());
+        assert_eq!(topology.faces().count(), 1);
+    }
+
+    #[test]
+    fn circle_creates_a_selectable_face_without_an_existing_rectangle() {
+        let mut topology = GeometryTopology::new();
+        let mut editor = GeometryEditorState::new();
+        editor.transform.set_viewport(1000.0, 800.0);
+        editor.snap_enabled = false;
+        editor.set_tool(GeometryTool::Circle);
+        editor.click(&mut topology, (500.0, 400.0), false).unwrap();
+        assert!(editor.click(&mut topology, (550.0, 400.0), false).unwrap());
+        assert_eq!(topology.faces().count(), 1);
+        assert!(matches!(
+            editor.pick(&topology, (525.0, 400.0), 4.0),
+            Some(GeometrySelectionTarget::Face(_))
+        ));
+        assert_eq!(editor.pick(&topology, (545.0, 355.0), 4.0), None);
+        assert!(editor.undo(&mut topology));
+        assert_eq!(topology.vertices().count(), 0);
+    }
+
+    #[test]
+    fn displayed_grid_and_snapping_share_spacing_at_different_zooms() {
+        let mut editor = GeometryEditorState::new();
+        editor.transform.set_viewport(1000.0, 800.0);
+        editor.set_tool(GeometryTool::Line);
+        for zoom in [0.1, 100.0, 10000.0] {
+            editor.transform.pixels_per_unit = zoom;
+            let grid = editor.grid_spacing();
+            editor.cursor_moved(&GeometryTopology::new(), (538.0, 431.0));
+            let (x, y) = editor.cursor_world().unwrap();
+            assert!((x / grid - (x / grid).round()).abs() < 1e-9);
+            assert!((y / grid - (y / grid).round()).abs() < 1e-9);
+        }
     }
 }
