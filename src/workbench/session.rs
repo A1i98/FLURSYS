@@ -300,6 +300,21 @@ impl WorkbenchSession {
         Ok(face)
     }
 
+    pub fn materialize_sketch_rectangle_at(
+        &mut self,
+        sketch: CadSketchId,
+        x: f64,
+        y: f64,
+        width: f64,
+        height: f64,
+    ) -> Result<FaceId, WorkbenchError> {
+        let face = self
+            .geometry
+            .materialize_sketch_rectangle_at(sketch, x, y, width, height)?;
+        self.geometry_changed();
+        Ok(face)
+    }
+
     /// Invalidates all products derived from geometry. View and selection
     /// operations deliberately never call this method.
     pub fn geometry_changed(&mut self) {

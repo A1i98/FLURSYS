@@ -87,6 +87,43 @@ fn canonical_renderable_faces_include_stable_extrusion_surfaces() {
 }
 
 #[test]
+fn curved_profile_extrusion_renders_smooth_arcs_with_stable_side_ids() {
+    let mut geometry = GeometryTopology::new();
+    let (rectangle, hole) = geometry
+        .add_rectangle_with_circle(2.0, 2.0, 1.0, 1.0, 0.3)
+        .unwrap();
+    let extrusion = geometry.extrude_planar_face(rectangle.face, 0.5).unwrap();
+    let rendered = geometry.renderable_faces();
+    assert_eq!(extrusion.side_faces.len(), 8);
+    for edge in hole.boundary {
+        assert!(geometry.edge(edge).is_some());
+    }
+    for face in extrusion.side_faces.iter().skip(4) {
+        let curved = rendered
+            .iter()
+            .find(|surface| surface.face == *face)
+            .unwrap();
+        assert!(curved.vertices.len() > 4);
+        assert_eq!(curved.body, Some(extrusion.body));
+        assert!(geometry.create_sketch_on_face(*face).is_err());
+    }
+    let top = rendered
+        .iter()
+        .find(|surface| surface.face == extrusion.top_face)
+        .unwrap();
+    assert_eq!(top.holes.len(), 1);
+    assert!(top.holes[0].len() > 16);
+    let through_hole =
+        flursys::Ray3::new(Vec3::new(1.0, 1.0, 2.0), Vec3::new(0.0, 0.0, -1.0)).unwrap();
+    assert!(geometry.pick_face(through_hole).is_none());
+    let tunnel_wall =
+        flursys::Ray3::new(Vec3::new(1.0, 1.0, 0.25), Vec3::new(1.0, 0.0, 0.0)).unwrap();
+    assert!(extrusion.side_faces[4..].contains(&geometry.pick_face(tunnel_wall).unwrap().face));
+    let solid = flursys::Ray3::new(Vec3::new(0.3, 0.3, 2.0), Vec3::new(0.0, 0.0, -1.0)).unwrap();
+    assert_eq!(geometry.pick_face(solid).unwrap().face, extrusion.top_face);
+}
+
+#[test]
 fn canonical_xy_sketch_materializes_a_profile_face_with_stable_identity() {
     let mut geometry = GeometryTopology::new();
     let sketch = geometry.create_sketch_on_plane(CadSketchPlane::Xy).unwrap();
@@ -104,6 +141,39 @@ fn canonical_xy_sketch_materializes_a_profile_face_with_stable_identity() {
             height: 1.0,
         })
     );
+}
+
+#[test]
+fn offset_sketch_rectangle_persists_its_geometry_in_the_local_frame() {
+    let mut geometry = GeometryTopology::new();
+    let sketch = geometry.create_sketch_on_plane(CadSketchPlane::Yz).unwrap();
+    let face = geometry
+        .materialize_sketch_rectangle_at(sketch.id, 0.3, -0.4, 1.2, 0.8)
+        .unwrap();
+    let restored: GeometryTopology =
+        serde_json::from_str(&serde_json::to_string(&geometry).unwrap()).unwrap();
+    let vertices = &restored
+        .renderable_faces()
+        .into_iter()
+        .find(|surface| surface.face == face)
+        .unwrap()
+        .vertices;
+    let frame = restored.sketch(sketch.id).unwrap().frame;
+    let local = vertices[0] - frame.origin;
+    assert!((local.dot(frame.x_axis) - 0.3).abs() < 1e-9);
+    assert!((local.dot(frame.y_axis) + 0.4).abs() < 1e-9);
+    assert_eq!(restored.sketch(sketch.id).unwrap().profile_face, Some(face));
+}
+
+#[test]
+fn unrepresentable_offset_rectangle_does_not_leave_partial_topology() {
+    let mut geometry = GeometryTopology::new();
+    let sketch = geometry.create_sketch_on_plane(CadSketchPlane::Xy).unwrap();
+    let before = geometry.clone();
+    assert!(geometry
+        .materialize_sketch_rectangle_at(sketch.id, f64::MAX, 0.0, 1.0, 1.0)
+        .is_err());
+    assert_eq!(geometry, before);
 }
 
 #[test]

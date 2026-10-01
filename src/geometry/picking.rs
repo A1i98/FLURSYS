@@ -4,8 +4,7 @@
 //! never from renderer or mesh triangles.
 
 use super::{
-    BodyId, EdgeGeometry, FaceId, GeometryBodyRepresentation, GeometryFaceRepresentation,
-    GeometryTopology,
+    BodyId, FaceId, GeometryBodyRepresentation, GeometryFaceRepresentation, GeometryTopology,
 };
 use crate::Vec3;
 
@@ -100,22 +99,22 @@ impl GeometryTopology {
                     .collect(),
             });
 
-            let mut boundaries = Vec::with_capacity(1 + holes.len());
-            boundaries.push(outer);
-            boundaries.extend(holes);
-            if side_faces.len() != boundaries.iter().map(Vec::len).sum::<usize>() {
-                continue;
-            }
-            for (face, (start, end)) in side_faces.iter().copied().zip(
-                boundaries
-                    .iter()
-                    .flat_map(|loop_points| loop_edges(loop_points)),
-            ) {
-                candidates.push(FaceCandidate {
-                    face,
-                    outer: vec![start, end, end + displacement, start + displacement],
-                    holes: Vec::new(),
-                });
+            for (face, edge) in side_faces
+                .iter()
+                .copied()
+                .zip(outer_loop.iter().chain(inner_loops.iter().flatten()))
+            {
+                let Some(path) = self.oriented_edge_path(*edge) else {
+                    continue;
+                };
+                for segment in path.windows(2) {
+                    let (start, end) = (segment[0], segment[1]);
+                    candidates.push(FaceCandidate {
+                        face,
+                        outer: vec![start, end, end + displacement, start + displacement],
+                        holes: Vec::new(),
+                    });
+                }
             }
         }
 
@@ -150,17 +149,7 @@ impl GeometryTopology {
     }
 
     fn loop_points(&self, loop_edges: &[super::OrientedEdge]) -> Option<Vec<Vec3>> {
-        loop_edges
-            .iter()
-            .map(|oriented| {
-                let edge = self.edge(oriented.edge)?;
-                let EdgeGeometry::Line { start, end } = edge.geometry else {
-                    return None;
-                };
-                let vertex = if oriented.reversed { end } else { start };
-                Some(self.vertex(vertex)?.position)
-            })
-            .collect()
+        self.render_loop_vertices(loop_edges)
     }
 }
 
@@ -246,14 +235,6 @@ fn point_on_segment(point: (f64, f64), start: (f64, f64), end: (f64, f64)) -> bo
         && point.0 <= start.0.max(end.0) + PICK_EPSILON
         && point.1 >= start.1.min(end.1) - PICK_EPSILON
         && point.1 <= start.1.max(end.1) + PICK_EPSILON
-}
-
-fn loop_edges(points: &[Vec3]) -> impl Iterator<Item = (Vec3, Vec3)> + '_ {
-    points
-        .iter()
-        .copied()
-        .zip(points.iter().copied().cycle().skip(1))
-        .take(points.len())
 }
 
 fn translated(points: &[Vec3], displacement: Vec3) -> Vec<Vec3> {

@@ -149,6 +149,7 @@ pub struct RenderableFace {
     pub face: FaceId,
     pub body: Option<BodyId>,
     pub vertices: Vec<Vec3>,
+    pub holes: Vec<Vec<Vec3>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -433,8 +434,36 @@ impl GeometryTopology {
         width: f64,
         height: f64,
     ) -> Result<FaceId, GeometryError> {
+        self.materialize_sketch_rectangle_at(sketch, 0.0, 0.0, width, height)
+    }
+
+    /// Materialize a rectangular profile at an offset in the sketch's local axes.
+    pub fn materialize_sketch_rectangle_at(
+        &mut self,
+        sketch: CadSketchId,
+        x: f64,
+        y: f64,
+        width: f64,
+        height: f64,
+    ) -> Result<FaceId, GeometryError> {
+        let mut candidate = self.clone();
+        let face = candidate.materialize_sketch_rectangle_at_inner(sketch, x, y, width, height)?;
+        *self = candidate;
+        Ok(face)
+    }
+
+    fn materialize_sketch_rectangle_at_inner(
+        &mut self,
+        sketch: CadSketchId,
+        x: f64,
+        y: f64,
+        width: f64,
+        height: f64,
+    ) -> Result<FaceId, GeometryError> {
         if !(width.is_finite()
             && height.is_finite()
+            && x.is_finite()
+            && y.is_finite()
             && width > GEOMETRY_EPSILON
             && height > GEOMETRY_EPSILON)
         {
@@ -454,13 +483,14 @@ impl GeometryTopology {
                 message: "sketch profile is already materialized".into(),
             });
         }
+        let origin = sketch_record.frame.origin
+            + sketch_record.frame.x_axis * x
+            + sketch_record.frame.y_axis * y;
         let corners = [
-            sketch_record.frame.origin,
-            sketch_record.frame.origin + sketch_record.frame.x_axis * width,
-            sketch_record.frame.origin
-                + sketch_record.frame.x_axis * width
-                + sketch_record.frame.y_axis * height,
-            sketch_record.frame.origin + sketch_record.frame.y_axis * height,
+            origin,
+            origin + sketch_record.frame.x_axis * width,
+            origin + sketch_record.frame.x_axis * width + sketch_record.frame.y_axis * height,
+            origin + sketch_record.frame.y_axis * height,
         ];
         let vertices = corners
             .into_iter()
@@ -503,9 +533,10 @@ impl GeometryTopology {
             id: sketch.get(),
         })?;
         if let Some(host_face) = sketch_record.host_face {
-            if host_face != source_face {
+            if host_face != source_face && sketch_record.profile_face != Some(source_face) {
                 return Err(GeometryError::InvalidPrimitive {
-                    message: "face-hosted sketch can extrude only its selected host face".into(),
+                    message: "face-hosted sketch can extrude only its host or its own profile face"
+                        .into(),
                 });
             }
         }
@@ -560,6 +591,10 @@ impl GeometryTopology {
         self.insert_sketch(CadSketchPlane::Face, frame, Some(face))
     }
 
+    pub fn sketch_frame_for_face(&self, face: FaceId) -> Result<CadPlaneFrame, GeometryError> {
+        self.planar_face_frame(face)
+    }
+
     fn insert_sketch(
         &mut self,
         plane: CadSketchPlane,
@@ -583,23 +618,26 @@ impl GeometryTopology {
     }
 
     fn planar_face_frame(&self, face: FaceId) -> Result<CadPlaneFrame, GeometryError> {
-        let GeometryFaceRepresentation::Planar { outer_loop, .. } =
-            &self.require_face(face)?.representation
-        else {
-            return Err(GeometryError::InvalidPrimitive {
-                message: "sketches can be attached only to planar faces".into(),
-            });
+        let points = match &self.require_face(face)?.representation {
+            GeometryFaceRepresentation::Planar { outer_loop, .. } => outer_loop
+                .iter()
+                .map(|oriented| {
+                    let (start, end) = match self.require_edge(oriented.edge)?.geometry {
+                        EdgeGeometry::Line { start, end }
+                        | EdgeGeometry::CircularArc { start, end, .. } => (start, end),
+                    };
+                    self.vertex_position(if oriented.reversed { end } else { start })
+                })
+                .collect::<Result<Vec<_>, GeometryError>>()?,
+            GeometryFaceRepresentation::PrimitiveSurface => self
+                .renderable_faces()
+                .into_iter()
+                .find(|surface| surface.face == face)
+                .map(|surface| surface.vertices)
+                .ok_or_else(|| GeometryError::InvalidPrimitive {
+                    message: "this face has no planar sketch surface".into(),
+                })?,
         };
-        let points = outer_loop
-            .iter()
-            .map(|oriented| {
-                let (start, end) = match self.require_edge(oriented.edge)?.geometry {
-                    EdgeGeometry::Line { start, end }
-                    | EdgeGeometry::CircularArc { start, end, .. } => (start, end),
-                };
-                self.vertex_position(if oriented.reversed { end } else { start })
-            })
-            .collect::<Result<Vec<_>, GeometryError>>()?;
         let origin = *points
             .first()
             .ok_or_else(|| GeometryError::InvalidPrimitive {
@@ -619,6 +657,15 @@ impl GeometryTopology {
             .ok_or_else(|| GeometryError::InvalidPrimitive {
                 message: "planar face has no finite normal".into(),
             })?;
+        if points
+            .iter()
+            .any(|point| (normal.dot(*point - origin)).abs() > 1.0e-8)
+        {
+            return Err(GeometryError::InvalidPrimitive {
+                message: "sketches require a flat face; curved extrusion walls are not planar"
+                    .into(),
+            });
+        }
         let y_axis =
             normal
                 .cross(x_axis)
@@ -657,15 +704,22 @@ impl GeometryTopology {
             .faces
             .values()
             .filter_map(|face| {
-                let GeometryFaceRepresentation::Planar { outer_loop, .. } = &face.representation
+                let GeometryFaceRepresentation::Planar {
+                    outer_loop,
+                    inner_loops,
+                } = &face.representation
                 else {
                     return None;
                 };
-                self.loop_vertices(outer_loop)
+                self.render_loop_vertices(outer_loop)
                     .map(|vertices| RenderableFace {
                         face: face.id,
                         body: self.body_owning_face(face.id),
                         vertices,
+                        holes: inner_loops
+                            .iter()
+                            .filter_map(|edges| self.render_loop_vertices(edges))
+                            .collect(),
                     })
             })
             .collect::<Vec<_>>();
@@ -699,26 +753,38 @@ impl GeometryTopology {
             faces.push(RenderableFace {
                 face: *top_face,
                 body: Some(body.id),
-                vertices: outer.iter().map(|point| *point + displacement).collect(),
-            });
-            let mut boundaries = vec![outer];
-            let Some(holes) = inner_loops
-                .iter()
-                .map(|loop_edges| self.loop_vertices(loop_edges))
-                .collect::<Option<Vec<_>>>()
-            else {
-                continue;
-            };
-            boundaries.extend(holes);
-            for (face, (start, end)) in side_faces.iter().copied().zip(
-                boundaries
+                vertices: self
+                    .render_loop_vertices(outer_loop)
+                    .unwrap_or(outer.clone())
+                    .into_iter()
+                    .map(|point| point + displacement)
+                    .collect(),
+                holes: inner_loops
                     .iter()
-                    .flat_map(|loop_vertices| loop_vertex_pairs(loop_vertices)),
-            ) {
+                    .filter_map(|edges| self.render_loop_vertices(edges))
+                    .map(|points| {
+                        points
+                            .into_iter()
+                            .map(|point| point + displacement)
+                            .collect()
+                    })
+                    .collect(),
+            });
+            for (face, edge) in side_faces
+                .iter()
+                .copied()
+                .zip(outer_loop.iter().chain(inner_loops.iter().flatten()))
+            {
+                let Some(path) = self.oriented_edge_path(*edge) else {
+                    continue;
+                };
+                let mut vertices = path.clone();
+                vertices.extend(path.into_iter().rev().map(|point| point + displacement));
                 faces.push(RenderableFace {
                     face,
                     body: Some(body.id),
-                    vertices: vec![start, end, end + displacement, start + displacement],
+                    vertices,
+                    holes: Vec::new(),
                 });
             }
         }
@@ -1303,14 +1369,7 @@ impl GeometryTopology {
             validate_plane_frame(sketch.frame)?;
             match (sketch.plane, sketch.host_face) {
                 (CadSketchPlane::Face, Some(face)) => {
-                    if !matches!(
-                        self.require_face(face)?.representation,
-                        GeometryFaceRepresentation::Planar { .. }
-                    ) {
-                        return Err(GeometryError::InvalidPrimitive {
-                            message: "face-hosted sketch requires a planar host face".into(),
-                        });
-                    }
+                    self.planar_face_frame(face)?;
                 }
                 (CadSketchPlane::Face, None) => {
                     return Err(GeometryError::InvalidPrimitive {
@@ -1425,6 +1484,54 @@ impl GeometryTopology {
                     .map(|vertex| vertex.position)
             })
             .collect()
+    }
+
+    fn render_loop_vertices(&self, edges: &[OrientedEdge]) -> Option<Vec<Vec3>> {
+        let mut vertices = Vec::new();
+        for edge in edges {
+            let mut path = self.oriented_edge_path(*edge)?;
+            path.pop(); // the next edge supplies this endpoint
+            vertices.extend(path);
+        }
+        Some(vertices)
+    }
+
+    fn oriented_edge_path(&self, oriented: OrientedEdge) -> Option<Vec<Vec3>> {
+        match self.edge(oriented.edge)?.geometry {
+            EdgeGeometry::Line { start, end } => Some(vec![
+                self.vertex_position(if oriented.reversed { end } else { start })
+                    .ok()?,
+                self.vertex_position(if oriented.reversed { start } else { end })
+                    .ok()?,
+            ]),
+            EdgeGeometry::CircularArc { start, center, end } => {
+                let start = self.vertex_position(start).ok()?;
+                let center = self.vertex_position(center).ok()?;
+                let end = self.vertex_position(end).ok()?;
+                let offset = start - center;
+                let radius = offset.norm();
+                let first = offset.y.atan2(offset.x);
+                let sweep = ((end.y - center.y).atan2(end.x - center.x) - first)
+                    .rem_euclid(std::f64::consts::TAU);
+                Some(
+                    (0..=16)
+                        .map(|i| {
+                            let t = if oriented.reversed {
+                                1.0 - i as f64 / 16.0
+                            } else {
+                                i as f64 / 16.0
+                            };
+                            let angle = first + sweep * t;
+                            Vec3::new(
+                                center.x + radius * angle.cos(),
+                                center.y + radius * angle.sin(),
+                                start.z,
+                            )
+                        })
+                        .collect(),
+                )
+            }
+        }
     }
 
     fn add_primitive_face(&mut self) -> Result<FaceId, GeometryError> {
@@ -1582,14 +1689,6 @@ fn polygon_normal(vertices: &[Vec3]) -> Option<Vec3> {
             .cross(vertices[index + 1] - origin)
             .normalized()
     })
-}
-
-fn loop_vertex_pairs(vertices: &[Vec3]) -> impl Iterator<Item = (Vec3, Vec3)> + '_ {
-    vertices
-        .iter()
-        .copied()
-        .zip(vertices.iter().copied().cycle().skip(1))
-        .take(vertices.len())
 }
 
 fn is_finite_vec3(vector: Vec3) -> bool {
