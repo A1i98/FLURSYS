@@ -1354,6 +1354,7 @@ impl PreprocessingModel {
 #[derive(Clone, Copy, Debug)]
 pub enum SolverBoundaryOverride {
     Velocity { u: f64, v: f64 },
+    ParabolicInlet { u_max: f64, y_min: f64, y_max: f64 },
     PressureOutlet { pressure: f64 },
     Symmetry,
 }
@@ -1369,7 +1370,8 @@ pub struct SolverBoundaryOverrides {
 impl SolverBoundaryOverrides {
     pub fn kind(&self, case: &Case, side: Side) -> BoundaryKind {
         match self.get(side) {
-            Some(SolverBoundaryOverride::Velocity { .. }) => BoundaryKind::Velocity,
+            Some(SolverBoundaryOverride::Velocity { .. })
+            | Some(SolverBoundaryOverride::ParabolicInlet { .. }) => BoundaryKind::Velocity,
             Some(SolverBoundaryOverride::PressureOutlet { pressure }) => {
                 BoundaryKind::PressureOutlet { pressure }
             }
@@ -1381,10 +1383,37 @@ impl SolverBoundaryOverrides {
     pub fn velocity(&self, case: &Case, side: Side, x: f64, y: f64, time: f64) -> (f64, f64) {
         match self.get(side) {
             Some(SolverBoundaryOverride::Velocity { u, v }) => (u, v),
+            Some(SolverBoundaryOverride::ParabolicInlet {
+                u_max,
+                y_min,
+                y_max,
+            }) => {
+                let height = y_max - y_min;
+                if height <= 0.0 {
+                    return (0.0, 0.0);
+                }
+                let eta = ((y - y_min) / height).clamp(0.0, 1.0);
+                (4.0 * u_max * eta * (1.0 - eta), 0.0)
+            }
             Some(SolverBoundaryOverride::PressureOutlet { .. })
             | Some(SolverBoundaryOverride::Symmetry) => (0.0, 0.0),
             None => case.boundary_velocity(side, x, y, time),
         }
+    }
+
+    pub fn set_parabolic_inlet(&mut self, side: Side, u_max: f64, y_min: f64, y_max: f64) {
+        self.set(
+            side,
+            Some(SolverBoundaryOverride::ParabolicInlet {
+                u_max,
+                y_min,
+                y_max,
+            }),
+        );
+    }
+
+    pub fn set_velocity(&mut self, side: Side, u: f64, v: f64) {
+        self.set(side, Some(SolverBoundaryOverride::Velocity { u, v }));
     }
 
     fn get(&self, side: Side) -> Option<SolverBoundaryOverride> {
