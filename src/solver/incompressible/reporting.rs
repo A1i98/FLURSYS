@@ -4,7 +4,7 @@ impl IncompressibleSolver {
     pub(super) fn append_histories(&self, diag: Diagnostics) -> Result<(), String> {
         let history = self.cfg.output_dir.join("history.csv");
         let row = format!(
-            "{},{:.12},{:.12e},{},{:.12e},{:.12e},{},{:.12e},{:.12e},{:.12e},{:.12e},{:.12e},{:.12e},{:.12e}",
+            "{},{:.12},{:.12e},{},{:.12e},{:.12e},{},{:.12e},{:.12e},{:.12e},{:.12e},{:.12e},{:.12e},{:.12e},{:.12e},{:.12e},{:.12e},{:.12e}",
             self.step,
             self.time,
             diag.pressure_residual,
@@ -20,11 +20,15 @@ impl IncompressibleSolver {
             diag.reattachment,
             diag.momentum_cfl,
             diag.viscous_diffusion_number,
-            diag.time_step
+            diag.time_step,
+            diag.cd_pressure,
+            diag.cd_viscous,
+            diag.cl_pressure,
+            diag.cl_viscous
         );
         output::append_history(
             &history,
-            "step,time,pressure_residual,pressure_iterations,max_divergence,velocity_change,momentum_equation_residual,max_speed,cd,cl,reattachment_x_over_h,momentum_cfl,viscous_diffusion_number,time_step",
+            "step,time,pressure_residual,pressure_iterations,max_divergence,velocity_change,momentum_equation_residual,max_speed,cd,cl,reattachment_x_over_h,momentum_cfl,viscous_diffusion_number,time_step,cd_pressure,cd_viscous,cl_pressure,cl_viscous",
             &row,
         )
     }

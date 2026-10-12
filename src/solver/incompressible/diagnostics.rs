@@ -1,13 +1,30 @@
 use super::*;
 
+#[derive(Clone, Copy, Debug, Default)]
+pub(super) struct CylinderForceCoefficients {
+    pub cd_pressure: f64,
+    pub cd_viscous: f64,
+    pub cl_pressure: f64,
+    pub cl_viscous: f64,
+}
+
+impl CylinderForceCoefficients {
+    pub fn cd(self) -> f64 {
+        self.cd_pressure + self.cd_viscous
+    }
+
+    pub fn cl(self) -> f64 {
+        self.cl_pressure + self.cl_viscous
+    }
+}
+
 impl IncompressibleSolver {
-    pub(super) fn cylinder_force_coefficients(&self) -> (f64, f64) {
+    pub(super) fn cylinder_force_coefficients(&self) -> CylinderForceCoefficients {
         let Some(cyl) = self.cfg.case.cylinder() else {
-            return (0.0, 0.0);
+            return CylinderForceCoefficients::default();
         };
         let mu = cyl.mu;
-        let mut fx = 0.0;
-        let mut fy = 0.0;
+        let mut forces = CylinderForceCoefficients::default();
 
         for j in 0..self.grid.ny {
             for i in 0..self.grid.nx {
@@ -19,29 +36,44 @@ impl IncompressibleSolver {
                 let vc = self.v_cell[(i, j)];
 
                 if i + 1 < self.grid.nx && self.solid[(i + 1, j)] {
-                    fx += p * self.grid.dy;
-                    fy += mu * vc / (0.5 * self.grid.dx) * self.grid.dy;
+                    forces.cd_pressure += p * self.grid.dy;
+                    // The no-slip wall lies half a cell from the reconstructed
+                    // velocity. At a vertical wall, the deviatoric normal
+                    // traction contributes (4/3) mu du/dn to drag.
+                    forces.cd_viscous +=
+                        (4.0 / 3.0) * mu * uc / (0.5 * self.grid.dx) * self.grid.dy;
+                    forces.cl_viscous += mu * vc / (0.5 * self.grid.dx) * self.grid.dy;
                 }
                 if i > 0 && self.solid[(i - 1, j)] {
-                    fx -= p * self.grid.dy;
-                    fy += mu * vc / (0.5 * self.grid.dx) * self.grid.dy;
+                    forces.cd_pressure -= p * self.grid.dy;
+                    forces.cd_viscous +=
+                        (4.0 / 3.0) * mu * uc / (0.5 * self.grid.dx) * self.grid.dy;
+                    forces.cl_viscous += mu * vc / (0.5 * self.grid.dx) * self.grid.dy;
                 }
                 if j + 1 < self.grid.ny && self.solid[(i, j + 1)] {
-                    fy += p * self.grid.dx;
-                    fx += mu * uc / (0.5 * self.grid.dy) * self.grid.dx;
+                    forces.cl_pressure += p * self.grid.dx;
+                    forces.cd_viscous += mu * uc / (0.5 * self.grid.dy) * self.grid.dx;
+                    forces.cl_viscous +=
+                        (4.0 / 3.0) * mu * vc / (0.5 * self.grid.dy) * self.grid.dx;
                 }
                 if j > 0 && self.solid[(i, j - 1)] {
-                    fy -= p * self.grid.dx;
-                    fx += mu * uc / (0.5 * self.grid.dy) * self.grid.dx;
+                    forces.cl_pressure -= p * self.grid.dx;
+                    forces.cd_viscous += mu * uc / (0.5 * self.grid.dy) * self.grid.dx;
+                    forces.cl_viscous +=
+                        (4.0 / 3.0) * mu * vc / (0.5 * self.grid.dy) * self.grid.dx;
                 }
             }
         }
 
         let q = 0.5 * cyl.rho * cyl.u_inf * cyl.u_inf * cyl.diameter;
         if q > 0.0 {
-            (fx / q, fy / q)
+            forces.cd_pressure /= q;
+            forces.cd_viscous /= q;
+            forces.cl_pressure /= q;
+            forces.cl_viscous /= q;
+            forces
         } else {
-            (0.0, 0.0)
+            CylinderForceCoefficients::default()
         }
     }
 

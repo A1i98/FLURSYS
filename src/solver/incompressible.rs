@@ -348,6 +348,10 @@ struct Diagnostics {
     momentum_equation_residual: Option<f64>,
     cd: f64,
     cl: f64,
+    cd_pressure: f64,
+    cd_viscous: f64,
+    cl_pressure: f64,
+    cl_viscous: f64,
     reattachment: f64,
 }
 

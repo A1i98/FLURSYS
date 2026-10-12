@@ -173,7 +173,7 @@ impl IncompressibleSolver {
         let max_speed = self.speed.max_abs();
         let velocity_change =
             max_field_difference(&self.u, &old_u).max(max_field_difference(&self.v, &old_v));
-        let (cd, cl) = self.cylinder_force_coefficients();
+        let forces = self.cylinder_force_coefficients();
         let reattachment = self.reattachment_length_ratio();
 
         Ok(Diagnostics {
@@ -186,8 +186,12 @@ impl IncompressibleSolver {
             viscous_diffusion_number,
             velocity_change,
             momentum_equation_residual,
-            cd,
-            cl,
+            cd: forces.cd(),
+            cl: forces.cl(),
+            cd_pressure: forces.cd_pressure,
+            cd_viscous: forces.cd_viscous,
+            cl_pressure: forces.cl_pressure,
+            cl_viscous: forces.cl_viscous,
             reattachment,
         })
     }
