@@ -103,7 +103,10 @@ pub struct ProjectSolver {
 #[serde(rename_all = "kebab-case")]
 pub enum ProjectCoupling {
     Projection,
+    Pimple,
     Simple,
+    SimpleImplicit,
+    SimpleConsistent,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -111,6 +114,7 @@ pub enum ProjectCoupling {
 pub enum ProjectConvectionScheme {
     FirstOrderUpwind,
     Central,
+    VanLeerTvd,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -128,6 +132,8 @@ pub struct ProjectTimeStepSettings {
 #[serde(rename_all = "kebab-case")]
 pub enum ProjectPressureSolver {
     Pcg,
+    PcgDic,
+    PcgMg,
     Sor,
 }
 
@@ -198,10 +204,15 @@ impl Project {
         let solver = &self.solver;
         let coupling = match solver.coupling {
             ProjectCoupling::Projection => PressureVelocityCoupling::Projection,
+            ProjectCoupling::Pimple => PressureVelocityCoupling::Pimple,
             ProjectCoupling::Simple => PressureVelocityCoupling::Simple,
+            ProjectCoupling::SimpleImplicit => PressureVelocityCoupling::SimpleImplicit,
+            ProjectCoupling::SimpleConsistent => PressureVelocityCoupling::SimpleConsistent,
         };
         let pressure_solver = match solver.pressure_solver {
             ProjectPressureSolver::Pcg => PressureSolverKind::Pcg,
+            ProjectPressureSolver::PcgDic => PressureSolverKind::PcgDic,
+            ProjectPressureSolver::PcgMg => PressureSolverKind::PcgMg,
             ProjectPressureSolver::Sor => PressureSolverKind::Sor,
         };
         Ok(SimulationConfig {
@@ -211,13 +222,17 @@ impl Project {
             dt: solver.dt,
             time_step: (&solver.time_step).into(),
             max_steps: solver.max_iterations,
-            t_end: if matches!(coupling, PressureVelocityCoupling::Projection) {
+            t_end: if matches!(
+                coupling,
+                PressureVelocityCoupling::Projection | PressureVelocityCoupling::Pimple
+            ) {
                 solver.max_iterations as f64 * solver.dt
             } else {
                 0.0
             },
             convection: solver.convection.into(),
             coupling,
+            pimple: Default::default(),
             pressure_solver,
             pressure_max_iters: solver.pressure_iterations,
             pressure_tolerance: solver.pressure_tolerance,
@@ -353,7 +368,10 @@ impl Project {
         let solver = &self.solver;
         let coupling = match solver.coupling {
             ProjectCoupling::Projection => PressureVelocityCoupling::Projection,
+            ProjectCoupling::Pimple => PressureVelocityCoupling::Pimple,
             ProjectCoupling::Simple => PressureVelocityCoupling::Simple,
+            ProjectCoupling::SimpleImplicit => PressureVelocityCoupling::SimpleImplicit,
+            ProjectCoupling::SimpleConsistent => PressureVelocityCoupling::SimpleConsistent,
         };
         SimulationConfig {
             case: self.case.to_case(),
@@ -362,15 +380,21 @@ impl Project {
             dt: solver.dt,
             time_step: (&solver.time_step).into(),
             max_steps: solver.max_iterations,
-            t_end: if matches!(coupling, PressureVelocityCoupling::Projection) {
+            t_end: if matches!(
+                coupling,
+                PressureVelocityCoupling::Projection | PressureVelocityCoupling::Pimple
+            ) {
                 solver.max_iterations as f64 * solver.dt
             } else {
                 0.0
             },
             convection: solver.convection.into(),
             coupling,
+            pimple: Default::default(),
             pressure_solver: match solver.pressure_solver {
                 ProjectPressureSolver::Pcg => PressureSolverKind::Pcg,
+                ProjectPressureSolver::PcgDic => PressureSolverKind::PcgDic,
+                ProjectPressureSolver::PcgMg => PressureSolverKind::PcgMg,
                 ProjectPressureSolver::Sor => PressureSolverKind::Sor,
             },
             pressure_max_iters: solver.pressure_iterations,
@@ -429,6 +453,7 @@ impl From<ProjectConvectionScheme> for ConvectionScheme {
         match value {
             ProjectConvectionScheme::FirstOrderUpwind => ConvectionScheme::FirstOrderUpwind,
             ProjectConvectionScheme::Central => ConvectionScheme::Central,
+            ProjectConvectionScheme::VanLeerTvd => ConvectionScheme::VanLeerTvd,
         }
     }
 }

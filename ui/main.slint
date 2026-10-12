@@ -88,6 +88,7 @@ export component MainWindow inherits Window {
     in-out property <int> history-every: 10;
     in-out property <int> frame-every: 100;
     in-out property <int> coupling-index: 0;
+    in-out property <int> convection-index: 0;
     in-out property <int> pressure-solver-index: 0;
     in-out property <string> velocity-relaxation: "0.7";
     in-out property <string> pressure-relaxation: "0.3";
@@ -719,8 +720,11 @@ export component MainWindow inherits Window {
                                 spacing: root.page-spacing;
                                 Card { min-width: 260px; preferred-width: 360px; max-width: 420px; horizontal-stretch: 1; VerticalLayout { padding: root.compact-ui ? 14px : 18px; spacing: 9px;
                                 Text { text: "SOLVER CONTROLS"; color: UiTheme.accent; font-size: 11px; font-weight: 700; }
-                                Text { text: "Coupling"; color: UiTheme.text-muted; font-size: 11px; } ComboBox { model: ["SIMPLE-style steady", "Projection transient"]; current-index <=> root.coupling-index; }
-                                Text { text: "Pressure solver"; color: UiTheme.text-muted; font-size: 11px; } ComboBox { model: ["PCG + Jacobi", "SOR"]; current-index <=> root.pressure-solver-index; }
+                                Text { text: "Coupling"; color: UiTheme.text-muted; font-size: 11px; } ComboBox { model: ["SIMPLE explicit", "SIMPLE implicit (FV)", "SIMPLEC implicit (FV)", "Projection transient", "PIMPLE transient (FV)"]; current-index <=> root.coupling-index; }
+                                Text { text: "Momentum convection"; color: UiTheme.text-muted; font-size: 11px; } ComboBox { model: ["Upwind (1st order)", "Central (2nd order)", "Van Leer TVD"]; current-index <=> root.convection-index; }
+                                Text { text: "Van Leer TVD is available with implicit SIMPLE, SIMPLEC, and PIMPLE."; color: UiTheme.text-faint; font-size: 10px; wrap: word-wrap; }
+                                Text { text: "Pressure solver"; color: UiTheme.text-muted; font-size: 11px; } ComboBox { model: ["PCG + Jacobi", "PCG + DIC(0)", "PCG + multigrid", "SOR"]; current-index <=> root.pressure-solver-index; }
+                                Text { text: "Multigrid is available with implicit pressure coupling."; color: UiTheme.text-faint; font-size: 10px; wrap: word-wrap; }
                                 Text { text: "Pseudo-time step"; color: UiTheme.text-muted; font-size: 11px; } LineEdit { text <=> root.dt-text; }
                                 Text { text: "Iterations"; color: UiTheme.text-muted; font-size: 11px; } SpinBox { value <=> root.iterations; minimum: 1; maximum: 10000000; }
                                 Text { text: "CPU threads (0 = auto)"; color: UiTheme.text-muted; font-size: 11px; } SpinBox { value <=> root.threads; minimum: 0; maximum: 256; }

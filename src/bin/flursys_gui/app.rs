@@ -5234,7 +5234,10 @@ fn refresh_ui(ui: &MainWindow, state: &AppState) {
         ui.set_solver_max_speed(update.max_speed as f32);
         let time_label = match state.project.solver.coupling {
             ProjectCoupling::Projection => "Time",
+            ProjectCoupling::Pimple => "Time",
             ProjectCoupling::Simple => "Pseudo time",
+            ProjectCoupling::SimpleImplicit => "Iteration",
+            ProjectCoupling::SimpleConsistent => "Iteration",
         };
         ui.set_solver_stability_summary(SharedString::from(format!(
             "{time_label:<10}{:>10.4e}\ndt         {:>10.4e}\nCFL        {:>10.4e}\nDν         {:>10.4e}\n|U|max     {:>10.4e}",
@@ -5245,13 +5248,14 @@ fn refresh_ui(ui: &MainWindow, state: &AppState) {
             update.max_speed,
         )));
         ui.set_residual_summary(SharedString::from(format!(
-            "Iteration        {:>10}\nElapsed          {:>10.3} s\nLast iteration   {:>10.3} ms\nPressure PCG     {:>10} iters\nContinuity       {:>10.3e}\nMomentum         {:>10.3e}\nPressure         {:>10.3e}\nConverged        {}",
+            "Iteration        {:>10}\nElapsed          {:>10.3} s\nLast iteration   {:>10.3} ms\nPressure PCG     {:>10} iters\nContinuity       {:>10.3e}\nMomentum ΔU      {:>10.3e}\nMomentum eq      {}\nPressure         {:>10.3e}\nConverged        {}",
             update.iteration,
             update.elapsed_seconds,
             update.iteration_seconds * 1_000.0,
             update.pressure_iterations,
             update.continuity_residual,
             update.momentum_residual,
+            update.momentum_equation_residual.map(|value| format!("{value:.3e}")).unwrap_or_else(|| "n/a".to_string()),
             update.pressure_residual,
             update.converged
         )));

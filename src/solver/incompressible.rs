@@ -4,6 +4,11 @@ use crate::grid::UniformGrid2D;
 use crate::output;
 use crate::physics::{BuoyancyModel, EnergyModel, PhysicsSettings, ThermalBoundaryCondition};
 use crate::preprocess::SolverBoundaryOverrides;
+use crate::{
+    bicgstab_with_preconditioner, pcg, pcg_with_preconditioner, CsrBuilder, CsrMatrix,
+    IncompleteCholeskyPreconditioner, JacobiPreconditioner, LinearSolverOptions,
+    StructuredMultigridPreconditioner, SymmetricGaussSeidelPreconditioner,
+};
 use rayon::prelude::*;
 use rayon::{ThreadPool, ThreadPoolBuilder};
 use std::fs::File;
@@ -11,15 +16,35 @@ use std::io::{BufWriter, Write};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
+mod boundary;
+use self::boundary::*;
+mod diagnostics;
+use self::diagnostics::*;
+mod implicit;
+use self::implicit::*;
+mod implicit_pressure;
+mod momentum;
+use self::momentum::*;
+mod numerics;
+use self::numerics::*;
+mod pressure;
+mod reporting;
+use self::pressure::*;
+mod step;
+mod thermal;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ConvectionScheme {
     FirstOrderUpwind,
     Central,
+    VanLeerTvd,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PressureSolverKind {
     Pcg,
+    PcgDic,
+    PcgMg,
     Sor,
 }
 
@@ -28,8 +53,49 @@ pub enum PressureSolverKind {
 pub enum PressureVelocityCoupling {
     /// Transient fractional-step projection method.
     Projection,
+    /// Transient pressure-implicit split with implicit momentum and configurable
+    /// pressure corrections on the native staggered grid.
+    Pimple,
     /// Steady, segregated SIMPLE-style iterations with pseudo-time momentum updates.
     Simple,
+    /// Coefficient-based steady SIMPLE with implicit momentum and pressure correction.
+    SimpleImplicit,
+    /// Consistent SIMPLE (SIMPLEC) with the same staggered finite-volume equations.
+    SimpleConsistent,
+}
+
+impl PressureVelocityCoupling {
+    fn is_coefficient_based(self) -> bool {
+        matches!(
+            self,
+            Self::Pimple | Self::SimpleImplicit | Self::SimpleConsistent
+        )
+    }
+
+    fn is_consistent(self) -> bool {
+        self == Self::SimpleConsistent
+    }
+
+    fn is_transient(self) -> bool {
+        matches!(self, Self::Projection | Self::Pimple)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PimpleControls {
+    pub pressure_correctors: usize,
+    pub momentum_tolerance: f64,
+    pub first_pressure_relative_tolerance: f64,
+}
+
+impl Default for PimpleControls {
+    fn default() -> Self {
+        Self {
+            pressure_correctors: 2,
+            momentum_tolerance: 1.0e-5,
+            first_pressure_relative_tolerance: 0.01,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -66,13 +132,14 @@ pub struct SimulationConfig {
     pub t_end: f64,
     pub convection: ConvectionScheme,
     pub coupling: PressureVelocityCoupling,
+    pub pimple: PimpleControls,
     pub pressure_solver: PressureSolverKind,
     pub pressure_max_iters: usize,
     pub pressure_tolerance: f64,
     pub pressure_omega: f64,
     /// SIMPLE momentum under-relaxation. Ignored by the projection method.
     pub velocity_relaxation: f64,
-    /// SIMPLE pressure under-relaxation. Ignored by the projection method.
+    /// SIMPLE pressure under-relaxation. Ignored by transient projection and PIMPLE.
     pub pressure_relaxation: f64,
     pub print_every: usize,
     pub output_every: usize,
@@ -100,8 +167,31 @@ impl SimulationConfig {
         if !self.t_end.is_finite() || self.t_end < 0.0 {
             return Err("t_end must be finite and non-negative".to_string());
         }
-        if self.coupling == PressureVelocityCoupling::Projection && self.t_end == 0.0 {
-            return Err("t_end must be positive for projection coupling".to_string());
+        if self.coupling.is_transient() && self.t_end == 0.0 {
+            return Err("t_end must be positive for transient coupling".to_string());
+        }
+        if self.pimple.pressure_correctors == 0
+            || !self.pimple.momentum_tolerance.is_finite()
+            || self.pimple.momentum_tolerance <= 0.0
+            || !self.pimple.first_pressure_relative_tolerance.is_finite()
+            || self.pimple.first_pressure_relative_tolerance < 0.0
+        {
+            return Err("invalid transient pressure-velocity solver controls".to_string());
+        }
+        if self.convection == ConvectionScheme::VanLeerTvd && !self.coupling.is_coefficient_based()
+        {
+            return Err(
+                "Van Leer TVD convection currently requires implicit coefficient-based coupling"
+                    .to_string(),
+            );
+        }
+        if self.pressure_solver == PressureSolverKind::PcgMg
+            && !self.coupling.is_coefficient_based()
+        {
+            return Err(
+                "PCG + structured multigrid currently requires implicit coefficient-based coupling"
+                    .to_string(),
+            );
         }
         if self.max_steps == 0 {
             return Err("max_steps must be positive".to_string());
@@ -204,6 +294,7 @@ pub struct RunSummary {
     pub final_time: f64,
     pub max_divergence: f64,
     pub pressure_residual: f64,
+    pub momentum_equation_residual: Option<f64>,
     pub elapsed: Duration,
     pub converged: bool,
 }
@@ -218,6 +309,7 @@ pub struct SolverStep {
     pub pressure_residual: f64,
     pub pressure_iterations: usize,
     pub momentum_residual: f64,
+    pub momentum_equation_residual: Option<f64>,
     pub max_speed: f64,
     pub momentum_cfl: f64,
     pub viscous_diffusion_number: f64,
@@ -253,6 +345,7 @@ struct Diagnostics {
     momentum_cfl: f64,
     viscous_diffusion_number: f64,
     velocity_change: f64,
+    momentum_equation_residual: Option<f64>,
     cd: f64,
     cl: f64,
     reattachment: f64,
@@ -268,33 +361,11 @@ struct AdaptiveTimeStepInputs {
     thermal_diffusivity: Option<f64>,
 }
 
-/// Reusable vectors for the pressure PCG solve. Keeping these allocations alive
-/// avoids allocator churn on every outer SIMPLE/projection iteration.
-#[derive(Default)]
-struct PcgWorkspace {
-    x: Vec<f64>,
-    b: Vec<f64>,
-    r: Vec<f64>,
-    z: Vec<f64>,
-    direction: Vec<f64>,
-    q: Vec<f64>,
-}
-
-impl PcgWorkspace {
-    fn resize(&mut self, len: usize) {
-        self.x.resize(len, 0.0);
-        self.b.resize(len, 0.0);
-        self.r.resize(len, 0.0);
-        self.z.resize(len, 0.0);
-        self.direction.resize(len, 0.0);
-        self.q.resize(len, 0.0);
-    }
-}
-
 pub struct IncompressibleSolver {
     cfg: SimulationConfig,
     grid: UniformGrid2D,
     solid: Mask2D,
+    pressure_stencil: PressureStencil2D,
     p: Field2D,
     rhs: Field2D,
     u: Field2D,
@@ -312,6 +383,8 @@ pub struct IncompressibleSolver {
     frame_index: usize,
     outputs_prepared: bool,
     pcg_workspace: PcgWorkspace,
+    implicit_assembly_workspace: Option<ImplicitAssemblyWorkspace>,
+    multigrid_preconditioner: Option<StructuredMultigridPreconditioner>,
     last_diag: Diagnostics,
     pool: ThreadPool,
 }
@@ -333,6 +406,8 @@ impl IncompressibleSolver {
                 solid[(i, j)] = cfg.case.is_solid(grid.cell_x(i), grid.cell_y(j));
             }
         }
+        let pressure_stencil =
+            PressureStencil2D::new(&grid, &solid, &cfg.case, &cfg.boundary_overrides);
         let current_dt = cfg.dt;
 
         let mut solver = Self {
@@ -351,12 +426,15 @@ impl IncompressibleSolver {
             cfg,
             grid,
             solid,
+            pressure_stencil,
             step: 0,
             time: 0.0,
             current_dt,
             frame_index: 0,
             outputs_prepared: false,
             pcg_workspace: PcgWorkspace::default(),
+            implicit_assembly_workspace: None,
+            multigrid_preconditioner: None,
             last_diag: Diagnostics::default(),
             pool,
         };
@@ -376,7 +454,7 @@ impl IncompressibleSolver {
             self.grid.nx, self.grid.ny, self.grid.dx, self.grid.dy
         );
         match self.cfg.coupling {
-            PressureVelocityCoupling::Projection => println!(
+            PressureVelocityCoupling::Projection | PressureVelocityCoupling::Pimple => println!(
                 "rho={:.6}, nu={:.6}, dt={:.6}, max_steps={}, t_end={:.6}",
                 self.cfg.case.density(),
                 self.cfg.case.kinematic_viscosity(),
@@ -384,8 +462,18 @@ impl IncompressibleSolver {
                 self.cfg.max_steps,
                 self.cfg.t_end
             ),
-            PressureVelocityCoupling::Simple => println!(
-                "rho={:.6}, nu={:.6}, pseudo_dt={:.6}, max_iterations={}",
+            PressureVelocityCoupling::Simple => {
+                println!(
+                    "rho={:.6}, nu={:.6}, pseudo_dt={:.6}, max_iterations={}",
+                    self.cfg.case.density(),
+                    self.cfg.case.kinematic_viscosity(),
+                    self.cfg.dt,
+                    self.cfg.max_steps
+                )
+            }
+            PressureVelocityCoupling::SimpleImplicit
+            | PressureVelocityCoupling::SimpleConsistent => println!(
+                "rho={:.6}, nu={:.6}, iteration_clock_dt={:.6}, max_iterations={}",
                 self.cfg.case.density(),
                 self.cfg.case.kinematic_viscosity(),
                 self.cfg.dt,
@@ -405,7 +493,11 @@ impl IncompressibleSolver {
                 settings.max_growth_factor
             );
         } else {
-            println!("Time stepping: fixed, dt={:.3e}", self.cfg.dt);
+            if self.cfg.coupling.is_coefficient_based() && !self.cfg.coupling.is_transient() {
+                println!("Time stepping: steady outer iterations; dt is the output/thermal iteration clock only ({:.3e})", self.cfg.dt);
+            } else {
+                println!("Time stepping: fixed, dt={:.3e}", self.cfg.dt);
+            }
         }
         // These are diagnostic reference numbers, not universal stability guarantees.
         println!(
@@ -413,22 +505,84 @@ impl IncompressibleSolver {
         );
         match self.cfg.coupling {
             PressureVelocityCoupling::Projection => println!("Coupling: transient projection"),
+            PressureVelocityCoupling::Pimple => println!(
+                "Coupling: transient PIMPLE-like, implicit Euler momentum + {} pressure corrections",
+                self.cfg.pimple.pressure_correctors
+            ),
             PressureVelocityCoupling::Simple => println!(
-                "Coupling: steady SIMPLE-style, velocity relaxation={:.3}, pressure relaxation={:.3}",
+                "Coupling: steady SIMPLE-style explicit pseudo-time, velocity relaxation={:.3}, pressure relaxation={:.3}",
+                self.cfg.velocity_relaxation, self.cfg.pressure_relaxation
+            ),
+            PressureVelocityCoupling::SimpleImplicit => println!(
+                "Coupling: steady implicit SIMPLE, {:?} momentum convection, velocity relaxation={:.3}, pressure relaxation={:.3}",
+                self.cfg.convection,
+                self.cfg.velocity_relaxation, self.cfg.pressure_relaxation
+            ),
+            PressureVelocityCoupling::SimpleConsistent => println!(
+                "Coupling: steady implicit SIMPLEC, {:?} momentum convection, velocity relaxation={:.3}, pressure relaxation={:.3}",
+                self.cfg.convection,
                 self.cfg.velocity_relaxation, self.cfg.pressure_relaxation
             ),
         }
-        match self.cfg.pressure_solver {
-            PressureSolverKind::Pcg => println!(
-                "Pressure: PCG + Jacobi preconditioner, tol={:.3e}, max_iters={}",
-                self.cfg.pressure_tolerance, self.cfg.pressure_max_iters
-            ),
-            PressureSolverKind::Sor => println!(
-                "Pressure: SOR omega={:.3}, tol={:.3e}, max_iters={}",
-                self.cfg.pressure_omega, self.cfg.pressure_tolerance, self.cfg.pressure_max_iters
-            ),
+        if self.cfg.coupling.is_coefficient_based() {
+            println!(
+                "Implicit momentum/correction solvers: momentum BiCGStab; pressure correction PCG + {}, max_iters={}",
+                match self.cfg.pressure_solver {
+                    PressureSolverKind::PcgDic => "DIC(0)",
+                    PressureSolverKind::PcgMg => "structured multigrid",
+                    PressureSolverKind::Pcg | PressureSolverKind::Sor => "Jacobi",
+                },
+                self.cfg.pressure_max_iters.max(100)
+            );
+            if self.cfg.coupling == PressureVelocityCoupling::Pimple {
+                println!(
+                    "Linear stopping: momentum abs={:.3e}; pressure abs={:.3e}, first rel={:.3e}, final rel=0",
+                    self.cfg.pimple.momentum_tolerance,
+                    self.cfg.pressure_tolerance,
+                    self.cfg.pimple.first_pressure_relative_tolerance
+                );
+            } else {
+                println!(
+                    "Linear stopping: relative={:.3e}",
+                    self.cfg.pressure_tolerance
+                );
+            }
+            if self.cfg.pressure_solver == PressureSolverKind::Sor {
+                println!(
+                    "SOR is not supported for coefficient-based coupling; using PCG + Jacobi."
+                );
+            }
+        } else {
+            match self.cfg.pressure_solver {
+                PressureSolverKind::Pcg => println!(
+                    "Pressure: PCG + Jacobi preconditioner, tol={:.3e}, max_iters={}",
+                    self.cfg.pressure_tolerance, self.cfg.pressure_max_iters
+                ),
+                PressureSolverKind::PcgDic => println!(
+                    "Pressure: PCG + DIC(0) preconditioner ({}), tol={:.3e}, max_iters={}",
+                    if self.pressure_stencil.dic_supported {
+                        "structured no-solid mesh"
+                    } else {
+                        "falling back to Jacobi for this mesh/boundary"
+                    },
+                    self.cfg.pressure_tolerance,
+                    self.cfg.pressure_max_iters
+                ),
+                PressureSolverKind::PcgMg => println!(
+                    "Pressure: PCG + structured multigrid (coefficient-based coupling), tol={:.3e}, max_iters={}",
+                    self.cfg.pressure_tolerance,
+                    self.cfg.pressure_max_iters
+                ),
+                PressureSolverKind::Sor => println!(
+                    "Pressure: SOR omega={:.3}, tol={:.3e}, max_iters={}",
+                    self.cfg.pressure_omega,
+                    self.cfg.pressure_tolerance,
+                    self.cfg.pressure_max_iters
+                ),
+            }
         }
-        if self.cfg.pressure_solver == PressureSolverKind::Sor
+        if !self.cfg.coupling.is_coefficient_based()
+            && self.cfg.pressure_solver == PressureSolverKind::Sor
             && self.pool.current_num_threads() > 1
         {
             println!(
@@ -447,24 +601,24 @@ impl IncompressibleSolver {
                 self.write_snapshot()?;
             }
             if self.step.is_multiple_of(self.cfg.print_every) {
-                let progress = match self.cfg.coupling {
-                    PressureVelocityCoupling::Projection => {
-                        format!(
-                            "step {:>8}/{:<8} t={:>10.4}",
-                            self.step, self.cfg.max_steps, self.time
-                        )
-                    }
-                    PressureVelocityCoupling::Simple => {
-                        format!("iteration {:>8}/{:<8}", self.step, self.cfg.max_steps)
-                    }
+                let progress = if self.cfg.coupling.is_transient() {
+                    format!(
+                        "step {:>8}/{:<8} t={:>10.4}",
+                        self.step, self.cfg.max_steps, self.time
+                    )
+                } else {
+                    format!("iteration {:>8}/{:<8}", self.step, self.cfg.max_steps)
                 };
                 println!(
-                    "{progress} dt={:.3e} div={:.3e} p_res={:.3e} p_it={:>4} du={:.3e} umax={:.5} CFL={:.3e} Dnu={:.3e} Cd={:.5} Cl={:.5} xr/h={:.5} elapsed={:.1}s",
+                    "{progress} dt={:.3e} div={:.3e} p_res={:.3e} p_it={:>4} du={:.3e} rU={} umax={:.5} CFL={:.3e} Dnu={:.3e} Cd={:.5} Cl={:.5} xr/h={:.5} elapsed={:.1}s",
                     diag.time_step,
                     diag.max_divergence,
                     diag.pressure_residual,
                     diag.pressure_iterations,
                     diag.velocity_change,
+                    diag.momentum_equation_residual
+                        .map(|residual| format!("{residual:.3e}"))
+                        .unwrap_or_else(|| "n/a".to_string()),
                     diag.max_speed,
                     diag.momentum_cfl,
                     diag.viscous_diffusion_number,
@@ -475,11 +629,7 @@ impl IncompressibleSolver {
                 );
             }
 
-            if self.cfg.case.kind() != CaseKind::CylinderRe100
-                && self.step >= self.cfg.minimum_steps
-                && diag.velocity_change < self.cfg.steady_tolerance
-                && diag.max_divergence < 10.0 * self.cfg.pressure_tolerance
-            {
+            if self.has_steady_converged(diag) {
                 converged = true;
                 break;
             }
@@ -493,6 +643,7 @@ impl IncompressibleSolver {
             final_time: self.time,
             max_divergence: self.last_diag.max_divergence,
             pressure_residual: self.last_diag.pressure_residual,
+            momentum_equation_residual: self.last_diag.momentum_equation_residual,
             elapsed: started.elapsed(),
             converged,
         })
@@ -530,10 +681,7 @@ impl IncompressibleSolver {
         if self.step.is_multiple_of(self.cfg.frame_every) {
             self.write_snapshot()?;
         }
-        let converged = self.cfg.case.kind() != CaseKind::CylinderRe100
-            && self.step >= self.cfg.minimum_steps
-            && diag.velocity_change < self.cfg.steady_tolerance
-            && diag.max_divergence < 10.0 * self.cfg.pressure_tolerance;
+        let converged = self.has_steady_converged(diag);
         let reached_end_time = self.reached_end_time();
 
         Ok(SolverStep {
@@ -544,6 +692,7 @@ impl IncompressibleSolver {
             pressure_residual: diag.pressure_residual,
             pressure_iterations: diag.pressure_iterations,
             momentum_residual: diag.velocity_change,
+            momentum_equation_residual: diag.momentum_equation_residual,
             max_speed: diag.max_speed,
             momentum_cfl: diag.momentum_cfl,
             viscous_diffusion_number: diag.viscous_diffusion_number,
@@ -556,1824 +705,20 @@ impl IncompressibleSolver {
 
     fn reached_end_time(&self) -> bool {
         let time_tolerance = f64::EPSILON * self.cfg.t_end.abs().max(1.0) * 16.0;
-        self.cfg.coupling == PressureVelocityCoupling::Projection
-            && self.time >= self.cfg.t_end - time_tolerance
+        self.cfg.coupling.is_transient() && self.time >= self.cfg.t_end - time_tolerance
     }
 
-    pub fn field_update(&self) -> FieldUpdate {
-        let mut velocity_x = Vec::with_capacity(self.grid.nx * self.grid.ny);
-        let mut velocity_y = Vec::with_capacity(self.grid.nx * self.grid.ny);
-        for j in 0..self.grid.ny {
-            for i in 0..self.grid.nx {
-                velocity_x.push(0.5 * (self.u[(i, j)] + self.u[(i + 1, j)]));
-                velocity_y.push(0.5 * (self.v[(i, j)] + self.v[(i, j + 1)]));
-            }
-        }
-        FieldUpdate {
-            nx: self.grid.nx,
-            ny: self.grid.ny,
-            pressure: self.p.as_slice().to_vec(),
-            speed: self.speed.as_slice().to_vec(),
-            velocity_x,
-            velocity_y,
-            vorticity: self.vorticity.as_slice().to_vec(),
-            solid: self.solid.as_slice().to_vec(),
-            temperature: self
-                .temperature
-                .as_ref()
-                .map(|field| field.as_slice().to_vec()),
-        }
+    fn has_steady_converged(&self, diag: Diagnostics) -> bool {
+        !self.cfg.coupling.is_transient()
+            && self.cfg.case.kind() != CaseKind::CylinderRe100
+            && self.step >= self.cfg.minimum_steps
+            && diag.velocity_change < self.cfg.steady_tolerance
+            && diag.max_divergence < 10.0 * self.cfg.pressure_tolerance
+            && (!self.cfg.coupling.is_coefficient_based()
+                || diag
+                    .momentum_equation_residual
+                    .is_some_and(|residual| residual < self.cfg.steady_tolerance))
     }
-
-    fn initialize_velocity(&mut self) {
-        for j in 0..self.grid.ny {
-            for i in 0..=self.grid.nx {
-                let x = self.grid.u_face_x(i);
-                let y = self.grid.u_face_y(j);
-                let mut value = self.cfg.case.initial_velocity(x, y).0;
-                if !self.u_face_open(i, j) {
-                    value = 0.0;
-                }
-                self.u[(i, j)] = value;
-            }
-        }
-        for j in 0..=self.grid.ny {
-            for i in 0..self.grid.nx {
-                let x = self.grid.v_face_x(i);
-                let y = self.grid.v_face_y(j);
-                let mut value = self.cfg.case.initial_velocity(x, y).1;
-                if !self.v_face_open(i, j) {
-                    value = 0.0;
-                }
-                self.v[(i, j)] = value;
-            }
-        }
-        apply_velocity_boundaries(
-            &self.cfg.case,
-            &self.cfg.boundary_overrides,
-            &self.grid,
-            &self.solid,
-            self.time,
-            &mut self.u,
-            &mut self.v,
-        );
-    }
-
-    fn advance_one_step(&mut self) -> Result<Diagnostics, String> {
-        if self.reached_end_time() {
-            return Err("projection simulation has already reached t_end".to_string());
-        }
-
-        let mut step_dt = self.cfg.dt;
-        if self.cfg.time_step.adaptive {
-            let thermal_diffusivity = (self.cfg.physics.thermal.model
-                == EnergyModel::ConstantProperties)
-                .then_some(self.cfg.physics.thermal.thermal_diffusivity);
-            step_dt = adaptive_time_step(
-                self.current_dt,
-                AdaptiveTimeStepInputs {
-                    max_abs_u: self.u.max_abs(),
-                    max_abs_v: self.v.max_abs(),
-                    dx: self.grid.dx,
-                    dy: self.grid.dy,
-                    kinematic_viscosity: self.cfg.case.kinematic_viscosity(),
-                    thermal_diffusivity,
-                },
-                self.cfg.time_step,
-            )?;
-        }
-        if self.cfg.coupling == PressureVelocityCoupling::Projection {
-            let remaining_time = self.cfg.t_end - self.time;
-            // The final step may be below min_dt only to land exactly on t_end.
-            step_dt = step_dt.min(remaining_time);
-            if step_dt <= 0.0 {
-                return Err("projection simulation has already reached t_end".to_string());
-            }
-        }
-        if self.cfg.time_step.adaptive {
-            self.current_dt = step_dt;
-        }
-        let old_u = self.u.clone();
-        let old_v = self.v.clone();
-
-        let simple = self.cfg.coupling == PressureVelocityCoupling::Simple;
-        self.predict_momentum(simple, step_dt);
-        apply_velocity_boundaries(
-            &self.cfg.case,
-            &self.cfg.boundary_overrides,
-            &self.grid,
-            &self.solid,
-            self.time + step_dt,
-            &mut self.u_star,
-            &mut self.v_star,
-        );
-        let old_pressure = simple.then(|| self.p.clone());
-        if simple {
-            // During SIMPLE the Poisson solve is for p', not the absolute pressure.
-            self.p.fill(0.0);
-        }
-        self.build_pressure_rhs(step_dt);
-        let (pressure_residual, pressure_iterations) = self.solve_pressure_poisson()?;
-        self.correct_velocity(
-            if simple {
-                self.cfg.velocity_relaxation
-            } else {
-                1.0
-            },
-            step_dt,
-        );
-        if let Some(old_pressure) = old_pressure {
-            let pressure_relaxation = self.cfg.pressure_relaxation;
-            for (pressure, correction) in self
-                .p
-                .as_mut_slice()
-                .iter_mut()
-                .zip(old_pressure.as_slice())
-            {
-                *pressure = *correction + pressure_relaxation * *pressure;
-            }
-        }
-        apply_velocity_boundaries(
-            &self.cfg.case,
-            &self.cfg.boundary_overrides,
-            &self.grid,
-            &self.solid,
-            self.time + step_dt,
-            &mut self.u,
-            &mut self.v,
-        );
-
-        self.step += 1;
-        if self.cfg.coupling == PressureVelocityCoupling::Projection {
-            self.time += step_dt;
-        } else {
-            self.time = self.step as f64 * self.cfg.dt;
-        }
-        self.compute_cell_fields();
-        self.advance_temperature(step_dt)?;
-        self.ensure_finite()?;
-
-        let max_abs_u = self.u.max_abs();
-        let max_abs_v = self.v.max_abs();
-        let (momentum_cfl, viscous_diffusion_number) = momentum_stability_numbers(
-            step_dt,
-            self.cfg.case.kinematic_viscosity(),
-            self.grid.dx,
-            self.grid.dy,
-            max_abs_u,
-            max_abs_v,
-        );
-        let max_divergence = self.max_divergence();
-        let max_speed = self.speed.max_abs();
-        let velocity_change =
-            max_field_difference(&self.u, &old_u).max(max_field_difference(&self.v, &old_v));
-        let (cd, cl) = self.cylinder_force_coefficients();
-        let reattachment = self.reattachment_length_ratio();
-
-        Ok(Diagnostics {
-            time_step: step_dt,
-            pressure_residual,
-            pressure_iterations,
-            max_divergence,
-            max_speed,
-            momentum_cfl,
-            viscous_diffusion_number,
-            velocity_change,
-            cd,
-            cl,
-            reattachment,
-        })
-    }
-
-    fn predict_momentum(&mut self, include_pressure_gradient: bool, step_dt: f64) {
-        self.u_star.fill(0.0);
-        self.v_star.fill(0.0);
-        let Self {
-            pool,
-            cfg,
-            grid,
-            solid,
-            p,
-            u,
-            v,
-            temperature,
-            u_star,
-            v_star,
-            ..
-        } = self;
-        let nx = grid.nx;
-        let ny = grid.ny;
-        let dx = grid.dx;
-        let dy = grid.dy;
-        let dt = step_dt;
-        let nu = cfg.case.kinematic_viscosity();
-        let convection_scheme = cfg.convection;
-        let u_values = u.as_slice();
-        let v_values = v.as_slice();
-        let p_values = p.as_slice();
-        let rho = cfg.case.density();
-        let velocity_relaxation = if include_pressure_gradient {
-            cfg.velocity_relaxation
-        } else {
-            1.0
-        };
-        let buoyancy = cfg.physics.buoyancy;
-        let reference_temperature = match buoyancy {
-            BuoyancyModel::Boussinesq {
-                reference_temperature,
-                ..
-            } => reference_temperature,
-            BuoyancyModel::Off => 0.0,
-        };
-        let temperature_values = temperature.as_ref().map(|field| field.as_slice());
-        let stencil = MomentumStencil {
-            solid,
-            case: &cfg.case,
-            boundaries: &cfg.boundary_overrides,
-            grid,
-        };
-
-        pool.install(|| {
-            u_star
-                .as_mut_slice()
-                .par_chunks_mut(nx + 1)
-                .enumerate()
-                .for_each(|(j, row)| {
-                    for i in 1..nx {
-                        if !u_face_open(solid, nx, i, j) {
-                            continue;
-                        }
-                        let up = u_values[i + (nx + 1) * j];
-                        let ue_nb = stencil.u_neighbor(u_values, i, j, 1, 0, up);
-                        let uw_nb = stencil.u_neighbor(u_values, i, j, -1, 0, up);
-                        let un_nb = stencil.u_neighbor(u_values, i, j, 0, 1, up);
-                        let us_nb = stencil.u_neighbor(u_values, i, j, 0, -1, up);
-
-                        let ue = 0.5 * (up + ue_nb);
-                        let uw = 0.5 * (uw_nb + up);
-                        let vn =
-                            0.5 * (v_values[i - 1 + nx * (j + 1)] + v_values[i + nx * (j + 1)]);
-                        let vs = 0.5 * (v_values[i - 1 + nx * j] + v_values[i + nx * j]);
-
-                        let phi_e = transported(convection_scheme, ue, up, ue_nb);
-                        let phi_w = transported(convection_scheme, uw, uw_nb, up);
-                        let phi_n = transported(convection_scheme, vn, up, un_nb);
-                        let phi_s = transported(convection_scheme, vs, us_nb, up);
-
-                        let convection =
-                            (ue * phi_e - uw * phi_w) / dx + (vn * phi_n - vs * phi_s) / dy;
-                        let diffusion = (ue_nb - 2.0 * up + uw_nb) / (dx * dx)
-                            + (un_nb - 2.0 * up + us_nb) / (dy * dy);
-                        let pressure_gradient = if include_pressure_gradient {
-                            (p_values[i + nx * j] - p_values[i - 1 + nx * j]) / dx
-                        } else {
-                            0.0
-                        };
-                        let buoyancy_x = match (buoyancy, temperature_values) {
-                            (
-                                BuoyancyModel::Boussinesq {
-                                    thermal_expansion,
-                                    gravity_x,
-                                    ..
-                                },
-                                Some(t),
-                            ) => {
-                                let left = t[i - 1 + nx * j];
-                                let right = t[i + nx * j];
-                                gravity_x
-                                    * thermal_expansion
-                                    * (0.5 * (left + right) - reference_temperature)
-                            }
-                            _ => 0.0,
-                        };
-                        row[i] = up
-                            + velocity_relaxation
-                                * dt
-                                * (-convection + nu * diffusion - pressure_gradient / rho
-                                    + buoyancy_x);
-                    }
-                });
-
-            v_star
-                .as_mut_slice()
-                .par_chunks_mut(nx)
-                .enumerate()
-                .for_each(|(j, row)| {
-                    if j == 0 || j >= ny {
-                        return;
-                    }
-                    for i in 0..nx {
-                        if !v_face_open(solid, ny, i, j) {
-                            continue;
-                        }
-                        let vp = v_values[i + nx * j];
-                        let ve_nb = stencil.v_neighbor(v_values, i, j, 1, 0, vp);
-                        let vw_nb = stencil.v_neighbor(v_values, i, j, -1, 0, vp);
-                        let vn_nb = stencil.v_neighbor(v_values, i, j, 0, 1, vp);
-                        let vs_nb = stencil.v_neighbor(v_values, i, j, 0, -1, vp);
-
-                        let ue = 0.5
-                            * (u_values[i + 1 + (nx + 1) * (j - 1)]
-                                + u_values[i + 1 + (nx + 1) * j]);
-                        let uw =
-                            0.5 * (u_values[i + (nx + 1) * (j - 1)] + u_values[i + (nx + 1) * j]);
-                        let vn = 0.5 * (vp + vn_nb);
-                        let vs = 0.5 * (vs_nb + vp);
-
-                        let phi_e = transported(convection_scheme, ue, vp, ve_nb);
-                        let phi_w = transported(convection_scheme, uw, vw_nb, vp);
-                        let phi_n = transported(convection_scheme, vn, vp, vn_nb);
-                        let phi_s = transported(convection_scheme, vs, vs_nb, vp);
-
-                        let convection =
-                            (ue * phi_e - uw * phi_w) / dx + (vn * phi_n - vs * phi_s) / dy;
-                        let diffusion = (ve_nb - 2.0 * vp + vw_nb) / (dx * dx)
-                            + (vn_nb - 2.0 * vp + vs_nb) / (dy * dy);
-                        let pressure_gradient = if include_pressure_gradient {
-                            (p_values[i + nx * j] - p_values[i + nx * (j - 1)]) / dy
-                        } else {
-                            0.0
-                        };
-                        let buoyancy_y = match (buoyancy, temperature_values) {
-                            (
-                                BuoyancyModel::Boussinesq {
-                                    thermal_expansion,
-                                    gravity_y,
-                                    ..
-                                },
-                                Some(t),
-                            ) => {
-                                let below = t[i + nx * (j - 1)];
-                                let above = t[i + nx * j];
-                                gravity_y
-                                    * thermal_expansion
-                                    * (0.5 * (below + above) - reference_temperature)
-                            }
-                            _ => 0.0,
-                        };
-                        row[i] = vp
-                            + velocity_relaxation
-                                * dt
-                                * (-convection + nu * diffusion - pressure_gradient / rho
-                                    + buoyancy_y);
-                    }
-                });
-        });
-    }
-
-    fn build_pressure_rhs(&mut self, step_dt: f64) {
-        let Self {
-            pool,
-            cfg,
-            grid,
-            solid,
-            u_star,
-            v_star,
-            rhs,
-            ..
-        } = self;
-        let nx = grid.nx;
-        let correction_scale = if cfg.coupling == PressureVelocityCoupling::Simple {
-            cfg.velocity_relaxation
-        } else {
-            1.0
-        };
-        let rho_over_dt = cfg.case.density() / (correction_scale * step_dt);
-        let u_values = u_star.as_slice();
-        let v_values = v_star.as_slice();
-        pool.install(|| {
-            rhs.as_mut_slice()
-                .par_chunks_mut(nx)
-                .enumerate()
-                .for_each(|(j, row)| {
-                    for i in 0..nx {
-                        if solid[(i, j)]
-                            || pressure_outlet_cell(
-                                &cfg.case,
-                                &cfg.boundary_overrides,
-                                solid,
-                                nx,
-                                i,
-                                j,
-                            )
-                        {
-                            row[i] = 0.0;
-                            continue;
-                        }
-                        let div = (u_values[i + 1 + (nx + 1) * j] - u_values[i + (nx + 1) * j])
-                            / grid.dx
-                            + (v_values[i + nx * (j + 1)] - v_values[i + nx * j]) / grid.dy;
-                        row[i] = rho_over_dt * div;
-                    }
-                });
-        });
-    }
-
-    fn solve_pressure_poisson(&mut self) -> Result<(f64, usize), String> {
-        match self.cfg.pressure_solver {
-            PressureSolverKind::Pcg => self.solve_pressure_pcg(),
-            PressureSolverKind::Sor => self.solve_pressure_sor(),
-        }
-    }
-
-    fn solve_pressure_sor(&mut self) -> Result<(f64, usize), String> {
-        let idx2 = 1.0 / (self.grid.dx * self.grid.dx);
-        let idy2 = 1.0 / (self.grid.dy * self.grid.dy);
-        let omega = self.cfg.pressure_omega;
-        let mut residual = f64::INFINITY;
-
-        let mut iterations = 0_usize;
-        for iteration in 0..self.cfg.pressure_max_iters {
-            iterations = iteration + 1;
-            for j in 0..self.grid.ny {
-                for i in 0..self.grid.nx {
-                    if self.solid[(i, j)] {
-                        self.p[(i, j)] = 0.0;
-                        continue;
-                    }
-                    if self.is_pressure_outlet_cell(i, j) {
-                        self.p[(i, j)] = self.outlet_pressure();
-                        continue;
-                    }
-                    let mut ap = 0.0;
-                    let mut sum = 0.0;
-                    if i + 1 < self.grid.nx && !self.solid[(i + 1, j)] {
-                        ap += idx2;
-                        sum += idx2 * self.p[(i + 1, j)];
-                    }
-                    if i > 0 && !self.solid[(i - 1, j)] {
-                        ap += idx2;
-                        sum += idx2 * self.p[(i - 1, j)];
-                    }
-                    if j + 1 < self.grid.ny && !self.solid[(i, j + 1)] {
-                        ap += idy2;
-                        sum += idy2 * self.p[(i, j + 1)];
-                    }
-                    if j > 0 && !self.solid[(i, j - 1)] {
-                        ap += idy2;
-                        sum += idy2 * self.p[(i, j - 1)];
-                    }
-                    if ap > 0.0 {
-                        let candidate = (sum - self.rhs[(i, j)]) / ap;
-                        let old = self.p[(i, j)];
-                        self.p[(i, j)] = old + omega * (candidate - old);
-                    }
-                }
-            }
-
-            if self.pressure_reference_required() {
-                if let Some((ri, rj)) = self.find_reference_cell() {
-                    let reference_pressure = self.p[(ri, rj)];
-                    for jj in 0..self.grid.ny {
-                        for ii in 0..self.grid.nx {
-                            if !self.solid[(ii, jj)] {
-                                self.p[(ii, jj)] -= reference_pressure;
-                            }
-                        }
-                    }
-                }
-            }
-
-            residual = self.pressure_residual();
-            if !residual.is_finite() {
-                return Err("Pressure solver produced a non-finite residual".to_string());
-            }
-            if residual < self.cfg.pressure_tolerance {
-                break;
-            }
-        }
-        Ok((residual, iterations))
-    }
-
-    fn solve_pressure_pcg(&mut self) -> Result<(f64, usize), String> {
-        let n = self.grid.nx * self.grid.ny;
-        let mut workspace = std::mem::take(&mut self.pcg_workspace);
-        workspace.resize(n);
-        let result = {
-            let PcgWorkspace {
-                ref mut x,
-                ref mut b,
-                ref mut r,
-                ref mut z,
-                ref mut direction,
-                ref mut q,
-            } = &mut workspace;
-            x.copy_from_slice(self.p.as_slice());
-            (|| {
-                let nx = self.grid.nx;
-                let solid = &self.solid;
-                let case = &self.cfg.case;
-                let boundaries = &self.cfg.boundary_overrides;
-                let rhs = self.rhs.as_slice();
-                let outlet_pressure = self.outlet_pressure();
-                self.pool.install(|| {
-                    x.par_chunks_mut(nx)
-                        .zip(b.par_chunks_mut(nx))
-                        .enumerate()
-                        .for_each(|(j, (x_row, b_row))| {
-                            for i in 0..nx {
-                                let k = i + nx * j;
-                                if solid[(i, j)]
-                                    || pressure_outlet_cell(case, boundaries, solid, nx, i, j)
-                                {
-                                    let value = if pressure_outlet_cell(
-                                        case, boundaries, solid, nx, i, j,
-                                    ) {
-                                        outlet_pressure
-                                    } else {
-                                        0.0
-                                    };
-                                    x_row[i] = value;
-                                    b_row[i] = value;
-                                } else {
-                                    b_row[i] = -rhs[k];
-                                }
-                            }
-                        });
-                });
-
-                if self.pressure_reference_required() {
-                    self.project_pressure_zero_mean(x);
-                    self.project_pressure_zero_mean(b);
-                }
-
-                self.apply_pressure_operator(x, q);
-                self.pool.install(|| {
-                    r.par_iter_mut()
-                        .zip(b.par_iter())
-                        .zip(q.par_iter())
-                        .for_each(|((r_value, &b_value), &q_value)| *r_value = b_value - q_value);
-                });
-                if self.pressure_reference_required() {
-                    self.project_pressure_zero_mean(r);
-                }
-
-                let mut residual = self.parallel_max_abs(r);
-                if residual < self.cfg.pressure_tolerance {
-                    self.p.as_mut_slice().copy_from_slice(x);
-                    return Ok((residual, 0));
-                }
-
-                self.apply_jacobi_preconditioner(r, z);
-                if self.pressure_reference_required() {
-                    self.project_pressure_zero_mean(z);
-                }
-                direction.copy_from_slice(z);
-                let mut rz_old = self.parallel_dot(r, z);
-
-                let mut iterations = 0_usize;
-                for iteration in 0..self.cfg.pressure_max_iters {
-                    iterations = iteration + 1;
-                    self.apply_pressure_operator(direction, q);
-                    let denominator = self.parallel_dot(direction, q);
-                    if denominator.abs() < 1.0e-30 || !denominator.is_finite() {
-                        return Err(
-                            "PCG pressure solver encountered a singular search direction"
-                                .to_string(),
-                        );
-                    }
-                    let alpha = rz_old / denominator;
-                    if !alpha.is_finite() {
-                        return Err(
-                            "PCG pressure solver produced a non-finite step length".to_string()
-                        );
-                    }
-                    self.pool.install(|| {
-                        x.par_iter_mut()
-                            .zip(r.par_iter_mut())
-                            .zip(direction.par_iter())
-                            .zip(q.par_iter())
-                            .for_each(|(((x_value, r_value), &direction_value), &q_value)| {
-                                *x_value += alpha * direction_value;
-                                *r_value -= alpha * q_value;
-                            });
-                    });
-                    if self.pressure_reference_required() {
-                        self.project_pressure_zero_mean(x);
-                        self.project_pressure_zero_mean(r);
-                    }
-
-                    residual = self.parallel_max_abs(r);
-                    if !residual.is_finite() {
-                        return Err(
-                            "PCG pressure solver produced a non-finite residual".to_string()
-                        );
-                    }
-                    if residual < self.cfg.pressure_tolerance {
-                        break;
-                    }
-
-                    self.apply_jacobi_preconditioner(r, z);
-                    if self.pressure_reference_required() {
-                        self.project_pressure_zero_mean(z);
-                    }
-                    let rz_new = self.parallel_dot(r, z);
-                    if rz_old.abs() < 1.0e-30 {
-                        break;
-                    }
-                    let beta = rz_new / rz_old;
-                    self.pool.install(|| {
-                        direction.par_iter_mut().zip(z.par_iter()).for_each(
-                            |(direction_value, &z_value)| {
-                                *direction_value = z_value + beta * *direction_value;
-                            },
-                        );
-                    });
-                    if self.pressure_reference_required() {
-                        self.project_pressure_zero_mean(direction);
-                    }
-                    rz_old = rz_new;
-                }
-
-                let case = &self.cfg.case;
-                let boundaries = &self.cfg.boundary_overrides;
-                let solid = &self.solid;
-                let outlet_pressure = self.outlet_pressure();
-                self.pool.install(|| {
-                    self.p
-                        .as_mut_slice()
-                        .par_chunks_mut(nx)
-                        .enumerate()
-                        .for_each(|(j, row)| {
-                            for i in 0..nx {
-                                row[i] = if solid[(i, j)] {
-                                    0.0
-                                } else if pressure_outlet_cell(case, boundaries, solid, nx, i, j) {
-                                    outlet_pressure
-                                } else {
-                                    x[i + nx * j]
-                                };
-                            }
-                        });
-                });
-                Ok((residual, iterations))
-            })()
-        };
-        self.pcg_workspace = workspace;
-        result
-    }
-
-    fn apply_pressure_operator(&self, x: &[f64], result: &mut [f64]) {
-        let idx2 = 1.0 / (self.grid.dx * self.grid.dx);
-        let idy2 = 1.0 / (self.grid.dy * self.grid.dy);
-        let nx = self.grid.nx;
-        let ny = self.grid.ny;
-        let solid = &self.solid;
-        let case = &self.cfg.case;
-        let boundaries = &self.cfg.boundary_overrides;
-        self.pool.install(|| {
-            result.par_chunks_mut(nx).enumerate().for_each(|(j, row)| {
-                for i in 0..nx {
-                    let k = i + nx * j;
-                    if solid[(i, j)] || pressure_outlet_cell(case, boundaries, solid, nx, i, j) {
-                        row[i] = x[k];
-                        continue;
-                    }
-
-                    let mut diagonal = 0.0;
-                    let mut neighbour_sum = 0.0;
-                    if i + 1 < nx && !solid[(i + 1, j)] {
-                        diagonal += idx2;
-                        neighbour_sum += idx2 * x[k + 1];
-                    }
-                    if i > 0 && !solid[(i - 1, j)] {
-                        diagonal += idx2;
-                        neighbour_sum += idx2 * x[k - 1];
-                    }
-                    if j + 1 < ny && !solid[(i, j + 1)] {
-                        diagonal += idy2;
-                        neighbour_sum += idy2 * x[k + nx];
-                    }
-                    if j > 0 && !solid[(i, j - 1)] {
-                        diagonal += idy2;
-                        neighbour_sum += idy2 * x[k - nx];
-                    }
-                    row[i] = diagonal * x[k] - neighbour_sum;
-                }
-            });
-        });
-    }
-
-    fn apply_jacobi_preconditioner(&self, r: &[f64], z: &mut [f64]) {
-        let idx2 = 1.0 / (self.grid.dx * self.grid.dx);
-        let idy2 = 1.0 / (self.grid.dy * self.grid.dy);
-        let nx = self.grid.nx;
-        let ny = self.grid.ny;
-        let solid = &self.solid;
-        let case = &self.cfg.case;
-        let boundaries = &self.cfg.boundary_overrides;
-        self.pool.install(|| {
-            z.par_chunks_mut(nx).enumerate().for_each(|(j, row)| {
-                for i in 0..nx {
-                    let k = i + nx * j;
-                    if solid[(i, j)] || pressure_outlet_cell(case, boundaries, solid, nx, i, j) {
-                        row[i] = r[k];
-                        continue;
-                    }
-                    let mut diagonal = 0.0;
-                    if i + 1 < nx && !solid[(i + 1, j)] {
-                        diagonal += idx2;
-                    }
-                    if i > 0 && !solid[(i - 1, j)] {
-                        diagonal += idx2;
-                    }
-                    if j + 1 < ny && !solid[(i, j + 1)] {
-                        diagonal += idy2;
-                    }
-                    if j > 0 && !solid[(i, j - 1)] {
-                        diagonal += idy2;
-                    }
-                    row[i] = if diagonal > 0.0 {
-                        r[k] / diagonal
-                    } else {
-                        r[k]
-                    };
-                }
-            });
-        });
-    }
-
-    fn project_pressure_zero_mean(&self, values: &mut [f64]) {
-        let pool = &self.pool;
-        let solid = &self.solid;
-        let case = &self.cfg.case;
-        let boundaries = &self.cfg.boundary_overrides;
-        let nx = self.grid.nx;
-        let ny = self.grid.ny;
-        project_zero_mean(pool, values, solid, nx, ny, |i, j| {
-            pressure_outlet_cell(case, boundaries, solid, nx, i, j)
-        });
-    }
-
-    fn parallel_dot(&self, a: &[f64], b: &[f64]) -> f64 {
-        self.pool
-            .install(|| a.par_iter().zip(b.par_iter()).map(|(&x, &y)| x * y).sum())
-    }
-
-    fn parallel_max_abs(&self, values: &[f64]) -> f64 {
-        self.pool.install(|| {
-            values
-                .par_iter()
-                .map(|value| value.abs())
-                .reduce(|| 0.0, f64::max)
-        })
-    }
-
-    fn correct_velocity(&mut self, correction_scale: f64, step_dt: f64) {
-        let dt_over_rho = correction_scale * step_dt / self.cfg.case.density();
-        self.u
-            .as_mut_slice()
-            .copy_from_slice(self.u_star.as_slice());
-        self.v
-            .as_mut_slice()
-            .copy_from_slice(self.v_star.as_slice());
-        let Self {
-            pool,
-            grid,
-            solid,
-            p,
-            u,
-            v,
-            u_star,
-            v_star,
-            ..
-        } = self;
-        let nx = grid.nx;
-        let ny = grid.ny;
-        let p_values = p.as_slice();
-        let u_star_values = u_star.as_slice();
-        let v_star_values = v_star.as_slice();
-        pool.install(|| {
-            u.as_mut_slice()
-                .par_chunks_mut(nx + 1)
-                .enumerate()
-                .for_each(|(j, row)| {
-                    for i in 1..nx {
-                        if u_face_open(solid, nx, i, j) {
-                            let gradient =
-                                (p_values[i + nx * j] - p_values[i - 1 + nx * j]) / grid.dx;
-                            row[i] = u_star_values[i + (nx + 1) * j] - dt_over_rho * gradient;
-                        } else {
-                            row[i] = 0.0;
-                        }
-                    }
-                });
-            v.as_mut_slice()
-                .par_chunks_mut(nx)
-                .enumerate()
-                .for_each(|(j, row)| {
-                    if j == 0 || j >= ny {
-                        return;
-                    }
-                    for i in 0..nx {
-                        if v_face_open(solid, ny, i, j) {
-                            let gradient =
-                                (p_values[i + nx * j] - p_values[i + nx * (j - 1)]) / grid.dy;
-                            row[i] = v_star_values[i + nx * j] - dt_over_rho * gradient;
-                        } else {
-                            row[i] = 0.0;
-                        }
-                    }
-                });
-        });
-    }
-
-    fn compute_cell_fields(&mut self) {
-        let Self {
-            pool,
-            grid,
-            solid,
-            u,
-            v,
-            u_cell,
-            v_cell,
-            speed,
-            vorticity,
-            ..
-        } = self;
-        let nx = grid.nx;
-        let u_values = u.as_slice();
-        let v_values = v.as_slice();
-        pool.install(|| {
-            u_cell
-                .as_mut_slice()
-                .par_chunks_mut(nx)
-                .zip(v_cell.as_mut_slice().par_chunks_mut(nx))
-                .zip(speed.as_mut_slice().par_chunks_mut(nx))
-                .enumerate()
-                .for_each(|(j, ((u_row, v_row), speed_row))| {
-                    for i in 0..nx {
-                        if solid[(i, j)] {
-                            u_row[i] = 0.0;
-                            v_row[i] = 0.0;
-                            speed_row[i] = 0.0;
-                            continue;
-                        }
-                        let uc =
-                            0.5 * (u_values[i + (nx + 1) * j] + u_values[i + 1 + (nx + 1) * j]);
-                        let vc = 0.5 * (v_values[i + nx * j] + v_values[i + nx * (j + 1)]);
-                        u_row[i] = uc;
-                        v_row[i] = vc;
-                        speed_row[i] = (uc * uc + vc * vc).sqrt();
-                    }
-                });
-
-            let u_cell_values = u_cell.as_slice();
-            let v_cell_values = v_cell.as_slice();
-            vorticity
-                .as_mut_slice()
-                .par_chunks_mut(nx)
-                .enumerate()
-                .for_each(|(j, row)| {
-                    for i in 0..nx {
-                        row[i] = if solid[(i, j)] {
-                            0.0
-                        } else {
-                            let dvdx = derivative_x_slice(v_cell_values, solid, nx, i, j, grid.dx);
-                            let dudy = derivative_y_slice(u_cell_values, solid, nx, i, j, grid.dy);
-                            dvdx - dudy
-                        };
-                    }
-                });
-        });
-    }
-
-    /// Advances rho*cp*(dT/dt + u.grad(T)) = k*laplacian(T) + q using an
-    /// explicit, conservative cell-centred finite-volume update.  The
-    /// configuration validation enforces the diffusion limit; this method also
-    /// enforces the velocity-dependent CFL condition at runtime.
-    fn advance_temperature(&mut self, step_dt: f64) -> Result<(), String> {
-        let Some(old) = self.temperature.as_ref().cloned() else {
-            return Ok(());
-        };
-        let max_u = self.u_cell.max_abs();
-        let max_v = self.v_cell.max_abs();
-        let cfl = step_dt * (max_u / self.grid.dx + max_v / self.grid.dy);
-        if cfl > 1.0 {
-            return Err(format!(
-                "explicit thermal advection is unstable at step {}: CFL={cfl:.3e} exceeds 1",
-                self.step
-            ));
-        }
-
-        let mut next = old.clone();
-        let alpha = self.cfg.physics.thermal.thermal_diffusivity;
-        let source = self.cfg.physics.thermal.source_temperature_rate;
-        for j in 0..self.grid.ny {
-            for i in 0..self.grid.nx {
-                if self.solid[(i, j)] {
-                    next[(i, j)] = old[(i, j)];
-                    continue;
-                }
-                let center = old[(i, j)];
-                let east = self.temperature_neighbor(&old, i, j, 1, 0, center);
-                let west = self.temperature_neighbor(&old, i, j, -1, 0, center);
-                let north = self.temperature_neighbor(&old, i, j, 0, 1, center);
-                let south = self.temperature_neighbor(&old, i, j, 0, -1, center);
-                let ue = self.u[(i + 1, j)];
-                let uw = self.u[(i, j)];
-                let vn = self.v[(i, j + 1)];
-                let vs = self.v[(i, j)];
-                let flux_e = ue * upwind_value(ue, center, east);
-                let flux_w = uw * upwind_value(uw, west, center);
-                let flux_n = vn * upwind_value(vn, center, north);
-                let flux_s = vs * upwind_value(vs, south, center);
-                let convection =
-                    (flux_e - flux_w) / self.grid.dx + (flux_n - flux_s) / self.grid.dy;
-                let diffusion = (east - 2.0 * center + west) / self.grid.dx.powi(2)
-                    + (north - 2.0 * center + south) / self.grid.dy.powi(2);
-                next[(i, j)] = center + step_dt * (-convection + alpha * diffusion + source);
-            }
-        }
-        *self
-            .temperature
-            .as_mut()
-            .expect("temperature state checked above") = next;
-        Ok(())
-    }
-
-    fn temperature_neighbor(
-        &self,
-        field: &Field2D,
-        i: usize,
-        j: usize,
-        di: isize,
-        dj: isize,
-        center: f64,
-    ) -> f64 {
-        let ni = i as isize + di;
-        let nj = j as isize + dj;
-        if ni >= 0 && ni < self.grid.nx as isize && nj >= 0 && nj < self.grid.ny as isize {
-            let ni = ni as usize;
-            let nj = nj as usize;
-            return if self.solid[(ni, nj)] {
-                center
-            } else {
-                field[(ni, nj)]
-            };
-        }
-        let boundary = if ni < 0 {
-            self.cfg.physics.thermal.left
-        } else if ni >= self.grid.nx as isize {
-            self.cfg.physics.thermal.right
-        } else if nj < 0 {
-            self.cfg.physics.thermal.bottom
-        } else {
-            self.cfg.physics.thermal.top
-        };
-        match boundary {
-            ThermalBoundaryCondition::Adiabatic => center,
-            ThermalBoundaryCondition::FixedTemperature { temperature } => {
-                2.0 * temperature - center
-            }
-        }
-    }
-
-    fn pressure_residual(&self) -> f64 {
-        let idx2 = 1.0 / (self.grid.dx * self.grid.dx);
-        let idy2 = 1.0 / (self.grid.dy * self.grid.dy);
-        let mut max_r = 0.0_f64;
-        for j in 0..self.grid.ny {
-            for i in 0..self.grid.nx {
-                if self.solid[(i, j)] || self.is_pressure_outlet_cell(i, j) {
-                    continue;
-                }
-                let p0 = self.p[(i, j)];
-                let pe = if i + 1 < self.grid.nx && !self.solid[(i + 1, j)] {
-                    self.p[(i + 1, j)]
-                } else {
-                    p0
-                };
-                let pw = if i > 0 && !self.solid[(i - 1, j)] {
-                    self.p[(i - 1, j)]
-                } else {
-                    p0
-                };
-                let pn = if j + 1 < self.grid.ny && !self.solid[(i, j + 1)] {
-                    self.p[(i, j + 1)]
-                } else {
-                    p0
-                };
-                let ps = if j > 0 && !self.solid[(i, j - 1)] {
-                    self.p[(i, j - 1)]
-                } else {
-                    p0
-                };
-                let lap = (pe - 2.0 * p0 + pw) * idx2 + (pn - 2.0 * p0 + ps) * idy2;
-                max_r = max_r.max((lap - self.rhs[(i, j)]).abs());
-            }
-        }
-        max_r
-    }
-
-    fn max_divergence(&self) -> f64 {
-        let mut max_div = 0.0_f64;
-        for j in 0..self.grid.ny {
-            for i in 0..self.grid.nx {
-                if self.solid[(i, j)] {
-                    continue;
-                }
-                let div = (self.u[(i + 1, j)] - self.u[(i, j)]) / self.grid.dx
-                    + (self.v[(i, j + 1)] - self.v[(i, j)]) / self.grid.dy;
-                max_div = max_div.max(div.abs());
-            }
-        }
-        max_div
-    }
-
-    fn u_face_open(&self, i: usize, j: usize) -> bool {
-        u_face_open(&self.solid, self.grid.nx, i, j)
-    }
-
-    fn v_face_open(&self, i: usize, j: usize) -> bool {
-        v_face_open(&self.solid, self.grid.ny, i, j)
-    }
-
-    fn is_pressure_outlet_cell(&self, i: usize, j: usize) -> bool {
-        i + 1 == self.grid.nx
-            && !self.solid[(i, j)]
-            && matches!(
-                self.cfg
-                    .boundary_overrides
-                    .kind(&self.cfg.case, Side::Right),
-                BoundaryKind::PressureOutlet { .. }
-            )
-    }
-
-    fn outlet_pressure(&self) -> f64 {
-        match self
-            .cfg
-            .boundary_overrides
-            .kind(&self.cfg.case, Side::Right)
-        {
-            BoundaryKind::PressureOutlet { pressure } => pressure,
-            _ => 0.0,
-        }
-    }
-
-    fn find_reference_cell(&self) -> Option<(usize, usize)> {
-        for j in 0..self.grid.ny {
-            for i in 0..self.grid.nx {
-                if !self.solid[(i, j)] {
-                    return Some((i, j));
-                }
-            }
-        }
-        None
-    }
-
-    fn pressure_reference_required(&self) -> bool {
-        !matches!(
-            self.cfg
-                .boundary_overrides
-                .kind(&self.cfg.case, Side::Right),
-            BoundaryKind::PressureOutlet { .. }
-        )
-    }
-
-    fn cylinder_force_coefficients(&self) -> (f64, f64) {
-        let Some(cyl) = self.cfg.case.cylinder() else {
-            return (0.0, 0.0);
-        };
-        let mu = cyl.mu;
-        let mut fx = 0.0;
-        let mut fy = 0.0;
-
-        for j in 0..self.grid.ny {
-            for i in 0..self.grid.nx {
-                if self.solid[(i, j)] {
-                    continue;
-                }
-                let p = self.p[(i, j)];
-                let uc = self.u_cell[(i, j)];
-                let vc = self.v_cell[(i, j)];
-
-                if i + 1 < self.grid.nx && self.solid[(i + 1, j)] {
-                    fx += p * self.grid.dy;
-                    fy += mu * vc / (0.5 * self.grid.dx) * self.grid.dy;
-                }
-                if i > 0 && self.solid[(i - 1, j)] {
-                    fx -= p * self.grid.dy;
-                    fy += mu * vc / (0.5 * self.grid.dx) * self.grid.dy;
-                }
-                if j + 1 < self.grid.ny && self.solid[(i, j + 1)] {
-                    fy += p * self.grid.dx;
-                    fx += mu * uc / (0.5 * self.grid.dy) * self.grid.dx;
-                }
-                if j > 0 && self.solid[(i, j - 1)] {
-                    fy -= p * self.grid.dx;
-                    fx += mu * uc / (0.5 * self.grid.dy) * self.grid.dx;
-                }
-            }
-        }
-
-        let q = 0.5 * cyl.rho * cyl.u_inf * cyl.u_inf * cyl.diameter;
-        if q > 0.0 {
-            (fx / q, fy / q)
-        } else {
-            (0.0, 0.0)
-        }
-    }
-
-    fn reattachment_length_ratio(&self) -> f64 {
-        let Some(step) = self.cfg.case.backward_step() else {
-            return 0.0;
-        };
-        let start_i = ((step.step_x / self.grid.dx).floor() as usize).min(self.grid.nx - 2);
-        let j = 0;
-        let mu = step.rho * step.nu;
-        let mut previous_tau: Option<f64> = None;
-        let mut previous_x = 0.0;
-
-        for i in (start_i + 1)..(self.grid.nx - 1) {
-            if self.solid[(i, j)] {
-                continue;
-            }
-            let tau = mu * self.u_cell[(i, j)] / (0.5 * self.grid.dy);
-            let x = self.grid.cell_x(i);
-            if let Some(tau0) = previous_tau {
-                if tau0 <= 0.0 && tau > 0.0 {
-                    let fraction = (-tau0 / (tau - tau0)).clamp(0.0, 1.0);
-                    let xr = previous_x + fraction * (x - previous_x);
-                    return (xr - step.step_x) / step.step_height;
-                }
-            }
-            previous_tau = Some(tau);
-            previous_x = x;
-        }
-        f64::NAN
-    }
-
-    fn ensure_finite(&self) -> Result<(), String> {
-        for (name, field) in [
-            ("pressure", &self.p),
-            ("u", &self.u),
-            ("v", &self.v),
-            ("speed", &self.speed),
-        ] {
-            if let Some((index, value)) = field
-                .as_slice()
-                .iter()
-                .copied()
-                .enumerate()
-                .find(|(_, value)| !value.is_finite())
-            {
-                return Err(format!(
-                    "Non-finite {name} value at flat index {index}: {value} (step {})",
-                    self.step
-                ));
-            }
-        }
-        if let Some(temperature) = &self.temperature {
-            if let Some((index, value)) = temperature
-                .as_slice()
-                .iter()
-                .copied()
-                .enumerate()
-                .find(|(_, value)| !value.is_finite())
-            {
-                return Err(format!(
-                    "Non-finite temperature value at flat index {index}: {value} (step {})",
-                    self.step
-                ));
-            }
-        }
-        Ok(())
-    }
-
-    fn append_histories(&self, diag: Diagnostics) -> Result<(), String> {
-        let history = self.cfg.output_dir.join("history.csv");
-        let row = format!(
-            "{},{:.12},{:.12e},{},{:.12e},{:.12e},{:.12e},{:.12e},{:.12e},{:.12e},{:.12e},{:.12e},{:.12e}",
-            self.step,
-            self.time,
-            diag.pressure_residual,
-            diag.pressure_iterations,
-            diag.max_divergence,
-            diag.velocity_change,
-            diag.max_speed,
-            diag.cd,
-            diag.cl,
-            diag.reattachment,
-            diag.momentum_cfl,
-            diag.viscous_diffusion_number,
-            diag.time_step
-        );
-        output::append_history(
-            &history,
-            "step,time,pressure_residual,pressure_iterations,max_divergence,velocity_change,max_speed,cd,cl,reattachment_x_over_h,momentum_cfl,viscous_diffusion_number,time_step",
-            &row,
-        )
-    }
-
-    fn write_snapshot(&mut self) -> Result<(), String> {
-        self.compute_cell_fields();
-        let frame_dir = self.cfg.output_dir.join("frames");
-        let speed_path = frame_dir.join(format!("speed_{:05}.ppm", self.frame_index));
-        let vort_path = frame_dir.join(format!("vorticity_{:05}.ppm", self.frame_index));
-        output::write_ppm_frame(&speed_path, &self.grid, &self.solid, &self.speed, false)?;
-        output::write_ppm_frame(&vort_path, &self.grid, &self.solid, &self.vorticity, true)?;
-        if let Some(temperature) = &self.temperature {
-            let temperature_path =
-                frame_dir.join(format!("temperature_{:05}.ppm", self.frame_index));
-            output::write_ppm_frame(
-                &temperature_path,
-                &self.grid,
-                &self.solid,
-                temperature,
-                false,
-            )?;
-        }
-        self.frame_index += 1;
-        Ok(())
-    }
-
-    fn write_final_outputs(&self) -> Result<(), String> {
-        output::write_field_csv(
-            &self.cfg.output_dir.join("field.csv"),
-            &self.grid,
-            &self.solid,
-            output::CsvFields {
-                pressure: &self.p,
-                u: &self.u_cell,
-                v: &self.v_cell,
-                vorticity: &self.vorticity,
-                temperature: self.temperature.as_ref(),
-            },
-        )?;
-        output::write_legacy_vtk(
-            &self.cfg.output_dir.join("field.vtk"),
-            self.cfg.case.name(),
-            &self.grid,
-            &self.solid,
-            output::VtkFields {
-                pressure: &self.p,
-                u: &self.u_cell,
-                v: &self.v_cell,
-                vorticity: &self.vorticity,
-                temperature: self.temperature.as_ref(),
-            },
-        )?;
-        self.write_case_specific_profiles()?;
-        Ok(())
-    }
-
-    fn write_case_specific_profiles(&self) -> Result<(), String> {
-        match self.cfg.case.kind() {
-            CaseKind::LidDrivenCavity => {
-                let mut u_file = BufWriter::new(
-                    File::create(self.cfg.output_dir.join("centerline_u_vertical.csv"))
-                        .map_err(|e| e.to_string())?,
-                );
-                writeln!(u_file, "y,u").map_err(|e| e.to_string())?;
-                let i = self.grid.nx / 2;
-                for j in 0..self.grid.ny {
-                    writeln!(
-                        u_file,
-                        "{:.12},{:.12e}",
-                        self.grid.cell_y(j),
-                        self.u_cell[(i, j)]
-                    )
-                    .map_err(|e| e.to_string())?;
-                }
-
-                let mut v_file = BufWriter::new(
-                    File::create(self.cfg.output_dir.join("centerline_v_horizontal.csv"))
-                        .map_err(|e| e.to_string())?,
-                );
-                writeln!(v_file, "x,v").map_err(|e| e.to_string())?;
-                let j = self.grid.ny / 2;
-                for i in 0..self.grid.nx {
-                    writeln!(
-                        v_file,
-                        "{:.12},{:.12e}",
-                        self.grid.cell_x(i),
-                        self.v_cell[(i, j)]
-                    )
-                    .map_err(|e| e.to_string())?;
-                }
-            }
-            CaseKind::CylinderRe100 => {
-                let mut file = BufWriter::new(
-                    File::create(self.cfg.output_dir.join("wake_centerline.csv"))
-                        .map_err(|e| e.to_string())?,
-                );
-                writeln!(file, "x,u,v,p").map_err(|e| e.to_string())?;
-                let j = self.grid.ny / 2;
-                for i in 0..self.grid.nx {
-                    if !self.solid[(i, j)] {
-                        writeln!(
-                            file,
-                            "{:.12},{:.12e},{:.12e},{:.12e}",
-                            self.grid.cell_x(i),
-                            self.u_cell[(i, j)],
-                            self.v_cell[(i, j)],
-                            self.p[(i, j)]
-                        )
-                        .map_err(|e| e.to_string())?;
-                    }
-                }
-            }
-            CaseKind::BackwardFacingStep => {
-                let mut file = BufWriter::new(
-                    File::create(self.cfg.output_dir.join("bottom_wall_shear.csv"))
-                        .map_err(|e| e.to_string())?,
-                );
-                writeln!(file, "x,tau_wall").map_err(|e| e.to_string())?;
-                let mu = self.cfg.case.density() * self.cfg.case.kinematic_viscosity();
-                for i in 0..self.grid.nx {
-                    if !self.solid[(i, 0)] {
-                        let tau = mu * self.u_cell[(i, 0)] / (0.5 * self.grid.dy);
-                        writeln!(file, "{:.12},{:.12e}", self.grid.cell_x(i), tau)
-                            .map_err(|e| e.to_string())?;
-                    }
-                }
-            }
-            CaseKind::Channel => {
-                let mut file = BufWriter::new(
-                    File::create(self.cfg.output_dir.join("outlet_velocity_profile.csv"))
-                        .map_err(|e| e.to_string())?,
-                );
-                writeln!(file, "y,u,v,p").map_err(|e| e.to_string())?;
-                let i = self.grid.nx - 1;
-                for j in 0..self.grid.ny {
-                    writeln!(
-                        file,
-                        "{:.12},{:.12e},{:.12e},{:.12e}",
-                        self.grid.cell_y(j),
-                        self.u_cell[(i, j)],
-                        self.v_cell[(i, j)],
-                        self.p[(i, j)]
-                    )
-                    .map_err(|e| e.to_string())?;
-                }
-            }
-        }
-        Ok(())
-    }
-
-    fn write_case_summary(&self) -> Result<(), String> {
-        let file = File::create(self.cfg.output_dir.join("case_summary.txt"))
-            .map_err(|e| format!("Cannot write case summary: {e}"))?;
-        let mut w = BufWriter::new(file);
-        writeln!(w, "Case: {}", self.cfg.case.name()).map_err(|e| e.to_string())?;
-        writeln!(
-            w,
-            "Method: finite volume, staggered grid, {:?}",
-            self.cfg.coupling
-        )
-        .map_err(|e| e.to_string())?;
-        writeln!(w, "Grid: {} x {}", self.grid.nx, self.grid.ny).map_err(|e| e.to_string())?;
-        writeln!(w, "Domain: {} x {}", self.grid.length, self.grid.height)
-            .map_err(|e| e.to_string())?;
-        writeln!(w, "dx: {}", self.grid.dx).map_err(|e| e.to_string())?;
-        writeln!(w, "dy: {}", self.grid.dy).map_err(|e| e.to_string())?;
-        writeln!(w, "rho: {}", self.cfg.case.density()).map_err(|e| e.to_string())?;
-        writeln!(w, "nu: {}", self.cfg.case.kinematic_viscosity()).map_err(|e| e.to_string())?;
-        match self.cfg.coupling {
-            PressureVelocityCoupling::Projection => {
-                writeln!(w, "dt: {}", self.cfg.dt).map_err(|e| e.to_string())?;
-                if self.cfg.time_step.adaptive {
-                    let settings = self.cfg.time_step;
-                    writeln!(
-                        w,
-                        "time_stepping: adaptive, initial_dt={}, min_dt={}, max_dt={}, target_cfl={}, target_diffusion={}, max_growth={}",
-                        self.cfg.dt,
-                        settings.min_dt,
-                        settings.max_dt,
-                        settings.target_cfl,
-                        settings.target_diffusion_number,
-                        settings.max_growth_factor
-                    )
-                    .map_err(|e| e.to_string())?;
-                } else {
-                    writeln!(w, "time_stepping: fixed, dt={}", self.cfg.dt)
-                        .map_err(|e| e.to_string())?;
-                }
-                writeln!(w, "t_end: {}", self.cfg.t_end).map_err(|e| e.to_string())?;
-                writeln!(w, "max_steps: {}", self.cfg.max_steps).map_err(|e| e.to_string())?;
-            }
-            PressureVelocityCoupling::Simple => {
-                writeln!(w, "pseudo_dt: {}", self.cfg.dt).map_err(|e| e.to_string())?;
-                writeln!(w, "time_stepping: fixed, dt={}", self.cfg.dt)
-                    .map_err(|e| e.to_string())?;
-                writeln!(w, "max_iterations: {}", self.cfg.max_steps).map_err(|e| e.to_string())?;
-            }
-        }
-        writeln!(w, "cpu_threads: {}", self.pool.current_num_threads())
-            .map_err(|e| e.to_string())?;
-        writeln!(w, "convection: {:?}", self.cfg.convection).map_err(|e| e.to_string())?;
-        writeln!(w, "coupling: {:?}", self.cfg.coupling).map_err(|e| e.to_string())?;
-        writeln!(w, "pressure_solver: {:?}", self.cfg.pressure_solver)
-            .map_err(|e| e.to_string())?;
-        writeln!(w, "velocity_relaxation: {}", self.cfg.velocity_relaxation)
-            .map_err(|e| e.to_string())?;
-        writeln!(w, "pressure_relaxation: {}", self.cfg.pressure_relaxation)
-            .map_err(|e| e.to_string())?;
-        writeln!(w, "energy_model: {:?}", self.cfg.physics.thermal.model)
-            .map_err(|e| e.to_string())?;
-        writeln!(w, "buoyancy_model: {:?}", self.cfg.physics.buoyancy)
-            .map_err(|e| e.to_string())?;
-        Ok(())
-    }
-}
-
-fn apply_velocity_boundaries(
-    case: &Case,
-    boundaries: &SolverBoundaryOverrides,
-    grid: &UniformGrid2D,
-    solid: &Mask2D,
-    time: f64,
-    u: &mut Field2D,
-    v: &mut Field2D,
-) {
-    for j in 0..grid.ny {
-        let y = grid.u_face_y(j);
-        match boundaries.kind(case, Side::Left) {
-            BoundaryKind::Velocity => {
-                u[(0, j)] = boundaries.velocity(case, Side::Left, 0.0, y, time).0
-            }
-            BoundaryKind::Symmetry => u[(0, j)] = 0.0,
-            BoundaryKind::PressureOutlet { .. } => u[(0, j)] = u[(1, j)],
-        }
-        match boundaries.kind(case, Side::Right) {
-            BoundaryKind::Velocity => {
-                u[(grid.nx, j)] = boundaries
-                    .velocity(case, Side::Right, grid.length, y, time)
-                    .0
-            }
-            BoundaryKind::Symmetry => u[(grid.nx, j)] = 0.0,
-            BoundaryKind::PressureOutlet { .. } => u[(grid.nx, j)] = u[(grid.nx - 1, j)],
-        }
-    }
-
-    for i in 0..grid.nx {
-        let x = grid.v_face_x(i);
-        match boundaries.kind(case, Side::Bottom) {
-            BoundaryKind::Velocity => {
-                v[(i, 0)] = boundaries.velocity(case, Side::Bottom, x, 0.0, time).1
-            }
-            BoundaryKind::Symmetry => v[(i, 0)] = 0.0,
-            BoundaryKind::PressureOutlet { .. } => v[(i, 0)] = v[(i, 1)],
-        }
-        match boundaries.kind(case, Side::Top) {
-            BoundaryKind::Velocity => {
-                v[(i, grid.ny)] = boundaries.velocity(case, Side::Top, x, grid.height, time).1
-            }
-            BoundaryKind::Symmetry => v[(i, grid.ny)] = 0.0,
-            BoundaryKind::PressureOutlet { .. } => v[(i, grid.ny)] = v[(i, grid.ny - 1)],
-        }
-    }
-
-    // Tangential velocity conditions are represented through ghost values in the
-    // momentum stencil. Here only blocked faces are explicitly zeroed.
-    for j in 0..grid.ny {
-        for i in 1..grid.nx {
-            if !u_face_open(solid, grid.nx, i, j) {
-                u[(i, j)] = 0.0;
-            }
-        }
-    }
-    for j in 1..grid.ny {
-        for i in 0..grid.nx {
-            if !v_face_open(solid, grid.ny, i, j) {
-                v[(i, j)] = 0.0;
-            }
-        }
-    }
-}
-
-fn u_face_open(solid: &Mask2D, nx: usize, i: usize, j: usize) -> bool {
-    if i == 0 {
-        !solid[(0, j)]
-    } else if i == nx {
-        !solid[(nx - 1, j)]
-    } else {
-        !solid[(i - 1, j)] && !solid[(i, j)]
-    }
-}
-
-fn v_face_open(solid: &Mask2D, ny: usize, i: usize, j: usize) -> bool {
-    if j == 0 {
-        !solid[(i, 0)]
-    } else if j == ny {
-        !solid[(i, ny - 1)]
-    } else {
-        !solid[(i, j - 1)] && !solid[(i, j)]
-    }
-}
-
-fn pressure_outlet_cell(
-    case: &Case,
-    boundaries: &SolverBoundaryOverrides,
-    solid: &Mask2D,
-    nx: usize,
-    i: usize,
-    j: usize,
-) -> bool {
-    i + 1 == nx
-        && !solid[(i, j)]
-        && matches!(
-            boundaries.kind(case, Side::Right),
-            BoundaryKind::PressureOutlet { .. }
-        )
-}
-
-struct MomentumStencil<'a> {
-    solid: &'a Mask2D,
-    case: &'a Case,
-    boundaries: &'a SolverBoundaryOverrides,
-    grid: &'a UniformGrid2D,
-}
-
-impl MomentumStencil<'_> {
-    fn u_neighbor(&self, u: &[f64], i: usize, j: usize, di: isize, dj: isize, center: f64) -> f64 {
-        let ii = i as isize + di;
-        let jj = j as isize + dj;
-        if ii >= 0 && ii <= self.grid.nx as isize && jj >= 0 && jj < self.grid.ny as isize {
-            let iu = ii as usize;
-            let ju = jj as usize;
-            return if u_face_open(self.solid, self.grid.nx, iu, ju) {
-                u[iu + (self.grid.nx + 1) * ju]
-            } else {
-                -center
-            };
-        }
-
-        if jj < 0 {
-            return tangential_ghost_u(
-                self.case,
-                self.boundaries,
-                Side::Bottom,
-                center,
-                self.grid.u_face_x(i),
-            );
-        }
-        if jj >= self.grid.ny as isize {
-            return tangential_ghost_u(
-                self.case,
-                self.boundaries,
-                Side::Top,
-                center,
-                self.grid.u_face_x(i),
-            );
-        }
-        center
-    }
-
-    fn v_neighbor(&self, v: &[f64], i: usize, j: usize, di: isize, dj: isize, center: f64) -> f64 {
-        let ii = i as isize + di;
-        let jj = j as isize + dj;
-        if ii >= 0 && ii < self.grid.nx as isize && jj >= 0 && jj <= self.grid.ny as isize {
-            let iu = ii as usize;
-            let ju = jj as usize;
-            return if v_face_open(self.solid, self.grid.ny, iu, ju) {
-                v[iu + self.grid.nx * ju]
-            } else {
-                -center
-            };
-        }
-
-        if ii < 0 {
-            return tangential_ghost_v(
-                self.case,
-                self.boundaries,
-                Side::Left,
-                center,
-                self.grid.v_face_y(j),
-            );
-        }
-        if ii >= self.grid.nx as isize {
-            return tangential_ghost_v(
-                self.case,
-                self.boundaries,
-                Side::Right,
-                center,
-                self.grid.v_face_y(j),
-            );
-        }
-        center
-    }
-}
-
-fn tangential_ghost_u(
-    case: &Case,
-    boundaries: &SolverBoundaryOverrides,
-    side: Side,
-    center: f64,
-    x: f64,
-) -> f64 {
-    match boundaries.kind(case, side) {
-        BoundaryKind::Velocity => {
-            let y = if side == Side::Bottom {
-                0.0
-            } else {
-                case.domain().1
-            };
-            let wall_u = boundaries.velocity(case, side, x, y, 0.0).0;
-            2.0 * wall_u - center
-        }
-        BoundaryKind::Symmetry | BoundaryKind::PressureOutlet { .. } => center,
-    }
-}
-
-fn tangential_ghost_v(
-    case: &Case,
-    boundaries: &SolverBoundaryOverrides,
-    side: Side,
-    center: f64,
-    y: f64,
-) -> f64 {
-    match boundaries.kind(case, side) {
-        BoundaryKind::Velocity => {
-            let x = if side == Side::Left {
-                0.0
-            } else {
-                case.domain().0
-            };
-            let wall_v = boundaries.velocity(case, side, x, y, 0.0).1;
-            2.0 * wall_v - center
-        }
-        BoundaryKind::Symmetry | BoundaryKind::PressureOutlet { .. } => center,
-    }
-}
-
-fn transported(scheme: ConvectionScheme, face_velocity: f64, left: f64, right: f64) -> f64 {
-    match scheme {
-        ConvectionScheme::FirstOrderUpwind => {
-            if face_velocity >= 0.0 {
-                left
-            } else {
-                right
-            }
-        }
-        ConvectionScheme::Central => 0.5 * (left + right),
-    }
-}
-
-#[inline]
-fn upwind_value(
-    face_velocity: f64,
-    upstream_when_positive: f64,
-    upstream_when_negative: f64,
-) -> f64 {
-    if face_velocity >= 0.0 {
-        upstream_when_positive
-    } else {
-        upstream_when_negative
-    }
-}
-
-fn derivative_x_slice(
-    values: &[f64],
-    solid: &Mask2D,
-    nx: usize,
-    i: usize,
-    j: usize,
-    dx: f64,
-) -> f64 {
-    let center = values[i + nx * j];
-    let east = if i + 1 < nx && !solid[(i + 1, j)] {
-        values[i + 1 + nx * j]
-    } else {
-        center
-    };
-    let west = if i > 0 && !solid[(i - 1, j)] {
-        values[i - 1 + nx * j]
-    } else {
-        center
-    };
-    if i > 0 && i + 1 < nx && !solid[(i - 1, j)] && !solid[(i + 1, j)] {
-        (east - west) / (2.0 * dx)
-    } else if i + 1 < nx && !solid[(i + 1, j)] {
-        (east - center) / dx
-    } else if i > 0 && !solid[(i - 1, j)] {
-        (center - west) / dx
-    } else {
-        0.0
-    }
-}
-
-fn derivative_y_slice(
-    values: &[f64],
-    solid: &Mask2D,
-    nx: usize,
-    i: usize,
-    j: usize,
-    dy: f64,
-) -> f64 {
-    let center = values[i + nx * j];
-    let north = if j + 1 < solid.ny() && !solid[(i, j + 1)] {
-        values[i + nx * (j + 1)]
-    } else {
-        center
-    };
-    let south = if j > 0 && !solid[(i, j - 1)] {
-        values[i + nx * (j - 1)]
-    } else {
-        center
-    };
-    if j > 0 && j + 1 < solid.ny() && !solid[(i, j - 1)] && !solid[(i, j + 1)] {
-        (north - south) / (2.0 * dy)
-    } else if j + 1 < solid.ny() && !solid[(i, j + 1)] {
-        (north - center) / dy
-    } else if j > 0 && !solid[(i, j - 1)] {
-        (center - south) / dy
-    } else {
-        0.0
-    }
-}
-
-fn max_field_difference(a: &Field2D, b: &Field2D) -> f64 {
-    a.as_slice()
-        .iter()
-        .zip(b.as_slice())
-        .fold(0.0_f64, |m, (&x, &y)| m.max((x - y).abs()))
-}
-
-fn momentum_stability_numbers(
-    dt: f64,
-    nu: f64,
-    dx: f64,
-    dy: f64,
-    max_abs_u: f64,
-    max_abs_v: f64,
-) -> (f64, f64) {
-    let momentum_cfl = dt * (max_abs_u / dx + max_abs_v / dy);
-    let viscous_diffusion_number = nu * dt * (1.0 / dx.powi(2) + 1.0 / dy.powi(2));
-
-    (momentum_cfl, viscous_diffusion_number)
-}
-
-fn adaptive_time_step(
-    current_dt: f64,
-    inputs: AdaptiveTimeStepInputs,
-    settings: TimeStepSettings,
-) -> Result<f64, String> {
-    let advective_rate = inputs.max_abs_u / inputs.dx + inputs.max_abs_v / inputs.dy;
-    let cfl_dt = if advective_rate > f64::EPSILON {
-        settings.target_cfl / advective_rate
-    } else {
-        settings.max_dt
-    };
-    let inverse_spacing_sum = 1.0 / inputs.dx.powi(2) + 1.0 / inputs.dy.powi(2);
-    let effective_diffusivity = inputs
-        .thermal_diffusivity
-        .map(|alpha| alpha.max(inputs.kinematic_viscosity))
-        .unwrap_or(inputs.kinematic_viscosity);
-    let diffusion_dt =
-        settings.target_diffusion_number / (effective_diffusivity * inverse_spacing_sum);
-    let stable_dt = settings.max_dt.min(cfl_dt).min(diffusion_dt);
-    if stable_dt < settings.min_dt {
-        return Err(format!(
-            "required stable time step {stable_dt:.3e} is below configured min_dt {min_dt:.3e}; CFL constraint={cfl_dt:.3e}, diffusion constraint={diffusion_dt:.3e}",
-            min_dt = settings.min_dt
-        ));
-    }
-    let growth_limited_dt = stable_dt.min(current_dt * settings.max_growth_factor);
-
-    Ok(growth_limited_dt.clamp(settings.min_dt, settings.max_dt))
-}
-
-fn project_zero_mean<F>(
-    pool: &ThreadPool,
-    values: &mut [f64],
-    solid: &Mask2D,
-    nx: usize,
-    ny: usize,
-    is_dirichlet: F,
-) where
-    F: Fn(usize, usize) -> bool + Sync,
-{
-    let (sum, count) = pool.install(|| {
-        (0..ny)
-            .into_par_iter()
-            .map(|j| {
-                let mut row_sum = 0.0;
-                let mut row_count = 0_usize;
-                for i in 0..nx {
-                    if !solid[(i, j)] && !is_dirichlet(i, j) {
-                        row_sum += values[i + nx * j];
-                        row_count += 1;
-                    }
-                }
-                (row_sum, row_count)
-            })
-            .reduce(|| (0.0, 0_usize), |a, b| (a.0 + b.0, a.1 + b.1))
-    });
-    if count == 0 {
-        return;
-    }
-    let mean = sum / count as f64;
-    pool.install(|| {
-        values.par_chunks_mut(nx).enumerate().for_each(|(j, row)| {
-            for i in 0..nx {
-                if !solid[(i, j)] && !is_dirichlet(i, j) {
-                    row[i] -= mean;
-                }
-            }
-        });
-    });
 }
 
 #[cfg(test)]
@@ -2396,6 +741,7 @@ mod tests {
             t_end: 2.5e-3,
             convection: ConvectionScheme::FirstOrderUpwind,
             coupling,
+            pimple: Default::default(),
             pressure_solver: PressureSolverKind::Pcg,
             pressure_max_iters: 50,
             pressure_tolerance: 1.0e-4,
@@ -2594,6 +940,7 @@ mod tests {
             t_end: 0.002,
             convection: ConvectionScheme::FirstOrderUpwind,
             coupling: PressureVelocityCoupling::Projection,
+            pimple: Default::default(),
             pressure_solver: PressureSolverKind::Pcg,
             pressure_max_iters: 10,
             pressure_tolerance: 1.0e-4,
@@ -2662,6 +1009,7 @@ mod tests {
             t_end: 0.002,
             convection: ConvectionScheme::FirstOrderUpwind,
             coupling: PressureVelocityCoupling::Projection,
+            pimple: Default::default(),
             pressure_solver: PressureSolverKind::Pcg,
             pressure_max_iters: 20,
             pressure_tolerance: 1.0e-4,
@@ -2731,6 +1079,7 @@ mod tests {
             t_end: 2.0e-4,
             convection: ConvectionScheme::FirstOrderUpwind,
             coupling: PressureVelocityCoupling::Projection,
+            pimple: Default::default(),
             pressure_solver: PressureSolverKind::Pcg,
             pressure_max_iters: 50,
             pressure_tolerance: 1.0e-4,
@@ -2772,6 +1121,7 @@ mod tests {
             t_end: 0.002,
             convection: ConvectionScheme::FirstOrderUpwind,
             coupling: PressureVelocityCoupling::Projection,
+            pimple: Default::default(),
             pressure_solver: PressureSolverKind::Pcg,
             pressure_max_iters: 10,
             pressure_tolerance: 1.0e-4,

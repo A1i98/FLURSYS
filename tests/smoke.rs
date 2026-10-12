@@ -17,6 +17,7 @@ fn config(case: Case, nx: usize, ny: usize, name: &str) -> SimulationConfig {
         t_end: 1.0e-3,
         convection: ConvectionScheme::FirstOrderUpwind,
         coupling: PressureVelocityCoupling::Projection,
+        pimple: Default::default(),
         pressure_solver: PressureSolverKind::Pcg,
         pressure_max_iters: 800,
         pressure_tolerance: 1.0e-6,

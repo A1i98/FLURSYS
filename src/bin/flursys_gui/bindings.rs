@@ -2,8 +2,9 @@ use super::{case_name, parse_number, MainWindow};
 use flursys::cases::{BackwardStepCase, CavityCase, ChannelCase, CylinderCase};
 use flursys::{
     BoundaryConditionKind, BoundaryFace, BuoyancyModel, EnergyModel, GeometryPart,
-    GeometryPartKind, GeometrySketch, Project, ProjectCase, ProjectCoupling, ProjectPressureSolver,
-    SketchPlane, SketchProfileKind, ThermalBoundaryCondition,
+    GeometryPartKind, GeometrySketch, Project, ProjectCase, ProjectConvectionScheme,
+    ProjectCoupling, ProjectPressureSolver, SketchPlane, SketchProfileKind,
+    ThermalBoundaryCondition,
 };
 use slint::SharedString;
 
@@ -17,15 +18,23 @@ pub(super) fn sync_project_from_ui(ui: &MainWindow, project: &mut Project) {
     project.solver.gui_update_every = ui.get_gui_update_every().max(1) as usize;
     project.solver.history_every = ui.get_history_every().max(1) as usize;
     project.solver.frame_every = ui.get_frame_every().max(1) as usize;
-    project.solver.coupling = if ui.get_coupling_index() == 0 {
-        ProjectCoupling::Simple
-    } else {
-        ProjectCoupling::Projection
+    project.solver.coupling = match ui.get_coupling_index() {
+        0 => ProjectCoupling::Simple,
+        1 => ProjectCoupling::SimpleImplicit,
+        2 => ProjectCoupling::SimpleConsistent,
+        4 => ProjectCoupling::Pimple,
+        _ => ProjectCoupling::Projection,
     };
-    project.solver.pressure_solver = if ui.get_pressure_solver_index() == 0 {
-        ProjectPressureSolver::Pcg
-    } else {
-        ProjectPressureSolver::Sor
+    project.solver.convection = match ui.get_convection_index() {
+        1 => ProjectConvectionScheme::Central,
+        2 => ProjectConvectionScheme::VanLeerTvd,
+        _ => ProjectConvectionScheme::FirstOrderUpwind,
+    };
+    project.solver.pressure_solver = match ui.get_pressure_solver_index() {
+        0 => ProjectPressureSolver::Pcg,
+        1 => ProjectPressureSolver::PcgDic,
+        2 => ProjectPressureSolver::PcgMg,
+        _ => ProjectPressureSolver::Sor,
     };
     project.solver.velocity_relaxation = parse_number(
         ui.get_velocity_relaxation().as_str(),
@@ -87,11 +96,21 @@ pub(super) fn write_project_to_ui(ui: &MainWindow, project: &Project) {
     ui.set_frame_every(project.solver.frame_every as i32);
     ui.set_coupling_index(match project.solver.coupling {
         ProjectCoupling::Simple => 0,
-        ProjectCoupling::Projection => 1,
+        ProjectCoupling::SimpleImplicit => 1,
+        ProjectCoupling::SimpleConsistent => 2,
+        ProjectCoupling::Projection => 3,
+        ProjectCoupling::Pimple => 4,
+    });
+    ui.set_convection_index(match project.solver.convection {
+        ProjectConvectionScheme::FirstOrderUpwind => 0,
+        ProjectConvectionScheme::Central => 1,
+        ProjectConvectionScheme::VanLeerTvd => 2,
     });
     ui.set_pressure_solver_index(match project.solver.pressure_solver {
         ProjectPressureSolver::Pcg => 0,
-        ProjectPressureSolver::Sor => 1,
+        ProjectPressureSolver::PcgDic => 1,
+        ProjectPressureSolver::PcgMg => 2,
+        ProjectPressureSolver::Sor => 3,
     });
     ui.set_velocity_relaxation(SharedString::from(format!(
         "{:.3}",

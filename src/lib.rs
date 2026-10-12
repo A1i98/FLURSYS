@@ -39,9 +39,11 @@ pub use geometry::{
 };
 pub use io::gmsh::{load_gmsh, parse_gmsh, GmshError};
 pub use linear::{
-    axpy, bicgstab, cg, copy_into, dot, norm_inf, norm_l2, pcg, residual, residual_into, scale,
-    CsrBuilder, CsrMatrix, JacobiPreconditioner, LinearAlgebraError, LinearSolveReport,
-    LinearSolverOptions, LinearSolverStatus,
+    axpy, bicgstab, bicgstab_with_preconditioner, cg, copy_into, dot, norm_inf, norm_l2, pcg,
+    pcg_with_preconditioner, residual, residual_into, scale, CsrBuilder, CsrMatrix,
+    IncompleteCholeskyPreconditioner, JacobiPreconditioner, LinearAlgebraError, LinearSolveReport,
+    LinearSolverOptions, LinearSolverStatus, Preconditioner, StructuredMultigridPreconditioner,
+    SymmetricGaussSeidelPreconditioner,
 };
 pub use mesh::{
     BoundaryPatch, BoundaryType, Cell, CellDefinition, ExtrudedMesh3D, Face, MeshDimension,
@@ -100,8 +102,8 @@ pub use simple::{
 };
 pub use solver::{
     ConvectionScheme, FieldUpdate, IncompressibleSolver, LidDrivenCavity3DConfig,
-    LidDrivenCavity3DSolver, PressureSolverKind, PressureVelocityCoupling, RunSummary,
-    RunSummary3D, SimulationConfig, SolverStep, TimeStepSettings,
+    LidDrivenCavity3DSolver, PimpleControls, PressureSolverKind, PressureVelocityCoupling,
+    RunSummary, RunSummary3D, SimulationConfig, SolverStep, TimeStepSettings,
 };
 pub use unstructured_incompressible::{
     patch_flux, solve_incompressible, solve_incompressible_with_control,

@@ -1,8 +1,8 @@
-use flursys::cases::{BackwardStepCase, CavityCase, ChannelCase, CylinderCase};
+use flursys::cases::{BackwardStepCase, CavityCase, ChannelCase, CylinderCase, Side};
 use flursys::{
     Case, ConvectionScheme, IncompressibleSolver, LidDrivenCavity3DConfig, LidDrivenCavity3DSolver,
-    PressureSolverKind, PressureVelocityCoupling, SimulationConfig, SolverBoundaryOverrides,
-    TimeStepSettings,
+    PimpleControls, PressureSolverKind, PressureVelocityCoupling, SimulationConfig,
+    SolverBoundaryOverrides, TimeStepSettings,
 };
 use std::collections::HashMap;
 use std::env;
@@ -25,6 +25,7 @@ fn run_cli() -> Result<(), String> {
         println!("Available cases:");
         println!("  cavity         lid-driven cavity");
         println!("  cylinder       cylinder flow at Re=100");
+        println!("  turek          Turek-Schäfer / DFG 2D-2 cylinder benchmark at Re=100");
         println!("  backward-step  backward-facing step flow");
         println!("  channel        plane Poiseuille channel flow");
         println!("  cavity-3d      three-dimensional lid-driven cavity");
@@ -44,6 +45,7 @@ fn run_cli() -> Result<(), String> {
     let config = match case_slug {
         "cavity" => cavity_config(&options)?,
         "cylinder" => cylinder_config(&options)?,
+        "turek" | "turek-schaefer" => turek_config(&options)?,
         "backward-step" | "bfs" => backward_step_config(&options)?,
         "channel" => channel_config(&options)?,
         other => return Err(format!("Unknown case '{other}'. Run `flursys list`.")),
@@ -61,6 +63,9 @@ fn run_solver(config: SimulationConfig) -> Result<(), String> {
     println!("final time: {:.6}", summary.final_time);
     println!("max divergence: {:.6e}", summary.max_divergence);
     println!("pressure residual: {:.6e}", summary.pressure_residual);
+    if let Some(residual) = summary.momentum_equation_residual {
+        println!("normalized momentum equation residual: {:.6e}", residual);
+    }
     println!("elapsed: {:.3} s", summary.elapsed.as_secs_f64());
     println!("steady convergence detected: {}", summary.converged);
     Ok(())
@@ -128,6 +133,70 @@ fn cylinder_config(options: &HashMap<String, String>) -> Result<SimulationConfig
             output_dir: "results/cylinder-re100",
         },
     )
+}
+
+fn turek_config(options: &HashMap<String, String>) -> Result<SimulationConfig, String> {
+    // Canonical DFG 2D-2 geometry and fluid properties.
+    let mut case = CylinderCase {
+        length: 2.2,
+        height: 0.41,
+        diameter: 0.1,
+        xc: 0.2,
+        yc: 0.2,
+        rho: 1.0,
+        u_inf: 1.0,
+        reynolds: 100.0,
+        mu: 0.001,
+        nu: 0.001,
+        perturbation: 1.0e-3,
+    };
+    case.length = value(options, "length", case.length)?;
+    case.height = value(options, "height", case.height)?;
+    case.diameter = value(options, "diameter", case.diameter)?;
+    case.xc = value(options, "xc", case.xc)?;
+    case.yc = value(options, "yc", case.yc)?;
+    case.rho = value(options, "rho", case.rho)?;
+    case.u_inf = value(options, "u-mean", case.u_inf)?;
+    case.reynolds = value(options, "re", case.reynolds)?;
+    case.nu = case.u_inf * case.diameter / case.reynolds;
+    case.mu = case.rho * case.nu;
+    case.perturbation = value(options, "perturb", case.perturbation)?;
+    let mut solver_options = options.clone();
+    solver_options
+        .entry("coupling".to_string())
+        .or_insert_with(|| "pimple".to_string());
+    solver_options
+        .entry("pressure-solver".to_string())
+        .or_insert_with(|| "pcg-mg".to_string());
+    solver_options
+        .entry("pressure-tol".to_string())
+        .or_insert_with(|| "1e-6".to_string());
+    solver_options
+        .entry("velocity-relax".to_string())
+        .or_insert_with(|| "1.0".to_string());
+    solver_options
+        .entry("pressure-relax".to_string())
+        .or_insert_with(|| "1.0".to_string());
+    let mut config = common_config(
+        Case::CylinderRe100(case.clone()),
+        &solver_options,
+        Defaults {
+            nx: 440,
+            ny: 82,
+            dt: 0.0025,
+            t_end: 30.0,
+            max_steps: 20_000,
+            output_dir: "results/turek-schaefer-re100",
+        },
+    )?;
+    config
+        .boundary_overrides
+        .set_parabolic_inlet(Side::Left, 1.5 * case.u_inf, 0.0, case.height);
+    config
+        .boundary_overrides
+        .set_velocity(Side::Bottom, 0.0, 0.0);
+    config.boundary_overrides.set_velocity(Side::Top, 0.0, 0.0);
+    Ok(config)
 }
 
 fn backward_step_config(options: &HashMap<String, String>) -> Result<SimulationConfig, String> {
@@ -225,6 +294,7 @@ fn common_config(
     {
         "upwind" | "first-order-upwind" => ConvectionScheme::FirstOrderUpwind,
         "central" => ConvectionScheme::Central,
+        "vanleer" | "tvd" => ConvectionScheme::VanLeerTvd,
         other => return Err(format!("Unknown convection scheme '{other}'")),
     };
     let pressure_solver = match options
@@ -233,6 +303,8 @@ fn common_config(
         .unwrap_or("pcg")
     {
         "pcg" => PressureSolverKind::Pcg,
+        "pcg-dic" => PressureSolverKind::PcgDic,
+        "pcg-mg" | "multigrid" => PressureSolverKind::PcgMg,
         "sor" => PressureSolverKind::Sor,
         other => return Err(format!("Unknown pressure solver '{other}'")),
     };
@@ -242,7 +314,10 @@ fn common_config(
         .unwrap_or("projection")
     {
         "projection" | "transient" => PressureVelocityCoupling::Projection,
+        "pimple" => PressureVelocityCoupling::Pimple,
         "simple" | "steady-simple" => PressureVelocityCoupling::Simple,
+        "simple-implicit" => PressureVelocityCoupling::SimpleImplicit,
+        "simplec" | "simple-consistent" => PressureVelocityCoupling::SimpleConsistent,
         other => return Err(format!("Unknown pressure-velocity coupling '{other}'")),
     };
 
@@ -256,6 +331,11 @@ fn common_config(
         max_steps: value(options, "max-steps", defaults.max_steps)?,
         convection,
         coupling,
+        pimple: PimpleControls {
+            pressure_correctors: value(options, "pressure-correctors", 2_usize)?,
+            momentum_tolerance: value(options, "momentum-tol", 1.0e-5_f64)?,
+            first_pressure_relative_tolerance: value(options, "pressure-rel-tol", 0.01_f64)?,
+        },
         pressure_solver,
         pressure_max_iters: value(options, "pressure-iters", 1200_usize)?,
         pressure_tolerance: value(options, "pressure-tol", 1.0e-5_f64)?,
@@ -336,11 +416,14 @@ fn print_case_help(case: &str) {
     println!("Common options:");
     println!("  --nx N --ny N");
     println!("  --dt DT --t-end T --max-steps N");
-    println!("  --convection upwind|central");
-    println!("  --coupling projection|simple");
-    println!("  --pressure-solver pcg|sor");
+    println!("  --convection upwind|central|vanleer (Van Leer requires implicit coupling)");
+    println!("  --coupling projection|pimple|simple|simple-implicit|simplec");
+    println!(
+        "  --pressure-solver pcg|pcg-dic|pcg-mg|sor (pcg-mg requires implicit momentum coupling)"
+    );
     println!("  --pressure-iters N --pressure-tol EPS --pressure-omega W");
-    println!("  --velocity-relax A --pressure-relax A (SIMPLE only)");
+    println!("  --pressure-correctors N --momentum-tol EPS --pressure-rel-tol R (pimple)");
+    println!("  --velocity-relax A --pressure-relax A (steady coupling)");
     println!("  --print-every N --output-every N --frame-every N");
     println!("  --steady-tol EPS --minimum-steps N");
     println!("  --threads N (0 = automatic CPU worker count)");
@@ -353,6 +436,12 @@ fn print_case_help(case: &str) {
         "cylinder" => {
             println!("Physical options: --length L --height H --diameter D --xc X --yc Y");
             println!("                  --rho RHO --u-inf U --re RE --perturb EPS");
+        }
+        "turek" | "turek-schaefer" => {
+            println!(
+                "DFG 2D-2 defaults: L=2.2 H=0.41 D=0.1 center=(0.2,0.2), rho=1, Umean=1, Re=100"
+            );
+            println!("Physical overrides: --length L --height H --diameter D --xc X --yc Y --rho RHO --u-mean U --re RE");
         }
         "backward-step" | "bfs" => {
             println!("Physical options: --length L --height H --step-height Hs --step-x Xs");
