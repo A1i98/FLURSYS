@@ -3,6 +3,8 @@
 **/results/
 /artifacts/
 /dist/
+/benchmarks/
+/scripts/benchmark/
 
 *.mp4
 *.gif
