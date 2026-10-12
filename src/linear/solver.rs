@@ -1,4 +1,4 @@
-use super::{dot, norm_l2, residual_into, CsrMatrix, JacobiPreconditioner, LinearAlgebraError};
+use super::{dot, norm_l2, residual_into, CsrMatrix, LinearAlgebraError, Preconditioner};
 
 const BREAKDOWN_EPSILON: f64 = 1.0e-30;
 
@@ -49,11 +49,21 @@ pub fn cg(
     solve_cg(matrix, rhs, solution, options, None)
 }
 
-pub fn pcg(
+pub fn pcg<P: Preconditioner>(
     matrix: &CsrMatrix,
     rhs: &[f64],
     solution: &mut [f64],
-    preconditioner: &JacobiPreconditioner,
+    preconditioner: &P,
+    options: LinearSolverOptions,
+) -> Result<LinearSolveReport, LinearAlgebraError> {
+    pcg_with_preconditioner(matrix, rhs, solution, preconditioner, options)
+}
+
+pub fn pcg_with_preconditioner<P: Preconditioner>(
+    matrix: &CsrMatrix,
+    rhs: &[f64],
+    solution: &mut [f64],
+    preconditioner: &P,
     options: LinearSolverOptions,
 ) -> Result<LinearSolveReport, LinearAlgebraError> {
     solve_cg(matrix, rhs, solution, options, Some(preconditioner))
@@ -64,7 +74,7 @@ fn solve_cg(
     rhs: &[f64],
     solution: &mut [f64],
     options: LinearSolverOptions,
-    preconditioner: Option<&JacobiPreconditioner>,
+    preconditioner: Option<&dyn Preconditioner>,
 ) -> Result<LinearSolveReport, LinearAlgebraError> {
     validate_solve_inputs(matrix, rhs, solution, options)?;
     if let Some(preconditioner) = preconditioner {
@@ -158,8 +168,36 @@ pub fn bicgstab(
     solution: &mut [f64],
     options: LinearSolverOptions,
 ) -> Result<LinearSolveReport, LinearAlgebraError> {
+    solve_bicgstab(matrix, rhs, solution, options, None)
+}
+
+pub fn bicgstab_with_preconditioner<P: Preconditioner>(
+    matrix: &CsrMatrix,
+    rhs: &[f64],
+    solution: &mut [f64],
+    preconditioner: &P,
+    options: LinearSolverOptions,
+) -> Result<LinearSolveReport, LinearAlgebraError> {
+    solve_bicgstab(matrix, rhs, solution, options, Some(preconditioner))
+}
+
+fn solve_bicgstab(
+    matrix: &CsrMatrix,
+    rhs: &[f64],
+    solution: &mut [f64],
+    options: LinearSolverOptions,
+    preconditioner: Option<&dyn Preconditioner>,
+) -> Result<LinearSolveReport, LinearAlgebraError> {
     validate_solve_inputs(matrix, rhs, solution, options)?;
     let n = matrix.nrows();
+    if let Some(preconditioner) = preconditioner {
+        if preconditioner.len() != n {
+            return Err(LinearAlgebraError::DimensionMismatch {
+                expected: n,
+                actual: preconditioner.len(),
+            });
+        }
+    }
     let mut r = vec![0.0; n];
     residual_into(matrix, solution, rhs, &mut r)?;
     let r_hat = r.clone();
@@ -172,6 +210,8 @@ pub fn bicgstab(
     let mut v = vec![0.0; n];
     let mut s = vec![0.0; n];
     let mut t = vec![0.0; n];
+    let mut p_preconditioned = preconditioner.map(|_| vec![0.0; n]);
+    let mut s_preconditioned = preconditioner.map(|_| vec![0.0; n]);
     let mut rho_previous = 1.0;
     let mut alpha = 1.0;
     let mut omega = 1.0;
@@ -191,7 +231,16 @@ pub fn bicgstab(
         for index in 0..n {
             p[index] = r[index] + beta * (p[index] - omega * v[index]);
         }
-        matrix.spmv_into(&p, &mut v)?;
+        if let Some(preconditioner) = preconditioner {
+            preconditioner.apply_into(
+                &p,
+                p_preconditioned
+                    .as_mut()
+                    .expect("preconditioned BiCGStab workspace was allocated"),
+            )?;
+        }
+        let p_direction = p_preconditioned.as_deref().unwrap_or(&p);
+        matrix.spmv_into(p_direction, &mut v)?;
         let denominator = dot(&r_hat, &v)?;
         if !denominator.is_finite() || denominator.abs() <= BREAKDOWN_EPSILON {
             return Err(LinearAlgebraError::Breakdown {
@@ -209,8 +258,8 @@ pub fn bicgstab(
         }
         let s_norm = norm_l2(&s)?;
         if s_norm <= threshold {
-            for index in 0..n {
-                solution[index] += alpha * p[index];
+            for (solution_value, &direction_value) in solution.iter_mut().zip(p_direction) {
+                *solution_value += alpha * direction_value;
             }
             return Ok(report(
                 LinearSolverStatus::Converged,
@@ -219,7 +268,16 @@ pub fn bicgstab(
                 s_norm,
             ));
         }
-        matrix.spmv_into(&s, &mut t)?;
+        if let Some(preconditioner) = preconditioner {
+            preconditioner.apply_into(
+                &s,
+                s_preconditioned
+                    .as_mut()
+                    .expect("preconditioned BiCGStab workspace was allocated"),
+            )?;
+        }
+        let s_direction = s_preconditioned.as_deref().unwrap_or(&s);
+        matrix.spmv_into(s_direction, &mut t)?;
         let tt = dot(&t, &t)?;
         if !tt.is_finite() || tt.abs() <= BREAKDOWN_EPSILON {
             return Err(LinearAlgebraError::Breakdown {
@@ -232,8 +290,12 @@ pub fn bicgstab(
                 reason: "zero BiCGSTAB omega",
             });
         }
+        for ((solution_value, &p_value), &s_value) in
+            solution.iter_mut().zip(p_direction).zip(s_direction)
+        {
+            *solution_value += alpha * p_value + omega * s_value;
+        }
         for index in 0..n {
-            solution[index] += alpha * p[index] + omega * s[index];
             r[index] = s[index] - omega * t[index];
         }
         let residual_norm = norm_l2(&r)?;

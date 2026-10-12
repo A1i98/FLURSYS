@@ -10,8 +10,14 @@ mod solver;
 mod vector;
 
 pub use csr::{CsrBuilder, CsrMatrix};
-pub use preconditioner::JacobiPreconditioner;
-pub use solver::{bicgstab, cg, pcg, LinearSolveReport, LinearSolverOptions, LinearSolverStatus};
+pub use preconditioner::{
+    IncompleteCholeskyPreconditioner, JacobiPreconditioner, Preconditioner,
+    StructuredMultigridPreconditioner, SymmetricGaussSeidelPreconditioner,
+};
+pub use solver::{
+    bicgstab, bicgstab_with_preconditioner, cg, pcg, pcg_with_preconditioner, LinearSolveReport,
+    LinearSolverOptions, LinearSolverStatus,
+};
 pub use vector::{axpy, copy_into, dot, norm_inf, norm_l2, residual, residual_into, scale};
 
 #[derive(Clone, Debug, PartialEq)]
