@@ -34,6 +34,24 @@ pub struct LinearSolveReport {
     pub relative_residual: f64,
 }
 
+/// Reusable work vectors for repeated conjugate-gradient pressure solves.
+#[derive(Default)]
+pub struct CgWorkspace {
+    residual: Vec<f64>,
+    direction: Vec<f64>,
+    product: Vec<f64>,
+    preconditioned: Vec<f64>,
+}
+
+impl CgWorkspace {
+    fn resize(&mut self, size: usize) {
+        self.residual.resize(size, 0.0);
+        self.direction.resize(size, 0.0);
+        self.product.resize(size, 0.0);
+        self.preconditioned.resize(size, 0.0);
+    }
+}
+
 impl LinearSolveReport {
     pub fn converged(&self) -> bool {
         self.status == LinearSolverStatus::Converged
@@ -69,12 +87,49 @@ pub fn pcg_with_preconditioner<P: Preconditioner>(
     solve_cg(matrix, rhs, solution, options, Some(preconditioner))
 }
 
+pub fn pcg_with_preconditioner_and_workspace<P: Preconditioner>(
+    matrix: &CsrMatrix,
+    rhs: &[f64],
+    solution: &mut [f64],
+    preconditioner: &P,
+    options: LinearSolverOptions,
+    workspace: &mut CgWorkspace,
+) -> Result<LinearSolveReport, LinearAlgebraError> {
+    solve_cg_with_workspace(
+        matrix,
+        rhs,
+        solution,
+        options,
+        Some(preconditioner),
+        workspace,
+    )
+}
+
 fn solve_cg(
     matrix: &CsrMatrix,
     rhs: &[f64],
     solution: &mut [f64],
     options: LinearSolverOptions,
     preconditioner: Option<&dyn Preconditioner>,
+) -> Result<LinearSolveReport, LinearAlgebraError> {
+    let mut workspace = CgWorkspace::default();
+    solve_cg_with_workspace(
+        matrix,
+        rhs,
+        solution,
+        options,
+        preconditioner,
+        &mut workspace,
+    )
+}
+
+fn solve_cg_with_workspace(
+    matrix: &CsrMatrix,
+    rhs: &[f64],
+    solution: &mut [f64],
+    options: LinearSolverOptions,
+    preconditioner: Option<&dyn Preconditioner>,
+    workspace: &mut CgWorkspace,
 ) -> Result<LinearSolveReport, LinearAlgebraError> {
     validate_solve_inputs(matrix, rhs, solution, options)?;
     if let Some(preconditioner) = preconditioner {
@@ -86,18 +141,21 @@ fn solve_cg(
         }
     }
     let n = matrix.nrows();
-    let mut residual = vec![0.0; n];
-    let mut direction = vec![0.0; n];
-    let mut product = vec![0.0; n];
-    let mut preconditioned = vec![0.0; n];
-    residual_into(matrix, solution, rhs, &mut residual)?;
+    workspace.resize(n);
+    let CgWorkspace {
+        residual,
+        direction,
+        product,
+        preconditioned,
+    } = workspace;
+    residual_into(matrix, solution, rhs, residual)?;
     let initial = norm_l2(&residual)?;
     let threshold = options.absolute_tolerance + options.relative_tolerance * initial;
     if initial <= threshold {
         return Ok(report(LinearSolverStatus::Converged, 0, initial, initial));
     }
     if let Some(preconditioner) = preconditioner {
-        preconditioner.apply_into(&residual, &mut preconditioned)?;
+        preconditioner.apply_into(residual, preconditioned)?;
         direction.copy_from_slice(&preconditioned);
     } else {
         direction.copy_from_slice(&residual);
@@ -105,7 +163,7 @@ fn solve_cg(
     }
     let mut rho = dot(&residual, &preconditioned)?;
     for iteration in 1..=options.max_iterations {
-        matrix.spmv_into(&direction, &mut product)?;
+        matrix.spmv_into(direction, product)?;
         let denominator = dot(&direction, &product)?;
         if !denominator.is_finite() || denominator.abs() <= BREAKDOWN_EPSILON {
             return Err(LinearAlgebraError::Breakdown {
@@ -132,7 +190,7 @@ fn solve_cg(
             ));
         }
         if let Some(preconditioner) = preconditioner {
-            preconditioner.apply_into(&residual, &mut preconditioned)?;
+            preconditioner.apply_into(residual, preconditioned)?;
         } else {
             preconditioned.copy_from_slice(&residual);
         }

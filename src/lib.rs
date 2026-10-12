@@ -40,10 +40,10 @@ pub use geometry::{
 pub use io::gmsh::{load_gmsh, parse_gmsh, GmshError};
 pub use linear::{
     axpy, bicgstab, bicgstab_with_preconditioner, cg, copy_into, dot, norm_inf, norm_l2, pcg,
-    pcg_with_preconditioner, residual, residual_into, scale, CsrBuilder, CsrMatrix,
-    IncompleteCholeskyPreconditioner, JacobiPreconditioner, LinearAlgebraError, LinearSolveReport,
-    LinearSolverOptions, LinearSolverStatus, Preconditioner, StructuredMultigridPreconditioner,
-    SymmetricGaussSeidelPreconditioner,
+    pcg_with_preconditioner, pcg_with_preconditioner_and_workspace, residual, residual_into, scale,
+    CgWorkspace, CsrBuilder, CsrMatrix, IncompleteCholeskyPreconditioner, JacobiPreconditioner,
+    LinearAlgebraError, LinearSolveReport, LinearSolverOptions, LinearSolverStatus, Preconditioner,
+    StructuredMultigridPreconditioner, SymmetricGaussSeidelPreconditioner,
 };
 pub use mesh::{
     BoundaryPatch, BoundaryType, Cell, CellDefinition, ExtrudedMesh3D, Face, MeshDimension,

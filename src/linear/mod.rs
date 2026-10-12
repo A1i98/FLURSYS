@@ -15,8 +15,9 @@ pub use preconditioner::{
     StructuredMultigridPreconditioner, SymmetricGaussSeidelPreconditioner,
 };
 pub use solver::{
-    bicgstab, bicgstab_with_preconditioner, cg, pcg, pcg_with_preconditioner, LinearSolveReport,
-    LinearSolverOptions, LinearSolverStatus,
+    bicgstab, bicgstab_with_preconditioner, cg, pcg, pcg_with_preconditioner,
+    pcg_with_preconditioner_and_workspace, CgWorkspace, LinearSolveReport, LinearSolverOptions,
+    LinearSolverStatus,
 };
 pub use vector::{axpy, copy_into, dot, norm_inf, norm_l2, residual, residual_into, scale};
 

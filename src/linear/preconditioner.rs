@@ -1,4 +1,5 @@
 use super::{CsrMatrix, LinearAlgebraError};
+use std::cell::RefCell;
 
 pub trait Preconditioner {
     fn len(&self) -> usize;
@@ -329,6 +330,7 @@ impl Preconditioner for IncompleteCholeskyPreconditioner {
 #[derive(Clone, Debug, PartialEq)]
 pub struct StructuredMultigridPreconditioner {
     levels: Vec<MultigridLevel>,
+    scratch: RefCell<Vec<MultigridScratch>>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -339,6 +341,14 @@ struct MultigridLevel {
     coarse_entry_map: Option<Vec<usize>>,
     coarse_size: usize,
     coarse_cholesky: Option<Vec<f64>>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct MultigridScratch {
+    product: Vec<f64>,
+    residual: Vec<f64>,
+    coarse_rhs: Vec<f64>,
+    coarse_solution: Vec<f64>,
 }
 
 impl StructuredMultigridPreconditioner {
@@ -437,7 +447,20 @@ impl StructuredMultigridPreconditioner {
             current_width = coarse_width;
             current_height = coarse_height;
         }
-        Ok(Self { levels })
+        let scratch = levels
+            .iter()
+            .filter(|level| level.aggregates.is_some())
+            .map(|level| MultigridScratch {
+                product: vec![0.0; level.matrix.nrows()],
+                residual: vec![0.0; level.matrix.nrows()],
+                coarse_rhs: vec![0.0; level.coarse_size],
+                coarse_solution: vec![0.0; level.coarse_size],
+            })
+            .collect();
+        Ok(Self {
+            levels,
+            scratch: RefCell::new(scratch),
+        })
     }
 
     /// Update matrix coefficients while reusing the fixed aggregation and
@@ -488,12 +511,25 @@ impl StructuredMultigridPreconditioner {
         level_index: usize,
         rhs: &[f64],
         solution: &mut [f64],
+        scratch: &mut [MultigridScratch],
     ) -> Result<(), LinearAlgebraError> {
         let level = &self.levels[level_index];
         if let Some(factor) = &level.coarse_cholesky {
             dense_cholesky_solve(factor, rhs, solution)?;
             return Ok(());
         }
+
+        let Some((level_scratch, coarse_scratch)) = scratch.split_first_mut() else {
+            return Err(LinearAlgebraError::Breakdown {
+                reason: "multigrid workspace is missing a non-coarse level",
+            });
+        };
+        let MultigridScratch {
+            product,
+            residual,
+            coarse_rhs,
+            coarse_solution,
+        } = level_scratch;
 
         solution.fill(0.0);
         gauss_seidel_smooth(
@@ -504,14 +540,12 @@ impl StructuredMultigridPreconditioner {
             true,
             2,
         )?;
-        let mut product = vec![0.0; rhs.len()];
-        level.matrix.spmv_into(solution, &mut product)?;
-        let residual = rhs
-            .iter()
-            .zip(product)
-            .map(|(right, applied)| right - applied)
-            .collect::<Vec<_>>();
-        let mut coarse_rhs = vec![0.0; level.coarse_size];
+        level.matrix.spmv_into(solution, product)?;
+        for ((residual_value, &right), &applied) in residual.iter_mut().zip(rhs).zip(product.iter())
+        {
+            *residual_value = right - applied;
+        }
+        coarse_rhs.fill(0.0);
         let aggregates = level
             .aggregates
             .as_ref()
@@ -521,8 +555,8 @@ impl StructuredMultigridPreconditioner {
         for (row, &value) in residual.iter().enumerate() {
             coarse_rhs[aggregates[row]] += value;
         }
-        let mut coarse_solution = vec![0.0; level.coarse_size];
-        self.v_cycle(level_index + 1, &coarse_rhs, &mut coarse_solution)?;
+        coarse_solution.fill(0.0);
+        self.v_cycle(level_index + 1, coarse_rhs, coarse_solution, coarse_scratch)?;
         for (row, &aggregate) in aggregates.iter().enumerate() {
             solution[row] += coarse_solution[aggregate];
         }
@@ -579,7 +613,7 @@ impl Preconditioner for StructuredMultigridPreconditioner {
                 actual: output.len(),
             });
         }
-        self.v_cycle(0, residual, output)
+        self.v_cycle(0, residual, output, &mut self.scratch.borrow_mut())
     }
 }
 
