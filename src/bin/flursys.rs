@@ -1,4 +1,6 @@
-use flursys::cases::{BackwardStepCase, CavityCase, ChannelCase, CylinderCase, Side};
+use flursys::cases::{
+    BackwardStepCase, CavityCase, ChannelCase, CylinderCase, CylinderInitialCondition, Side,
+};
 use flursys::{
     Case, ConvectionScheme, IncompressibleSolver, LidDrivenCavity3DConfig, LidDrivenCavity3DSolver,
     PimpleControls, PressureSolverKind, PressureVelocityCoupling, SimulationConfig,
@@ -118,6 +120,7 @@ fn cylinder_config(options: &HashMap<String, String>) -> Result<SimulationConfig
     case.u_inf = value(options, "u-inf", case.u_inf)?;
     case.reynolds = value(options, "re", case.reynolds)?;
     case.perturbation = value(options, "perturb", case.perturbation)?;
+    case.initial_condition = cylinder_initial_condition(options)?;
     case.nu = case.u_inf * case.diameter / case.reynolds;
     case.mu = case.rho * case.nu;
 
@@ -149,6 +152,7 @@ fn turek_config(options: &HashMap<String, String>) -> Result<SimulationConfig, S
         mu: 0.001,
         nu: 0.001,
         perturbation: 1.0e-3,
+        initial_condition: CylinderInitialCondition::GaussianWake,
     };
     case.length = value(options, "length", case.length)?;
     case.height = value(options, "height", case.height)?;
@@ -161,6 +165,7 @@ fn turek_config(options: &HashMap<String, String>) -> Result<SimulationConfig, S
     case.nu = case.u_inf * case.diameter / case.reynolds;
     case.mu = case.rho * case.nu;
     case.perturbation = value(options, "perturb", case.perturbation)?;
+    case.initial_condition = cylinder_initial_condition(options)?;
     let mut solver_options = options.clone();
     solver_options
         .entry("coupling".to_string())
@@ -197,6 +202,26 @@ fn turek_config(options: &HashMap<String, String>) -> Result<SimulationConfig, S
         .set_velocity(Side::Bottom, 0.0, 0.0);
     config.boundary_overrides.set_velocity(Side::Top, 0.0, 0.0);
     Ok(config)
+}
+
+fn cylinder_initial_condition(
+    options: &HashMap<String, String>,
+) -> Result<CylinderInitialCondition, String> {
+    match options
+        .get("wake-seed")
+        .map(String::as_str)
+        .unwrap_or("gaussian")
+    {
+        "gaussian" => Ok(CylinderInitialCondition::GaussianWake),
+        "uniform" => Ok(CylinderInitialCondition::Uniform),
+        "sphere" => Ok(CylinderInitialCondition::SphereWake {
+            x: value(options, "wake-x", 0.35_f64)?,
+            y: value(options, "wake-y", 0.225_f64)?,
+            radius: value(options, "wake-radius", 0.035_f64)?,
+            transverse_velocity: value(options, "wake-v", 0.01_f64)?,
+        }),
+        other => Err(format!("Unknown wake seed '{other}'")),
+    }
 }
 
 fn backward_step_config(options: &HashMap<String, String>) -> Result<SimulationConfig, String> {
@@ -427,6 +452,9 @@ fn print_case_help(case: &str) {
     println!("  --print-every N --output-every N --frame-every N");
     println!("  --steady-tol EPS --minimum-steps N");
     println!("  --threads N (0 = automatic CPU worker count)");
+    println!(
+        "  --wake-seed gaussian|uniform|sphere [--wake-x X --wake-y Y --wake-radius R --wake-v V]"
+    );
     println!("  --out PATH");
     println!();
     match case {

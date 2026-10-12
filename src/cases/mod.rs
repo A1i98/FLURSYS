@@ -6,7 +6,7 @@ mod cylinder;
 pub use backward_step::BackwardStepCase;
 pub use cavity::CavityCase;
 pub use channel::ChannelCase;
-pub use cylinder::CylinderCase;
+pub use cylinder::{CylinderCase, CylinderInitialCondition};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CaseKind {
@@ -182,6 +182,20 @@ impl Case {
                 if r2 <= (0.5 * c.diameter).powi(2) {
                     (0.0, 0.0)
                 } else {
+                    match c.initial_condition {
+                        CylinderInitialCondition::Uniform => return (c.u_inf, 0.0),
+                        CylinderInitialCondition::SphereWake {
+                            x: seed_x,
+                            y: seed_y,
+                            radius,
+                            transverse_velocity,
+                        } => {
+                            let in_seed =
+                                (x - seed_x).powi(2) + (y - seed_y).powi(2) <= radius * radius;
+                            return (c.u_inf, if in_seed { transverse_velocity } else { 0.0 });
+                        }
+                        CylinderInitialCondition::GaussianWake => {}
+                    }
                     // A localized divergence-free perturbation is generated
                     // from a Gaussian streamfunction. It prevents an exactly
                     // symmetric grid and initial field from remaining on the

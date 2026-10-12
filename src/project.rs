@@ -499,6 +499,7 @@ impl ProjectCase {
                     mu: density * nu,
                     nu,
                     perturbation: *perturbation,
+                    initial_condition: crate::cases::CylinderInitialCondition::GaussianWake,
                 })
             }
             Self::BackwardFacingStep {
