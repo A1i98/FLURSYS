@@ -17,6 +17,7 @@ impl IncompressibleSolver {
         let rho = self.cfg.case.density();
         let mut final_pressure_residual = 0.0;
         let mut total_pressure_iterations = 0;
+        let mut correction = vec![0.0; nx * ny];
         for corrector in 0..pressure_correctors {
             let pressure_options = if transient {
                 LinearSolverOptions {
@@ -31,6 +32,7 @@ impl IncompressibleSolver {
             } else {
                 solver_options
             };
+            let pressure_assembly_profile = ProfileScope::new(ProfileStage::PressureAssembly);
             workspace.pressure_builder.clear();
             let pressure_builder = &mut workspace.pressure_builder;
             let mut pressure_rhs = vec![0.0; nx * ny];
@@ -118,8 +120,10 @@ impl IncompressibleSolver {
                 .pressure_builder
                 .finalize_into(&mut workspace.pressure_matrix)
                 .map_err(|e| e.to_string())?;
+            drop(pressure_assembly_profile);
             let pressure_matrix = &workspace.pressure_matrix;
-            let mut correction = vec![0.0; nx * ny];
+            correction.fill(0.0);
+            let pressure_solve_profile = ProfileScope::new(ProfileStage::PressureSolve);
             let pressure_report = match self.cfg.pressure_solver {
                 PressureSolverKind::PcgDic => {
                     let preconditioner = IncompleteCholeskyPreconditioner::new(&pressure_matrix)
@@ -144,12 +148,13 @@ impl IncompressibleSolver {
                         None => StructuredMultigridPreconditioner::new(&pressure_matrix, nx, ny)
                             .map_err(|error| format!("cannot build pressure multigrid: {error}"))?,
                     };
-                    let result = pcg_with_preconditioner(
+                    let result = pcg_with_preconditioner_and_workspace(
                         &pressure_matrix,
                         &pressure_rhs,
                         &mut correction,
                         &preconditioner,
                         pressure_options,
+                        &mut self.pressure_cg_workspace,
                     );
                     self.multigrid_preconditioner = Some(preconditioner);
                     result
@@ -167,6 +172,7 @@ impl IncompressibleSolver {
                 }
             }
             .map_err(|e| e.to_string())?;
+            drop(pressure_solve_profile);
             if !pressure_report.converged() {
                 return Err(format!(
                 "Coefficient-based pressure-correction solve did not converge: residual {:.3e} after {} iterations",
@@ -176,6 +182,7 @@ impl IncompressibleSolver {
             final_pressure_residual = pressure_report.final_residual;
             total_pressure_iterations += pressure_report.iterations;
 
+            let pressure_correction_profile = ProfileScope::new(ProfileStage::PressureCorrection);
             for j in 0..ny {
                 for i in 1..=nx {
                     let face = i + (nx + 1) * j;
@@ -204,9 +211,15 @@ impl IncompressibleSolver {
                     }
                 }
             }
-            for (pressure, dp) in self.p.as_mut_slice().iter_mut().zip(correction) {
+            for (pressure, dp) in self
+                .p
+                .as_mut_slice()
+                .iter_mut()
+                .zip(correction.iter().copied())
+            {
                 *pressure += alpha_p * dp;
             }
+            drop(pressure_correction_profile);
             self.u
                 .as_mut_slice()
                 .copy_from_slice(self.u_star.as_slice());

@@ -5,7 +5,8 @@ use crate::output;
 use crate::physics::{BuoyancyModel, EnergyModel, PhysicsSettings, ThermalBoundaryCondition};
 use crate::preprocess::SolverBoundaryOverrides;
 use crate::{
-    bicgstab_with_preconditioner, pcg, pcg_with_preconditioner, CsrBuilder, CsrMatrix,
+    bicgstab_with_preconditioner, pcg, pcg_with_preconditioner,
+    pcg_with_preconditioner_and_workspace, CgWorkspace, CsrBuilder, CsrMatrix,
     IncompleteCholeskyPreconditioner, JacobiPreconditioner, LinearSolverOptions,
     StructuredMultigridPreconditioner, SymmetricGaussSeidelPreconditioner,
 };
@@ -30,6 +31,8 @@ use self::numerics::*;
 mod pressure;
 mod reporting;
 use self::pressure::*;
+mod profile;
+use self::profile::{ProfileScope, ProfileStage};
 mod step;
 mod thermal;
 
@@ -387,6 +390,7 @@ pub struct IncompressibleSolver {
     frame_index: usize,
     outputs_prepared: bool,
     pcg_workspace: PcgWorkspace,
+    pressure_cg_workspace: CgWorkspace,
     implicit_assembly_workspace: Option<ImplicitAssemblyWorkspace>,
     multigrid_preconditioner: Option<StructuredMultigridPreconditioner>,
     last_diag: Diagnostics,
@@ -437,6 +441,7 @@ impl IncompressibleSolver {
             frame_index: 0,
             outputs_prepared: false,
             pcg_workspace: PcgWorkspace::default(),
+            pressure_cg_workspace: CgWorkspace::default(),
             implicit_assembly_workspace: None,
             multigrid_preconditioner: None,
             last_diag: Diagnostics::default(),
@@ -448,7 +453,10 @@ impl IncompressibleSolver {
     }
 
     pub fn run(&mut self) -> Result<RunSummary, String> {
-        self.prepare_output()?;
+        {
+            let _profile = ProfileScope::new(ProfileStage::Output);
+            self.prepare_output()?;
+        }
         let started = Instant::now();
         let mut converged = false;
 
@@ -599,9 +607,11 @@ impl IncompressibleSolver {
             self.last_diag = diag;
 
             if self.step.is_multiple_of(self.cfg.output_every) {
+                let _profile = ProfileScope::new(ProfileStage::Output);
                 self.append_histories(diag)?;
             }
             if self.step.is_multiple_of(self.cfg.frame_every) {
+                let _profile = ProfileScope::new(ProfileStage::Output);
                 self.write_snapshot()?;
             }
             if self.step.is_multiple_of(self.cfg.print_every) {
@@ -639,8 +649,12 @@ impl IncompressibleSolver {
             }
         }
 
-        self.compute_cell_fields();
-        self.write_final_outputs()?;
+        {
+            let _profile = ProfileScope::new(ProfileStage::Output);
+            self.compute_cell_fields();
+            self.write_final_outputs()?;
+        }
+        ProfileScope::report();
         Ok(RunSummary {
             case_name: self.cfg.case.name().to_string(),
             steps: self.step,

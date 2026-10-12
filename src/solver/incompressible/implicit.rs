@@ -154,6 +154,7 @@ impl IncompressibleSolver {
                 .map(|(i, j)| v_before[i + nx * j])
         };
 
+        let u_assembly_profile = ProfileScope::new(ProfileStage::UAssembly);
         workspace.u_builder.clear();
         let u_builder = &mut workspace.u_builder;
         let mut u_rhs = vec![0.0; n_u];
@@ -304,6 +305,7 @@ impl IncompressibleSolver {
             .u_builder
             .finalize_into(&mut workspace.u_matrix)
             .map_err(|e| e.to_string())?;
+        drop(u_assembly_profile);
         let u_matrix = &workspace.u_matrix;
         let u_diagonal = u_matrix.diagonal().map_err(|e| e.to_string())?;
         let mut u_pressure_diagonal =
@@ -326,6 +328,7 @@ impl IncompressibleSolver {
         // every implicit iteration even though `u_star` already has the right
         // size and is reused by the other coupling modes.
         self.u_star.as_mut_slice().copy_from_slice(&u_before);
+        let u_solve_profile = ProfileScope::new(ProfileStage::USolve);
         let u_preconditioner = SymmetricGaussSeidelPreconditioner::new(&u_matrix)
             .map_err(|e| format!("cannot build u-momentum Gauss-Seidel preconditioner: {e}"))?;
         let u_report = bicgstab_with_preconditioner(
@@ -336,6 +339,7 @@ impl IncompressibleSolver {
             momentum_options,
         )
         .map_err(|e| e.to_string())?;
+        drop(u_solve_profile);
         if !u_report.converged() {
             return Err(format!(
                 "Implicit u-momentum solve did not converge: residual {:.3e} after {} iterations",
@@ -344,6 +348,7 @@ impl IncompressibleSolver {
         }
         let u_equation_residual = normalized_linear_residual(u_report.final_residual, &u_rhs);
 
+        let v_assembly_profile = ProfileScope::new(ProfileStage::VAssembly);
         workspace.v_builder.clear();
         let v_builder = &mut workspace.v_builder;
         let mut v_rhs = vec![0.0; n_v];
@@ -487,6 +492,7 @@ impl IncompressibleSolver {
             .v_builder
             .finalize_into(&mut workspace.v_matrix)
             .map_err(|e| e.to_string())?;
+        drop(v_assembly_profile);
         let v_matrix = &workspace.v_matrix;
         let v_diagonal = v_matrix.diagonal().map_err(|e| e.to_string())?;
         let v_pressure_diagonal =
@@ -494,6 +500,7 @@ impl IncompressibleSolver {
         // Match the u path: keep the BiCGStab iterate in the persistent face
         // field rather than allocating a fresh vector for each outer step.
         self.v_star.as_mut_slice().copy_from_slice(&v_before);
+        let v_solve_profile = ProfileScope::new(ProfileStage::VSolve);
         let v_preconditioner = SymmetricGaussSeidelPreconditioner::new(&v_matrix)
             .map_err(|e| format!("cannot build v-momentum Gauss-Seidel preconditioner: {e}"))?;
         let v_report = bicgstab_with_preconditioner(
@@ -504,6 +511,7 @@ impl IncompressibleSolver {
             momentum_options,
         )
         .map_err(|e| e.to_string())?;
+        drop(v_solve_profile);
         if !v_report.converged() {
             return Err(format!(
                 "Implicit v-momentum solve did not converge: residual {:.3e} after {} iterations",

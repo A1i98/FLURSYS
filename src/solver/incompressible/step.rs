@@ -36,6 +36,7 @@ impl IncompressibleSolver {
     }
 
     pub(super) fn advance_one_step(&mut self) -> Result<Diagnostics, String> {
+        let _profile = ProfileScope::new(ProfileStage::Step);
         if self.reached_end_time() {
             return Err("projection simulation has already reached t_end".to_string());
         }
@@ -197,6 +198,7 @@ impl IncompressibleSolver {
     }
 
     pub(super) fn compute_cell_fields(&mut self) {
+        let _profile = ProfileScope::new(ProfileStage::CellFields);
         let Self {
             pool,
             grid,
