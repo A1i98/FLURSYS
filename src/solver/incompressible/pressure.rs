@@ -168,6 +168,9 @@ impl IncompressibleSolver {
         match self.cfg.pressure_solver {
             PressureSolverKind::Pcg => self.solve_pressure_pcg(false),
             PressureSolverKind::PcgDic | PressureSolverKind::PcgMg => self.solve_pressure_pcg(true),
+            PressureSolverKind::Gamg => {
+                unreachable!("configuration validation requires implicit momentum for GAMG")
+            }
             PressureSolverKind::Sor => self.solve_pressure_sor(),
         }
     }

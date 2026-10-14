@@ -55,6 +55,30 @@ impl IncompressibleSolver {
         Ok(())
     }
 
+    pub(super) fn write_verification_snapshot_if_due(&self) -> Result<(), String> {
+        let Some((every, from_time)) = self.verification_snapshots else {
+            return Ok(());
+        };
+        if !self.step.is_multiple_of(every) || self.time + 1.0e-10 < from_time {
+            return Ok(());
+        }
+        let _profile = ProfileScope::new(ProfileStage::Output);
+        let directory = self.cfg.output_dir.join("field_snapshots");
+        std::fs::create_dir_all(&directory).map_err(|e| e.to_string())?;
+        output::write_field_csv(
+            &directory.join(format!("field_{:08}.csv", self.step)),
+            &self.grid,
+            &self.solid,
+            output::CsvFields {
+                pressure: &self.p,
+                u: &self.u_cell,
+                v: &self.v_cell,
+                vorticity: &self.vorticity,
+                temperature: self.temperature.as_ref(),
+            },
+        )
+    }
+
     pub(super) fn write_final_outputs(&self) -> Result<(), String> {
         output::write_field_csv(
             &self.cfg.output_dir.join("field.csv"),
@@ -240,16 +264,35 @@ impl IncompressibleSolver {
                     PressureSolverKind::Pcg => "Jacobi",
                     PressureSolverKind::PcgDic => "DIC(0)",
                     PressureSolverKind::PcgMg => "structured multigrid",
+                    PressureSolverKind::Gamg
+                        if self.algebraic_multigrid_options.krylov_dimension > 0 =>
+                    {
+                        "GAMG + flexible GCR"
+                    }
+                    PressureSolverKind::Gamg => "standalone algebraic multigrid",
                     PressureSolverKind::Sor => "Jacobi (SOR unavailable in coefficient-based mode)",
                 };
-                writeln!(w, "pressure_correction_solver: PCG + {preconditioner}")
-                    .map_err(|e| e.to_string())?;
+                let method = if self.cfg.pressure_solver == PressureSolverKind::Gamg {
+                    preconditioner.to_string()
+                } else {
+                    format!("PCG + {preconditioner}")
+                };
+                writeln!(w, "pressure_correction_solver: {method}").map_err(|e| e.to_string())?;
             }
         }
         writeln!(w, "cpu_threads: {}", self.pool.current_num_threads())
             .map_err(|e| e.to_string())?;
         writeln!(w, "convection: {:?}", self.cfg.convection).map_err(|e| e.to_string())?;
         writeln!(w, "coupling: {:?}", self.cfg.coupling).map_err(|e| e.to_string())?;
+        if self.cfg.pressure_solver == PressureSolverKind::Gamg {
+            writeln!(w, "multigrid_aggregation: shared-face-area").map_err(|e| e.to_string())?;
+            writeln!(
+                w,
+                "multigrid_controls: {:?}",
+                self.algebraic_multigrid_options
+            )
+            .map_err(|e| e.to_string())?;
+        }
         if self.cfg.coupling == PressureVelocityCoupling::Pimple {
             writeln!(
                 w,
@@ -276,6 +319,24 @@ impl IncompressibleSolver {
             )
             .map_err(|e| e.to_string())?;
             writeln!(w, "final_pressure_relative_tolerance: 0").map_err(|e| e.to_string())?;
+        }
+        writeln!(
+            w,
+            "multigrid_smoothing_steps: {}",
+            self.multigrid_smoothing_steps
+        )
+        .map_err(|e| e.to_string())?;
+        if self.cfg.pressure_solver == PressureSolverKind::Gamg {
+            writeln!(
+                w,
+                "algebraic_multigrid: {:?}",
+                self.algebraic_multigrid_options
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        if let Some((every, from)) = self.verification_snapshots {
+            writeln!(w, "verification_field_every: {every}, from_time: {from}")
+                .map_err(|e| e.to_string())?;
         }
         writeln!(w, "pressure_solver: {:?}", self.cfg.pressure_solver)
             .map_err(|e| e.to_string())?;

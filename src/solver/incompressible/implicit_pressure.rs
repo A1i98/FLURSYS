@@ -1,5 +1,39 @@
 use super::*;
 
+mod assembly;
+mod correctors;
+mod predictor;
+
+/// Owned setup reused by every corrector for one fixed momentum matrix.
+enum ImplicitPressurePreconditioner {
+    Dic(IncompleteCholeskyPreconditioner),
+    Mg(StructuredMultigridPreconditioner),
+    Jacobi(JacobiPreconditioner),
+}
+
+enum ImplicitPressureSolver {
+    Pcg(ImplicitPressurePreconditioner),
+    Gamg(AlgebraicMultigrid),
+}
+
+impl crate::Preconditioner for ImplicitPressurePreconditioner {
+    fn len(&self) -> usize {
+        match self {
+            Self::Dic(p) => crate::Preconditioner::len(p),
+            Self::Mg(p) => crate::Preconditioner::len(p),
+            Self::Jacobi(p) => crate::Preconditioner::len(p),
+        }
+    }
+
+    fn apply_into(&self, rhs: &[f64], output: &mut [f64]) -> Result<(), crate::LinearAlgebraError> {
+        match self {
+            Self::Dic(p) => p.apply_into(rhs, output),
+            Self::Mg(p) => p.apply_into(rhs, output),
+            Self::Jacobi(p) => p.apply_into(rhs, output),
+        }
+    }
+}
+
 impl IncompressibleSolver {
     pub(super) fn correct_implicit_pressure(
         &mut self,
@@ -14,219 +48,105 @@ impl IncompressibleSolver {
     ) -> Result<(f64, usize), String> {
         let nx = self.grid.nx;
         let ny = self.grid.ny;
-        let rho = self.cfg.case.density();
-        let mut final_pressure_residual = 0.0;
-        let mut total_pressure_iterations = 0;
-        let mut correction = vec![0.0; nx * ny];
-        for corrector in 0..pressure_correctors {
-            let pressure_options = if transient {
-                LinearSolverOptions {
-                    absolute_tolerance: self.cfg.pressure_tolerance,
-                    relative_tolerance: if corrector + 1 == pressure_correctors {
-                        0.0
-                    } else {
-                        self.cfg.pimple.first_pressure_relative_tolerance
-                    },
-                    ..solver_options
-                }
-            } else {
-                solver_options
-            };
-            let pressure_assembly_profile = ProfileScope::new(ProfileStage::PressureAssembly);
-            workspace.pressure_builder.clear();
-            let pressure_builder = &mut workspace.pressure_builder;
-            let mut pressure_rhs = vec![0.0; nx * ny];
-            let reference = self
-                .pressure_reference_required()
-                .then(|| self.find_reference_cell())
-                .flatten();
-            for j in 0..ny {
-                for i in 0..nx {
-                    let row = i + nx * j;
-                    if self.solid[(i, j)]
-                        || (!transient_pressure_outlet && self.is_pressure_outlet_cell(i, j))
-                        || reference == Some((i, j))
-                    {
-                        pressure_builder
-                            .add(row, row, 1.0)
-                            .map_err(|e| e.to_string())?;
-                        continue;
-                    }
-                    let divergence = (self.u_star.as_slice()[i + 1 + (nx + 1) * j]
-                        - self.u_star.as_slice()[i + (nx + 1) * j])
-                        / self.grid.dx
-                        + (self.v_star.as_slice()[i + nx * (j + 1)]
-                            - self.v_star.as_slice()[i + nx * j])
-                            / self.grid.dy;
-                    pressure_rhs[row] = -divergence;
-                    let neighbors = [
-                        (
-                            i + 1 < nx,
-                            (i + 1).min(nx - 1),
-                            j,
-                            self.grid.dy / (rho * self.grid.dx),
-                            1.0 / u_pressure_diagonal[i + 1 + (nx + 1) * j],
-                        ),
-                        (
-                            i > 0,
-                            i.saturating_sub(1),
-                            j,
-                            self.grid.dy / (rho * self.grid.dx),
-                            1.0 / u_pressure_diagonal[i + (nx + 1) * j],
-                        ),
-                        (
-                            j + 1 < ny,
-                            i,
-                            (j + 1).min(ny - 1),
-                            self.grid.dx / (rho * self.grid.dy),
-                            1.0 / v_pressure_diagonal[i + nx * (j + 1)],
-                        ),
-                        (
-                            j > 0,
-                            i,
-                            j.saturating_sub(1),
-                            self.grid.dx / (rho * self.grid.dy),
-                            1.0 / v_pressure_diagonal[i + nx * j],
-                        ),
-                    ];
-                    let mut diagonal = 0.0;
-                    for (exists, ni, nj, metric, reciprocal) in neighbors {
-                        if !exists || self.solid[(ni, nj)] {
-                            continue;
+        let reference = self.assemble_implicit_pressure_matrix(
+            workspace,
+            u_pressure_diagonal,
+            v_pressure_diagonal,
+            transient_pressure_outlet,
+        )?;
+        let setup_profile = ProfileScope::new(ProfileStage::PressurePreconditionerSetup);
+        let mut pressure_solver = match self.cfg.pressure_solver {
+            PressureSolverKind::Gamg => {
+                let solver = match self.algebraic_multigrid.take() {
+                    Some(mut solver) => {
+                        if let Err(error) = solver.update_values(&workspace.pressure_matrix) {
+                            self.algebraic_multigrid = Some(solver);
+                            return Err(format!("cannot update algebraic multigrid: {error}"));
                         }
-                        let coefficient = metric * reciprocal;
-                        diagonal += coefficient;
-                        let neighbor = ni + nx * nj;
-                        if (transient_pressure_outlet || !self.is_pressure_outlet_cell(ni, nj))
-                            && reference != Some((ni, nj))
-                        {
-                            pressure_builder
-                                .add(row, neighbor, -coefficient)
-                                .map_err(|e| e.to_string())?;
-                        }
+                        solver
                     }
-                    if transient_pressure_outlet && i + 1 == nx {
-                        // Dirichlet pressure is prescribed on the outlet face,
-                        // half a cell from the last pressure unknown.
-                        diagonal += 2.0 * self.grid.dy
-                            / (rho * self.grid.dx * u_pressure_diagonal[nx + (nx + 1) * j]);
-                    }
-                    pressure_builder
-                        .add(row, row, diagonal.max(f64::MIN_POSITIVE))
-                        .map_err(|e| e.to_string())?;
-                }
-            }
-            workspace
-                .pressure_builder
-                .finalize_into(&mut workspace.pressure_matrix)
-                .map_err(|e| e.to_string())?;
-            drop(pressure_assembly_profile);
-            let pressure_matrix = &workspace.pressure_matrix;
-            correction.fill(0.0);
-            let pressure_solve_profile = ProfileScope::new(ProfileStage::PressureSolve);
-            let pressure_report = match self.cfg.pressure_solver {
-                PressureSolverKind::PcgDic => {
-                    let preconditioner = IncompleteCholeskyPreconditioner::new(&pressure_matrix)
-                        .map_err(|error| format!("cannot build pressure DIC(0): {error}"))?;
-                    pcg_with_preconditioner(
-                        &pressure_matrix,
-                        &pressure_rhs,
-                        &mut correction,
-                        &preconditioner,
-                        pressure_options,
-                    )
-                }
-                PressureSolverKind::PcgMg => {
-                    let preconditioner = match self.multigrid_preconditioner.take() {
-                        Some(mut preconditioner) => {
-                            if let Err(error) = preconditioner.update_values(&pressure_matrix) {
-                                self.multigrid_preconditioner = Some(preconditioner);
-                                return Err(format!("cannot update pressure multigrid: {error}"));
+                    None => {
+                        // Pressure has Cartesian cell unknowns. Geometric face
+                        // strength keeps aggregation independent of the initial
+                        // transient momentum coefficients and favors compact
+                        // coarse cells as shared face areas are accumulated.
+                        let matrix = &workspace.pressure_matrix;
+                        let mut weights = vec![0.0; matrix.nnz()];
+                        for row in 0..matrix.nrows() {
+                            for entry in matrix.row_offsets()[row]..matrix.row_offsets()[row + 1] {
+                                let column = matrix.column_indices()[entry];
+                                if column != row {
+                                    weights[entry] = if column.abs_diff(row) == nx {
+                                        self.grid.dx
+                                    } else {
+                                        self.grid.dy
+                                    };
+                                }
                             }
-                            preconditioner
                         }
-                        None => StructuredMultigridPreconditioner::new(&pressure_matrix, nx, ny)
-                            .map_err(|error| format!("cannot build pressure multigrid: {error}"))?,
-                    };
-                    let result = pcg_with_preconditioner_and_workspace(
-                        &pressure_matrix,
-                        &pressure_rhs,
-                        &mut correction,
-                        &preconditioner,
-                        pressure_options,
-                        &mut self.pressure_cg_workspace,
-                    );
-                    self.multigrid_preconditioner = Some(preconditioner);
-                    result
-                }
-                PressureSolverKind::Pcg | PressureSolverKind::Sor => {
-                    let preconditioner =
-                        JacobiPreconditioner::new(&pressure_matrix).map_err(|e| e.to_string())?;
-                    pcg(
-                        &pressure_matrix,
-                        &pressure_rhs,
-                        &mut correction,
-                        &preconditioner,
-                        pressure_options,
+                        AlgebraicMultigrid::new_with_face_weights(
+                            matrix,
+                            &weights,
+                            self.algebraic_multigrid_options,
+                        )
+                        .map_err(|error| format!("cannot build algebraic multigrid: {error}"))?
+                    }
+                };
+                ImplicitPressureSolver::Gamg(solver)
+            }
+            PressureSolverKind::PcgDic => {
+                ImplicitPressureSolver::Pcg(ImplicitPressurePreconditioner::Dic(
+                    IncompleteCholeskyPreconditioner::new(&workspace.pressure_matrix)
+                        .map_err(|error| format!("cannot build pressure DIC(0): {error}"))?,
+                ))
+            }
+            PressureSolverKind::PcgMg => {
+                let mg = match self.multigrid_preconditioner.take() {
+                    Some(mut mg) => {
+                        if let Err(error) = mg.update_values(&workspace.pressure_matrix) {
+                            self.multigrid_preconditioner = Some(mg);
+                            return Err(format!("cannot update pressure multigrid: {error}"));
+                        }
+                        mg
+                    }
+                    None => StructuredMultigridPreconditioner::with_smoothing_steps(
+                        &workspace.pressure_matrix,
+                        nx,
+                        ny,
+                        self.multigrid_smoothing_steps,
                     )
-                }
+                    .map_err(|error| format!("cannot build pressure multigrid: {error}"))?,
+                };
+                ImplicitPressureSolver::Pcg(ImplicitPressurePreconditioner::Mg(mg))
             }
-            .map_err(|e| e.to_string())?;
-            drop(pressure_solve_profile);
-            if !pressure_report.converged() {
-                return Err(format!(
-                "Coefficient-based pressure-correction solve did not converge: residual {:.3e} after {} iterations",
-                pressure_report.final_residual, pressure_report.iterations
-            ));
+            PressureSolverKind::Pcg | PressureSolverKind::Sor => {
+                ImplicitPressureSolver::Pcg(ImplicitPressurePreconditioner::Jacobi(
+                    JacobiPreconditioner::new(&workspace.pressure_matrix)
+                        .map_err(|e| e.to_string())?,
+                ))
             }
-            final_pressure_residual = pressure_report.final_residual;
-            total_pressure_iterations += pressure_report.iterations;
-
-            let pressure_correction_profile = ProfileScope::new(ProfileStage::PressureCorrection);
-            for j in 0..ny {
-                for i in 1..=nx {
-                    let face = i + (nx + 1) * j;
-                    if i == nx {
-                        if transient_pressure_outlet && u_face_open(&self.solid, nx, i, j) {
-                            self.u_star.as_mut_slice()[face] +=
-                                2.0 * self.grid.dy * correction[nx - 1 + nx * j]
-                                    / (rho * u_pressure_diagonal[face]);
-                        }
-                        continue;
-                    }
-                    if u_face_open(&self.solid, nx, i, j) {
-                        self.u_star.as_mut_slice()[face] -= self.grid.dy
-                            * (correction[i + nx * j] - correction[i - 1 + nx * j])
-                            / (rho * u_pressure_diagonal[face]);
-                    }
-                }
+        };
+        drop(setup_profile);
+        let result = self.apply_implicit_pressure_correctors(
+            workspace,
+            u_pressure_diagonal,
+            v_pressure_diagonal,
+            pressure_correctors,
+            alpha_p,
+            transient,
+            transient_pressure_outlet,
+            solver_options,
+            reference,
+            &mut pressure_solver,
+        );
+        // Restore the hierarchy even if a linear solve failed.
+        match pressure_solver {
+            ImplicitPressureSolver::Pcg(ImplicitPressurePreconditioner::Mg(mg)) => {
+                self.multigrid_preconditioner = Some(mg)
             }
-            for j in 1..ny {
-                for i in 0..nx {
-                    let face = i + nx * j;
-                    if v_face_open(&self.solid, ny, i, j) {
-                        self.v_star.as_mut_slice()[face] -= self.grid.dx
-                            * (correction[i + nx * j] - correction[i + nx * (j - 1)])
-                            / (rho * v_pressure_diagonal[face]);
-                    }
-                }
-            }
-            for (pressure, dp) in self
-                .p
-                .as_mut_slice()
-                .iter_mut()
-                .zip(correction.iter().copied())
-            {
-                *pressure += alpha_p * dp;
-            }
-            drop(pressure_correction_profile);
-            self.u
-                .as_mut_slice()
-                .copy_from_slice(self.u_star.as_slice());
-            self.v
-                .as_mut_slice()
-                .copy_from_slice(self.v_star.as_slice());
+            ImplicitPressureSolver::Gamg(solver) => self.algebraic_multigrid = Some(solver),
+            _ => {}
         }
-        Ok((final_pressure_residual, total_pressure_iterations))
+        result
     }
 }

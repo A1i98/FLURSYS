@@ -14,11 +14,17 @@ pub(super) enum ProfileStage {
     PressureCorrection,
     CellFields,
     Output,
+    PressureRhs,
+    PressurePreconditionerSetup,
+    PressurePredictor,
 }
 
-const STAGE_COUNT: usize = 10;
+const STAGE_COUNT: usize = 13;
 static ENABLED: OnceLock<bool> = OnceLock::new();
 static NANOS: [AtomicU64; STAGE_COUNT] = [
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
     AtomicU64::new(0),
     AtomicU64::new(0),
     AtomicU64::new(0),
@@ -47,6 +53,9 @@ fn index(stage: ProfileStage) -> usize {
         ProfileStage::PressureCorrection => 7,
         ProfileStage::CellFields => 8,
         ProfileStage::Output => 9,
+        ProfileStage::PressureRhs => 10,
+        ProfileStage::PressurePreconditionerSetup => 11,
+        ProfileStage::PressurePredictor => 12,
     }
 }
 
@@ -79,6 +88,9 @@ impl ProfileScope {
             "pressure_correction",
             "cell_fields",
             "output",
+            "pressure_rhs",
+            "pressure_setup",
+            "pressure_predictor",
         ];
         let step_nanos = NANOS[0].load(Ordering::Relaxed).max(1) as f64;
         println!("Performance profile (FLURSYS_PROFILE enabled):");
@@ -94,6 +106,15 @@ impl ProfileScope {
                 nanos as f64 * 1.0e-9
             );
         }
+        let cg = crate::linear::cg_profile_snapshot();
+        println!(
+            "CG totals: {} solves, {} iterations, {} SpMV calls, {} preconditioner applications",
+            cg.solves, cg.iterations, cg.spmv_calls, cg.preconditioner_calls
+        );
+        println!(
+            "CG substage times (included in pressure_solve): SpMV {:.6} s; preconditioner {:.6} s",
+            cg.spmv_seconds, cg.preconditioner_seconds
+        );
     }
 }
 

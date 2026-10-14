@@ -5,9 +5,9 @@ use crate::output;
 use crate::physics::{BuoyancyModel, EnergyModel, PhysicsSettings, ThermalBoundaryCondition};
 use crate::preprocess::SolverBoundaryOverrides;
 use crate::{
-    bicgstab_with_preconditioner, pcg, pcg_with_preconditioner,
-    pcg_with_preconditioner_and_workspace, CgWorkspace, CsrBuilder, CsrMatrix,
-    IncompleteCholeskyPreconditioner, JacobiPreconditioner, LinearSolverOptions,
+    bicgstab_with_preconditioner_and_workspace, pcg_with_preconditioner_and_workspace,
+    AlgebraicMultigrid, BiCgStabWorkspace, CgWorkspace, CsrBuilder, CsrMatrix,
+    IncompleteCholeskyPreconditioner, JacobiPreconditioner, LinearSolverOptions, MultigridOptions,
     StructuredMultigridPreconditioner, SymmetricGaussSeidelPreconditioner,
 };
 use rayon::prelude::*;
@@ -24,6 +24,7 @@ use self::diagnostics::*;
 mod implicit;
 use self::implicit::*;
 mod implicit_pressure;
+mod implicit_residual;
 mod momentum;
 use self::momentum::*;
 mod numerics;
@@ -48,6 +49,7 @@ pub enum PressureSolverKind {
     Pcg,
     PcgDic,
     PcgMg,
+    Gamg,
     Sor,
 }
 
@@ -188,11 +190,13 @@ impl SimulationConfig {
                     .to_string(),
             );
         }
-        if self.pressure_solver == PressureSolverKind::PcgMg
-            && !self.coupling.is_coefficient_based()
+        if matches!(
+            self.pressure_solver,
+            PressureSolverKind::PcgMg | PressureSolverKind::Gamg
+        ) && !self.coupling.is_coefficient_based()
         {
             return Err(
-                "PCG + structured multigrid currently requires implicit coefficient-based coupling"
+                "multigrid pressure solvers require implicit coefficient-based coupling"
                     .to_string(),
             );
         }
@@ -391,8 +395,13 @@ pub struct IncompressibleSolver {
     outputs_prepared: bool,
     pcg_workspace: PcgWorkspace,
     pressure_cg_workspace: CgWorkspace,
+    momentum_bicg_workspace: BiCgStabWorkspace,
     implicit_assembly_workspace: Option<ImplicitAssemblyWorkspace>,
     multigrid_preconditioner: Option<StructuredMultigridPreconditioner>,
+    multigrid_smoothing_steps: usize,
+    algebraic_multigrid: Option<AlgebraicMultigrid>,
+    algebraic_multigrid_options: MultigridOptions,
+    verification_snapshots: Option<(usize, f64)>,
     last_diag: Diagnostics,
     pool: ThreadPool,
 }
@@ -442,14 +451,66 @@ impl IncompressibleSolver {
             outputs_prepared: false,
             pcg_workspace: PcgWorkspace::default(),
             pressure_cg_workspace: CgWorkspace::default(),
+            momentum_bicg_workspace: BiCgStabWorkspace::default(),
             implicit_assembly_workspace: None,
             multigrid_preconditioner: None,
+            multigrid_smoothing_steps: 1,
+            algebraic_multigrid: None,
+            algebraic_multigrid_options: MultigridOptions::default(),
+            verification_snapshots: None,
             last_diag: Diagnostics::default(),
             pool,
         };
         solver.initialize_velocity();
         solver.compute_cell_fields();
         Ok(solver)
+    }
+
+    /// Configure the standalone multigrid hierarchy and invalidate its cached setup.
+    pub fn set_algebraic_multigrid_options(
+        &mut self,
+        options: MultigridOptions,
+    ) -> Result<(), String> {
+        options.validate().map_err(|error| error.to_string())?;
+        if options != self.algebraic_multigrid_options {
+            self.algebraic_multigrid_options = options;
+            self.algebraic_multigrid = None;
+        }
+        Ok(())
+    }
+
+    pub fn algebraic_multigrid_statistics(&self) -> Option<&[crate::MultigridLevelStatistics]> {
+        self.algebraic_multigrid
+            .as_ref()
+            .map(AlgebraicMultigrid::statistics)
+    }
+
+    /// Set matched forward/backward multigrid sweeps, preserving symmetry for PCG.
+    pub fn set_multigrid_smoothing_steps(&mut self, steps: usize) -> Result<(), String> {
+        if !(1..=8).contains(&steps) {
+            return Err("multigrid smoothing steps must be between 1 and 8".to_string());
+        }
+        if steps != self.multigrid_smoothing_steps {
+            self.multigrid_smoothing_steps = steps;
+            self.multigrid_preconditioner = None;
+        }
+        Ok(())
+    }
+
+    /// Save cell fields at a fixed step cadence for phase-aligned verification.
+    pub fn set_verification_snapshots(
+        &mut self,
+        every: usize,
+        from_time: f64,
+    ) -> Result<(), String> {
+        if every == 0 || !from_time.is_finite() || from_time < 0.0 {
+            return Err(
+                "field snapshot interval must be positive and start time finite/nonnegative"
+                    .to_string(),
+            );
+        }
+        self.verification_snapshots = Some((every, from_time));
+        Ok(())
     }
 
     pub fn run(&mut self) -> Result<RunSummary, String> {
@@ -538,13 +599,17 @@ impl IncompressibleSolver {
         }
         if self.cfg.coupling.is_coefficient_based() {
             println!(
-                "Implicit momentum/correction solvers: momentum BiCGStab; pressure correction PCG + {}, max_iters={}",
+                "Implicit momentum/correction solvers: momentum BiCGStab; pressure correction {}, max_iters={}",
                 match self.cfg.pressure_solver {
-                    PressureSolverKind::PcgDic => "DIC(0)",
-                    PressureSolverKind::PcgMg => "structured multigrid",
-                    PressureSolverKind::Pcg | PressureSolverKind::Sor => "Jacobi",
+                    PressureSolverKind::PcgDic => "PCG + DIC(0)",
+                    PressureSolverKind::PcgMg => "PCG + structured multigrid",
+                    PressureSolverKind::Gamg if self.algebraic_multigrid_options.krylov_dimension > 0 => "GAMG + flexible GCR",
+                    PressureSolverKind::Gamg => "standalone algebraic multigrid",
+                    PressureSolverKind::Pcg | PressureSolverKind::Sor => "PCG + Jacobi",
                 },
-                self.cfg.pressure_max_iters.max(100)
+                if self.cfg.pressure_solver == PressureSolverKind::Gamg {
+                    self.cfg.pressure_max_iters
+                } else { self.cfg.pressure_max_iters.max(100) }
             );
             if self.cfg.coupling == PressureVelocityCoupling::Pimple {
                 println!(
@@ -557,6 +622,12 @@ impl IncompressibleSolver {
                 println!(
                     "Linear stopping: relative={:.3e}",
                     self.cfg.pressure_tolerance
+                );
+            }
+            if self.cfg.pressure_solver == PressureSolverKind::Gamg {
+                println!(
+                    "Multigrid aggregation: shared-face-area, connected clusters. Controls: {:?}",
+                    self.algebraic_multigrid_options
                 );
             }
             if self.cfg.pressure_solver == PressureSolverKind::Sor {
@@ -580,7 +651,7 @@ impl IncompressibleSolver {
                     self.cfg.pressure_tolerance,
                     self.cfg.pressure_max_iters
                 ),
-                PressureSolverKind::PcgMg => println!(
+                PressureSolverKind::PcgMg | PressureSolverKind::Gamg => println!(
                     "Pressure: PCG + structured multigrid (coefficient-based coupling), tol={:.3e}, max_iters={}",
                     self.cfg.pressure_tolerance,
                     self.cfg.pressure_max_iters
@@ -614,6 +685,7 @@ impl IncompressibleSolver {
                 let _profile = ProfileScope::new(ProfileStage::Output);
                 self.write_snapshot()?;
             }
+            self.write_verification_snapshot_if_due()?;
             if self.step.is_multiple_of(self.cfg.print_every) {
                 let progress = if self.cfg.coupling.is_transient() {
                     format!(
@@ -655,6 +727,15 @@ impl IncompressibleSolver {
             self.write_final_outputs()?;
         }
         ProfileScope::report();
+        if self.algebraic_multigrid_options.profile {
+            if let Some(statistics) = self.algebraic_multigrid_statistics() {
+                println!("Multigrid levels (times include recursive children):");
+                for (index, level) in statistics.iter().enumerate() {
+                    println!("  level {index}: {} cells, {} visits, {} smoother sweeps, {} coarse iterations, {:.6}s",
+                        level.cells, level.visits, level.smoothing_sweeps, level.coarse_iterations, level.inclusive_seconds);
+                }
+            }
+        }
         Ok(RunSummary {
             case_name: self.cfg.case.name().to_string(),
             steps: self.step,
@@ -699,6 +780,7 @@ impl IncompressibleSolver {
         if self.step.is_multiple_of(self.cfg.frame_every) {
             self.write_snapshot()?;
         }
+        self.write_verification_snapshot_if_due()?;
         let converged = self.has_steady_converged(diag);
         let reached_end_time = self.reached_end_time();
 
@@ -1164,5 +1246,165 @@ mod tests {
         };
         let error = IncompressibleSolver::new(cfg).err().unwrap();
         assert!(error.contains("requires the constant-property energy equation"));
+    }
+    #[test]
+    fn pressure_correctors_agree_across_preconditioners_and_snapshot_output_is_optional() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut reference_fields = None;
+        for (index, kind) in [
+            PressureSolverKind::Pcg,
+            PressureSolverKind::PcgDic,
+            PressureSolverKind::PcgMg,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let output = directory.path().join(index.to_string());
+            let mut cfg = test_config(PressureVelocityCoupling::Pimple, output.to_str().unwrap());
+            cfg.case = Case::CylinderRe100(crate::cases::CylinderCase {
+                length: 2.2,
+                height: 0.41,
+                diameter: 0.1,
+                xc: 0.2,
+                yc: 0.2,
+                rho: 1.0,
+                u_inf: 1.0,
+                reynolds: 100.0,
+                mu: 0.001,
+                nu: 0.001,
+                perturbation: 0.001,
+                initial_condition: crate::cases::CylinderInitialCondition::GaussianWake,
+            });
+            cfg.nx = 88;
+            cfg.ny = 16;
+            cfg.dt = 0.001;
+            cfg.t_end = 0.003;
+            cfg.pressure_solver = kind;
+            cfg.pressure_max_iters = 4000;
+            cfg.pressure_tolerance = 1.0e-10;
+            cfg.pimple.momentum_tolerance = 1.0e-10;
+            cfg.pimple.pressure_correctors = 3;
+            cfg.pimple.first_pressure_relative_tolerance = 0.0;
+            cfg.velocity_relaxation = 1.0;
+            cfg.pressure_relaxation = 1.0;
+            cfg.boundary_overrides
+                .set_parabolic_inlet(Side::Left, 1.5, 0.0, 0.41);
+            cfg.boundary_overrides.set_velocity(Side::Top, 0.0, 0.0);
+            cfg.boundary_overrides.set_velocity(Side::Bottom, 0.0, 0.0);
+            let mut solver = IncompressibleSolver::new(cfg).unwrap();
+            if index == 2 {
+                solver.set_verification_snapshots(1, 0.002).unwrap();
+            }
+            let summary = solver.run().unwrap();
+            assert_eq!(summary.steps, 3);
+            assert!(summary.max_divergence < 1.0e-8);
+            let workspace = solver.implicit_assembly_workspace.as_ref().unwrap();
+            let true_residual = crate::residual(
+                &workspace.pressure_matrix,
+                &workspace.pressure_correction,
+                &workspace.pressure_rhs,
+            )
+            .unwrap();
+            assert!(crate::norm_l2(&true_residual).unwrap() < 2.0e-10);
+            if let Some((p, u, v)) = &reference_fields {
+                assert!(max_field_difference(&solver.p, p) < 1.0e-6);
+                assert!(max_field_difference(&solver.u, u) < 1.0e-8);
+                assert!(max_field_difference(&solver.v, v) < 1.0e-8);
+            } else {
+                reference_fields = Some((solver.p.clone(), solver.u.clone(), solver.v.clone()));
+            }
+            assert_eq!(output.join("field_snapshots").exists(), index == 2);
+            if index == 2 {
+                assert!(!output.join("field_snapshots/field_00000001.csv").exists());
+                assert!(output.join("field_snapshots/field_00000002.csv").exists());
+                assert!(output.join("field_snapshots/field_00000003.csv").exists());
+            }
+        }
+    }
+    #[test]
+    fn transient_neighbour_correctors_reduce_the_corrected_momentum_defect() {
+        let mut previous_residual = f64::INFINITY;
+        for correctors in [1, 2, 4] {
+            let mut cfg = test_config(PressureVelocityCoupling::Pimple, "target/piso-defect-test");
+            cfg.case = Case::CylinderRe100(crate::cases::CylinderCase {
+                length: 2.2,
+                height: 0.41,
+                diameter: 0.1,
+                xc: 0.2,
+                yc: 0.2,
+                rho: 1.0,
+                u_inf: 1.0,
+                reynolds: 100.0,
+                mu: 0.001,
+                nu: 0.001,
+                perturbation: 0.001,
+                initial_condition: crate::cases::CylinderInitialCondition::GaussianWake,
+            });
+            cfg.nx = 88;
+            cfg.ny = 16;
+            cfg.dt = 0.01;
+            cfg.t_end = 0.01;
+            cfg.pressure_solver = PressureSolverKind::PcgMg;
+            cfg.pressure_max_iters = 2000;
+            cfg.pressure_tolerance = 1.0e-10;
+            cfg.pimple.momentum_tolerance = 1.0e-10;
+            cfg.pimple.pressure_correctors = correctors;
+            cfg.pimple.first_pressure_relative_tolerance = 0.0;
+            cfg.boundary_overrides
+                .set_parabolic_inlet(Side::Left, 1.5, 0.0, 0.41);
+            cfg.boundary_overrides.set_velocity(Side::Top, 0.0, 0.0);
+            cfg.boundary_overrides.set_velocity(Side::Bottom, 0.0, 0.0);
+            let mut solver = IncompressibleSolver::new(cfg).unwrap();
+            let diag = solver.advance_one_step().unwrap();
+            let residual = diag.momentum_equation_residual.unwrap();
+            assert!(
+                residual < previous_residual,
+                "{correctors} correctors: {residual} >= {previous_residual}"
+            );
+            assert!(diag.max_divergence < 1.0e-8);
+            previous_residual = residual;
+        }
+    }
+    #[test]
+    fn implicit_outlet_preserves_neumann_momentum_coefficients() {
+        let mut cfg = test_config(
+            PressureVelocityCoupling::Pimple,
+            "target/outlet-neumann-test",
+        );
+        cfg.case = Case::Channel(crate::cases::ChannelCase {
+            length: 2.2,
+            height: 0.41,
+            rho: 1.0,
+            u_mean: 1.0,
+            reynolds: 100.0,
+            nu: 0.001,
+        });
+        cfg.pressure_solver = PressureSolverKind::PcgMg;
+        cfg.pressure_max_iters = 1000;
+        let mut solver = IncompressibleSolver::new(cfg).unwrap();
+        solver.u.fill(1.0);
+        solver.v.fill(0.25);
+        let old_u = solver.u.clone();
+        let old_v = solver.v.clone();
+        let dt = solver.cfg.dt;
+        solver.advance_implicit_pimple(dt, &old_u, &old_v).unwrap();
+        let workspace = solver.implicit_assembly_workspace.as_ref().unwrap();
+        let nx = solver.grid.nx;
+        let j = solver.grid.ny / 2;
+        let u_outlet = nx + (nx + 1) * j;
+        assert_eq!(workspace.u_matrix.get(u_outlet, u_outlet), Some(1.0));
+        assert_eq!(workspace.u_matrix.get(u_outlet, u_outlet - 1), Some(-1.0));
+        assert_eq!(workspace.u_pressure_free_rhs[u_outlet], 0.0);
+        let row = nx - 1 + nx * j;
+        let begin = workspace.v_matrix.row_offsets()[row];
+        let end = workspace.v_matrix.row_offsets()[row + 1];
+        let row_sum: f64 = workspace.v_matrix.values()[begin..end].iter().sum();
+        // A constant transverse field has zero diffusion/convection divergence
+        // at a zero-gradient outlet. Only the time derivative remains.
+        let transient = solver.grid.dx * solver.grid.dy / dt;
+        assert!(
+            (row_sum - transient).abs() < 1.0e-10,
+            "{row_sum} != {transient}"
+        );
     }
 }

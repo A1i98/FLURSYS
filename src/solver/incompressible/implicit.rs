@@ -5,9 +5,15 @@ pub(super) struct ImplicitAssemblyWorkspace {
     u_builder: CsrBuilder,
     v_builder: CsrBuilder,
     pub(super) pressure_builder: CsrBuilder,
-    u_matrix: CsrMatrix,
-    v_matrix: CsrMatrix,
+    pub(super) u_matrix: CsrMatrix,
+    pub(super) v_matrix: CsrMatrix,
     pub(super) pressure_matrix: CsrMatrix,
+    pub(super) pressure_rhs: Vec<f64>,
+    pub(super) pressure_correction: Vec<f64>,
+    pub(super) u_pressure_free_rhs: Vec<f64>,
+    pub(super) v_pressure_free_rhs: Vec<f64>,
+    pub(super) u_product: Vec<f64>,
+    pub(super) v_product: Vec<f64>,
 }
 
 impl ImplicitAssemblyWorkspace {
@@ -30,6 +36,12 @@ impl ImplicitAssemblyWorkspace {
             u_matrix: empty_matrix(n_u)?,
             v_matrix: empty_matrix(n_v)?,
             pressure_matrix: empty_matrix(n_pressure)?,
+            pressure_rhs: vec![0.0; n_pressure],
+            pressure_correction: vec![0.0; n_pressure],
+            u_pressure_free_rhs: vec![0.0; n_u],
+            v_pressure_free_rhs: vec![0.0; n_v],
+            u_product: vec![0.0; n_u],
+            v_product: vec![0.0; n_v],
         })
     }
 }
@@ -130,7 +142,11 @@ impl IncompressibleSolver {
         let solver_options = LinearSolverOptions {
             absolute_tolerance: 1.0e-12,
             relative_tolerance: self.cfg.pressure_tolerance,
-            max_iterations: self.cfg.pressure_max_iters.max(100),
+            max_iterations: if self.cfg.pressure_solver == PressureSolverKind::Gamg {
+                self.cfg.pressure_max_iters
+            } else {
+                self.cfg.pressure_max_iters.max(100)
+            },
         };
         let momentum_options = if transient_reference.is_some() {
             LinearSolverOptions {
@@ -161,6 +177,21 @@ impl IncompressibleSolver {
         for j in 0..ny {
             for i in 0..=nx {
                 let row = i + (nx + 1) * j;
+                if i == nx
+                    && u_face_open(&self.solid, nx, i, j)
+                    && matches!(
+                        self.cfg
+                            .boundary_overrides
+                            .kind(&self.cfg.case, Side::Right),
+                        BoundaryKind::PressureOutlet { .. }
+                    )
+                {
+                    u_builder.add(row, row, 1.0).map_err(|e| e.to_string())?;
+                    u_builder
+                        .add(row, row - 1, -1.0)
+                        .map_err(|e| e.to_string())?;
+                    continue;
+                }
                 if i == 0 || i == nx || !u_face_open(&self.solid, nx, i, j) {
                     u_builder.add(row, row, 1.0).map_err(|e| e.to_string())?;
                     u_rhs[row] = u_before[row];
@@ -218,9 +249,12 @@ impl IncompressibleSolver {
                         u_builder
                             .add(row, neighbor, -coeff)
                             .map_err(|e| e.to_string())?;
-                    } else {
+                    } else if inside {
                         ap += coeff;
-                        if !inside {
+                    } else {
+                        let kind = self.cfg.boundary_overrides.kind(&self.cfg.case, side);
+                        if matches!(kind, BoundaryKind::Velocity) {
+                            ap += coeff;
                             let x = self.grid.u_face_x(i);
                             let y = if side == Side::Top {
                                 self.grid.height
@@ -233,6 +267,10 @@ impl IncompressibleSolver {
                                 .velocity(&self.cfg.case, side, x, y, self.time)
                                 .0;
                             boundary_source += 2.0 * coeff * wall_u;
+                        } else {
+                            // Outlet and symmetry tangential velocities have
+                            // a zero normal gradient: the ghost equals u_P.
+                            ap -= coeff;
                         }
                     }
                 }
@@ -331,12 +369,13 @@ impl IncompressibleSolver {
         let u_solve_profile = ProfileScope::new(ProfileStage::USolve);
         let u_preconditioner = SymmetricGaussSeidelPreconditioner::new(&u_matrix)
             .map_err(|e| format!("cannot build u-momentum Gauss-Seidel preconditioner: {e}"))?;
-        let u_report = bicgstab_with_preconditioner(
+        let u_report = bicgstab_with_preconditioner_and_workspace(
             &u_matrix,
             &u_rhs,
             self.u_star.as_mut_slice(),
             &u_preconditioner,
             momentum_options,
+            &mut self.momentum_bicg_workspace,
         )
         .map_err(|e| e.to_string())?;
         drop(u_solve_profile);
@@ -401,9 +440,12 @@ impl IncompressibleSolver {
                         v_builder
                             .add(row, neighbor, -coeff)
                             .map_err(|e| e.to_string())?;
-                    } else {
+                    } else if inside {
                         ap += coeff;
-                        if !inside {
+                    } else {
+                        let kind = self.cfg.boundary_overrides.kind(&self.cfg.case, side);
+                        if matches!(kind, BoundaryKind::Velocity) {
+                            ap += coeff;
                             let x = if side == Side::Right {
                                 self.grid.length
                             } else {
@@ -415,6 +457,10 @@ impl IncompressibleSolver {
                                 .velocity(&self.cfg.case, side, x, self.grid.v_face_y(j), self.time)
                                 .1;
                             boundary_source += 2.0 * coeff * wall_v;
+                        } else {
+                            // Neumann tangential velocity contributes no wall
+                            // source and cancels the boundary neighbour term.
+                            ap -= coeff;
                         }
                     }
                 }
@@ -503,12 +549,13 @@ impl IncompressibleSolver {
         let v_solve_profile = ProfileScope::new(ProfileStage::VSolve);
         let v_preconditioner = SymmetricGaussSeidelPreconditioner::new(&v_matrix)
             .map_err(|e| format!("cannot build v-momentum Gauss-Seidel preconditioner: {e}"))?;
-        let v_report = bicgstab_with_preconditioner(
+        let v_report = bicgstab_with_preconditioner_and_workspace(
             &v_matrix,
             &v_rhs,
             self.v_star.as_mut_slice(),
             &v_preconditioner,
             momentum_options,
+            &mut self.momentum_bicg_workspace,
         )
         .map_err(|e| e.to_string())?;
         drop(v_solve_profile);
@@ -520,6 +567,27 @@ impl IncompressibleSolver {
         }
         let v_equation_residual = normalized_linear_residual(v_report.final_residual, &v_rhs);
 
+        // Separate the pressure force so each transient corrector can rebuild
+        // the momentum predictor using the latest pressure and neighbour values.
+        workspace.u_pressure_free_rhs.copy_from_slice(&u_rhs);
+        workspace.v_pressure_free_rhs.copy_from_slice(&v_rhs);
+        for j in 0..ny {
+            for i in 1..nx {
+                if u_face_open(&self.solid, nx, i, j) {
+                    workspace.u_pressure_free_rhs[i + (nx + 1) * j] +=
+                        (self.p[(i, j)] - self.p[(i - 1, j)]) * self.grid.dy / rho;
+                }
+            }
+        }
+        for j in 1..ny {
+            for i in 0..nx {
+                if v_face_open(&self.solid, ny, i, j) {
+                    workspace.v_pressure_free_rhs[i + nx * j] +=
+                        (self.p[(i, j)] - self.p[(i, j - 1)]) * self.grid.dx / rho;
+                }
+            }
+        }
+
         let (pressure_residual, pressure_iterations) = self.correct_implicit_pressure(
             workspace,
             &u_pressure_diagonal,
@@ -530,11 +598,12 @@ impl IncompressibleSolver {
             transient_pressure_outlet,
             solver_options,
         )?;
-        Ok((
-            pressure_residual,
-            pressure_iterations,
-            u_equation_residual.max(v_equation_residual),
-        ))
+        let momentum_residual = if transient_reference.is_some() {
+            self.corrected_implicit_momentum_residual(workspace)?
+        } else {
+            u_equation_residual.max(v_equation_residual)
+        };
+        Ok((pressure_residual, pressure_iterations, momentum_residual))
     }
 
     pub(super) fn pressure_coupling_diagonal(
