@@ -52,6 +52,38 @@ impl CgWorkspace {
     }
 }
 
+/// Reusable vectors for consecutive nonsymmetric momentum solves.
+#[derive(Default)]
+pub struct BiCgStabWorkspace {
+    r: Vec<f64>,
+    r_hat: Vec<f64>,
+    p: Vec<f64>,
+    v: Vec<f64>,
+    s: Vec<f64>,
+    t: Vec<f64>,
+    p_preconditioned: Vec<f64>,
+    s_preconditioned: Vec<f64>,
+}
+
+impl BiCgStabWorkspace {
+    fn resize(&mut self, size: usize, preconditioned: bool) {
+        for vector in [
+            &mut self.r,
+            &mut self.r_hat,
+            &mut self.p,
+            &mut self.v,
+            &mut self.s,
+            &mut self.t,
+        ] {
+            vector.resize(size, 0.0);
+        }
+        if preconditioned {
+            self.p_preconditioned.resize(size, 0.0);
+            self.s_preconditioned.resize(size, 0.0);
+        }
+    }
+}
+
 impl LinearSolveReport {
     pub fn converged(&self) -> bool {
         self.status == LinearSolverStatus::Converged
@@ -140,6 +172,7 @@ fn solve_cg_with_workspace(
             });
         }
     }
+    let mut profile = super::profile::CgProfileSession::new();
     let n = matrix.nrows();
     workspace.resize(n);
     let CgWorkspace {
@@ -148,14 +181,14 @@ fn solve_cg_with_workspace(
         product,
         preconditioned,
     } = workspace;
-    residual_into(matrix, solution, rhs, residual)?;
+    profile.measure(false, || residual_into(matrix, solution, rhs, residual))?;
     let initial = norm_l2(&residual)?;
     let threshold = options.absolute_tolerance + options.relative_tolerance * initial;
     if initial <= threshold {
         return Ok(report(LinearSolverStatus::Converged, 0, initial, initial));
     }
     if let Some(preconditioner) = preconditioner {
-        preconditioner.apply_into(residual, preconditioned)?;
+        profile.measure(true, || preconditioner.apply_into(residual, preconditioned))?;
         direction.copy_from_slice(&preconditioned);
     } else {
         direction.copy_from_slice(&residual);
@@ -163,7 +196,8 @@ fn solve_cg_with_workspace(
     }
     let mut rho = dot(&residual, &preconditioned)?;
     for iteration in 1..=options.max_iterations {
-        matrix.spmv_into(direction, product)?;
+        profile.iteration();
+        profile.measure(false, || matrix.spmv_into(direction, product))?;
         let denominator = dot(&direction, &product)?;
         if !denominator.is_finite() || denominator.abs() <= BREAKDOWN_EPSILON {
             return Err(LinearAlgebraError::Breakdown {
@@ -190,7 +224,7 @@ fn solve_cg_with_workspace(
             ));
         }
         if let Some(preconditioner) = preconditioner {
-            preconditioner.apply_into(residual, preconditioned)?;
+            profile.measure(true, || preconditioner.apply_into(residual, preconditioned))?;
         } else {
             preconditioned.copy_from_slice(&residual);
         }
@@ -239,12 +273,48 @@ pub fn bicgstab_with_preconditioner<P: Preconditioner>(
     solve_bicgstab(matrix, rhs, solution, options, Some(preconditioner))
 }
 
+pub fn bicgstab_with_preconditioner_and_workspace<P: Preconditioner>(
+    matrix: &CsrMatrix,
+    rhs: &[f64],
+    solution: &mut [f64],
+    preconditioner: &P,
+    options: LinearSolverOptions,
+    workspace: &mut BiCgStabWorkspace,
+) -> Result<LinearSolveReport, LinearAlgebraError> {
+    solve_bicgstab_with_workspace(
+        matrix,
+        rhs,
+        solution,
+        options,
+        Some(preconditioner),
+        workspace,
+    )
+}
+
 fn solve_bicgstab(
     matrix: &CsrMatrix,
     rhs: &[f64],
     solution: &mut [f64],
     options: LinearSolverOptions,
     preconditioner: Option<&dyn Preconditioner>,
+) -> Result<LinearSolveReport, LinearAlgebraError> {
+    solve_bicgstab_with_workspace(
+        matrix,
+        rhs,
+        solution,
+        options,
+        preconditioner,
+        &mut BiCgStabWorkspace::default(),
+    )
+}
+
+fn solve_bicgstab_with_workspace(
+    matrix: &CsrMatrix,
+    rhs: &[f64],
+    solution: &mut [f64],
+    options: LinearSolverOptions,
+    preconditioner: Option<&dyn Preconditioner>,
+    workspace: &mut BiCgStabWorkspace,
 ) -> Result<LinearSolveReport, LinearAlgebraError> {
     validate_solve_inputs(matrix, rhs, solution, options)?;
     let n = matrix.nrows();
@@ -256,20 +326,27 @@ fn solve_bicgstab(
             });
         }
     }
-    let mut r = vec![0.0; n];
-    residual_into(matrix, solution, rhs, &mut r)?;
-    let r_hat = r.clone();
+    workspace.resize(n, preconditioner.is_some());
+    let BiCgStabWorkspace {
+        r,
+        r_hat,
+        p,
+        v,
+        s,
+        t,
+        p_preconditioned,
+        s_preconditioned,
+    } = workspace;
+    residual_into(matrix, solution, rhs, r)?;
+    r_hat.copy_from_slice(r);
     let initial = norm_l2(&r)?;
     let threshold = options.absolute_tolerance + options.relative_tolerance * initial;
     if initial <= threshold {
         return Ok(report(LinearSolverStatus::Converged, 0, initial, initial));
     }
-    let mut p = vec![0.0; n];
-    let mut v = vec![0.0; n];
-    let mut s = vec![0.0; n];
-    let mut t = vec![0.0; n];
-    let mut p_preconditioned = preconditioner.map(|_| vec![0.0; n]);
-    let mut s_preconditioned = preconditioner.map(|_| vec![0.0; n]);
+    // These enter the first recurrence; all other work vectors are overwritten.
+    p.fill(0.0);
+    v.fill(0.0);
     let mut rho_previous = 1.0;
     let mut alpha = 1.0;
     let mut omega = 1.0;
@@ -290,15 +367,14 @@ fn solve_bicgstab(
             p[index] = r[index] + beta * (p[index] - omega * v[index]);
         }
         if let Some(preconditioner) = preconditioner {
-            preconditioner.apply_into(
-                &p,
-                p_preconditioned
-                    .as_mut()
-                    .expect("preconditioned BiCGStab workspace was allocated"),
-            )?;
+            preconditioner.apply_into(&p, p_preconditioned)?;
         }
-        let p_direction = p_preconditioned.as_deref().unwrap_or(&p);
-        matrix.spmv_into(p_direction, &mut v)?;
+        let p_direction = if preconditioner.is_some() {
+            p_preconditioned.as_slice()
+        } else {
+            p.as_slice()
+        };
+        matrix.spmv_into(p_direction, v)?;
         let denominator = dot(&r_hat, &v)?;
         if !denominator.is_finite() || denominator.abs() <= BREAKDOWN_EPSILON {
             return Err(LinearAlgebraError::Breakdown {
@@ -327,15 +403,14 @@ fn solve_bicgstab(
             ));
         }
         if let Some(preconditioner) = preconditioner {
-            preconditioner.apply_into(
-                &s,
-                s_preconditioned
-                    .as_mut()
-                    .expect("preconditioned BiCGStab workspace was allocated"),
-            )?;
+            preconditioner.apply_into(&s, s_preconditioned)?;
         }
-        let s_direction = s_preconditioned.as_deref().unwrap_or(&s);
-        matrix.spmv_into(s_direction, &mut t)?;
+        let s_direction = if preconditioner.is_some() {
+            s_preconditioned.as_slice()
+        } else {
+            s.as_slice()
+        };
+        matrix.spmv_into(s_direction, t)?;
         let tt = dot(&t, &t)?;
         if !tt.is_finite() || tt.abs() <= BREAKDOWN_EPSILON {
             return Err(LinearAlgebraError::Breakdown {

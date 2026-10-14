@@ -331,6 +331,7 @@ impl Preconditioner for IncompleteCholeskyPreconditioner {
 pub struct StructuredMultigridPreconditioner {
     levels: Vec<MultigridLevel>,
     scratch: RefCell<Vec<MultigridScratch>>,
+    smoothing_steps: usize,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -357,6 +358,21 @@ impl StructuredMultigridPreconditioner {
         width: usize,
         height: usize,
     ) -> Result<Self, LinearAlgebraError> {
+        Self::with_smoothing_steps(matrix, width, height, 1)
+    }
+
+    /// Equal pre/post sweeps make the V-cycle symmetric for conjugate gradients.
+    pub fn with_smoothing_steps(
+        matrix: &CsrMatrix,
+        width: usize,
+        height: usize,
+        smoothing_steps: usize,
+    ) -> Result<Self, LinearAlgebraError> {
+        if !(1..=8).contains(&smoothing_steps) {
+            return Err(LinearAlgebraError::Breakdown {
+                reason: "multigrid smoothing steps must be between 1 and 8",
+            });
+        }
         let expected = width
             .checked_mul(height)
             .ok_or_else(|| LinearAlgebraError::InvalidCsr {
@@ -460,6 +476,7 @@ impl StructuredMultigridPreconditioner {
         Ok(Self {
             levels,
             scratch: RefCell::new(scratch),
+            smoothing_steps,
         })
     }
 
@@ -485,7 +502,7 @@ impl StructuredMultigridPreconditioner {
         for level_index in 0..self.levels.len() {
             let (current_levels, coarse_levels) = self.levels.split_at_mut(level_index + 1);
             let level = &mut current_levels[level_index];
-            level.inverse_diagonal = multigrid_inverse_diagonal(&level.matrix)?;
+            update_multigrid_inverse_diagonal(&level.matrix, &mut level.inverse_diagonal)?;
 
             if let Some(next_levels) = coarse_levels.first_mut() {
                 let map = level
@@ -538,7 +555,7 @@ impl StructuredMultigridPreconditioner {
             rhs,
             solution,
             true,
-            2,
+            self.smoothing_steps,
         )?;
         level.matrix.spmv_into(solution, product)?;
         for ((residual_value, &right), &applied) in residual.iter_mut().zip(rhs).zip(product.iter())
@@ -566,32 +583,43 @@ impl StructuredMultigridPreconditioner {
             rhs,
             solution,
             false,
-            2,
+            self.smoothing_steps,
         )
     }
 }
 
 fn multigrid_inverse_diagonal(matrix: &CsrMatrix) -> Result<Vec<f64>, LinearAlgebraError> {
-    matrix
-        .diagonal()?
-        .into_iter()
-        .enumerate()
-        .map(|(index, value)| {
-            if !value.is_finite() || value <= 0.0 {
-                return Err(LinearAlgebraError::Breakdown {
-                    reason: "multigrid requires a positive diagonal",
-                });
-            }
-            let inverse = 1.0 / value;
-            if !inverse.is_finite() {
-                return Err(LinearAlgebraError::NonFiniteValue {
-                    context: "multigrid inverse diagonal",
-                    index,
-                });
-            }
-            Ok(inverse)
-        })
-        .collect()
+    let mut inverse = vec![0.0; matrix.nrows()];
+    update_multigrid_inverse_diagonal(matrix, &mut inverse)?;
+    Ok(inverse)
+}
+
+fn update_multigrid_inverse_diagonal(
+    matrix: &CsrMatrix,
+    inverse: &mut [f64],
+) -> Result<(), LinearAlgebraError> {
+    for (row, inverse_value) in inverse.iter_mut().enumerate() {
+        let start = matrix.row_offsets()[row];
+        let end = matrix.row_offsets()[row + 1];
+        let diagonal = matrix.column_indices()[start..end]
+            .binary_search(&row)
+            .map_err(|_| LinearAlgebraError::MissingDiagonal { row })?
+            + start;
+        let value = matrix.values()[diagonal];
+        if !value.is_finite() || value <= 0.0 {
+            return Err(LinearAlgebraError::Breakdown {
+                reason: "multigrid requires a positive diagonal",
+            });
+        }
+        *inverse_value = 1.0 / value;
+        if !inverse_value.is_finite() {
+            return Err(LinearAlgebraError::NonFiniteValue {
+                context: "multigrid inverse diagonal",
+                index: row,
+            });
+        }
+    }
+    Ok(())
 }
 
 impl Preconditioner for StructuredMultigridPreconditioner {

@@ -5,8 +5,15 @@
 //! entries deterministically at finalization, and omits only exact zero sums.
 
 mod csr;
+mod multigrid;
+pub use multigrid::{
+    AlgebraicMultigrid, MultigridCoarseSolver, MultigridLevelStatistics, MultigridOptions,
+    MultigridResidualNorm, MultigridSmoother,
+};
 mod preconditioner;
+mod profile;
 mod solver;
+pub use profile::{cg_profile_snapshot, CgProfileSnapshot};
 mod vector;
 
 pub use csr::{CsrBuilder, CsrMatrix};
@@ -15,9 +22,9 @@ pub use preconditioner::{
     StructuredMultigridPreconditioner, SymmetricGaussSeidelPreconditioner,
 };
 pub use solver::{
-    bicgstab, bicgstab_with_preconditioner, cg, pcg, pcg_with_preconditioner,
-    pcg_with_preconditioner_and_workspace, CgWorkspace, LinearSolveReport, LinearSolverOptions,
-    LinearSolverStatus,
+    bicgstab, bicgstab_with_preconditioner, bicgstab_with_preconditioner_and_workspace, cg, pcg,
+    pcg_with_preconditioner, pcg_with_preconditioner_and_workspace, BiCgStabWorkspace, CgWorkspace,
+    LinearSolveReport, LinearSolverOptions, LinearSolverStatus,
 };
 pub use vector::{axpy, copy_into, dot, norm_inf, norm_l2, residual, residual_into, scale};
 
