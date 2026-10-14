@@ -723,7 +723,7 @@ export component MainWindow inherits Window {
                                 Text { text: "Coupling"; color: UiTheme.text-muted; font-size: 11px; } ComboBox { model: ["SIMPLE explicit", "SIMPLE implicit (FV)", "SIMPLEC implicit (FV)", "Projection transient", "PIMPLE transient (FV)"]; current-index <=> root.coupling-index; }
                                 Text { text: "Momentum convection"; color: UiTheme.text-muted; font-size: 11px; } ComboBox { model: ["Upwind (1st order)", "Central (2nd order)", "Van Leer TVD"]; current-index <=> root.convection-index; }
                                 Text { text: "Van Leer TVD is available with implicit SIMPLE, SIMPLEC, and PIMPLE."; color: UiTheme.text-faint; font-size: 10px; wrap: word-wrap; }
-                                Text { text: "Pressure solver"; color: UiTheme.text-muted; font-size: 11px; } ComboBox { model: ["PCG + Jacobi", "PCG + DIC(0)", "PCG + multigrid", "SOR"]; current-index <=> root.pressure-solver-index; }
+                                Text { text: "Pressure solver"; color: UiTheme.text-muted; font-size: 11px; } ComboBox { model: ["PCG + Jacobi", "PCG + DIC(0)", "PCG + multigrid", "SOR", "GAMG"]; current-index <=> root.pressure-solver-index; }
                                 Text { text: "Multigrid is available with implicit pressure coupling."; color: UiTheme.text-faint; font-size: 10px; wrap: word-wrap; }
                                 Text { text: "Pseudo-time step"; color: UiTheme.text-muted; font-size: 11px; } LineEdit { text <=> root.dt-text; }
                                 Text { text: "Iterations"; color: UiTheme.text-muted; font-size: 11px; } SpinBox { value <=> root.iterations; minimum: 1; maximum: 10000000; }

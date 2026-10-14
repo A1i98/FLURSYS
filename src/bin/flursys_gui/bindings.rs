@@ -34,6 +34,7 @@ pub(super) fn sync_project_from_ui(ui: &MainWindow, project: &mut Project) {
         0 => ProjectPressureSolver::Pcg,
         1 => ProjectPressureSolver::PcgDic,
         2 => ProjectPressureSolver::PcgMg,
+        4 => ProjectPressureSolver::Gamg,
         _ => ProjectPressureSolver::Sor,
     };
     project.solver.velocity_relaxation = parse_number(
@@ -110,6 +111,7 @@ pub(super) fn write_project_to_ui(ui: &MainWindow, project: &Project) {
         ProjectPressureSolver::Pcg => 0,
         ProjectPressureSolver::PcgDic => 1,
         ProjectPressureSolver::PcgMg => 2,
+        ProjectPressureSolver::Gamg => 4,
         ProjectPressureSolver::Sor => 3,
     });
     ui.set_velocity_relaxation(SharedString::from(format!(

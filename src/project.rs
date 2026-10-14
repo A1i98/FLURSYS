@@ -134,6 +134,7 @@ pub enum ProjectPressureSolver {
     Pcg,
     PcgDic,
     PcgMg,
+    Gamg,
     Sor,
 }
 
@@ -213,6 +214,7 @@ impl Project {
             ProjectPressureSolver::Pcg => PressureSolverKind::Pcg,
             ProjectPressureSolver::PcgDic => PressureSolverKind::PcgDic,
             ProjectPressureSolver::PcgMg => PressureSolverKind::PcgMg,
+            ProjectPressureSolver::Gamg => PressureSolverKind::Gamg,
             ProjectPressureSolver::Sor => PressureSolverKind::Sor,
         };
         Ok(SimulationConfig {
@@ -395,6 +397,7 @@ impl Project {
                 ProjectPressureSolver::Pcg => PressureSolverKind::Pcg,
                 ProjectPressureSolver::PcgDic => PressureSolverKind::PcgDic,
                 ProjectPressureSolver::PcgMg => PressureSolverKind::PcgMg,
+                ProjectPressureSolver::Gamg => PressureSolverKind::Gamg,
                 ProjectPressureSolver::Sor => PressureSolverKind::Sor,
             },
             pressure_max_iters: solver.pressure_iterations,

@@ -3,6 +3,7 @@ use flursys::cases::{
 };
 use flursys::{
     Case, ConvectionScheme, IncompressibleSolver, LidDrivenCavity3DConfig, LidDrivenCavity3DSolver,
+    MultigridCoarseSolver, MultigridOptions, MultigridResidualNorm, MultigridSmoother,
     PimpleControls, PressureSolverKind, PressureVelocityCoupling, SimulationConfig,
     SolverBoundaryOverrides, TimeStepSettings,
 };
@@ -53,11 +54,75 @@ fn run_cli() -> Result<(), String> {
         other => return Err(format!("Unknown case '{other}'. Run `flursys list`.")),
     };
 
-    run_solver(config)
+    run_solver(config, &options)
 }
 
-fn run_solver(config: SimulationConfig) -> Result<(), String> {
+fn run_solver(config: SimulationConfig, options: &HashMap<String, String>) -> Result<(), String> {
     let mut solver = IncompressibleSolver::new(config)?;
+    solver.set_multigrid_smoothing_steps(value(options, "mg-sweeps", 1_usize)?)?;
+    let defaults = MultigridOptions::default();
+    let smoother = match options
+        .get("mg-smoother")
+        .map(String::as_str)
+        .unwrap_or("dic-gs")
+    {
+        "gs" => MultigridSmoother::GaussSeidel,
+        "sym-gs" => MultigridSmoother::SymmetricGaussSeidel,
+        "dic-gs" => MultigridSmoother::DicGaussSeidel,
+        other => return Err(format!("unknown multigrid smoother '{other}'")),
+    };
+    let residual_norm = match options.get("mg-norm").map(String::as_str).unwrap_or("l1") {
+        "l1" => MultigridResidualNorm::NormalizedL1,
+        "l2" => MultigridResidualNorm::AbsoluteL2,
+        other => return Err(format!("unknown multigrid residual norm '{other}'")),
+    };
+    solver.set_algebraic_multigrid_options(MultigridOptions {
+        smoother,
+        residual_norm,
+        pre_sweeps: value(options, "mg-pre-sweeps", defaults.pre_sweeps)?,
+        post_sweeps: value(options, "mg-post-sweeps", defaults.post_sweeps)?,
+        finest_sweeps: value(options, "mg-finest-sweeps", defaults.finest_sweeps)?,
+        sweep_level_multiplier: value(
+            options,
+            "mg-level-multiplier",
+            defaults.sweep_level_multiplier,
+        )?,
+        max_sweeps: value(options, "mg-max-sweeps", defaults.max_sweeps)?,
+        coarsest_cells: value(options, "mg-coarsest-cells", defaults.coarsest_cells)?,
+        max_levels: value(options, "mg-max-levels", defaults.max_levels)?,
+        merge_levels: value(options, "mg-merge-levels", defaults.merge_levels)?,
+        krylov_dimension: value(options, "mg-krylov-dim", defaults.krylov_dimension)?,
+        coarse_solver: match options
+            .get("mg-coarse-solver")
+            .map(String::as_str)
+            .unwrap_or("pcg-dic")
+        {
+            "pcg-dic" => MultigridCoarseSolver::PcgDic,
+            "cholesky" => MultigridCoarseSolver::Cholesky,
+            other => return Err(format!("unknown coarse solver '{other}'")),
+        },
+        coarse_absolute_tolerance: value(
+            options,
+            "mg-coarse-abs-tol",
+            defaults.coarse_absolute_tolerance,
+        )?,
+        coarse_relative_tolerance: value(
+            options,
+            "mg-coarse-rel-tol",
+            defaults.coarse_relative_tolerance,
+        )?,
+        coarse_max_iterations: value(
+            options,
+            "mg-coarse-max-iterations",
+            defaults.coarse_max_iterations,
+        )?,
+        scale_correction: value(options, "mg-scale-correction", defaults.scale_correction)?,
+        profile: env::var_os("FLURSYS_PROFILE").is_some(),
+    })?;
+    let field_every = value(options, "field-every", 0_usize)?;
+    if field_every > 0 {
+        solver.set_verification_snapshots(field_every, value(options, "field-from", 0.0_f64)?)?;
+    }
     let summary = solver.run()?;
     println!();
     println!("Completed: {}", summary.case_name);
@@ -330,6 +395,7 @@ fn common_config(
         "pcg" => PressureSolverKind::Pcg,
         "pcg-dic" => PressureSolverKind::PcgDic,
         "pcg-mg" | "multigrid" => PressureSolverKind::PcgMg,
+        "gamg" => PressureSolverKind::Gamg,
         "sor" => PressureSolverKind::Sor,
         other => return Err(format!("Unknown pressure solver '{other}'")),
     };
@@ -444,10 +510,18 @@ fn print_case_help(case: &str) {
     println!("  --convection upwind|central|vanleer (Van Leer requires implicit coupling)");
     println!("  --coupling projection|pimple|simple|simple-implicit|simplec");
     println!(
-        "  --pressure-solver pcg|pcg-dic|pcg-mg|sor (pcg-mg requires implicit momentum coupling)"
+        "  --pressure-solver pcg|pcg-dic|pcg-mg|gamg|sor (multigrid requires implicit momentum)"
     );
     println!("  --pressure-iters N --pressure-tol EPS --pressure-omega W");
     println!("  --pressure-correctors N --momentum-tol EPS --pressure-rel-tol R (pimple)");
+    println!("  --mg-sweeps N (symmetric multigrid sweeps, 1..8, default 1)");
+    println!("  GAMG: --mg-smoother dic-gs|gs|sym-gs --mg-norm l1|l2");
+    println!("  --mg-pre-sweeps N --mg-post-sweeps N --mg-finest-sweeps N");
+    println!("  --mg-level-multiplier N --mg-max-sweeps N --mg-coarsest-cells N");
+    println!("  --mg-max-levels N --mg-scale-correction true|false");
+    println!("  --mg-coarse-solver pcg-dic|cholesky --mg-coarse-abs-tol X --mg-coarse-rel-tol X");
+    println!("  --mg-coarse-max-iterations N --mg-merge-levels 1..4 --mg-krylov-dim 0..16");
+    println!("  --field-every N --field-from T (optional verification CSV snapshots)");
     println!("  --velocity-relax A --pressure-relax A (steady coupling)");
     println!("  --print-every N --output-every N --frame-every N");
     println!("  --steady-tol EPS --minimum-steps N");
