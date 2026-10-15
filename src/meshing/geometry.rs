@@ -11,8 +11,9 @@ use std::collections::BTreeMap;
 pub struct GeometryToGmshMap {
     vertex_tags: BTreeMap<VertexId, usize>,
     edge_tags: BTreeMap<EdgeId, usize>,
-    face_tags: BTreeMap<FaceId, usize>,
-    body_tags: BTreeMap<BodyId, usize>,
+    pub(super) face_tags: BTreeMap<FaceId, usize>,
+    pub(super) face_tag_groups: BTreeMap<FaceId, Vec<usize>>,
+    pub(super) body_tags: BTreeMap<BodyId, usize>,
 }
 
 impl GeometryToGmshMap {
@@ -26,6 +27,13 @@ impl GeometryToGmshMap {
 
     pub fn face_tag(&self, id: FaceId) -> Option<usize> {
         self.face_tags.get(&id).copied()
+    }
+
+    pub fn face_tags(&self, id: FaceId) -> Vec<usize> {
+        self.face_tag_groups
+            .get(&id)
+            .cloned()
+            .unwrap_or_else(|| self.face_tag(id).into_iter().collect())
     }
 
     pub fn body_tag(&self, id: BodyId) -> Option<usize> {

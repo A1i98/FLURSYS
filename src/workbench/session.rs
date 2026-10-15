@@ -685,29 +685,33 @@ impl WorkbenchSession {
                 }
             }
         }
-        let mut tags = stable_targets
-            .into_iter()
-            .map(|target| match (self.mesh_dimension, target) {
-                (MeshDimension::TwoD, GeometrySelectionTarget::Edge(edge)) => export
-                    .map
-                    .edge_tag(edge)
-                    .ok_or_else(|| WorkbenchError::InvalidGrouping {
-                        message: format!("mesh recipe edge {} is not exported", edge.get()),
-                    }),
-                (MeshDimension::ThreeD, GeometrySelectionTarget::Face(face)) => export
-                    .map
-                    .face_tag(face)
-                    .ok_or_else(|| WorkbenchError::InvalidGrouping {
-                        message: format!("mesh recipe face {} is not exported", face.get()),
-                    }),
-                (MeshDimension::TwoD, _) => Err(WorkbenchError::InvalidGrouping {
-                    message: "2D mesh recipe controls must target geometry edges".into(),
-                }),
-                (MeshDimension::ThreeD, _) => Err(WorkbenchError::InvalidGrouping {
-                    message: "3D mesh recipe controls must target geometry faces".into(),
-                }),
-            })
-            .collect::<Result<Vec<_>, _>>()?;
+        let mut tags = Vec::new();
+        for target in stable_targets {
+            match (self.mesh_dimension, target) {
+                (MeshDimension::TwoD, GeometrySelectionTarget::Edge(edge)) => {
+                    tags.push(export.map.edge_tag(edge).ok_or_else(|| {
+                        WorkbenchError::InvalidGrouping {
+                            message: format!("mesh recipe edge {} is not exported", edge.get()),
+                        }
+                    })?)
+                }
+                (MeshDimension::ThreeD, GeometrySelectionTarget::Face(face)) => {
+                    let face_tags = export.map.face_tags(face);
+                    if face_tags.is_empty() {
+                        return Err(WorkbenchError::InvalidGrouping {
+                            message: format!("mesh recipe face {} is not exported", face.get()),
+                        });
+                    }
+                    tags.extend(face_tags);
+                }
+                _ => {
+                    return Err(WorkbenchError::InvalidGrouping {
+                        message: "Mesh recipe controls must target edges in 2D and faces in 3D"
+                            .into(),
+                    })
+                }
+            }
+        }
         tags.sort_unstable();
         tags.dedup();
         if tags.is_empty() {
@@ -735,6 +739,22 @@ impl WorkbenchSession {
             }
             MeshDimension::ThreeD => {
                 let groups = self.boundary_groups_3d()?;
+                let cad_bodies = self
+                    .geometry
+                    .cad_bodies()
+                    .filter(|(_, body)| body.visible)
+                    .collect::<Vec<_>>();
+                if !cad_bodies.is_empty() {
+                    if cad_bodies.len() != 1 {
+                        return Err(WorkbenchError::InvalidGrouping { message: "Meshing requires one visible CAD fluid body; hide other bodies or combine them first".into() });
+                    }
+                    return Ok(GmshGeometryExporter::cad_faceted(
+                        &self.geometry,
+                        cad_bodies[0].0,
+                        groups,
+                        "fluid",
+                    )?);
+                }
                 if let Some(body) = &self.box_body {
                     Ok(GmshGeometryExporter::rectangular_box(
                         &self.geometry,
