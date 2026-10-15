@@ -48,15 +48,20 @@ incremental = false
 [profile.release]
 lto = "thin"
 codegen-units = 1
-panic = "abort"
+# CAD workers contain third-party kernel panics and preserve the source document.
+panic = "unwind"
 
 [dependencies]
 rayon = "1"
 rfd = { version = "0.17", optional = true }
 slint = { version = "1.17", optional = true }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde = { version = "1", features = ["derive", "rc"] }
+serde_json = { version = "1", features = ["float_roundtrip"] }
 tempfile = "3"
+truck-modeling = "0.6"
+truck-meshalgo = { version = "0.4", default-features = false, features = ["tessellation", "filters"] }
+truck-shapeops = { version = "0.4", default-features = false }
+truck-stepio = "0.3"
 
 [build-dependencies]
 slint-build = "1.17"
