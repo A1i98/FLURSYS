@@ -1,0 +1,236 @@
+import { CadToolButton } from "cad-tools.slint";
+import { Button, ComboBox, LineEdit, SpinBox, ScrollView, CheckBox } from "std-widgets.slint";
+import { UiTheme } from "components.slint";
+
+export component CadTaskPanel inherits Rectangle {
+    in-out property <int> workbench: 0;
+    in-out property <int> primitive-kind: 0;
+    in-out property <int> axis: 1;
+    in property <bool> can-loft;
+    in property <bool> can-pocket;
+    in-out property <int> feature-mode:0;
+    in-out property <string> name: "Body";
+    in-out property <string> size-x: "10";
+    in-out property <string> size-y: "8";
+    in-out property <string> size-z: "6";
+    in-out property <string> pos-x: "0";
+    in-out property <string> pos-y: "0";
+    in-out property <string> pos-z: "0";
+    in-out property <string> angle: "360";
+    in-out property <string> revolve-x:"0";
+    in-out property <string> revolve-y:"0";
+    in-out property <string> revolve-z:"0";
+    in-out property <string> factor: "1.5";
+    in-out property <string> tolerance: "0.001";
+    in-out property <int> count: 4;
+    in-out property <int> source: 0;
+    in-out property <int> target: 1;
+    in property <[string]> bodies;
+    in property <string> inspector;
+    in property <string> feedback;
+    in property <bool> busy;
+    in property <bool> has-profile;
+    in property <bool> face-editing;
+    in property <bool> previewing;
+    in-out property <bool> through-all:false;
+    in-out property <int> sketch-plane: 0;
+    in-out property <int> sketch-kind: 0;
+    in-out property <int> sketch-index: 0;
+    in-out property <bool> sketch-editing: false;
+    in property <[string]> sketches;
+    in property <string> history;
+    in-out property <int> edit-sketch-id:0;
+    in-out property <bool> editing-pad:false;
+    in-out property <int> feature-index:0;
+    in property <[string]> features;
+    in property <bool> direct-editing;
+    in property <string> edit-status;
+    callback parameters-edited();
+    callback command(int);
+    callback select-body(int);
+    background: UiTheme.sidebar;
+    VerticalLayout {
+        padding: 10px; spacing: 8px;
+        Text { text: "PART DESIGN"; color: UiTheme.accent; font-size: 12px; font-weight: 800; }
+        Text { text: "ACTIVE SOLID"; color: UiTheme.text-muted; font-size: 10px; }
+        ComboBox { min-width: 0px; preferred-width: 1px; horizontal-stretch: 1; min-height: 32px; max-height: 32px; model: root.bodies; current-index <=> root.source; enabled: !root.busy && !root.direct-editing && root.bodies.length > 0; selected(value) => { root.select-body(self.current-index); } }
+        Text { text: root.inspector; color: UiTheme.text; font-size: 11px; wrap: word-wrap; }
+        HorizontalLayout {
+            spacing:6px;
+            CadToolButton {icon:@image-url("icons/eye.svg");label:"Show / hide body";enabled:!root.busy && !root.direct-editing && root.bodies.length>0;clicked=>{root.command(12);}}
+            CadToolButton {icon:@image-url("icons/delete.svg");label:"Delete body";enabled:!root.busy && !root.direct-editing && root.bodies.length>0;clicked=>{root.command(14);}}
+            CadToolButton {icon:@image-url("icons/measure.svg");label:"Measure selection";enabled:!root.busy && !root.direct-editing;clicked=>{root.command(23);}}
+            Rectangle {horizontal-stretch:1;}
+        }
+        Rectangle {height:1px;background:UiTheme.border;}
+        Text { text: root.workbench == 0 ? "SKETCH FEATURES" : root.workbench == 1 ? "CREATE SOLID" : root.workbench == 2 ? "TRANSFORM / PATTERN" : root.workbench == 3 ? "BOOLEAN OPERATIONS" : "IMPORT / EXPORT"; color: UiTheme.accent; font-weight: 700; font-size: 11px; }
+        if root.workbench == 1 || root.workbench == 2 : VerticalLayout {
+            spacing: 6px;
+            Text {text:"Name";color:UiTheme.text-muted;font-size:10px;}
+            LineEdit { min-width: 0px; preferred-width: 1px; horizontal-stretch: 1; min-height: 32px; max-height: 32px;text <=> root.name;enabled:!root.busy;}
+        }
+        if root.workbench == 1 : VerticalLayout {
+            spacing: 6px;
+            ComboBox { min-width: 0px; preferred-width: 1px; horizontal-stretch: 1; min-height: 32px; max-height: 32px; model:["Box", "Cylinder", "Sphere", "Cone", "Torus"];current-index <=> root.primitive-kind;enabled:!root.busy; }
+            Text {text:root.primitive-kind == 0 ? "Length · width · height" : root.primitive-kind == 4 ? "Major radius · minor radius" : "Radius · height";color:UiTheme.text-muted;font-size:10px;}
+            HorizontalLayout {
+                LineEdit {enabled:!root.busy; min-width: 0px; preferred-width: 1px; horizontal-stretch: 1; min-height: 32px; max-height: 32px;text <=> root.size-x;}
+                if root.primitive-kind != 2 : LineEdit {enabled:!root.busy; min-width: 0px; preferred-width: 1px; horizontal-stretch: 1; min-height: 32px; max-height: 32px;text <=> root.size-y;}
+                if root.primitive-kind == 0 : LineEdit {enabled:!root.busy; min-width: 0px; preferred-width: 1px; horizontal-stretch: 1; min-height: 32px; max-height: 32px;text <=> root.size-z;}
+            }
+        }
+        if root.face-editing : VerticalLayout {
+            spacing:8px;
+            Text {text:"EDITING SKETCH";color:UiTheme.accent;font-weight:700;font-size:11px;}
+            Text {text:"Choose Circle or Rectangle in the toolbar. Click the center and radius, or two corners. Dragging also works. The second point finishes the profile.";color:UiTheme.text-secondary;font-size:12px;wrap:word-wrap;}
+            Text {text:"Grid snap and live dimensions are available in the viewport.";color:UiTheme.text-muted;font-size:11px;wrap:word-wrap;}
+            Button {text:"Cancel sketch";min-width:0px;max-height:32px;clicked=>{root.command(27);}}
+        }
+        if root.workbench == 0 && !root.face-editing && !root.editing-pad : VerticalLayout {
+            spacing: 6px;
+            Text {text:"1  Sketch  →  2  Profile  →  3  Pad";color:UiTheme.text-muted;font-size:11px;}
+            HorizontalLayout {
+                spacing:6px;
+                CadToolButton {icon:@image-url("icons/circle.svg");label:"Draw circle on selected face";enabled:!root.busy && !root.direct-editing;clicked=>{root.command(26);}}
+                Text {text:"Sketch on face";color:UiTheme.text-muted;vertical-alignment:center;font-size:11px;}
+                Rectangle {horizontal-stretch:1;}
+            }
+            if !root.sketch-editing : Button {text:"＋ New sketch";min-width:0px;max-height:32px;enabled:!root.busy;clicked=>{root.edit-sketch-id=0;root.sketch-editing=true;}}
+            if root.sketch-editing : VerticalLayout {
+                spacing:6px;
+                ComboBox {model:["XY plane", "YZ plane", "ZX plane", "Selected planar face"];current-index <=> root.sketch-plane;enabled:root.edit-sketch-id==0;min-width:0px;max-height:32px;}
+                ComboBox {model:["Circle", "Rectangle"];current-index <=> root.sketch-kind;enabled:root.edit-sketch-id==0;min-width:0px;max-height:32px;}
+                if root.direct-editing : Text {text:root.edit-status;color:UiTheme.accent;font-size:11px;wrap:word-wrap;}
+                if root.direct-editing : Text {text:"Drag the origin to move; other handles resize. Numeric inputs update the same draft.";color:UiTheme.text-muted;font-size:11px;wrap:word-wrap;}
+                Text {text:root.sketch-kind==0 ? "Radius" : "Width · height";color:UiTheme.text-muted;font-size:10px;}
+                HorizontalLayout {
+                    LineEdit {enabled:!root.busy;text <=> root.size-x;min-width:0px;max-height:32px; edited(value)=>{root.parameters-edited();}}
+                    if root.sketch-kind==1 : LineEdit {enabled:!root.busy;text <=> root.size-y;min-width:0px;max-height:32px; edited(value)=>{root.parameters-edited();}}
+                }
+                Text {text:"Center / corner: local X · Y";color:UiTheme.text-muted;font-size:10px;}
+                HorizontalLayout {LineEdit {enabled:!root.busy;text <=> root.pos-x;min-width:0px;max-height:32px; edited(value)=>{root.parameters-edited();}}LineEdit {enabled:!root.busy;text <=> root.pos-y;min-width:0px;max-height:32px; edited(value)=>{root.parameters-edited();}}}
+                HorizontalLayout {
+                    Button {text:root.edit-sketch-id>0 ? "Preview & rebuild" : "Finish sketch";enabled:!root.busy;min-width:0px;max-height:32px;clicked=>{root.command(root.edit-sketch-id>0 ? 129 : 21);}}
+                    Button {text:"Cancel";enabled:!root.busy;min-width:0px;max-height:32px;clicked=>{root.command(40);}}
+                }
+            }
+            if !root.sketch-editing : VerticalLayout {
+                spacing:6px;
+                ComboBox {model:root.sketches;current-index <=> root.sketch-index;min-width:0px;max-height:32px;}
+                HorizontalLayout {spacing:8px;
+                CadToolButton {icon:@image-url("icons/eye.svg");label:"Show / hide selected sketch";enabled:root.sketches.length>0 && !root.busy;clicked=>{root.command(37);}}
+                CadToolButton {icon:@image-url("icons/delete.svg");label:"Delete selected sketch (after its features)";enabled:root.sketches.length>0 && !root.busy;clicked=>{root.command(38);}}
+                Rectangle {horizontal-stretch:1;}
+                }
+                Button {text:"Select sketch profile";enabled:root.sketches.length>0 && !root.busy;min-width:0px;max-height:32px;clicked=>{root.command(22);}}
+                Button {text:"Edit sketch in viewport…";enabled:root.sketches.length>0 && !root.busy;min-width:0px;max-height:32px;clicked=>{root.command(39);}}
+                Button {text:"Edit sketch dimensions…";enabled:root.sketches.length>0 && !root.busy;min-width:0px;max-height:32px;clicked=>{root.command(28);}}
+            }
+            if !root.sketch-editing : VerticalLayout {spacing:6px;
+            HorizontalLayout {
+                spacing:8px;
+                CadToolButton {icon:@image-url("icons/pad.svg");label:"Pad";active:root.feature-mode==0;enabled:!root.busy;clicked=>{root.feature-mode=0;}}
+                CadToolButton {icon:@image-url("icons/revolve.svg");label:"Revolve";active:root.feature-mode==1;enabled:!root.busy;clicked=>{root.feature-mode=1;}}
+                CadToolButton {icon:@image-url("icons/cut.svg");label:"Pocket · requires a sketch on a solid face";active:root.feature-mode==2;enabled:!root.busy;clicked=>{root.feature-mode=2;}}
+                Rectangle {horizontal-stretch:1;}
+            }
+            Text {text:root.feature-mode==0 ? "PAD · depth" : root.feature-mode==1 ? "REVOLVE · angle in degrees" : "POCKET · cut depth";color:UiTheme.accent;font-size:11px;}
+            if root.feature-mode!=1 : LineEdit {text <=> root.size-z;enabled:!root.busy && !(root.feature-mode==2 && root.through-all);min-width:0px;max-height:32px;}
+            if root.feature-mode==1 : LineEdit {text <=> root.angle;enabled:!root.busy;min-width:0px;max-height:32px;}
+            if root.feature-mode==1 : VerticalLayout {spacing:5px;
+                Text {text:"Revolve pivot X · Y · Z (global coordinates)";color:UiTheme.text-muted;font-size:10px;wrap:word-wrap;}
+                HorizontalLayout {
+                    LineEdit {text <=> root.revolve-x;enabled:!root.busy;min-width:0px;max-height:32px;}
+                    LineEdit {text <=> root.revolve-y;enabled:!root.busy;min-width:0px;max-height:32px;}
+                    LineEdit {text <=> root.revolve-z;enabled:!root.busy;min-width:0px;max-height:32px;}
+                }
+            }
+
+            if root.feature-mode==2 : VerticalLayout {spacing:5px;
+                CheckBox {text:"Through all";checked <=> root.through-all;enabled:!root.busy;}
+                Text {text:"Intersection tolerance";color:UiTheme.text-muted;font-size:10px;}
+                LineEdit {text <=> root.tolerance;enabled:!root.busy;min-width:0px;max-height:32px;}
+                if !root.can-pocket : Text {text:"Select a circle or closed profile sketched on the solid's planar face.";color:UiTheme.text-muted;font-size:11px;wrap:word-wrap;}
+            }
+            Button {text:"Preview";enabled:root.has-profile && !root.busy && (root.feature-mode!=2 || root.can-pocket);min-width:0px;max-height:32px;clicked=>{root.command(root.feature-mode==0 ? 101 : root.feature-mode==1 ? 102 : 134);}}
+        }
+        }
+        if (root.workbench == 0 && !root.sketch-editing && !root.face-editing && !root.editing-pad && root.feature-mode==1) || root.workbench == 2 : HorizontalLayout {
+            Text {text:"Axis";color:UiTheme.text-muted;vertical-alignment:center;}
+            ComboBox {enabled:!root.busy;model:["X", "Y", "Z"];current-index <=> root.axis;min-width:0px;preferred-width:1px;horizontal-stretch:1;max-height:32px;}
+        }
+        if root.workbench == 0 && !root.sketch-editing && !root.face-editing && !root.editing-pad && root.feature-mode==0 : Button {text:"Preview additive Pad";enabled:root.has-profile && root.can-pocket && !root.busy;min-width:0px;max-height:32px;clicked=>{root.command(124);}}
+        if root.workbench == 0 && !root.sketch-editing && !root.face-editing && !root.editing-pad : Button {text:"Loft two selected profiles";enabled:root.can-loft && !root.busy;min-width:0px;max-height:32px;clicked=>{root.command(20);}}
+        if root.workbench == 1 || root.workbench == 2 : VerticalLayout {
+            spacing:6px;
+            Text {text:root.workbench == 1 ? "Position X · Y · Z" : "Translation / rotation pivot X · Y · Z";color:UiTheme.text-muted;font-size:10px;wrap:word-wrap;}
+            HorizontalLayout {LineEdit {enabled:!root.busy; min-width: 0px; preferred-width: 1px; horizontal-stretch: 1; min-height: 32px; max-height: 32px;text <=> root.pos-x;}LineEdit {enabled:!root.busy; min-width: 0px; preferred-width: 1px; horizontal-stretch: 1; min-height: 32px; max-height: 32px;text <=> root.pos-y;}LineEdit {enabled:!root.busy; min-width: 0px; preferred-width: 1px; horizontal-stretch: 1; min-height: 32px; max-height: 32px;text <=> root.pos-z;}}
+        }
+        if root.workbench == 1 : Button { min-width: 0px; preferred-width: 1px; horizontal-stretch: 1; min-height: 32px; max-height: 32px; text:root.busy ? "Building…" : "Preview solid";enabled:!root.busy;clicked=>{root.command(100);} }
+        if root.workbench == 2 : VerticalLayout {
+            spacing:6px;
+            HorizontalLayout {
+                CadToolButton {icon:@image-url("icons/move.svg");label:"Move";enabled:root.bodies.length>0 && !root.busy;clicked=>{root.command(3);}}
+                CadToolButton {icon:@image-url("icons/copy.svg");label:"Copy";enabled:root.bodies.length>0 && !root.busy;clicked=>{root.command(6);}}
+            }
+            Text {text:"Rotation (degrees) · uniform scale";color:UiTheme.text-muted;font-size:10px;wrap:word-wrap;}
+            HorizontalLayout { LineEdit {enabled:!root.busy; min-width: 0px; preferred-width: 1px; horizontal-stretch: 1; min-height: 32px; max-height: 32px;text <=> root.angle;}LineEdit {enabled:!root.busy; min-width: 0px; preferred-width: 1px; horizontal-stretch: 1; min-height: 32px; max-height: 32px;text <=> root.factor;} }
+            HorizontalLayout {
+                CadToolButton {icon:@image-url("icons/rotate.svg");label:"Rotate";enabled:root.bodies.length>0 && !root.busy;clicked=>{root.command(4);}}
+                CadToolButton {icon:@image-url("icons/scale.svg");label:"Scale";enabled:root.bodies.length>0 && !root.busy;clicked=>{root.command(5);}}
+            }
+            Text {text:"Instances, including source (2–64)";color:UiTheme.text-muted;font-size:10px;}
+            SpinBox {enabled:!root.busy; min-width: 0px; preferred-width: 1px; horizontal-stretch: 1; min-height: 32px; max-height: 32px;value <=> root.count;minimum:2;maximum:64;}
+            HorizontalLayout {
+                CadToolButton {icon:@image-url("icons/pattern.svg");label:"Linear";enabled:root.bodies.length>0 && !root.busy;clicked=>{root.command(7);}}
+                CadToolButton {icon:@image-url("icons/rotate.svg");label:"Circular Z";enabled:root.bodies.length>0 && !root.busy;clicked=>{root.command(8);}}
+            }
+            Button{ min-width: 0px; preferred-width: 1px; horizontal-stretch: 1; min-height: 32px; max-height: 32px;text:"Rename selected body";enabled:root.bodies.length>0 && !root.busy;clicked=>{root.command(13);}}
+        }
+        if root.workbench == 3 : VerticalLayout {
+            spacing:7px;
+            Text{text:"Tool body";color:UiTheme.text-muted;font-size:10px;}
+            ComboBox{ min-width: 0px; preferred-width: 1px; horizontal-stretch: 1; min-height: 32px; max-height: 32px;model:root.bodies;current-index <=> root.target;enabled:!root.busy;}
+            Text{text:"Intersection tolerance (model units)";color:UiTheme.text-muted;font-size:10px;}
+            LineEdit {enabled:!root.busy; min-width: 0px; preferred-width: 1px; horizontal-stretch: 1; min-height: 32px; max-height: 32px;text <=> root.tolerance;}
+            HorizontalLayout {spacing:8px;
+            CadToolButton {icon:@image-url("icons/union.svg");label:"Union · source ∪ tool";enabled:root.bodies.length>1 && root.source!=root.target && !root.busy;clicked=>{root.command(9);}}
+            CadToolButton {icon:@image-url("icons/cut.svg");label:"Cut · source − tool";enabled:root.bodies.length>1 && root.source!=root.target && !root.busy;clicked=>{root.command(10);}}
+            CadToolButton {icon:@image-url("icons/common.svg");label:"Common · source ∩ tool";enabled:root.bodies.length>1 && root.source!=root.target && !root.busy;clicked=>{root.command(11);}}
+                Rectangle {horizontal-stretch:1;}
+            }
+            Text{text:"Inputs are retained and hidden after a successful operation. Use Show / hide to inspect them.";color:UiTheme.text-muted;font-size:11px;wrap:word-wrap;}
+        }
+        if root.workbench == 4 : VerticalLayout {
+            spacing:8px;
+            Button{text:"Import STEP solid…";enabled:!root.busy;min-width:0px;preferred-width:1px;horizontal-stretch:1;max-height:32px;clicked=>{root.command(19);}}
+            Button{ min-width: 0px; preferred-width: 1px; horizontal-stretch: 1; min-height: 32px; max-height: 32px;text:"Import native B-rep…";enabled:!root.busy;clicked=>{root.command(18);}}
+            Button{ min-width: 0px; preferred-width: 1px; horizontal-stretch: 1; min-height: 32px; max-height: 32px;text:"Export STEP…";enabled:root.bodies.length>0 && !root.busy;clicked=>{root.command(15);}}
+            Button{ min-width: 0px; preferred-width: 1px; horizontal-stretch: 1; min-height: 32px; max-height: 32px;text:"Export STL…";enabled:root.bodies.length>0 && !root.busy;clicked=>{root.command(16);}}
+            Button{ min-width: 0px; preferred-width: 1px; horizontal-stretch: 1; min-height: 32px; max-height: 32px;text:"Export native B-rep…";enabled:root.bodies.length>0 && !root.busy;clicked=>{root.command(17);}}
+            Text{text:"STEP retains analytic geometry. Import supports a single closed shell; coordinate units follow the file. STL and volume meshing use a faceted surface approximation.";color:UiTheme.text-muted;font-size:11px;wrap:word-wrap;}
+        }
+        Rectangle {height:1px;background:UiTheme.border;}
+        Button {text:"Measure selection";min-width:0px;max-height:32px;enabled:!root.busy && !root.direct-editing;clicked=>{root.command(23);}}
+        if root.workbench == 0 && root.features.length>0 && !root.sketch-editing && !root.face-editing : VerticalLayout {
+            spacing:6px;
+            Text {text:"EDIT PAD HISTORY";color:UiTheme.accent;font-size:10px;}
+            ComboBox {model:root.features;current-index <=> root.feature-index;min-width:0px;max-height:32px;enabled:!root.busy;selected(value)=>{root.command(30);}}
+            Button {text:"Load selected depth";enabled:!root.busy;min-width:0px;max-height:32px;clicked=>{root.command(30);}}
+            if root.editing-pad : VerticalLayout {
+                spacing:6px;
+                Text {text:"Pad depth (keep the existing direction)";color:UiTheme.text-muted;font-size:10px;}
+                LineEdit {text <=> root.size-z;enabled:!root.busy;min-width:0px;max-height:32px;}
+                Button {text:"Apply depth & rebuild";enabled:!root.busy;min-width:0px;max-height:32px;clicked=>{root.command(131);}}
+                Button {text:"Cancel";enabled:!root.busy;min-width:0px;max-height:32px;clicked=>{root.editing-pad=false;}}
+            }
+        }
+        if root.workbench == 0 && root.history != "" : VerticalLayout {
+            Text {text:"FEATURE HISTORY";color:UiTheme.accent;font-size:10px;}
+            Text {text:root.history;color:UiTheme.text-secondary;font-size:10px;wrap:word-wrap;}
+        }
+        if root.busy && !root.previewing : Button {text:"Discard pending result";min-width:0px;max-height:32px;clicked=>{root.command(-1);}}
+        Text {text:root.previewing ? "Preview ready. Apply or Cancel above the viewport." : root.busy ? "Working on geometry… viewport remains interactive." : root.feedback;color:root.busy ? UiTheme.accent : UiTheme.text-secondary;font-size:11px;wrap:word-wrap;}
+        Rectangle {vertical-stretch:1;}
+    }
+}

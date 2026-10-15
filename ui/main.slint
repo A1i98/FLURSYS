@@ -1,4 +1,6 @@
-import { Button, ComboBox, LineEdit, SpinBox, TextEdit, ScrollView, ListView } from "std-widgets.slint";
+import { CadToolButton, SketchDimension, SketchDimensionsOverlay } from "cad-tools.slint";
+import { CadTaskPanel } from "cad.slint";
+import { Button, ComboBox, LineEdit, SpinBox, TextEdit, ScrollView, ListView, Palette } from "std-widgets.slint";
 import { SectionTitle, SectionHint, Card, MetricCard, InteractiveGeometryPreview, WorkflowItem, TreeRowView, InspectorLabel, InspectorValue, ProjectTreeRow, UiTheme } from "components.slint";
 import { TopBar } from "layout/topbar.slint";
 import { ProjectTree } from "layout/project_tree.slint";
@@ -7,12 +9,65 @@ import { StatusBar } from "layout/status_bar.slint";
 import { LegacyImportDialog, RecoveryDialog, UnsavedChangesDialog } from "layout/project_dialogs.slint";
 
 export component MainWindow inherits Window {
+    init => { Palette.color-scheme = ColorScheme.dark; }
     title: root.project-loaded ? "FLURSYS — " + root.project-name : "FLURSYS — CFD Workbench";
     preferred-width: 1440px;
     preferred-height: 900px;
     min-width: 1100px;
     min-height: 650px;
     background: UiTheme.background;
+
+    in-out property <int> cad-workbench: 0;
+    in-out property <int> cad-primitive-kind: 0;
+    in-out property <int> cad-axis: 1;
+    in-out property <bool> cad-can-loft: false;
+    in-out property <bool> cad-can-pocket:false;
+    in-out property <int> cad-source: 0;
+    in-out property <int> cad-target: 1;
+    in-out property <int> cad-count: 4;
+    in-out property <string> cad-name: "Body";
+    in-out property <string> cad-size-x: "10";
+    in-out property <string> cad-size-y: "8";
+    in-out property <string> cad-size-z: "6";
+    in-out property <string> cad-pos-x: "0";
+    in-out property <string> cad-pos-y: "0";
+    in-out property <string> cad-pos-z: "0";
+    in-out property <string> cad-angle: "360";
+    in-out property <string> cad-revolve-x:"0";
+    in-out property <string> cad-revolve-y:"0";
+    in-out property <string> cad-revolve-z:"0";
+    in-out property <string> cad-factor: "1.5";
+    in-out property <string> cad-tolerance: "0.001";
+    in-out property <[string]> cad-bodies;
+    in-out property <string> cad-inspector: "Create a solid or select a sketch profile.";
+    in-out property <string> cad-feedback: "Ready";
+    in-out property <bool> cad-busy: false;
+    in-out property <int> cad-sketch-plane: 0;
+    in-out property <int> cad-sketch-kind: 0;
+    in-out property <int> cad-sketch-index: 0;
+    in-out property <bool> cad-sketch-editing: false;
+    in-out property <[string]> cad-sketches;
+    in-out property <bool> cad-direct-sketch-editing:false;
+    in-out property <string> cad-sketch-plane-label;
+    in-out property <string> cad-sketch-edit-status;
+    in-out property <[SketchDimension]> cad-sketch-dimensions;
+    callback cad-sketch-drag(int,float,float,float,float);
+    callback cad-sketch-parameters-edited();
+    in-out property <bool> cad-preview-active:false;
+    in-out property <string> cad-preview-label;
+    in-out property <bool> cad-through-all:false;
+    in-out property <bool> cad-measure-active:false;
+    in-out property <int> cad-measure-kind:0;
+    in-out property <string> cad-measure-result:"Select geometry to measure.";
+    in-out property <string> cad-history;
+    in-out property <int> cad-edit-sketch-id:0;
+    in-out property <bool> cad-editing-pad:false;
+    in-out property <int> cad-feature-index:0;
+    in-out property <[string]> cad-features;
+    in-out property <image> cad-orientation-image;
+    callback cad-pick-orientation(float,float);
+    callback cad-command(int);
+    callback cad-select-body(int);
 
     // Keep the responsive size-class independent from Window layout constraints.
     // Binding this directly to root.width creates a cycle:
@@ -54,7 +109,7 @@ export component MainWindow inherits Window {
     in-out property <string> sketch-pos-x: "0.0";
     in-out property <string> sketch-pos-y: "0.0";
     in-out property <string> sketch-pos-z: "0.0";
-    in-out property <string> feature-depth: "1.0";
+    in-out property <string> feature-depth <=> root.cad-size-z;
     in-out property <string> revolve-axis-offset: "1.0";
     in-out property <string> driving-dimension: "1.0";
     in-out property <string> part-name: "Part 1";
@@ -320,9 +375,9 @@ export component MainWindow inherits Window {
                     VerticalLayout {
                         padding: 8px; spacing: 6px;
                         Rectangle {
-                            min-height: 75px;
-                            preferred-height: root.compact-ui ? 78px : 82px;
-                            max-height: 92px;
+                            min-height: 112px;
+                            preferred-height: 118px;
+                            max-height: 126px;
                             background: UiTheme.toolbar;
                             border-color: UiTheme.border;
                             border-width: 1px;
@@ -332,22 +387,32 @@ export component MainWindow inherits Window {
                                 spacing: 4px;
 
                                 HorizontalLayout {
+                                    spacing: 6px;
+                                    Text {text:"CAD";color:UiTheme.accent;font-weight:800;vertical-alignment:center;}
+                                    for label[index] in ["Sketch", "Solid", "Transform", "Boolean", "Exchange"] : Button {
+                                        enabled:!root.cad-direct-sketch-editing && !root.cad-preview-active && !root.cad-busy;
+                                        text: root.cad-workbench == index ? "● " + label : label;
+                                        clicked => {root.cad-workbench=index;root.geometry-sidebar-tab=0;}
+                                    }
+                                    Rectangle {horizontal-stretch:1;}
+                                    Text {text:root.cad-busy ? "BUILDING" : "PART DESIGN";color:UiTheme.text-muted;font-size:10px;vertical-alignment:center;}
+                                }
+                                HorizontalLayout {
                                     spacing: 5px;
 
                                     Text { text: "GEOMETRY"; color: UiTheme.accent; font-size: 10px; font-weight: 800; vertical-alignment: center; }
                                     Rectangle { width: 1px; background: UiTheme.divider; }
 
-                                    Button { text: root.geometry-active-tool == 0 && root.geometry-prefer-faces ? "FACE ✓" : "FACE"; enabled: !root.geometry-face-sketch-editing; clicked => { root.geometry-cad-view-3d = false; root.geometry-select-face-mode(); } }
-                                    Button { text: root.geometry-active-tool == 0 && !root.geometry-prefer-faces ? "EDGE ✓" : "EDGE"; enabled: !root.geometry-face-sketch-editing; clicked => { root.geometry-cad-view-3d = false; root.geometry-select-entity-mode(); } }
-                                    Button { text: root.geometry-active-tool == 1 ? "LINE ✓" : "LINE"; clicked => { root.geometry-cad-view-3d = false; root.geometry-tool(1); } }
-                                    Button { text: root.geometry-active-tool == 2 ? "RECT ✓" : "RECT"; clicked => { root.geometry-cad-view-3d = false; root.geometry-tool(2); } }
-                                    Button { text: root.geometry-active-tool == 3 ? "CIRCLE ✓" : "CIRCLE"; clicked => { root.geometry-cad-view-3d = false; root.geometry-tool(3); } }
-                                    Button { text: root.geometry-snap ? "SNAP ON" : "SNAP OFF"; clicked => { root.geometry-toggle-snap(); } }
-                                    Button { text: root.geometry-grid ? "GRID ON" : "GRID OFF"; clicked => { root.geometry-toggle-grid(); } }
-                                    Button { text: "UNDO"; clicked => { root.geometry-undo(); } }
-                                    Button { text: "REDO"; clicked => { root.geometry-redo(); } }
-                                    Button { text: "DELETE"; clicked => { root.geometry-delete-selection(); } }
-
+                                    CadToolButton {icon:@image-url("icons/face.svg");label:"Select faces";active:root.geometry-active-tool == 0 && root.geometry-prefer-faces;enabled:!root.geometry-face-sketch-editing && !root.cad-direct-sketch-editing;clicked=>{root.geometry-select-face-mode();}}
+                                    CadToolButton {icon:@image-url("icons/edge.svg");label:"Select edges / vertices";active:root.geometry-active-tool == 0 && !root.geometry-prefer-faces;enabled:!root.geometry-face-sketch-editing && !root.cad-direct-sketch-editing;clicked=>{root.geometry-select-entity-mode();}}
+                                    CadToolButton {icon:@image-url("icons/line.svg");label:"Line";active:root.geometry-active-tool == 1;enabled:!root.geometry-face-sketch-editing && !root.cad-direct-sketch-editing;clicked=>{root.geometry-cad-view-3d=false;root.geometry-tool(1);}}
+                                    CadToolButton {icon:@image-url("icons/rectangle.svg");label:"Rectangle";active:root.geometry-active-tool == 2;enabled:!root.cad-direct-sketch-editing;clicked=>{root.geometry-cad-view-3d=false;root.geometry-tool(2);}}
+                                    CadToolButton {icon:@image-url("icons/circle.svg");label:"Circle";active:root.geometry-active-tool == 3;enabled:!root.cad-direct-sketch-editing;clicked=>{if root.geometry-face-sketch-editing {root.geometry-tool(3);} else {root.geometry-cad-view-3d=false;root.geometry-tool(3);}}}
+                                    CadToolButton {icon:@image-url("icons/snap.svg");label:"Snap to grid";active:root.geometry-snap;enabled:true;clicked=>{root.geometry-toggle-snap();}}
+                                    CadToolButton {icon:@image-url("icons/grid.svg");label:"Show grid";active:root.geometry-grid;enabled:true;clicked=>{root.geometry-toggle-grid();}}
+                                    CadToolButton {icon:@image-url("icons/undo.svg");label:"Undo";active:false;enabled:true;clicked=>{root.geometry-undo();}}
+                                    CadToolButton {icon:@image-url("icons/redo.svg");label:"Redo";active:false;enabled:true;clicked=>{root.geometry-redo();}}
+                                    CadToolButton {icon:@image-url("icons/delete.svg");label:"Delete selection";active:false;enabled:!root.cad-direct-sketch-editing;clicked=>{root.geometry-delete-selection();}}
                                     Rectangle { horizontal-stretch: 1; }
                                 }
 
@@ -356,15 +421,11 @@ export component MainWindow inherits Window {
 
                                     Text { text: "VIEW"; color: UiTheme.text-dim; font-size: 10px; font-weight: 700; vertical-alignment: center; }
 
-                                    Button { text: "FIT"; clicked => { if root.geometry-cad-view-3d { root.reset-geometry-view(); } else { root.geometry-fit(); } } }
-
-                                    Button { text: root.geometry-cad-view-3d ? "2D SKETCH" : "3D MODEL"; clicked => { if root.geometry-face-sketch-editing { root.geometry-shortcut(0); } else { root.geometry-cad-view-3d = !root.geometry-cad-view-3d; if root.geometry-cad-view-3d { root.show-geometry-3d(); } } } }
-                                    Button { text: root.geometry-face-sketch-editing ? "CANCEL SKETCH" : "DRAW ON FACE"; clicked => { if root.geometry-face-sketch-editing { root.geometry-shortcut(0); } else { root.draw-on-face(); } } }
-
-                                    Rectangle { width: 1px; background: UiTheme.divider; }
-
-                                    Button { text: "EXTRUDE"; enabled: root.geometry-can-extrude; clicked => { root.feature-kind-index = 0; root.build-feature(); } }
-
+                                    CadToolButton {icon:@image-url("icons/fit.svg");label:"Fit view";active:false;enabled:true;clicked=>{if root.geometry-cad-view-3d {root.reset-geometry-view();} else {root.geometry-fit();}}}
+                                    CadToolButton {icon:@image-url("icons/cube.svg");label:"Toggle sketch / 3D view";active:root.geometry-cad-view-3d;enabled:!root.geometry-face-sketch-editing && !root.cad-direct-sketch-editing;clicked=>{root.geometry-cad-view-3d=!root.geometry-cad-view-3d;if root.geometry-cad-view-3d {root.show-geometry-3d();}}}
+                                    CadToolButton {icon:@image-url("icons/sketch.svg");label:"Sketch on selected face";active:root.geometry-face-sketch-editing;enabled:!root.cad-direct-sketch-editing;clicked=>{if root.geometry-face-sketch-editing {root.geometry-shortcut(0);} else {root.draw-on-face();}}}
+                                    CadToolButton {icon:@image-url("icons/pad.svg");label:"Pad / revolve";active:false;enabled:root.geometry-can-extrude;clicked=>{root.cad-workbench=0;root.geometry-sidebar-tab=0;}}
+                                    CadToolButton {icon:@image-url("icons/measure.svg");label:"Measure";active:root.cad-measure-active;enabled:!root.cad-busy && !root.cad-preview-active && !root.cad-direct-sketch-editing;clicked=>{root.cad-command(23);}}
                                     Rectangle { horizontal-stretch: 1; }
                                 }
 
@@ -384,7 +445,7 @@ export component MainWindow inherits Window {
 
                                     HorizontalLayout {
                                         spacing: 4px;
-                                        Button { text: "MODEL"; clicked => { root.geometry-sidebar-tab = 0; } }
+                                        Button { text: "TASKS"; clicked => { root.geometry-sidebar-tab = 0; } }
                                         Button { text: "PROJECT"; clicked => { root.geometry-sidebar-tab = 1; } }
                                         Button { text: root.compact-ui ? "INSPECT" : "INSPECTOR"; clicked => { root.geometry-sidebar-tab = 2; } }
                                     }
@@ -395,40 +456,39 @@ export component MainWindow inherits Window {
 
                                         VerticalLayout {
                                             spacing: 8px;
-                                     if root.geometry-sidebar-tab == 0 : VerticalLayout {
-                                         Button { text: root.geometry-model-tree-open ? "▾  MODEL TREE" : "▸  MODEL TREE"; clicked => { root.geometry-model-tree-open = !root.geometry-model-tree-open; } }
-                                         if root.geometry-model-tree-open : VerticalLayout {
-                                             Text { text: root.project-name; color: UiTheme.text-bright; font-size: 13px; font-weight: 700; }
-                                             Text { text: root.geometry-model-tree; color: UiTheme.text-tree; font-family: "monospace"; font-size: 10px; wrap: word-wrap; }
-                                         }
-                                         Rectangle { height: 1px; background: UiTheme.border; }
-                                         Button { text: root.geometry-active-body-open ? "▾  ACTIVE BODY" : "▸  ACTIVE BODY"; clicked => { root.geometry-active-body-open = !root.geometry-active-body-open; } }
-                                         if root.geometry-active-body-open : Text { text: root.geometry-parts-summary; color: UiTheme.text-secondary; font-size: 11px; wrap: word-wrap; }
-                                         Rectangle { height: 1px; background: UiTheme.border; }
-                                         Button { text: root.geometry-primitive-open ? "▾  ADD PRIMITIVE" : "▸  ADD PRIMITIVE"; clicked => { root.geometry-primitive-open = !root.geometry-primitive-open; } }
-                                         if root.geometry-primitive-open : VerticalLayout {
-                                             spacing: 5px;
-                                             ComboBox { model: ["Box", "Cylinder", "Cone", "Sphere", "Torus"]; current-index <=> root.part-kind-index; }
-                                             LineEdit { text <=> root.part-name; placeholder-text: "Solid name"; }
-                                             HorizontalLayout {
-                                                 LineEdit { text <=> root.part-size-x; placeholder-text: "X / R"; }
-                                                 LineEdit { text <=> root.part-size-y; placeholder-text: "Y"; }
-                                                 LineEdit { text <=> root.part-size-z; placeholder-text: "Z / H"; }
-                                             }
-                                             Text { text: "POSITION (mm)"; color: UiTheme.text-faint; font-size: 10px; font-weight: 700; }
-                                             HorizontalLayout {
-                                                 LineEdit { text <=> root.part-pos-x; placeholder-text: "X"; }
-                                                 LineEdit { text <=> root.part-pos-y; placeholder-text: "Y"; }
-                                                 LineEdit { text <=> root.part-pos-z; placeholder-text: "Z"; }
-                                             }
-                                             Button { text: "ADD SOLID"; clicked => { root.add-part(); } }
-                                             HorizontalLayout {
-                                                 Button { text: "DUPLICATE"; clicked => { root.duplicate-last-part(); } }
-                                                 Button { text: "DELETE"; clicked => { root.remove-last-part(); } }
-                                             }
-                                         }
-                                        Rectangle { vertical-stretch: 1; }
-                                    }
+                                     if root.geometry-sidebar-tab == 0 : CadTaskPanel {
+                                         vertical-stretch: 1;
+                                         workbench <=> root.cad-workbench;
+                                         face-editing:root.geometry-face-sketch-editing;
+                                         through-all <=> root.cad-through-all;
+                                         previewing:root.cad-preview-active;
+                                         sketch-plane <=> root.cad-sketch-plane;
+                                         sketch-kind <=> root.cad-sketch-kind;
+                                         sketch-index <=> root.cad-sketch-index;
+                                         sketch-editing <=> root.cad-sketch-editing;
+                                         sketches: root.cad-sketches; history: root.cad-history;
+                                         edit-sketch-id <=> root.cad-edit-sketch-id;
+                                         editing-pad <=> root.cad-editing-pad;
+                                         feature-index <=> root.cad-feature-index;
+                                         features:root.cad-features;
+                                         primitive-kind <=> root.cad-primitive-kind;
+                                         axis <=> root.cad-axis; can-loft: root.cad-can-loft;
+                                         feature-mode <=> root.feature-kind-index;can-pocket:root.cad-can-pocket;
+                                         source <=> root.cad-source; target <=> root.cad-target;
+                                         count <=> root.cad-count; name <=> root.cad-name;
+                                         size-x <=> root.cad-size-x; size-y <=> root.cad-size-y; size-z <=> root.cad-size-z;
+                                         pos-x <=> root.cad-pos-x; pos-y <=> root.cad-pos-y; pos-z <=> root.cad-pos-z;
+                                         revolve-x <=> root.cad-revolve-x;revolve-y <=> root.cad-revolve-y;revolve-z <=> root.cad-revolve-z;
+                                         angle <=> root.cad-angle; factor <=> root.cad-factor; tolerance <=> root.cad-tolerance;
+                                         bodies: root.cad-bodies; inspector: root.cad-inspector;
+                                         feedback: root.cad-feedback; busy: root.cad-busy || root.cad-preview-active; has-profile: root.geometry-can-extrude;
+                                         command(action) => {root.cad-command(action);}
+                                         edit-status:root.cad-sketch-edit-status;
+                                         direct-editing:root.cad-direct-sketch-editing;
+                                         parameters-edited()=>{root.cad-sketch-parameters-edited();}
+                                         select-body(index) => {root.cad-select-body(index);}
+                                     }
+
                                      if root.geometry-sidebar-tab == 1 : VerticalLayout {
                                          Button { text: root.geometry-domain-open ? "▾  CASE / DOMAIN" : "▸  CASE / DOMAIN"; clicked => { root.geometry-domain-open = !root.geometry-domain-open; } }
                                          if root.geometry-domain-open : VerticalLayout {
@@ -481,7 +541,7 @@ export component MainWindow inherits Window {
                                          if root.geometry-feature-open : VerticalLayout {
                                              Text { text: "Extrude selected planar face"; color: UiTheme.text-secondary; font-size: 11px; }
                                              LineEdit { text <=> root.feature-depth; placeholder-text: "Extrude distance (mm)"; }
-                                             Text { text: "Select a shaded closed profile, then use EXTRUDE below the canvas."; color: UiTheme.text-faint; font-size: 10px; wrap: word-wrap; }
+                                             Text { text: "Select a closed profile, then apply Pad in the Sketch task panel."; color: UiTheme.text-faint; font-size: 10px; wrap: word-wrap; }
                                          }
                                         Rectangle { vertical-stretch: 1; }
                                     }
@@ -494,10 +554,32 @@ export component MainWindow inherits Window {
                                 horizontal-stretch: 3;
                                 VerticalLayout {
                                     padding: 12px; spacing: 8px;
-                                     HorizontalLayout { Text { text: root.geometry-cad-view-3d ? "3D CAD · SELECT A FACE" : root.geometry-face-sketch-editing ? "SKETCH ON SELECTED FACE" : "2D GEOMETRY EDITOR"; color: UiTheme.accent; font-size: 11px; font-weight: 800; } Rectangle { horizontal-stretch: 1; } Text { text: root.geometry-cad-view-3d ? "ORBIT · PICK · EXTRUDE" : root.geometry-face-sketch-editing ? "LOCAL FACE PLANE · mm" : "XY PLANE · mm"; color: UiTheme.text-dim; font-size: 10px; } }
+                                     if root.cad-preview-active : Rectangle {
+                                         min-height:58px;preferred-height:58px;background:UiTheme.toolbar;border-width:1px;border-color:UiTheme.accent;border-radius:5px;
+                                         HorizontalLayout {padding:7px;spacing:8px;
+                                             Text {text:"PREVIEW · " + root.cad-preview-label;wrap:word-wrap;color:UiTheme.accent;font-size:11px;vertical-alignment:center;horizontal-stretch:1;}
+                                             Button {text:"Apply";min-width:0px;max-height:30px;clicked=>{root.cad-command(35);}}
+                                             Button {text:"Cancel";min-width:0px;max-height:30px;clicked=>{root.cad-command(36);}}
+                                         }
+                                     }
+                                     if root.cad-measure-active : Rectangle {
+                                         min-height:86px;preferred-height:86px;background:UiTheme.toolbar;border-color:UiTheme.accent;border-width:1px;border-radius:5px;
+                                         VerticalLayout {padding:8px;spacing:5px;
+                                             HorizontalLayout {
+                                                 Text {text:"MEASURE";color:UiTheme.accent;font-size:11px;font-weight:800;vertical-alignment:center;}
+                                                 ComboBox {model:["Geometry", "Point distance", "Planar faces"];current-index <=> root.cad-measure-kind;min-width:0px;max-height:28px;selected(value)=>{root.cad-command(33);}}
+                                                 Button {text:"Clear";min-width:0px;max-height:28px;clicked=>{root.cad-command(33);}}
+                                                 Button {text:"Close";min-width:0px;max-height:28px;clicked=>{root.cad-command(32);}}
+                                             }
+                                             Text {text:root.cad-measure-result;color:UiTheme.text;font-size:12px;wrap:word-wrap;}
+                                         }
+                                     }
+                                     HorizontalLayout { Text { text: root.cad-direct-sketch-editing && !root.geometry-cad-view-3d ? "EDIT SKETCH · " + root.cad-sketch-plane-label : root.geometry-cad-view-3d ? "3D CAD · SELECT A FACE" : root.geometry-face-sketch-editing ? "SKETCH ON SELECTED FACE" : "2D GEOMETRY EDITOR"; color: UiTheme.accent; font-size: 11px; font-weight: 800; } Rectangle { horizontal-stretch: 1; } Text { text: root.cad-direct-sketch-editing && !root.geometry-cad-view-3d ? "DRAG HANDLES · LOCAL PLANE" : root.geometry-cad-view-3d ? "ORBIT · PICK · EXTRUDE" : root.geometry-face-sketch-editing ? "LOCAL FACE PLANE · mm" : "XY PLANE · mm"; color: UiTheme.text-dim; font-size: 10px; } }
                                      if root.geometry-cad-view-3d : InteractiveGeometryPreview {
                                          vertical-stretch: 1;
                                          preview-image: root.visualization-image;
+                                         orientation-image:root.cad-orientation-image;
+                                         pick-orientation(x,y)=>{root.cad-pick-orientation(x,y);}
                                          view-axis: root.geometry-view-axis;
                                          select-geometry: true;
                                          help-text: root.geometry-pick-mode == 0 ? "CLICK FACE: SELECT  ·  DRAG: ORBIT  ·  WHEEL: ZOOM  ·  DOUBLE-CLICK: FIT" : root.geometry-pick-mode == 1 ? "CLICK A SKETCH EDGE: SELECT  ·  DRAG: ORBIT  ·  WHEEL: ZOOM" : "CLICK A SKETCH VERTEX: SELECT  ·  DRAG: ORBIT  ·  WHEEL: ZOOM";
@@ -530,8 +612,10 @@ export component MainWindow inherits Window {
                                                  if event.modifiers.control && (event.text == "z" || event.text == "Z") && event.modifiers.shift { root.geometry-shortcut(7); accept }
                                                  else if event.modifiers.control && (event.text == "z" || event.text == "Z") { root.geometry-shortcut(6); accept }
                                                  else if event.modifiers.control && (event.text == "y" || event.text == "Y") { root.geometry-shortcut(7); accept }
-                                                 else if root.geometry-can-extrude && !event.modifiers.control && (event.text == "e" || event.text == "E" || event.text == Key.Return) { root.build-feature(); accept }
-                                                else if event.text == Key.Escape || event.text == "v" || event.text == "V" { root.geometry-shortcut(0); accept }
+                                                 else if root.cad-direct-sketch-editing && event.text == Key.Return {root.cad-command(129);accept}
+                                                 else if !root.cad-direct-sketch-editing && root.geometry-can-extrude && !event.modifiers.control && (event.text == "e" || event.text == "E" || event.text == Key.Return) { root.build-feature(); accept }
+                                                else if event.text == Key.Escape { root.geometry-shortcut(0); accept }
+                                                else if event.text == "v" || event.text == "V" {if !root.cad-direct-sketch-editing {root.geometry-shortcut(0);} accept}
                                                 else if !event.modifiers.control && (event.text == "l" || event.text == "L") { root.geometry-shortcut(1); accept }
                                                 else if !event.modifiers.control && (event.text == "r" || event.text == "R") { root.geometry-shortcut(2); accept }
                                                 else if !event.modifiers.control && (event.text == "c" || event.text == "C") { root.geometry-shortcut(3); accept }
@@ -550,11 +634,19 @@ export component MainWindow inherits Window {
                                             moved => {
                                                 if root.geometry-editor-panning {
                                                     root.geometry-pan-move(self.mouse-x / 1px, self.mouse-y / 1px, self.width / 1px, self.height / 1px);
+                                                } else if root.cad-direct-sketch-editing && self.pressed {
+                                                    root.cad-sketch-drag(1,self.mouse-x/1px,self.mouse-y/1px,self.width/1px,self.height/1px);
                                                 } else {
                                                     root.geometry-move(self.mouse-x / 1px, self.mouse-y / 1px, self.width / 1px, self.height / 1px);
                                                 }
                                             }
                                             pointer-event(event) => {
+                                                if root.cad-direct-sketch-editing && event.button == PointerEventButton.left {
+                                                    editor-focus.focus();
+                                                    if event.kind == PointerEventKind.down {root.cad-sketch-drag(0,self.mouse-x/1px,self.mouse-y/1px,self.width/1px,self.height/1px);}
+                                                    if event.kind == PointerEventKind.up {root.cad-sketch-drag(2,self.mouse-x/1px,self.mouse-y/1px,self.width/1px,self.height/1px);}
+                                                } else {
+
                                                 if event.button == PointerEventButton.left && event.kind == PointerEventKind.down {
                                                     editor-focus.focus();
                                                     self.press-x = self.mouse-x;
@@ -575,25 +667,15 @@ export component MainWindow inherits Window {
                                                 if event.button == PointerEventButton.middle && event.kind == PointerEventKind.up {
                                                     root.geometry-editor-panning = false;
                                                 }
+                                                }
                                             }
                                             scroll-event(event) => { root.geometry-wheel(self.mouse-x / 1px, self.mouse-y / 1px, self.width / 1px, self.height / 1px, event.delta-y / 1px); accept }
                                         }
+                                        if root.cad-direct-sketch-editing : SketchDimensionsOverlay {width:parent.width;height:parent.height;labels:root.cad-sketch-dimensions;}
                                     }
-                                    Rectangle {
-                                        background: UiTheme.toolbar; border-color: root.geometry-can-extrude ? UiTheme.accent : UiTheme.border; border-width: 1px; border-radius: 4px;
-                                        HorizontalLayout {
-                                            padding: 8px; spacing: 8px;
-                                            VerticalLayout {
-                                                horizontal-stretch: 1;
-                                                Text { text: root.geometry-can-extrude ? "CLOSED PROFILE · READY" : "SKETCH PROFILE"; color: root.geometry-can-extrude ? UiTheme.accent : UiTheme.text-dim; font-size: 10px; font-weight: 800; }
-                                                Text { text: root.geometry-feature-feedback != "" ? root.geometry-feature-feedback : root.geometry-selection-summary; color: UiTheme.text-soft; font-size: 11px; wrap: word-wrap; }
-                                            }
-                                            LineEdit { text <=> root.feature-depth; preferred-width: 80px; placeholder-text: "Depth mm"; }
-                                            Button { text: "EXTRUDE"; enabled: root.geometry-can-extrude; clicked => { root.build-feature(); } }
-                                        }
-                                    }
-                                    HorizontalLayout { Text { text: root.geometry-cad-view-3d ? root.animation-status : root.geometry-editor-status; color: UiTheme.text-soft; font-size: 11px; vertical-alignment: center; wrap: word-wrap; } Rectangle { horizontal-stretch: 1; } Button { text: "FIT VIEW"; clicked => { if root.geometry-cad-view-3d { root.reset-geometry-view(); } else { root.geometry-fit(); } } } }
-                                    Text { text: root.geometry-cad-view-3d ? "CLICK A FLAT FACE → DRAW ON FACE → DRAG A RECTANGLE → EXTRUDE   ·   DRAG: ORBIT" : root.geometry-face-sketch-editing ? "CLICK-DRAG A RECTANGLE OR CLICK TWO CORNERS · WHEEL: ZOOM · ESC: CANCEL" : "RECT / CIRCLE: DRAG OR CLICK TWICE  ·  LINE: CLOSE THE LOOP  ·  FACE: PICK SHADED AREA  ·  E / ENTER: EXTRUDE"; color: UiTheme.text-faint; font-size: 10px; wrap: word-wrap; }
+                                    if root.geometry-feature-feedback != "" : Text {text:root.geometry-feature-feedback;color:UiTheme.accent;font-size:11px;wrap:word-wrap;}
+                                    if root.geometry-active-tool != 0 || root.geometry-face-sketch-editing : Text {text:root.geometry-editor-status;color:UiTheme.text-muted;font-size:10px;wrap:word-wrap;}
+
                                 }
                             }
 
@@ -635,7 +717,7 @@ export component MainWindow inherits Window {
                                 HorizontalLayout { Text { text: "Threshold"; color: UiTheme.text-muted; vertical-alignment: center; } LineEdit { text <=> root.mesh-quality-threshold; } Button { text: "APPLY"; clicked => { root.mesh-threshold(); } } }
                                 if root.bad-cell-model.length > 0 : VerticalLayout { spacing: 3px; Text { text: "BAD CELLS (first " + root.bad-cell-model.length + ")"; color: UiTheme.text-muted; font-size: 10px; font-weight: 700; } ListView { min-height: 48px; max-height: 96px; for cell[index] in root.bad-cell-model : Button { text: cell; clicked => { root.select-bad-cell(index); } } } }
                                 Text { text: root.mesh-inspection; color: UiTheme.text-subtle; font-family: "monospace"; font-size: 11px; wrap: word-wrap; }
-                                InteractiveGeometryPreview { vertical-stretch: 1; preview-image: root.visualization-image; view-axis: root.geometry-view-axis; orbit(x, y, pressed-x, pressed-y) => { root.geometry-drag(x, y, pressed-x, pressed-y); } orbit-end => { root.geometry-drag-end(); } zoom(delta) => { root.geometry-zoom(delta); } reset-view => { root.reset-geometry-view(); } select-view-axis(axis) => { root.select-geometry-view-axis(axis); } pick-boundary(x, y, w, h) => { root.pick-boundary(x, y, w, h); } hover(x, y, w, h) => { root.mesh-hover(x, y, w, h); } }
+                                InteractiveGeometryPreview { vertical-stretch: 1; preview-image: root.visualization-image; orientation-image:root.cad-orientation-image; pick-orientation(x,y)=>{root.cad-pick-orientation(x,y);} view-axis: root.geometry-view-axis; orbit(x, y, pressed-x, pressed-y) => { root.geometry-drag(x, y, pressed-x, pressed-y); } orbit-end => { root.geometry-drag-end(); } zoom(delta) => { root.geometry-zoom(delta); } reset-view => { root.reset-geometry-view(); } select-view-axis(axis) => { root.select-geometry-view-axis(axis); } pick-boundary(x, y, w, h) => { root.pick-boundary(x, y, w, h); } hover(x, y, w, h) => { root.mesh-hover(x, y, w, h); } }
                                 Text { text: root.visualization-title + " · " + root.animation-status; color: UiTheme.text-soft; font-size: 11px; }
                                 HorizontalLayout { Button { text: "2D GRID"; clicked => { root.show-mesh(); } } Button { text: "3D VOLUME"; clicked => { root.show-geometry-3d(); } } }
                             } }
@@ -695,7 +777,7 @@ export component MainWindow inherits Window {
                             } }
                                 Card { min-width: 250px; horizontal-stretch: 2; VerticalLayout { padding: root.compact-ui ? 14px : 18px; spacing: 10px;
                                 Text { text: "BOUNDARY & VOLUME VIEW"; color: UiTheme.accent; font-size: 11px; font-weight: 700; }
-                                InteractiveGeometryPreview { vertical-stretch: 1; preview-image: root.visualization-image; view-axis: root.geometry-view-axis; orbit(x, y, pressed-x, pressed-y) => { root.geometry-drag(x, y, pressed-x, pressed-y); } orbit-end => { root.geometry-drag-end(); } zoom(delta) => { root.geometry-zoom(delta); } reset-view => { root.reset-geometry-view(); } select-view-axis(axis) => { root.select-geometry-view-axis(axis); } pick-boundary(x, y, w, h) => { root.pick-boundary(x, y, w, h); } hover(x, y, w, h) => { root.mesh-hover(x, y, w, h); } }
+                                InteractiveGeometryPreview { vertical-stretch: 1; preview-image: root.visualization-image; orientation-image:root.cad-orientation-image; pick-orientation(x,y)=>{root.cad-pick-orientation(x,y);} view-axis: root.geometry-view-axis; orbit(x, y, pressed-x, pressed-y) => { root.geometry-drag(x, y, pressed-x, pressed-y); } orbit-end => { root.geometry-drag-end(); } zoom(delta) => { root.geometry-zoom(delta); } reset-view => { root.reset-geometry-view(); } select-view-axis(axis) => { root.select-geometry-view-axis(axis); } pick-boundary(x, y, w, h) => { root.pick-boundary(x, y, w, h); } hover(x, y, w, h) => { root.mesh-hover(x, y, w, h); } }
                                 Text { text: "Cyan: left · Gold: right · Green: top · Magenta: bottom"; color: UiTheme.text-soft; font-size: 11px; }
                                 HorizontalLayout { Button { text: "SHOW 3D"; clicked => { root.show-geometry-3d(); } } Button { text: "ROTATE"; clicked => { root.rotate-geometry-3d(); } } }
                             } }
@@ -810,7 +892,7 @@ export component MainWindow inherits Window {
                 }
 
                 // ---- RIGHT PROPERTIES INSPECTOR ----
-                Rectangle {
+                if root.current-step != 0 || root.inspector-mode != 0 : Rectangle {
                     min-width: root.compact-ui ? 236px : 264px;
                     preferred-width: root.compact-ui ? 260px : 292px;
                     max-width: root.compact-ui ? 288px : 320px;

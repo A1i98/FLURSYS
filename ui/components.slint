@@ -74,6 +74,8 @@
     export component InteractiveGeometryPreview inherits Rectangle {
         in property <image> preview-image;
         in property <int> view-axis: 3;
+        in property <image> orientation-image;
+        callback pick-orientation(float,float);
         in property <string> help-text: "DRAG: ORBIT  ·  WHEEL: ZOOM  ·  CLICK RGB XYZ TRIAD: AXIS VIEW  ·  DOUBLE-CLICK: RESET";
         in property <bool> select-geometry: false;
         callback orbit(float, float, float, float);
@@ -90,6 +92,8 @@
         Image { source: root.preview-image; width: parent.width; height: parent.height; image-fit: contain; }
         Text {
             x: 10px; y: parent.height - self.height - 8px;
+            width: max(0px,parent.width - 132px);
+            wrap:word-wrap;
             text: root.help-text;
             color: rgb(145, 174, 190); font-size: 10px; font-weight: 700;
         }
@@ -118,6 +122,17 @@
             scroll-event(event) => { root.zoom(event.delta-y / 1px); accept }
             double-clicked => { root.reset-view(); }
             clicked => { if !self.dragged { root.pick-boundary(self.mouse-x / 1px, self.mouse-y / 1px, root.width / 1px, root.height / 1px); } }
+        }
+        Rectangle {
+            x: parent.width - self.width - 12px;
+            y: parent.height - self.height - 12px;
+            width:96px;height:96px;
+            background:transparent;
+            Image {source:root.orientation-image;width:96px;height:96px;}
+            TouchArea {
+                mouse-cursor:pointer;
+                clicked=>{root.pick-orientation(self.mouse-x/1px,self.mouse-y/1px);}
+            }
         }
     }
 

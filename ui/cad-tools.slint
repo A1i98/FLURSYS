@@ -1,0 +1,39 @@
+import { UiTheme } from "components.slint";
+export component CadToolButton inherits Rectangle {
+    in property <image> icon;
+    in property <string> label;
+    in property <bool> active: false;
+    in property <bool> enabled: true;
+    callback clicked();
+    accessible-role:button;
+    accessible-label:root.label;
+    preferred-width:34px; preferred-height:34px;
+    min-width: 34px; max-width: 34px; min-height:34px; max-height:34px;
+    border-radius: 5px;
+    background: !root.enabled ? transparent : root.active ? #3d4140 : touch.has-hover ? #2c4556 : transparent;
+    border-width: root.active || keyboard.has-focus ? 1px : 0px;
+    border-color: UiTheme.accent;
+    Image {source:root.icon;width:21px;height:21px;x:6px;y:6px;opacity:root.enabled ? 1 : 0.25;}
+    keyboard := FocusScope {
+        enabled:root.enabled;
+        key-pressed(event)=>{
+            if event.text == Key.Return || event.text == " " {root.clicked();accept} else {reject}
+        }
+    }
+    touch := TouchArea {enabled:root.enabled;clicked=>{keyboard.focus();root.clicked();}}
+    Tooltip { text:@markdown("\{root.label}"); }
+}
+
+export struct SketchDimension {text:string,x:float,y:float}
+export component SketchDimensionsOverlay inherits Rectangle {
+    in property <[SketchDimension]> labels;
+    property <float> image-scale:min(root.width/520px,root.height/320px);
+    background:transparent;
+    for entry in root.labels : Rectangle {
+        visible:entry.x>=0 && entry.x<=520 && entry.y>=0 && entry.y<=320;
+        x:min(max(0px,(root.width - 520px*root.image-scale)/2 + entry.x*1px*root.image-scale - self.width/2),max(0px,root.width - self.width));
+        y:min(max(0px,(root.height - 320px*root.image-scale)/2 + entry.y*1px*root.image-scale - self.height/2),max(0px,root.height - self.height));
+        width:132px;height:22px;background:#091016ed;border-radius:3px;
+        Text {text:entry.text;color:UiTheme.accent;font-size:12px;horizontal-alignment:center;vertical-alignment:center;}
+    }
+}

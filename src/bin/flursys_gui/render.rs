@@ -1,3 +1,5 @@
+#[path = "sketch_visual.rs"]
+mod sketch_visual;
 use super::{residual_level, MeshColorMode, ResidualSample, PREVIEW_HEIGHT, PREVIEW_WIDTH};
 use flursys::{
     BoundaryConditionKind, BoundaryFace, ExtrudedMesh3D, FieldUpdate, GeometryEditorState,
@@ -861,7 +863,7 @@ pub(super) fn render_geometry_3d(
     for (index, part) in project.preprocessing.geometry.parts.iter().enumerate() {
         draw_part_with_camera(&mut pixels, width, height, part, camera, part_color(index));
     }
-    draw_orientation_triad(&mut pixels, width, height, camera);
+
     image_from_rgba(width, height, pixels)
 }
 
@@ -880,7 +882,6 @@ pub(super) fn render_canonical_geometry_3d(
     fill(&mut pixels, [9, 16, 22, 255]);
     let mut surfaces = topology.renderable_faces();
     if surfaces.is_empty() {
-        draw_canonical_orientation_triad(&mut pixels, width, height, yaw, pitch);
         return image_from_rgba(width, height, pixels);
     }
     let camera = CanonicalCamera::fit(
@@ -893,12 +894,31 @@ pub(super) fn render_canonical_geometry_3d(
     );
     surfaces.sort_by(|left, right| {
         camera
-            .depth(&left.vertices)
-            .total_cmp(&camera.depth(&right.vertices))
+            .depth(&right.vertices)
+            .total_cmp(&camera.depth(&left.vertices))
     });
+    let sketch_ids = topology
+        .sketches()
+        .filter_map(|s| s.profile_face)
+        .collect::<std::collections::BTreeSet<_>>();
+    let sketch_surfaces = surfaces
+        .iter()
+        .filter(|s| s.body.is_none() && sketch_ids.contains(&s.face))
+        .cloned()
+        .collect::<Vec<_>>();
+    let mut cad_depth = vec![f64::INFINITY; (width * height) as usize];
     for surface in surfaces {
-        let selected = selected_target == Some(GeometrySelectionTarget::Face(surface.face));
-        let hovered = hovered_target == Some(GeometrySelectionTarget::Face(surface.face));
+        if surface.body.is_none() && sketch_ids.contains(&surface.face) {
+            continue;
+        }
+        let selected = selected_target == Some(GeometrySelectionTarget::Face(surface.face))
+            || surface
+                .body
+                .is_some_and(|body| selected_target == Some(GeometrySelectionTarget::Body(body)));
+        let hovered = hovered_target == Some(GeometrySelectionTarget::Face(surface.face))
+            || surface
+                .body
+                .is_some_and(|body| hovered_target == Some(GeometrySelectionTarget::Body(body)));
         let fill_color = if selected {
             [240, 195, 109, 255]
         } else if hovered {
@@ -915,6 +935,24 @@ pub(super) fn render_canonical_geometry_3d(
         } else {
             [108, 181, 202, 255]
         };
+        let kernel_surface = surface
+            .body
+            .is_some_and(|id| topology.cad_body(id).is_some());
+        let fill_color = if kernel_surface && surface.vertices.len() >= 3 {
+            let normal = (surface.vertices[1] - surface.vertices[0])
+                .cross(surface.vertices[2] - surface.vertices[0]);
+            let illumination = 0.55
+                + 0.45
+                    * (normal.dot(Vec3::new(0.35, -0.45, 0.82)) / normal.norm().max(1e-20)).abs();
+            [
+                (fill_color[0] as f64 * illumination) as u8,
+                (fill_color[1] as f64 * illumination) as u8,
+                (fill_color[2] as f64 * illumination) as u8,
+                255,
+            ]
+        } else {
+            fill_color
+        };
         let polygon = surface
             .vertices
             .iter()
@@ -926,6 +964,25 @@ pub(super) fn render_canonical_geometry_3d(
             .map(|&(x, y)| (f64::from(x), f64::from(y)))
             .collect::<Vec<_>>();
         let before = (!surface.holes.is_empty()).then(|| pixels.clone());
+        if kernel_surface && surface.vertices.len() == 3 {
+            let projected = [0, 1, 2].map(|i| {
+                let (x, y) = camera.project_unscaled(surface.vertices[i]);
+                (
+                    f64::from(width) * 0.5 + x * camera.scale,
+                    f64::from(height) * 0.5 - y * camera.scale,
+                    camera.depth(&surface.vertices[i..i + 1]),
+                )
+            });
+            draw_cad_triangle(
+                &mut pixels,
+                &mut cad_depth,
+                width,
+                height,
+                projected,
+                fill_color,
+            );
+            continue;
+        }
         draw_filled_polygon(&mut pixels, width, height, &fill_polygon, fill_color);
         if let Some(before) = before {
             let mut mask = vec![0_u8; pixels.len()];
@@ -954,6 +1011,9 @@ pub(super) fn render_canonical_geometry_3d(
                 }
             }
         }
+        if kernel_surface {
+            continue;
+        }
         for (start, end) in polygon
             .iter()
             .copied()
@@ -961,6 +1021,28 @@ pub(super) fn render_canonical_geometry_3d(
             .take(polygon.len())
         {
             draw_line(&mut pixels, width, height, start, end, edge_color);
+        }
+    }
+    // Sketches are wire overlays; filling their profiles would visually cap holes.
+    for surface in sketch_surfaces {
+        let color = if selected_target == Some(GeometrySelectionTarget::Face(surface.face)) {
+            [255, 224, 140, 255]
+        } else if hovered_target == Some(GeometrySelectionTarget::Face(surface.face)) {
+            [142, 232, 176, 255]
+        } else {
+            [104, 222, 237, 255]
+        };
+        for polygon in std::iter::once(&surface.vertices).chain(surface.holes.iter()) {
+            for i in 0..polygon.len() {
+                sketch_visual::line(
+                    &mut pixels,
+                    width,
+                    height,
+                    camera.project(polygon[i]),
+                    camera.project(polygon[(i + 1) % polygon.len()]),
+                    color,
+                );
+            }
         }
     }
     // Entity picks use the same stable IDs and camera as the geometry tree.
@@ -999,7 +1081,7 @@ pub(super) fn render_canonical_geometry_3d(
             _ => {}
         }
     }
-    draw_canonical_orientation_triad(&mut pixels, width, height, yaw, pitch);
+
     image_from_rgba(width, height, pixels)
 }
 
@@ -1048,6 +1130,53 @@ fn canonical_camera(
 
 /// Face, sketch-edge, or sketch-vertex selection in the same orthographic camera
 /// used for rendering. Candidates behind a nearer face are not selectable.
+pub(super) fn measurement_surface_point(
+    topology: &GeometryTopology,
+    yaw: f32,
+    pitch: f32,
+    zoom: f32,
+    point: (f64, f64),
+) -> Option<Vec3> {
+    topology
+        .pick_face(canonical_camera(topology, yaw, pitch, zoom)?.ray(point)?)
+        .map(|hit| hit.position)
+}
+
+pub(super) fn project_measurement(
+    topology: &GeometryTopology,
+    yaw: f32,
+    pitch: f32,
+    zoom: f32,
+    points: &[Vec3],
+) -> Vec<(i32, i32)> {
+    canonical_camera(topology, yaw, pitch, zoom)
+        .map(|camera| points.iter().map(|p| camera.project(*p)).collect())
+        .unwrap_or_default()
+}
+
+pub(super) fn annotate_measurement(image: Image, points: &[(i32, i32)]) -> Image {
+    let Some(buffer) = image.to_rgba8() else {
+        return image;
+    };
+    let (width, height) = (buffer.width(), buffer.height());
+    let mut pixels = buffer.as_bytes().to_vec();
+    for pair in points.windows(2) {
+        sketch_visual::line(
+            &mut pixels,
+            width,
+            height,
+            pair[0],
+            pair[1],
+            [255, 210, 112, 255],
+        );
+    }
+    for p in points {
+        draw_marker(&mut pixels, width, height, *p, [255, 210, 112, 255]);
+        draw_ellipse(&mut pixels, width, height, *p, 6, 6, [255, 210, 112, 255]);
+    }
+    image_from_rgba(width, height, pixels)
+}
+
 pub(super) fn pick_canonical_geometry_target(
     topology: &GeometryTopology,
     yaw: f32,
@@ -1072,6 +1201,7 @@ pub(super) fn pick_canonical_geometry_target(
     if mode == 2 {
         return topology
             .vertices()
+            .filter(|v| topology.is_vertex_visible(v.id))
             .filter_map(|vertex| {
                 let position = camera.project(vertex.position);
                 let distance =
@@ -1087,6 +1217,7 @@ pub(super) fn pick_canonical_geometry_target(
     }
     topology
         .edges()
+        .filter(|e| topology.is_edge_visible(e.id))
         .filter_map(|edge| {
             let path = canonical_edge_path(topology, &edge.geometry)?;
             path.windows(2)
@@ -1148,6 +1279,53 @@ fn canonical_edge_path(
                     })
                     .collect(),
             )
+        }
+    }
+}
+
+/// Depth-tested rasterization prevents curved CAD faces from painting through
+/// each other; depth is interpolated in the orthographic camera basis.
+fn draw_cad_triangle(
+    pixels: &mut [u8],
+    depth: &mut [f64],
+    width: u32,
+    height: u32,
+    triangle: [(f64, f64, f64); 3],
+    color: [u8; 4],
+) {
+    let [(ax, ay, az), (bx, by, bz), (cx, cy, cz)] = triangle;
+    let area = (by - cy) * (ax - cx) + (cx - bx) * (ay - cy);
+    if area.abs() < 1e-12 {
+        return;
+    }
+    let min_x = ax.min(bx).min(cx).floor().max(0.0) as u32;
+    let max_x = ax
+        .max(bx)
+        .max(cx)
+        .ceil()
+        .min(f64::from(width) - 1.0)
+        .max(0.0) as u32;
+    let min_y = ay.min(by).min(cy).floor().max(0.0) as u32;
+    let max_y = ay
+        .max(by)
+        .max(cy)
+        .ceil()
+        .min(f64::from(height) - 1.0)
+        .max(0.0) as u32;
+    for y in min_y..=max_y {
+        for x in min_x..=max_x {
+            let (px, py) = (f64::from(x) + 0.5, f64::from(y) + 0.5);
+            let a = ((by - cy) * (px - cx) + (cx - bx) * (py - cy)) / area;
+            let b = ((cy - ay) * (px - cx) + (ax - cx) * (py - cy)) / area;
+            let c = 1.0 - a - b;
+            if a >= -1e-9 && b >= -1e-9 && c >= -1e-9 {
+                let d = a * az + b * bz + c * cz;
+                let index = (y * width + x) as usize;
+                if d < depth[index] {
+                    depth[index] = d;
+                    pixels[index * 4..index * 4 + 4].copy_from_slice(&color);
+                }
+            }
         }
     }
 }
@@ -1231,7 +1409,8 @@ impl CanonicalCamera {
             .iter()
             .map(|point| {
                 let point = *point - self.centre;
-                point.x * self.yaw.sin() + point.y * self.yaw.cos()
+                (point.x * self.yaw.sin() + point.y * self.yaw.cos()) * self.pitch.cos()
+                    - point.z * self.pitch.sin()
             })
             .sum::<f64>()
             / points.len().max(1) as f64
@@ -1279,21 +1458,24 @@ pub(super) fn render_face_sketch(
     let Ok(frame) = topology.sketch_frame_for_face(face) else {
         return image_from_rgba(width, height, pixels);
     };
-    let Some(surface) = topology
+    let surfaces = topology
         .renderable_faces()
         .into_iter()
-        .find(|entry| entry.face == face)
-    else {
+        .filter(|entry| entry.face == face)
+        .collect::<Vec<_>>();
+    if surfaces.is_empty() {
         return image_from_rgba(width, height, pixels);
-    };
+    }
     let project = |point: Vec3| {
         let delta = point - frame.origin;
         editor
             .transform
             .world_to_screen((delta.dot(frame.x_axis), delta.dot(frame.y_axis)))
     };
-    let points: Vec<_> = surface.vertices.iter().copied().map(project).collect();
-    draw_filled_polygon(&mut pixels, width, height, &points, [22, 48, 60, 255]);
+    for surface in &surfaces {
+        let points: Vec<_> = surface.vertices.iter().copied().map(project).collect();
+        draw_filled_polygon(&mut pixels, width, height, &points, [22, 48, 60, 255]);
+    }
     if editor.grid_enabled {
         let spacing = editor.grid_spacing();
         let (left, bottom) = editor.transform.screen_to_world((0.0, f64::from(height)));
@@ -1327,27 +1509,124 @@ pub(super) fn render_face_sketch(
             );
         }
     }
-    for polygon in std::iter::once(&surface.vertices).chain(surface.holes.iter()) {
-        let outline: Vec<_> = polygon.iter().copied().map(project).collect();
-        for index in 0..outline.len() {
-            let a = outline[index];
-            let b = outline[(index + 1) % outline.len()];
+    // Count geometric edges across the tessellation. Shared diagonals belong
+    // to two triangles and are not part of the face's sketch boundary.
+    let key = |v: Vec3| [v.x.to_bits(), v.y.to_bits(), v.z.to_bits()];
+    let mut boundary = std::collections::BTreeMap::new();
+    for polygon in surfaces
+        .iter()
+        .flat_map(|s| std::iter::once(&s.vertices).chain(s.holes.iter()))
+    {
+        for i in 0..polygon.len() {
+            let (a, b) = (polygon[i], polygon[(i + 1) % polygon.len()]);
+            let (ka, kb) = (key(a), key(b));
+            let edge_key = if ka < kb { (ka, kb) } else { (kb, ka) };
+            let entry = boundary.entry(edge_key).or_insert((0usize, a, b));
+            entry.0 += 1;
+        }
+    }
+    for (_, (count, a, b)) in boundary {
+        if count != 1 {
+            continue;
+        }
+        let (p, q) = (project(a), project(b));
+        sketch_visual::line(
+            &mut pixels,
+            width,
+            height,
+            (p.0 as i32, p.1 as i32),
+            (q.0 as i32, q.1 as i32),
+            [95, 151, 168, 255],
+        );
+    }
+    let origin = editor.transform.world_to_screen((0.0, 0.0));
+    draw_line(
+        &mut pixels,
+        width,
+        height,
+        (0, origin.1 as i32),
+        (width as i32, origin.1 as i32),
+        [124, 62, 65, 255],
+    );
+    draw_line(
+        &mut pixels,
+        width,
+        height,
+        (origin.0 as i32, 0),
+        (origin.0 as i32, height as i32),
+        [53, 111, 87, 255],
+    );
+    draw_marker(
+        &mut pixels,
+        width,
+        height,
+        (origin.0 as i32, origin.1 as i32),
+        [228, 235, 241, 255],
+    );
+    // Show completed profiles attached to this face in the same local frame.
+    for sketch in topology.sketches().filter(|s| s.host_face == Some(face)) {
+        if let Some(profile) = sketch.profile_face {
+            for surface in topology
+                .renderable_faces()
+                .into_iter()
+                .filter(|s| s.face == profile)
+            {
+                for polygon in std::iter::once(&surface.vertices).chain(surface.holes.iter()) {
+                    for i in 0..polygon.len() {
+                        let (p, q) = (
+                            project(polygon[i]),
+                            project(polygon[(i + 1) % polygon.len()]),
+                        );
+                        sketch_visual::line(
+                            &mut pixels,
+                            width,
+                            height,
+                            (p.0 as i32, p.1 as i32),
+                            (q.0 as i32, q.1 as i32),
+                            [104, 222, 237, 255],
+                        );
+                    }
+                }
+            }
+        }
+    }
+    if let (Some(a), Some(b)) = (start, cursor) {
+        let corners = if editor.active_tool == flursys::GeometryTool::Circle {
+            let radius = (b.0 - a.0).hypot(b.1 - a.1);
+            (0..96)
+                .map(|i| {
+                    let angle = std::f64::consts::TAU * i as f64 / 96.0;
+                    (a.0 + radius * angle.cos(), a.1 + radius * angle.sin())
+                })
+                .collect::<Vec<_>>()
+        } else {
+            vec![a, (b.0, a.1), b, (a.0, b.1)]
+        };
+        let center = editor.transform.world_to_screen(a);
+        draw_marker(
+            &mut pixels,
+            width,
+            height,
+            (center.0 as i32, center.1 as i32),
+            [255, 205, 123, 255],
+        );
+        if editor.active_tool == flursys::GeometryTool::Circle {
+            let radius_point = editor.transform.world_to_screen(b);
             draw_line(
                 &mut pixels,
                 width,
                 height,
-                (a.0 as i32, a.1 as i32),
-                (b.0 as i32, b.1 as i32),
-                [112, 221, 232, 255],
+                (center.0 as i32, center.1 as i32),
+                (radius_point.0 as i32, radius_point.1 as i32),
+                [112, 145, 165, 255],
             );
         }
-    }
-    if let (Some(a), Some(b)) = (start, cursor) {
-        let corners = [a, (b.0, a.1), b, (a.0, b.1)];
-        for index in 0..4 {
+        for index in 0..corners.len() {
             let p = editor.transform.world_to_screen(corners[index]);
-            let q = editor.transform.world_to_screen(corners[(index + 1) % 4]);
-            draw_line(
+            let q = editor
+                .transform
+                .world_to_screen(corners[(index + 1) % corners.len()]);
+            sketch_visual::line(
                 &mut pixels,
                 width,
                 height,
@@ -1404,7 +1683,7 @@ pub(super) fn render_geometry_editor(
         let last_y = (top / grid).ceil() as i32;
         for x in first_x..=last_x {
             let x = to_screen((f64::from(x) * grid, 0.0)).0 as i32;
-            draw_line(
+            sketch_visual::line(
                 &mut pixels,
                 width,
                 height,
@@ -1415,7 +1694,7 @@ pub(super) fn render_geometry_editor(
         }
         for y in first_y..=last_y {
             let y = to_screen((0.0, f64::from(y) * grid)).1 as i32;
-            draw_line(
+            sketch_visual::line(
                 &mut pixels,
                 width,
                 height,
@@ -1427,7 +1706,7 @@ pub(super) fn render_geometry_editor(
     }
     let origin = to_screen((0.0, 0.0));
     if origin.0 >= 0.0 && origin.0 < f64::from(width) {
-        draw_line(
+        sketch_visual::line(
             &mut pixels,
             width,
             height,
@@ -1437,7 +1716,7 @@ pub(super) fn render_geometry_editor(
         );
     }
     if origin.1 >= 0.0 && origin.1 < f64::from(height) {
-        draw_line(
+        sketch_visual::line(
             &mut pixels,
             width,
             height,
@@ -1487,7 +1766,7 @@ pub(super) fn render_geometry_editor(
             }
         }
     }
-    for edge in topology.edges() {
+    for edge in topology.edges().filter(|e| topology.is_edge_visible(e.id)) {
         let in_sketch_plane = match edge.geometry {
             flursys::EdgeGeometry::Line { start, end } => [start, end].into_iter().all(|id| {
                 topology
@@ -1537,7 +1816,7 @@ pub(super) fn render_geometry_editor(
                 if let (Some(a), Some(b)) = (topology.vertex(start), topology.vertex(end)) {
                     let a = to_screen((a.position.x, a.position.y));
                     let b = to_screen((b.position.x, b.position.y));
-                    draw_line(
+                    sketch_visual::line(
                         &mut pixels,
                         width,
                         height,
@@ -1569,7 +1848,7 @@ pub(super) fn render_geometry_editor(
                             c.position.x + radius * angle.cos(),
                             c.position.y + radius * angle.sin(),
                         ));
-                        draw_line(
+                        sketch_visual::line(
                             &mut pixels,
                             width,
                             height,
@@ -1583,7 +1862,10 @@ pub(super) fn render_geometry_editor(
             }
         }
     }
-    for vertex in topology.vertices() {
+    for vertex in topology
+        .vertices()
+        .filter(|v| topology.is_vertex_visible(v.id))
+    {
         if vertex.position.z.abs() > 1.0e-9 {
             continue;
         }
@@ -1612,7 +1894,7 @@ pub(super) fn render_geometry_editor(
             PreviewPrimitive::Line(a, b) => {
                 let a = to_screen(a);
                 let b = to_screen(b);
-                draw_line(
+                sketch_visual::line(
                     &mut pixels,
                     width,
                     height,
@@ -1626,7 +1908,7 @@ pub(super) fn render_geometry_editor(
                 for i in 0..4 {
                     let a = to_screen(p[i]);
                     let b = to_screen(p[(i + 1) % 4]);
-                    draw_line(
+                    sketch_visual::line(
                         &mut pixels,
                         width,
                         height,
@@ -1656,7 +1938,7 @@ pub(super) fn render_geometry_editor(
             let (x, y) = to_screen(cursor);
             if (0.0..f64::from(width)).contains(&x) && (0.0..f64::from(height)).contains(&y) {
                 let (x, y) = (x as i32, y as i32);
-                draw_line(
+                sketch_visual::line(
                     &mut pixels,
                     width,
                     height,
@@ -1664,7 +1946,7 @@ pub(super) fn render_geometry_editor(
                     (x + 6, y),
                     [255, 181, 88, 255],
                 );
-                draw_line(
+                sketch_visual::line(
                     &mut pixels,
                     width,
                     height,
@@ -1787,6 +2069,13 @@ fn sketch_point(center: (i32, i32), scale: f64, x: f64, y: f64) -> (i32, i32) {
 }
 
 fn draw_marker(pixels: &mut [u8], width: u32, height: u32, center: (i32, i32), color: [u8; 4]) {
+    if center.0 < -4
+        || center.1 < -4
+        || center.0 as i64 > width as i64 + 4
+        || center.1 as i64 > height as i64 + 4
+    {
+        return;
+    }
     draw_line(
         pixels,
         width,
@@ -2342,10 +2631,11 @@ impl MeshCamera {
     }
 }
 
-const TRIAD_ORIGIN: (i32, i32) = (478, 48);
+const TRIAD_ORIGIN: (i32, i32) = (PREVIEW_WIDTH as i32 - 48, PREVIEW_HEIGHT as i32 - 48);
 const TRIAD_LENGTH: f64 = 25.0;
 const TRIAD_COLORS: [[u8; 4]; 3] = [[235, 91, 91, 255], [91, 210, 125, 255], [91, 144, 235, 255]];
 
+#[cfg(test)]
 pub(super) fn orientation_triad_endpoints(camera: MeshCamera) -> [(i32, i32); 3] {
     triad_endpoints(camera.yaw, camera.pitch)
 }
@@ -2367,6 +2657,30 @@ fn triad_endpoints(yaw: f64, pitch: f64) -> [(i32, i32); 3] {
 #[cfg(test)]
 pub(super) fn pick_orientation_triad(point: (f64, f64), camera: MeshCamera) -> Option<i32> {
     pick_triad_endpoints(point, orientation_triad_endpoints(camera))
+}
+
+pub(super) fn render_orientation_overlay(yaw: f32, pitch: f32) -> Image {
+    let mut pixels = vec![0u8; (PREVIEW_WIDTH * PREVIEW_HEIGHT * 4) as usize];
+    draw_canonical_orientation_triad(&mut pixels, PREVIEW_WIDTH, PREVIEW_HEIGHT, yaw, pitch);
+    let mut cropped = vec![0u8; 96 * 96 * 4];
+    let left = TRIAD_ORIGIN.0 - 48;
+    let top = TRIAD_ORIGIN.1 - 48;
+    for y in 0..96usize {
+        let source = (((top as usize + y) * PREVIEW_WIDTH as usize) + left as usize) * 4;
+        cropped[y * 96 * 4..(y + 1) * 96 * 4].copy_from_slice(&pixels[source..source + 96 * 4]);
+    }
+    image_from_rgba(96, 96, cropped)
+}
+
+pub(super) fn pick_orientation_overlay(yaw: f32, pitch: f32, x: f32, y: f32) -> Option<i32> {
+    pick_canonical_orientation_axis(
+        yaw,
+        pitch,
+        (
+            x as f64 + f64::from(TRIAD_ORIGIN.0 - 48),
+            y as f64 + f64::from(TRIAD_ORIGIN.1 - 48),
+        ),
+    )
 }
 
 pub(super) fn pick_canonical_orientation_axis(
@@ -2409,10 +2723,6 @@ fn pick_triad_endpoints(point: (f64, f64), endpoints: [(i32, i32); 3]) -> Option
         .and_then(|(axis, distance)| (distance <= 6.0).then_some(axis))
 }
 
-fn draw_orientation_triad(pixels: &mut [u8], width: u32, height: u32, camera: MeshCamera) {
-    draw_triad_endpoints(pixels, width, height, orientation_triad_endpoints(camera));
-}
-
 fn draw_canonical_orientation_triad(
     pixels: &mut [u8],
     width: u32,
@@ -2444,13 +2754,6 @@ fn draw_sketch_orientation_triad(pixels: &mut [u8], width: u32, height: u32) {
 }
 
 fn draw_triad_endpoints(pixels: &mut [u8], width: u32, height: u32, endpoints: [(i32, i32); 3]) {
-    draw_filled_polygon(
-        pixels,
-        width,
-        height,
-        &[(432.0, 8.0), (519.0, 8.0), (519.0, 85.0), (432.0, 85.0)],
-        [18, 35, 46, 255],
-    );
     draw_marker(pixels, width, height, TRIAD_ORIGIN, [224, 235, 242, 255]);
     for (axis, (endpoint, color)) in endpoints.into_iter().zip(TRIAD_COLORS).enumerate() {
         draw_line(pixels, width, height, TRIAD_ORIGIN, endpoint, color);
@@ -3406,6 +3709,17 @@ pub(super) fn draw_series(
     }
 }
 
+pub(super) fn draw_sketch_line(
+    pixels: &mut [u8],
+    width: u32,
+    height: u32,
+    a: (i32, i32),
+    b: (i32, i32),
+    color: [u8; 4],
+) {
+    sketch_visual::line(pixels, width, height, a, b, color);
+}
+
 pub(super) fn draw_line(
     pixels: &mut [u8],
     width: u32,
@@ -3414,6 +3728,38 @@ pub(super) fn draw_line(
     end: (i32, i32),
     color: [u8; 4],
 ) {
+    if width == 0 || height == 0 {
+        return;
+    }
+    // Clip before integer rasterization: zoomed/off-screen edges must not
+    // overflow Bresenham arithmetic or walk billions of invisible pixels.
+    let (ax, ay) = (start.0 as f64, start.1 as f64);
+    let (dx, dy) = (end.0 as f64 - ax, end.1 as f64 - ay);
+    let (mut lo, mut hi) = (0.0f64, 1.0f64);
+    for (p, q) in [
+        (-dx, ax),
+        (dx, width as f64 - 1.0 - ax),
+        (-dy, ay),
+        (dy, height as f64 - 1.0 - ay),
+    ] {
+        if p == 0.0 {
+            if q < 0.0 {
+                return;
+            }
+            continue;
+        }
+        let r = q / p;
+        if p < 0.0 {
+            lo = lo.max(r);
+        } else {
+            hi = hi.min(r);
+        }
+        if lo > hi {
+            return;
+        }
+    }
+    let start = ((ax + lo * dx).round() as i32, (ay + lo * dy).round() as i32);
+    let end = ((ax + hi * dx).round() as i32, (ay + hi * dy).round() as i32);
     let (mut x0, mut y0) = start;
     let (x1, y1) = end;
     let dx = (x1 - x0).abs();

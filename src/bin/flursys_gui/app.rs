@@ -24,6 +24,12 @@ use std::time::Duration;
 use flursys::{ExtrudedMesh3D, StructuredMesh2D};
 
 slint::include_modules!();
+#[path = "cad.rs"]
+mod cad;
+#[path = "measure.rs"]
+mod measure;
+#[path = "sketch_edit.rs"]
+mod sketch_edit;
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum WorkspaceSaveRoute {
     Existing(PathBuf),
@@ -209,6 +215,7 @@ struct AppState {
     pending_recovery_workspace: Option<PathBuf>,
     pending_project_replacement: Option<PendingProjectReplacement>,
     pending_legacy_import: Option<(PendingProjectReplacement, LegacyProjectInspection)>,
+    cad_measure_points: Vec<Vec3>,
     geometry_editor: GeometryEditorState,
     face_sketch_host: Option<flursys::FaceId>,
     face_sketch_start: Option<(f64, f64)>,
@@ -236,6 +243,9 @@ struct AppState {
     meshing: bool,
     solving: bool,
     workbench_jobs: WorkbenchJobExecutor,
+    cad_job: Option<cad::CadJob>,
+    cad_preview: Option<cad::CadPreview>,
+    sketch_edit: Option<sketch_edit::SketchEdit>,
     gmsh_probe_rx: Option<Receiver<Result<String, String>>>,
     gmsh_status: String,
     current_step: usize,
@@ -329,6 +339,7 @@ impl AppState {
             pending_recovery_workspace: None,
             pending_project_replacement: None,
             pending_legacy_import: None,
+            cad_measure_points: Vec::new(),
             geometry_editor: {
                 let mut editor = GeometryEditorState::new();
                 editor
@@ -372,6 +383,9 @@ impl AppState {
             meshing: false,
             solving: false,
             workbench_jobs: WorkbenchJobExecutor::new(),
+            cad_job: None,
+            cad_preview: None,
+            sketch_edit: None,
             gmsh_probe_rx: None,
             gmsh_status: "Gmsh: checking…".to_string(),
             current_step: 0,
@@ -1098,6 +1112,7 @@ fn canonical_geometry_sidebar(state: &AppState) -> (String, String) {
     (lines.join("\n"), summary)
 }
 
+#[cfg(test)]
 fn build_canonical_extrude(state: &mut AppState, distance_text: &str) -> Result<String, String> {
     let source_face = selected_extrusion_face(state)?;
     let distance = parse_positive(distance_text, "extrusion distance")?;
@@ -1195,14 +1210,17 @@ fn begin_face_sketch(state: &mut AppState) -> Result<String, String> {
     let frame = geometry
         .sketch_frame_for_face(face)
         .map_err(|error| error.to_string())?;
-    let surface = geometry
+    let surfaces = geometry
         .renderable_faces()
         .into_iter()
-        .find(|entry| entry.face == face)
-        .ok_or_else(|| "Selected face cannot be displayed as a sketch plane.".to_string())?;
-    let local: Vec<_> = surface
-        .vertices
+        .filter(|entry| entry.face == face)
+        .collect::<Vec<_>>();
+    if surfaces.is_empty() {
+        return Err("Selected face cannot be displayed as a sketch plane".into());
+    }
+    let local: Vec<_> = surfaces
         .iter()
+        .flat_map(|surface| surface.vertices.iter())
         .map(|point| {
             let delta = *point - frame.origin;
             (delta.dot(frame.x_axis), delta.dot(frame.y_axis))
@@ -1255,19 +1273,30 @@ fn face_sketch_click(state: &mut AppState, point: (f64, f64)) -> Result<Option<S
     };
     let (x, y) = (start.0.min(point.0), start.1.min(point.1));
     let (width, height) = ((start.0 - point.0).abs(), (start.1 - point.1).abs());
-    if width <= 1.0e-9 || height <= 1.0e-9 {
-        return Err(
-            "Rectangle needs non-zero width and height; choose another corner.".to_string(),
-        );
+    let circle = state.geometry_editor.active_tool == GeometryTool::Circle;
+    let radius = (point.0 - start.0).hypot(point.1 - start.1);
+    if (!circle && (width <= 1.0e-9 || height <= 1.0e-9)) || (circle && radius <= 1.0e-9) {
+        return Err(if circle {
+            "Circle radius must be positive; choose another radius point."
+        } else {
+            "Rectangle needs non-zero width and height; choose another corner."
+        }
+        .to_string());
     }
     // Commit sketch and profile together so a failed materialization leaves no orphan sketch.
     let mut geometry = state.workbench.geometry().clone();
     let sketch = geometry
         .create_sketch_on_face(host)
         .map_err(|error| error.to_string())?;
-    let profile = geometry
-        .materialize_sketch_rectangle_at(sketch.id, x, y, width, height)
-        .map_err(|error| error.to_string())?;
+    let profile = if circle {
+        geometry.materialize_sketch_circle_at(sketch.id, start.0, start.1, radius)
+    } else {
+        geometry.materialize_sketch_rectangle_at(sketch.id, x, y, width, height)
+    }
+    .map_err(|error| error.to_string())?;
+    state
+        .geometry_editor
+        .record_snapshot(state.workbench.geometry());
     *state.workbench.geometry_mut() = geometry;
     state.workbench.geometry_changed();
     state.mark_workbench_dirty();
@@ -1521,6 +1550,7 @@ pub fn run() -> Result<(), slint::PlatformError> {
     refresh_ui(&ui, &state.borrow());
 
     bind_callbacks(&ui, &state);
+    cad::bind(&ui, &state);
     let timer = Timer::default();
     let weak_ui = ui.as_weak();
     let poll_state = state.clone();
@@ -1529,7 +1559,7 @@ pub fn run() -> Result<(), slint::PlatformError> {
             return;
         };
         let mut state = poll_state.borrow_mut();
-        let mut changed = false;
+        let mut changed = cad::poll(&ui, &mut state);
         while let Ok(update) = state.controller.try_recv() {
             if let Some(message) = &update.message {
                 state.log(format!("{:?}: {message}", update.state));
@@ -1677,7 +1707,10 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
             return;
         };
         let mut state = editor_state.borrow_mut();
-        if state.face_sketch_host.is_some() && tool != 2 {
+        if sketch_edit::valid(&state).is_some() {
+            return;
+        }
+        if state.face_sketch_host.is_some() && !matches!(tool, 2 | 3) {
             state.face_sketch_host = None;
             state.face_sketch_start = None;
             state.face_sketch_cursor = None;
@@ -1700,6 +1733,9 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
             return;
         };
         let mut state = editor_state.borrow_mut();
+        if sketch_edit::valid(&state).is_some() {
+            return;
+        }
         if state.face_sketch_host.is_some() {
             let point = face_sketch_point(&state, p);
             if state.face_sketch_cursor != Some(point) {
@@ -1718,6 +1754,9 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
         let Some(ui) = weak_ui.upgrade() else {
             return false;
         };
+        if ui.get_cad_measure_active() {
+            return false;
+        }
         let Some(p) = preview_image_point(x, y, w, h) else {
             return false;
         };
@@ -1748,6 +1787,13 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
         };
         ui.set_geometry_feature_feedback(SharedString::default());
         let mut state = editor_state.borrow_mut();
+        if sketch_edit::valid(&state).is_some() {
+            return;
+        }
+        if measure::pick(&ui, &mut state, p, false) {
+            refresh_ui(&ui, &state);
+            return;
+        }
         if state.face_sketch_host.is_some() {
             let point = face_sketch_point(&state, p);
             match face_sketch_click(&mut state, point) {
@@ -1811,12 +1857,18 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
     ui.on_geometry_fit(move || {
         let Some(ui) = weak_ui.upgrade() else { return };
         let mut state = editor_state.borrow_mut();
+        if sketch_edit::fit(&mut state) {
+            refresh_ui(&ui, &state);
+            return;
+        }
         if state.face_sketch_host.is_some() {
             let start = state.face_sketch_start;
             let cursor = state.face_sketch_cursor;
+            let tool = state.geometry_editor.active_tool;
             if let Err(error) = begin_face_sketch(&mut state) {
                 state.log(error);
             }
+            state.geometry_editor.set_tool(tool);
             state.face_sketch_start = start;
             state.face_sketch_cursor = cursor;
         } else {
@@ -1874,6 +1926,23 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
             return;
         };
         let mut state = editor_state.borrow_mut();
+        if sketch_edit::valid(&state).is_some() {
+            if action == 0 {
+                sketch_edit::cancel(&ui, &mut state);
+            } else if matches!(action, 6 | 7) {
+                sketch_edit::undo(&ui, &mut state, action == 7);
+            } else if action == 5 {
+                sketch_edit::fit(&mut state);
+            }
+            refresh_ui(&ui, &state);
+            return;
+        }
+        if ui.get_cad_measure_active() && action == 0 {
+            measure::command(&ui, &mut state, 32);
+            refresh_ui(&ui, &state);
+            return;
+        }
+
         if state.face_sketch_host.is_some() {
             if action == 0 {
                 state.face_sketch_host = None;
@@ -1882,8 +1951,16 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
                 state.geometry_editor.cancel();
                 ui.set_geometry_cad_view_3d(true);
                 state.log("Face sketch cancelled.");
-            } else if action != 2 {
-                state.log("Finish the face rectangle or press Esc to cancel first.");
+            } else if matches!(action, 2 | 3) {
+                state.geometry_editor.set_tool(if action == 3 {
+                    GeometryTool::Circle
+                } else {
+                    GeometryTool::Rectangle
+                });
+                state.face_sketch_start = None;
+                state.face_sketch_cursor = None;
+            } else {
+                state.log("Finish the face profile or press Esc to cancel first.");
             }
             refresh_ui(&ui, &state);
             return;
@@ -1929,6 +2006,10 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
     ui.on_geometry_undo(move || {
         let Some(ui) = weak_ui.upgrade() else { return };
         let mut state = editor_state.borrow_mut();
+        if sketch_edit::undo(&ui, &mut state, false) {
+            refresh_ui(&ui, &state);
+            return;
+        }
         let mut editor = std::mem::take(&mut state.geometry_editor);
         let changed = editor.undo(state.workbench.geometry_mut());
         state.geometry_editor = editor;
@@ -1946,6 +2027,10 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
     ui.on_geometry_redo(move || {
         let Some(ui) = weak_ui.upgrade() else { return };
         let mut state = editor_state.borrow_mut();
+        if sketch_edit::undo(&ui, &mut state, true) {
+            refresh_ui(&ui, &state);
+            return;
+        }
         let mut editor = std::mem::take(&mut state.geometry_editor);
         let changed = editor.redo(state.workbench.geometry_mut());
         state.geometry_editor = editor;
@@ -1963,6 +2048,9 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
     ui.on_geometry_delete_selection(move || {
         let Some(ui) = weak_ui.upgrade() else { return };
         let mut state = editor_state.borrow_mut();
+        if sketch_edit::valid(&state).is_some() {
+            return;
+        }
         delete_editor_selection(&mut state);
         refresh_ui(&ui, &state);
     });
@@ -2113,35 +2201,34 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
         };
         let mut state = feature_state.borrow_mut();
         if !require_project(&mut state) {
-            ui.set_geometry_feature_feedback(SharedString::from(
-                "Open or create a project before extruding.",
-            ));
             refresh_ui(&ui, &state);
             return;
         }
-        let result = if ui.get_feature_kind_index() != 0 {
-            Err("Revolve is unavailable in the canonical CAD workflow.".to_string())
-        } else if state.draft_sketch.is_some() {
-            commit_draft_rectangle(&mut state).and_then(|commit| {
-                build_canonical_extrude(&mut state, ui.get_feature_depth().as_str())
-                    .map(|extrude| format!("{commit} {extrude}"))
-            })
-        } else {
-            build_canonical_extrude(&mut state, ui.get_feature_depth().as_str())
-        };
-        match result {
-            Ok(message) => {
-                ui.set_geometry_feature_feedback(SharedString::from(&message));
-                state.log(message);
-                ui.set_geometry_cad_view_3d(true);
-            }
-            Err(error) => {
-                ui.set_geometry_feature_feedback(SharedString::from(&error));
-                state.log(error);
-            }
+        if sketch_edit::valid(&state).is_some() {
+            drop(state);
+            ui.invoke_cad_command(129);
+            return;
         }
-        rebuild_tree_rows(&mut state);
-        refresh_ui(&ui, &state);
+        if state.cad_job.is_some() {
+            return;
+        }
+        if state.draft_sketch.is_some() {
+            if let Err(error) = commit_draft_rectangle(&mut state) {
+                ui.set_cad_feedback(error.into());
+                refresh_ui(&ui, &state);
+                return;
+            }
+            rebuild_tree_rows(&mut state);
+            refresh_ui(&ui, &state);
+        }
+        let action = match ui.get_feature_kind_index() {
+            0 => 1,
+            1 => 2,
+            _ => 34,
+        };
+        ui.set_cad_size_z(ui.get_feature_depth());
+        drop(state);
+        ui.invoke_cad_command(action + 100);
     });
 
     let weak_ui = ui.as_weak();
@@ -3237,19 +3324,8 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
             }
         }
         if state.show_geometry_3d {
-            if let Some(axis) = pick_canonical_orientation_axis(state.geometry_yaw, state.geometry_pitch, point) {
-                let (yaw, pitch) = geometry_view_angles(axis);
-                state.geometry_yaw = yaw;
-                state.geometry_pitch = pitch;
-                state.geometry_view_axis = axis;
-                state.geometry_drag_anchor = None;
-                state.log(format!(
-                    "Selected {} axis view from triad.",
-                    geometry_view_label(axis)
-                ));
-                refresh_ui(&ui, &state);
-                return;
-            }
+            if cad::preview(&state).is_some() {return;}
+            if measure::pick(&ui,&mut state,point,true) {refresh_ui(&ui,&state);return;}
             if let Some(target) = pick_canonical_geometry_target(
                 state.workbench.geometry(), state.geometry_yaw, state.geometry_pitch,
                 state.geometry_zoom, point, if state.current_step == 0 { state.geometry_pick_mode } else { 0 },
@@ -3506,11 +3582,37 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
                 refresh_ui(&ui, &state);
             }
             TREE_KIND_SKETCH | TREE_KIND_EXTRUDE_FEATURE => {
+                let target = if row.kind == TREE_KIND_SKETCH {
+                    state
+                        .workbench
+                        .geometry()
+                        .sketches()
+                        .find(|s| s.id.get() == row.payload as u64)
+                        .and_then(|s| s.profile_face)
+                        .map(GeometrySelectionTarget::Face)
+                } else {
+                    state
+                        .workbench
+                        .geometry()
+                        .extrude_features()
+                        .find(|f| f.id.get() == row.payload as u64)
+                        .map(|f| f.body)
+                        .or_else(|| {
+                            state
+                                .workbench
+                                .geometry()
+                                .pocket_features()
+                                .find(|f| f.id.get() == row.payload as u64)
+                                .map(|f| f.body)
+                        })
+                        .map(GeometrySelectionTarget::Body)
+                };
+                state.wb_selected_targets = target.into_iter().collect();
+                state.geometry_editor.selection = state.wb_selected_targets.clone();
                 state.selected_tree = Some(TreeSelection {
                     kind: row.kind,
                     payload: row.payload,
                 });
-                state.wb_selected_targets.clear();
                 ui.set_inspector_mode(0);
                 rebuild_tree_rows(&mut state);
                 refresh_ui(&ui, &state);
@@ -4209,25 +4311,18 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
             let Some(point) = preview_image_point(x, y, width, height) else {
                 return;
             };
-            let hover =
-                if pick_canonical_orientation_axis(state.geometry_yaw, state.geometry_pitch, point)
-                    .is_some()
-                {
-                    None
+            let hover = pick_canonical_geometry_target(
+                state.workbench.geometry(),
+                state.geometry_yaw,
+                state.geometry_pitch,
+                state.geometry_zoom,
+                point,
+                if state.current_step == 0 {
+                    state.geometry_pick_mode
                 } else {
-                    pick_canonical_geometry_target(
-                        state.workbench.geometry(),
-                        state.geometry_yaw,
-                        state.geometry_pitch,
-                        state.geometry_zoom,
-                        point,
-                        if state.current_step == 0 {
-                            state.geometry_pick_mode
-                        } else {
-                            0
-                        },
-                    )
-                };
+                    0
+                },
+            );
             if state.geometry_editor.hover_target != hover {
                 state.geometry_editor.hover_target = hover;
                 refresh_ui(&ui, &state);
@@ -4329,6 +4424,13 @@ fn rebuild_tree_rows(state: &mut AppState) {
         .geometry()
         .extrude_features()
         .map(|feature| (feature.id.get(), feature.body.get()))
+        .chain(
+            state
+                .workbench
+                .geometry()
+                .pocket_features()
+                .map(|feature| (feature.id.get(), feature.body.get())),
+        )
         .collect();
     let mesh_cells = state
         .workbench
@@ -4376,6 +4478,44 @@ fn rebuild_tree_rows(state: &mut AppState) {
         state.current_step,
         state.selected_tree,
     );
+    for row in &mut state.tree_rows {
+        if row.kind == TREE_KIND_EXTRUDE_FEATURE {
+            if let Some(f) = state
+                .workbench
+                .geometry()
+                .pocket_features()
+                .find(|f| f.id.get() == row.payload as u64)
+            {
+                row.label = format!("Pocket {}", f.id.get());
+                row.note = format!(
+                    "Sketch {} · {} · Body {}",
+                    f.sketch.get(),
+                    if f.through_all {
+                        "Through all".into()
+                    } else {
+                        format!("Depth {:.4}", f.depth)
+                    },
+                    f.body.get()
+                );
+            }
+        }
+
+        if row.kind == TREE_KIND_BODY {
+            if let Some((_, body)) = state
+                .workbench
+                .geometry()
+                .cad_bodies()
+                .find(|(id, _)| id.get() == row.payload as u64)
+            {
+                row.label = body.name.clone();
+                row.note = format!(
+                    "{} · {} faces",
+                    if body.visible { "visible" } else { "hidden" },
+                    body.face_meshes.len()
+                );
+            }
+        }
+    }
 }
 
 fn toggle_tree_group(state: &mut AppState, index: usize) {
@@ -4621,7 +4761,7 @@ fn canonical_design_inspector(
                     feature.source_face.get(),
                     feature.body.get(),
                 )
-            }),
+            }).or_else(||topology.pocket_features().find(|f|f.id.get()==selection.payload as u64).map(|f|format!("Pocket {}\nSketch {}\nBase Body {}\nResult Body {}\nDepth {:.6}\nThrough all {}",f.id.get(),f.sketch.get(),f.base.get(),f.body.get(),f.depth,f.through_all))),
         _ => None,
     }
 }
@@ -5119,6 +5259,7 @@ fn recent_project_labels(state: &AppState) -> Vec<SharedString> {
 }
 
 fn refresh_ui(ui: &MainWindow, state: &AppState) {
+    cad::refresh(ui, state);
     ui.set_project_loaded(state.project_loaded);
     let recent_labels = recent_project_labels(state);
     ui.set_recent_project_model(ModelRc::new(VecModel::from(recent_labels)));
@@ -5371,7 +5512,9 @@ fn refresh_ui(ui: &MainWindow, state: &AppState) {
                 |target| geometry_target_inspector(state.workbench.geometry(), target),
             ),
     ));
-    ui.set_geometry_editor_image(if let Some(face) = state.face_sketch_host {
+    ui.set_geometry_editor_image(if let Some(image) = sketch_edit::render(state) {
+        image
+    } else if let Some(face) = state.face_sketch_host {
         render_face_sketch(
             state.workbench.geometry(),
             face,
@@ -5382,6 +5525,20 @@ fn refresh_ui(ui: &MainWindow, state: &AppState) {
     } else {
         render_geometry_editor(state.workbench.geometry(), &state.geometry_editor)
     });
+    if ui.get_cad_measure_active() && !state.cad_measure_points.is_empty() {
+        let points = state
+            .cad_measure_points
+            .iter()
+            .map(|p| {
+                let q = state.geometry_editor.transform.world_to_screen((p.x, p.y));
+                (q.0 as i32, q.1 as i32)
+            })
+            .collect::<Vec<_>>();
+        ui.set_geometry_editor_image(render::annotate_measurement(
+            ui.get_geometry_editor_image(),
+            &points,
+        ));
+    }
     ui.set_geometry_active_tool(match state.geometry_editor.active_tool {
         GeometryTool::Select => 0,
         GeometryTool::Line => 1,
@@ -5408,7 +5565,7 @@ fn refresh_ui(ui: &MainWindow, state: &AppState) {
     ui.set_geometry_selection_summary(SharedString::from(if let Some(face) = extrusion_face {
         format!("Face {} selected · set depth and extrude", face.get())
     } else if state.face_sketch_host.is_some() {
-        "Finish the rectangle with a second click.".to_string()
+        "Finish the profile with a second click. Esc cancels.".to_string()
     } else if let Some(face) = state
         .wb_selected_targets
         .iter()
@@ -5431,12 +5588,25 @@ fn refresh_ui(ui: &MainWindow, state: &AppState) {
     ui.set_geometry_editor_status(SharedString::from(
         if let Some(face) = state.face_sketch_host {
             match (state.face_sketch_start, state.face_sketch_cursor) {
+                (Some((x, y)), Some((cx, cy)))
+                    if state.geometry_editor.active_tool == GeometryTool::Circle =>
+                {
+                    format!(
+                        "Face {} · R {:.3} · Ø {:.3} · click to finish · Esc cancels",
+                        face.get(),
+                        (cx - x).hypot(cy - y),
+                        2.0 * (cx - x).hypot(cy - y)
+                    )
+                }
                 (Some((x, y)), Some((cx, cy))) => format!(
                     "Face {} · rectangle {:.3} × {:.3} mm · click to finish",
                     face.get(),
                     (cx - x).abs(),
                     (cy - y).abs()
                 ),
+                _ if state.geometry_editor.active_tool == GeometryTool::Circle => {
+                    format!("Face {} · click circle center · Esc cancels", face.get())
+                }
                 _ => format!(
                     "Face {} · click the first rectangle corner · Esc cancels",
                     face.get()
@@ -5584,11 +5754,18 @@ fn refresh_ui(ui: &MainWindow, state: &AppState) {
 
     if state.show_geometry_3d && !state.show_sketch_editor {
         ui.set_visualization_title(SharedString::from("CANONICAL 3D CAD"));
-        let topology = state.workbench.geometry();
-        let selected_target = state.wb_selected_targets.first().copied();
+        let candidate = cad::preview(state);
+        let topology = candidate
+            .map(|p| &p.geometry)
+            .unwrap_or_else(|| state.workbench.geometry());
+        let selected_target = candidate
+            .and_then(|p| p.selection.first())
+            .copied()
+            .map(GeometrySelectionTarget::Body)
+            .or_else(|| state.wb_selected_targets.first().copied());
         let hovered_target = state.geometry_editor.hover_target;
         ui.set_animation_status(SharedString::from(format!(
-            "{} bodies · {} renderable faces · selected: {} · yaw {:.0}° · pitch {:.0}° · zoom {:.0}%",
+            "{} bodies · {} display patches · selected: {} · yaw {:.0}° · pitch {:.0}° · zoom {:.0}%",
             topology.bodies().count(),
             topology.renderable_faces().len(),
             selected_target.map_or_else(|| "none".to_string(), |target| format!("{target:?}")),
@@ -5604,6 +5781,19 @@ fn refresh_ui(ui: &MainWindow, state: &AppState) {
             selected_target,
             hovered_target,
         ));
+        if ui.get_cad_measure_active() && !state.cad_measure_points.is_empty() {
+            let points = render::project_measurement(
+                topology,
+                state.geometry_yaw,
+                state.geometry_pitch,
+                state.geometry_zoom,
+                &state.cad_measure_points,
+            );
+            ui.set_visualization_image(render::annotate_measurement(
+                ui.get_visualization_image(),
+                &points,
+            ));
+        }
     } else if state.show_mesh {
         if let Some(generated) = state.workbench.mesh() {
             if let Some(cache) = state.workbench.mesh_render_cache() {
