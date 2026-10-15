@@ -218,6 +218,31 @@ impl GeometryEditorState {
                 *topology = before;
                 return Err(error);
             }
+            let created_face = topology
+                .faces()
+                .find(|f| before.face(f.id).is_none())
+                .map(|f| f.id);
+            if let Some(face) = created_face {
+                let profile = match self.active_tool {
+                    GeometryTool::Rectangle => Some(crate::CadSketchProfile::Rectangle {
+                        width: (world.0 - start.0).abs(),
+                        height: (world.1 - start.1).abs(),
+                    }),
+                    GeometryTool::Circle => Some(crate::CadSketchProfile::Circle {
+                        radius: distance(start, world),
+                    }),
+                    _ => None,
+                };
+                let registration = if let Some(profile) = profile {
+                    topology.register_xy_sketch_profile(face, profile)
+                } else {
+                    topology.register_xy_sketch_face(face)
+                };
+                if let Err(error) = registration {
+                    *topology = before;
+                    return Err(error);
+                }
+            }
             self.selection = topology
                 .faces()
                 .find(|face| before.face(face.id).is_none())
@@ -254,9 +279,13 @@ impl GeometryEditorState {
             .retain(|target| target_exists(topology, *target));
         true
     }
-    pub fn snapshot_before_delete(&mut self, topology: &GeometryTopology) {
+    pub fn record_snapshot(&mut self, topology: &GeometryTopology) {
         self.push_undo(topology.clone());
         self.redo.clear();
+    }
+
+    pub fn snapshot_before_delete(&mut self, topology: &GeometryTopology) {
+        self.record_snapshot(topology);
     }
 
     /// Removes a just-recorded delete snapshot when the validated delete
@@ -276,7 +305,8 @@ impl GeometryEditorState {
             topology
                 .faces()
                 .filter(|face| {
-                    face_on_xy(topology, &face.representation)
+                    topology.is_face_visible(face.id)
+                        && face_on_xy(topology, &face.representation)
                         && face_contains(topology, &face.representation, point)
                 })
                 .last()
@@ -289,7 +319,9 @@ impl GeometryEditorState {
         }
         topology
             .vertices()
-            .filter(|vertex| vertex.position.z.abs() <= MIN_GEOMETRY)
+            .filter(|vertex| {
+                topology.is_vertex_visible(vertex.id) && vertex.position.z.abs() <= MIN_GEOMETRY
+            })
             .filter_map(|vertex| {
                 let d = distance((vertex.position.x, vertex.position.y), point);
                 (d <= tolerance).then_some((d, GeometrySelectionTarget::Vertex(vertex.id)))
@@ -299,7 +331,9 @@ impl GeometryEditorState {
             .or_else(|| {
                 topology
                     .edges()
-                    .filter(|edge| edge_on_xy(topology, &edge.geometry))
+                    .filter(|edge| {
+                        topology.is_edge_visible(edge.id) && edge_on_xy(topology, &edge.geometry)
+                    })
                     .filter_map(|edge| {
                         edge_distance(topology, edge.geometry.clone(), point)
                             .filter(|d| *d <= tolerance)
@@ -313,7 +347,7 @@ impl GeometryEditorState {
     pub fn fit_view(&mut self, topology: &GeometryTopology) {
         let mut points = topology
             .vertices()
-            .filter(|v| v.position.z.abs() <= MIN_GEOMETRY)
+            .filter(|v| topology.is_vertex_visible(v.id) && v.position.z.abs() <= MIN_GEOMETRY)
             .map(|v| (v.position.x, v.position.y));
         let Some((x, y)) = points.next() else {
             self.transform.fit(None);
@@ -335,7 +369,7 @@ impl GeometryEditorState {
         let tolerance = 10.0 / self.transform.pixels_per_unit;
         if let Some(vertex) = topology
             .vertices()
-            .filter(|v| v.position.z.abs() <= MIN_GEOMETRY)
+            .filter(|v| topology.is_vertex_visible(v.id) && v.position.z.abs() <= MIN_GEOMETRY)
             .min_by(|a, b| {
                 distance((a.position.x, a.position.y), point)
                     .total_cmp(&distance((b.position.x, b.position.y), point))
@@ -385,10 +419,11 @@ fn add_vertex_if_needed(
     topology: &mut GeometryTopology,
     point: (f64, f64),
 ) -> Result<VertexId, GeometryError> {
-    if let Some(vertex) = topology
-        .vertices()
-        .find(|v| distance((v.position.x, v.position.y), point) <= MIN_GEOMETRY)
-    {
+    if let Some(vertex) = topology.vertices().find(|v| {
+        topology.is_vertex_visible(v.id)
+            && v.position.z.abs() <= MIN_GEOMETRY
+            && distance((v.position.x, v.position.y), point) <= MIN_GEOMETRY
+    }) {
         return Ok(vertex.id);
     }
     topology.add_vertex(Vec3::new(point.0, point.1, 0.0))
@@ -593,7 +628,8 @@ fn add_circle(
             matches!(
                 face.representation,
                 GeometryFaceRepresentation::Planar { .. }
-            ) && face_contains(topology, &face.representation, center)
+            ) && topology.is_face_visible(face.id)
+                && face_contains(topology, &face.representation, center)
         })
         .map(|face| (face.id, face.representation.clone()));
     let Some((face, representation)) = containing_face else {
