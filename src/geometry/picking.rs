@@ -43,6 +43,9 @@ impl GeometryTopology {
         let mut candidates = Vec::new();
 
         for face in self.faces.values() {
+            if !self.is_face_visible(face.id) {
+                continue;
+            }
             if let GeometryFaceRepresentation::Planar {
                 outer_loop,
                 inner_loops,
@@ -119,6 +122,17 @@ impl GeometryTopology {
             }
         }
 
+        for body in self.cad_bodies.values().filter(|b| b.visible) {
+            for mesh in body.face_meshes.iter() {
+                for triangle in &mesh.triangles {
+                    candidates.push(FaceCandidate {
+                        face: mesh.face,
+                        outer: triangle.to_vec(),
+                        holes: Vec::new(),
+                    });
+                }
+            }
+        }
         candidates
             .into_iter()
             .filter_map(|candidate| {

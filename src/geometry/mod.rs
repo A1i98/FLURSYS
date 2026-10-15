@@ -7,7 +7,9 @@ use crate::Vec3;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
+pub mod cad;
 mod picking;
+pub use cad::{CadBody, CadBoolean, CadPrimitive, CadTransform};
 
 pub use picking::{FaceRayHit, Ray3};
 
@@ -85,15 +87,34 @@ pub struct CadSketch {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum CadSketchProfile {
     Rectangle { width: f64, height: f64 },
+    Circle { radius: f64 },
 }
 
 /// Persistent source-to-result relation for the first canonical CAD feature.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct CadExtrudeFeature {
     pub id: CadFeatureId,
     pub sketch: CadSketchId,
     pub source_face: FaceId,
     pub body: BodyId,
+    #[serde(default)]
+    pub distance: Option<f64>,
+    #[serde(default)]
+    pub additive: bool,
+}
+
+/// Subtractive extrusion intent and retained Boolean inputs.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CadPocketFeature {
+    pub id: CadFeatureId,
+    pub sketch: CadSketchId,
+    pub source_face: FaceId,
+    pub base: BodyId,
+    pub tool: BodyId,
+    pub body: BodyId,
+    pub depth: f64,
+    pub through_all: bool,
+    pub tolerance: f64,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -358,6 +379,10 @@ impl std::error::Error for GeometryError {}
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct GeometryTopology {
+    #[serde(default)]
+    cad_bodies: BTreeMap<BodyId, CadBody>,
+    #[serde(default)]
+    hidden_profiles: BTreeSet<FaceId>,
     revision: GeometryRevision,
     next_vertex_id: u64,
     next_edge_id: u64,
@@ -375,6 +400,8 @@ pub struct GeometryTopology {
     sketches: BTreeMap<CadSketchId, CadSketch>,
     #[serde(default)]
     extrude_features: BTreeMap<CadFeatureId, CadExtrudeFeature>,
+    #[serde(default)]
+    pocket_features: BTreeMap<CadFeatureId, CadPocketFeature>,
 }
 
 impl Default for GeometryTopology {
@@ -386,6 +413,8 @@ impl Default for GeometryTopology {
 impl GeometryTopology {
     pub const fn new() -> Self {
         Self {
+            cad_bodies: BTreeMap::new(),
+            hidden_profiles: BTreeSet::new(),
             revision: GeometryRevision(0),
             next_vertex_id: 1,
             next_edge_id: 1,
@@ -399,6 +428,7 @@ impl GeometryTopology {
             bodies: BTreeMap::new(),
             sketches: BTreeMap::new(),
             extrude_features: BTreeMap::new(),
+            pocket_features: BTreeMap::new(),
         }
     }
 
@@ -432,6 +462,9 @@ impl GeometryTopology {
 
     pub fn extrude_features(&self) -> impl Iterator<Item = &CadExtrudeFeature> {
         self.extrude_features.values()
+    }
+    pub fn pocket_features(&self) -> impl Iterator<Item = &CadPocketFeature> {
+        self.pocket_features.values()
     }
 
     pub fn materialize_sketch_rectangle(
@@ -554,6 +587,8 @@ impl GeometryTopology {
             sketch,
             source_face,
             body: entities.body,
+            distance: Some(distance),
+            additive: false,
         };
         self.extrude_features.insert(id, feature.clone());
         self.bump_revision();
@@ -624,6 +659,9 @@ impl GeometryTopology {
     }
 
     fn planar_face_frame(&self, face: FaceId) -> Result<CadPlaneFrame, GeometryError> {
+        if self.cad_owner(face).is_some() {
+            return self.cad_face_frame(face);
+        }
         let points = match &self.require_face(face)?.representation {
             GeometryFaceRepresentation::Planar { outer_loop, .. } => outer_loop
                 .iter()
@@ -709,6 +747,7 @@ impl GeometryTopology {
         let mut faces = self
             .faces
             .values()
+            .filter(|face| self.is_face_visible(face.id))
             .filter_map(|face| {
                 let GeometryFaceRepresentation::Planar {
                     outer_loop,
@@ -793,6 +832,21 @@ impl GeometryTopology {
                     vertices,
                     holes: Vec::new(),
                 });
+            }
+        }
+        for (&body, data) in &self.cad_bodies {
+            if !data.visible {
+                continue;
+            }
+            for mesh in data.face_meshes.iter() {
+                for triangle in &mesh.triangles {
+                    faces.push(RenderableFace {
+                        face: mesh.face,
+                        body: Some(body),
+                        vertices: triangle.to_vec(),
+                        holes: Vec::new(),
+                    });
+                }
             }
         }
         faces
@@ -1326,6 +1380,18 @@ impl GeometryTopology {
 
     pub fn remove_face(&mut self, id: FaceId) -> Result<GeometryFace, GeometryError> {
         self.require_face(id)?;
+        if self.cad_bodies.values().any(|body| {
+            body.dependencies
+                .as_ref()
+                .is_some_and(|d| d.profiles.contains(&id))
+        }) {
+            return Err(GeometryError::EntityInUse {
+                entity: "face",
+                id: id.get(),
+                used_by: "CAD operation",
+            });
+        }
+
         if self.bodies.values().any(|body| body.faces.contains(&id)) {
             return Err(GeometryError::EntityInUse {
                 entity: "face",
@@ -1336,7 +1402,7 @@ impl GeometryTopology {
         if self
             .sketches
             .values()
-            .any(|sketch| sketch.host_face == Some(id))
+            .any(|sketch| sketch.host_face == Some(id) || sketch.profile_face == Some(id))
         {
             return Err(GeometryError::EntityInUse {
                 entity: "face",
@@ -1344,12 +1410,37 @@ impl GeometryTopology {
                 used_by: "sketch",
             });
         }
+        self.hidden_profiles.remove(&id);
         let removed = self.faces.remove(&id).expect("validated face exists");
         self.bump_revision();
         Ok(removed)
     }
 
     pub fn remove_body(&mut self, id: BodyId) -> Result<GeometryBody, GeometryError> {
+        if self
+            .pocket_features
+            .values()
+            .any(|f| [f.base, f.tool, f.body].contains(&id))
+        {
+            return Err(GeometryError::EntityInUse {
+                entity: "body",
+                id: id.get(),
+                used_by: "Pocket feature",
+            });
+        }
+
+        if self.cad_bodies.values().any(|body| {
+            body.dependencies
+                .as_ref()
+                .is_some_and(|d| d.bodies.contains(&id))
+        }) {
+            return Err(GeometryError::EntityInUse {
+                entity: "body",
+                id: id.get(),
+                used_by: "CAD operation",
+            });
+        }
+
         self.body(id).ok_or(GeometryError::EntityNotFound {
             entity: "body",
             id: id.get(),
@@ -1365,6 +1456,22 @@ impl GeometryTopology {
                 used_by: "feature",
             });
         }
+        if self.sketches.values().any(|sketch| {
+            sketch
+                .host_face
+                .is_some_and(|face| self.bodies[&id].faces.contains(&face))
+        }) {
+            return Err(GeometryError::EntityInUse {
+                entity: "body",
+                id: id.get(),
+                used_by: "face-hosted sketch",
+            });
+        }
+        if let Some(body) = self.cad_bodies.remove(&id) {
+            for mesh in body.face_meshes.iter() {
+                self.faces.remove(&mesh.face);
+            }
+        }
         let removed = self.bodies.remove(&id).expect("validated body exists");
         self.bump_revision();
         Ok(removed)
@@ -1378,6 +1485,23 @@ impl GeometryTopology {
         id: BodyId,
         transform: RigidBodyTransform,
     ) -> Result<(), GeometryError> {
+        if self.cad_body(id).is_some() {
+            let operation = match transform.operation {
+                RigidBodyTransformOperation::Translation { displacement } => {
+                    CadTransform::Translate(displacement)
+                }
+                RigidBodyTransformOperation::Rotation {
+                    pivot,
+                    unit_axis,
+                    angle_radians,
+                } => CadTransform::Rotate {
+                    pivot,
+                    axis: unit_axis,
+                    degrees: angle_radians.to_degrees(),
+                },
+            };
+            return self.cad_transform(id, operation, false).map(|_| ());
+        }
         let body = self.body(id).ok_or(GeometryError::EntityNotFound {
             entity: "body",
             id: id.get(),
@@ -1440,6 +1564,7 @@ impl GeometryTopology {
     }
 
     pub fn validate(&self) -> Result<(), GeometryError> {
+        self.validate_cad_bodies()?;
         for edge in self.edges.values() {
             match edge.geometry {
                 EdgeGeometry::Line { start, end } => self.validate_line(start, end)?,
@@ -1543,17 +1668,54 @@ impl GeometryTopology {
                 message: "canonical sketch allocator would reuse a stable ID".into(),
             });
         }
+        if self
+            .hidden_profiles
+            .iter()
+            .any(|face| self.face(*face).is_none())
+        {
+            return Err(GeometryError::InvalidPrimitive {
+                message: "Sketch visibility references a missing profile".into(),
+            });
+        }
         for (&id, feature) in &self.extrude_features {
             if feature.id != id
                 || self.sketch(feature.sketch).is_none()
-                || !matches!(
+                || self.face(feature.source_face).is_none()
+                || feature
+                    .distance
+                    .is_some_and(|d| !d.is_finite() || d.abs() <= GEOMETRY_EPSILON)
+                || !(matches!(
                     self.body(feature.body).map(|body| &body.representation),
                     Some(GeometryBodyRepresentation::Extrude { source_face, .. })
                         if *source_face == feature.source_face
-                )
+                ) || (self.cad_body(feature.body).is_some()
+                    && self
+                        .sketch(feature.sketch)
+                        .is_some_and(|s| s.profile_face == Some(feature.source_face))))
             {
                 return Err(GeometryError::InvalidPrimitive {
                     message: "canonical extrusion feature has a dangling source or body".into(),
+                });
+            }
+        }
+        for (&id, feature) in &self.pocket_features {
+            if id != feature.id
+                || self.extrude_features.contains_key(&id)
+                || !self.sketch(feature.sketch).is_some_and(|s| {
+                    s.profile_face == Some(feature.source_face)
+                        && s.host_face.and_then(|f| self.cad_owner(f)) == Some(feature.base)
+                })
+                || [feature.base, feature.tool, feature.body]
+                    .iter()
+                    .any(|body| self.cad_body(*body).is_none())
+                || !feature.depth.is_finite()
+                || feature.depth <= GEOMETRY_EPSILON
+                || !feature.tolerance.is_finite()
+                || feature.tolerance <= 1e-6
+                || feature.tolerance > 1.0
+            {
+                return Err(GeometryError::InvalidPrimitive {
+                    message: "Pocket feature has an invalid recipe or dangling dependency".into(),
                 });
             }
         }
@@ -1561,6 +1723,7 @@ impl GeometryTopology {
             <= self
                 .extrude_features
                 .keys()
+                .chain(self.pocket_features.keys())
                 .map(|id| id.get())
                 .max()
                 .unwrap_or(0)

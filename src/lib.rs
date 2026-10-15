@@ -31,11 +31,12 @@ pub mod workbench;
 pub use cases::{Case, CaseKind};
 pub use fields::{CellField, FaceField, FieldError};
 pub use geometry::{
-    BodyId, BoxEntities, CadExtrudeFeature, CadFeatureId, CadPlaneFrame, CadSketch, CadSketchId,
-    CadSketchPlane, CadSketchProfile, CircleHoleEntities, EdgeGeometry, EdgeId, ExtrudeEntities,
-    FaceId, FaceRayHit, GeometryBody, GeometryBodyRepresentation, GeometryEdge, GeometryError,
-    GeometryFace, GeometryFaceRepresentation, GeometryRevision, GeometryTopology, GeometryVertex,
-    OrientedEdge, Ray3, RectangleEntities, RenderableFace, RigidBodyTransform, VertexId,
+    BodyId, BoxEntities, CadExtrudeFeature, CadFeatureId, CadPlaneFrame, CadPocketFeature,
+    CadSketch, CadSketchId, CadSketchPlane, CadSketchProfile, CircleHoleEntities, EdgeGeometry,
+    EdgeId, ExtrudeEntities, FaceId, FaceRayHit, GeometryBody, GeometryBodyRepresentation,
+    GeometryEdge, GeometryError, GeometryFace, GeometryFaceRepresentation, GeometryRevision,
+    GeometryTopology, GeometryVertex, OrientedEdge, Ray3, RectangleEntities, RenderableFace,
+    RigidBodyTransform, VertexId,
 };
 pub use io::gmsh::{load_gmsh, parse_gmsh, GmshError};
 pub use linear::{
@@ -133,3 +134,5 @@ pub use workbench::{
     ViewTransform, WorkbenchAnalysis, WorkbenchError, WorkbenchProject, WorkbenchSession,
     LEGACY_PROJECT_FORMATS,
 };
+
+pub use geometry::cad::{CadBody, CadBoolean, CadPrimitive, CadTransform};
