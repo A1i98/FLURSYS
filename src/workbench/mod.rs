@@ -11,6 +11,7 @@ pub mod mesh_viewport;
 pub mod picking;
 pub mod project;
 pub mod results;
+mod result_slice;
 pub mod selection;
 pub mod session;
 

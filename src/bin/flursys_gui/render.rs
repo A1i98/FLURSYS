@@ -1,3 +1,6 @@
+#[path = "result_slice.rs"]
+mod result_slice;
+pub(super) use result_slice::{render_result_slice, pick_result_slice_cell};
 #[path = "sketch_visual.rs"]
 mod sketch_visual;
 use super::{residual_level, MeshColorMode, ResidualSample, PREVIEW_HEIGHT, PREVIEW_WIDTH};
@@ -148,7 +151,7 @@ pub(super) fn render_workbench_mesh(
             selected.is_some_and(|entry| entry.target() == MeshSelectionTarget::Face(face_index));
         let hovered_face =
             hovered.is_some_and(|entry| entry.target() == MeshSelectionTarget::Face(face_index));
-        let patch_selected = highlighted_patch == cache.face_patch_indices()[face_index];
+        let patch_selected = highlighted_patch.is_some() && highlighted_patch == cache.face_patch_indices()[face_index];
         if selected_face {
             [255, 214, 95, 255]
         } else if hovered_face {
@@ -188,10 +191,11 @@ pub(super) fn render_workbench_mesh(
                 }
             }
         } else {
-            for (triangle, &face_index) in
-                cache.surface_triangles().iter().zip(cache.triangle_faces())
-            {
-                let points = triangle.map(|index| project_mesh_3d(cache.positions()[index]));
+            let mut triangles = cache.surface_triangles().iter().zip(cache.triangle_faces()).collect::<Vec<_>>();
+            let depth = |t: &[usize;3]| t.iter().map(|i| { let p=cache.positions()[*i]; p.x+p.y+p.z }).sum::<f64>();
+            triangles.sort_by(|(a,_),(b,_)| depth(b).total_cmp(&depth(a)));
+            for (triangle, &face_index) in triangles {
+                let points = triangle.map(|index| project_result_3d(cache, cache.positions()[index]));
                 draw_filled_triangle(&mut pixels, width, height, points, face_color(face_index));
             }
         }
@@ -212,7 +216,7 @@ pub(super) fn render_workbench_mesh(
                     if mesh.dimension() == MeshDimension::TwoD {
                         view.world_to_screen((point.x, point.y))
                     } else {
-                        project_mesh_3d(point)
+                        project_result_3d(cache, point)
                     }
                 };
                 let a = project(mesh.points()[a].position);
@@ -304,24 +308,21 @@ fn render_persisted_pixels(
             }
         }
     } else if mesh_cache.dimension() == MeshDimension::ThreeD && plot != 3 {
-        for (triangle, &face) in mesh_cache
-            .surface_triangles()
-            .iter()
-            .zip(mesh_cache.triangle_faces())
-        {
-            let Some(value) = cache.scalar_for_face(field, face) else {
-                continue;
-            };
-            let points = triangle.map(|index| project_mesh_3d(mesh_cache.positions()[index]));
-            draw_filled_triangle(
-                &mut pixels,
-                width,
-                height,
-                points,
-                scalar_color(normalize(value, minimum, maximum), colormap),
-            );
+        // Draw far faces before near faces in the orthographic viewing direction.
+        let mut triangles = mesh_cache.surface_triangles().iter()
+            .zip(mesh_cache.triangle_faces()).collect::<Vec<_>>();
+        let depth = |triangle: &[usize;3]| triangle.iter().map(|i| {
+            let p = mesh_cache.positions()[*i]; p.x+p.y+p.z
+        }).sum::<f64>();
+        triangles.sort_by(|(a,_),(b,_)| depth(b).total_cmp(&depth(a)));
+        for (triangle, &face) in triangles {
+            let Some(value) = cache.scalar_for_face(field, face) else { continue; };
+            let points = triangle.map(|index| project_result_3d(mesh_cache, mesh_cache.positions()[index]));
+            draw_filled_triangle(&mut pixels, width, height, points,
+                scalar_color(normalize(value, minimum, maximum), colormap));
         }
     }
+
     if matches!(plot, 2 | 3) {
         match mesh_cache.dimension() {
             MeshDimension::TwoD => draw_result_vectors(
@@ -453,9 +454,9 @@ fn draw_result_vectors_3d(
             (positions[triangle[0]].y + positions[triangle[1]].y + positions[triangle[2]].y) / 3.0,
             (positions[triangle[0]].z + positions[triangle[1]].z + positions[triangle[2]].z) / 3.0,
         );
-        let scale = 0.08 / max_speed * vector_scale_multiplier(manual_scale);
-        let start = project_mesh_3d(center);
-        let end = project_mesh_3d(center + velocity * scale);
+        let scale = (mesh_cache.bounds().1 - mesh_cache.bounds().0).norm() * 0.08 / max_speed * vector_scale_multiplier(manual_scale);
+        let start = project_result_3d(mesh_cache, center);
+        let end = project_result_3d(mesh_cache, center + velocity * scale);
         draw_line(
             pixels,
             width,
@@ -488,22 +489,29 @@ fn vector_scale_multiplier(text: &str) -> f64 {
     }
 }
 
-/// Orthographic ray matching the compact 3D mesh surface projection.
-pub(super) fn mesh_screen_ray(point: (f64, f64)) -> (flursys::Vec3, flursys::Vec3) {
-    let u = (point.0 - f64::from(PREVIEW_WIDTH) * 0.5) / 130.0;
-    let v = (f64::from(PREVIEW_HEIGHT) * 0.62 - point.1) / 130.0;
-    (
-        flursys::Vec3::new(0.5 * u, -0.5 * u, v),
-        flursys::Vec3::new(1.0, 1.0, 1.0),
-    )
+/// Fit any model size and origin into the result viewport.
+pub(super) fn result_screen_ray(cache: &MeshRenderCache, point: (f64,f64)) -> (Vec3,Vec3) {
+    let (lo,hi)=cache.bounds();
+    let center=(lo+hi)*0.5;
+    let extent=hi-lo;
+    let scale=(f64::from(PREVIEW_WIDTH)*0.85/(extent.x+extent.y).max(1e-12))
+        .min(f64::from(PREVIEW_HEIGHT)*0.8/(extent.z+0.5*(extent.x+extent.y)).max(1e-12));
+    let u=(point.0-f64::from(PREVIEW_WIDTH)*0.5)/scale;
+    let v=(f64::from(PREVIEW_HEIGHT)*0.5-point.1)/scale;
+    (center+Vec3::new(0.5*u,-0.5*u,v)-Vec3::new(1.0,1.0,1.0)*extent.norm().max(1e-12)*2.0,Vec3::new(1.0,1.0,1.0))
 }
 
-fn project_mesh_3d(point: flursys::Vec3) -> (f64, f64) {
-    (
-        f64::from(PREVIEW_WIDTH) * 0.5 + (point.x - point.y) * 130.0,
-        f64::from(PREVIEW_HEIGHT) * 0.62 - (point.z - 0.5 * (point.x + point.y)) * 130.0,
-    )
+fn project_result_3d(cache: &flursys::MeshRenderCache, point: Vec3) -> (f64, f64) {
+    let (lo, hi) = cache.bounds();
+    let center = (lo + hi) * 0.5;
+    let extent = hi - lo;
+    let scale = (f64::from(PREVIEW_WIDTH) * 0.85 / (extent.x + extent.y).max(1e-12))
+        .min(f64::from(PREVIEW_HEIGHT) * 0.80 / (extent.z + 0.5 * (extent.x + extent.y)).max(1e-12));
+    let p = point - center;
+    (f64::from(PREVIEW_WIDTH) * 0.5 + (p.x-p.y)*scale,
+     f64::from(PREVIEW_HEIGHT) * 0.5 - (p.z - 0.5*(p.x+p.y))*scale)
 }
+
 
 fn draw_filled_polygon(
     pixels: &mut [u8],
@@ -3704,6 +3712,16 @@ fn draw_velocity_vectors(pixels: &mut [u8], width: u32, height: u32, field: &Fie
             }
         }
     }
+}
+
+/// Workbench jobs report continuity during the solve; do not substitute
+/// histories belonging to the separate structured solver.
+pub(super) fn render_workbench_continuity_chart(history: &VecDeque<ResidualSample>) -> Image {
+    let (width,height)=(PREVIEW_WIDTH,PREVIEW_HEIGHT);
+    let mut pixels=vec![0u8;(width*height*4) as usize];
+    fill(&mut pixels,[11,18,24,255]);
+    if history.len()>1 {draw_series(&mut pixels,width,height,history,|s|s.continuity,[77,168,184,255]);}
+    image_from_rgba(width,height,pixels)
 }
 
 pub(super) fn render_residual_chart(history: &VecDeque<ResidualSample>) -> Image {

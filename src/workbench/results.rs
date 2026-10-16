@@ -15,13 +15,19 @@ pub mod streamlines;
 pub enum ResultFieldKind {
     Pressure,
     VelocityMagnitude,
+    VelocityX,
+    VelocityY,
+    VelocityZ,
 }
 
 impl ResultFieldKind {
     pub const fn label(self) -> &'static str {
         match self {
-            Self::Pressure => "Pressure",
+            Self::Pressure => "Kinematic gauge pressure p/rho",
             Self::VelocityMagnitude => "Velocity Magnitude",
+            Self::VelocityX => "Velocity X",
+            Self::VelocityY => "Velocity Y",
+            Self::VelocityZ => "Velocity Z",
         }
     }
 }
@@ -43,6 +49,7 @@ pub struct ResultDataset {
     pressure: Vec<f64>,
     velocity: Vec<Vec3>,
     velocity_magnitude: Vec<f64>,
+    velocity_components: [Vec<f64>; 3],
 }
 
 impl ResultDataset {
@@ -83,7 +90,12 @@ impl ResultDataset {
             run_id,
             mesh: mesh.clone(),
             pressure,
-            velocity,
+            velocity: velocity.clone(),
+            velocity_components: [
+                velocity.iter().map(|v| v.x).collect(),
+                velocity.iter().map(|v| v.y).collect(),
+                velocity.iter().map(|v| v.z).collect(),
+            ],
             velocity_magnitude,
         })
     }
@@ -108,6 +120,9 @@ impl ResultDataset {
         match field {
             ResultFieldKind::Pressure => &self.pressure,
             ResultFieldKind::VelocityMagnitude => &self.velocity_magnitude,
+            ResultFieldKind::VelocityX => &self.velocity_components[0],
+            ResultFieldKind::VelocityY => &self.velocity_components[1],
+            ResultFieldKind::VelocityZ => &self.velocity_components[2],
         }
     }
 
@@ -124,6 +139,50 @@ impl ResultDataset {
             .fold((f64::INFINITY, f64::NEG_INFINITY), |(min, max), value| {
                 (min.min(*value), max.max(*value))
             }))
+    }
+
+    /// Volume-weighted mean; unlike a cell average this is independent of
+    /// how many small cells were inserted near a wall.
+    pub fn volume_mean(&self, field: ResultFieldKind) -> Result<f64, ResultDataError> {
+        let total: f64 = self.mesh.cells().iter().map(|c| c.volume).sum();
+        if !total.is_finite() || total <= 0.0 {
+            return Err(ResultDataError::Invalid("Invalid fluid volume".into()));
+        }
+        let mean = self
+            .scalar_values(field)
+            .iter()
+            .zip(self.mesh.cells())
+            .map(|(v, c)| *v * (c.volume / total))
+            .sum::<f64>();
+        if !mean.is_finite() {
+            return Err(ResultDataError::Invalid("Non-finite field mean".into()));
+        }
+        Ok(mean)
+    }
+
+    /// Full precision cell data for independent post-processing. Pressure is
+    /// kinematic gauge pressure, not physical pressure in pascals.
+    pub fn write_cell_csv(&self, path: &Path) -> Result<(), std::io::Error> {
+        use std::io::Write;
+        let mut file = std::io::BufWriter::new(std::fs::File::create(path)?);
+        writeln!(file, "cell,x,y,z,cell_measure,p_over_rho,ux,uy,uz,speed")?;
+        for (index, cell) in self.mesh.cells().iter().enumerate() {
+            let u = self.velocity[index];
+            writeln!(
+                file,
+                "{index},{:.17e},{:.17e},{:.17e},{:.17e},{:.17e},{:.17e},{:.17e},{:.17e},{:.17e}",
+                cell.center.x,
+                cell.center.y,
+                cell.center.z,
+                cell.volume,
+                self.pressure[index],
+                u.x,
+                u.y,
+                u.z,
+                self.velocity_magnitude[index]
+            )?;
+        }
+        file.flush()
     }
 
     pub fn probe_cell(&self, cell_index: usize) -> Option<ResultProbe> {
@@ -148,6 +207,7 @@ pub struct ResultRenderCache {
     pressure: Vec<f64>,
     velocity: Vec<Vec3>,
     velocity_magnitude: Vec<f64>,
+    velocity_components: [Vec<f64>; 3],
     face_owners: Vec<usize>,
 }
 
@@ -163,6 +223,7 @@ impl ResultRenderCache {
             pressure: dataset.pressure.clone(),
             velocity: dataset.velocity.clone(),
             velocity_magnitude: dataset.velocity_magnitude.clone(),
+            velocity_components: dataset.velocity_components.clone(),
             face_owners: dataset.mesh.faces().iter().map(|face| face.owner).collect(),
         })
     }
@@ -190,6 +251,9 @@ impl ResultRenderCache {
         match field {
             ResultFieldKind::Pressure => self.pressure.get(cell).copied(),
             ResultFieldKind::VelocityMagnitude => self.velocity_magnitude.get(cell).copied(),
+            ResultFieldKind::VelocityX => self.velocity_components[0].get(cell).copied(),
+            ResultFieldKind::VelocityY => self.velocity_components[1].get(cell).copied(),
+            ResultFieldKind::VelocityZ => self.velocity_components[2].get(cell).copied(),
         }
     }
 
