@@ -58,7 +58,8 @@ pub(super) fn close(ui: &MainWindow, state: &mut AppState) {
     state.face_sketch_cursor = None;
     state.geometry_editor.cancel();
     ui.set_cad_task_open(false);
-    ui.set_cad_region_owner("".into());ui.set_cad_region_grouped(false);
+    ui.set_cad_region_owner("".into());
+    ui.set_cad_region_grouped(false);
     ui.set_cad_pick_role(0);
     ui.set_cad_edit_body_id("".into());
     ui.set_cad_sketch_host("".into());
@@ -85,7 +86,7 @@ pub(super) fn bind(ui: &MainWindow, shared: &Rc<RefCell<AppState>>) {
         let mut state = changed.borrow_mut();
         let had_preview = state.cad_preview.is_some();
         invalidate(&ui, &mut state);
-        super::cad_constraints::resolve_fields(&ui,&state);
+        super::cad_constraints::resolve_fields(&ui, &state);
         if super::sketch_edit::valid(&state).is_some() {
             state.show_geometry_3d = false;
             ui.set_geometry_cad_view_3d(false);
@@ -122,7 +123,15 @@ pub(super) fn bind(ui: &MainWindow, shared: &Rc<RefCell<AppState>>) {
             let strings = [
                 ui.get_cad_name(),
                 ui.get_cad_size_x(),
-                format!("{}:{}:{}:{}:{}",ui.get_cad_finish_corner0(),ui.get_cad_finish_corner1(),ui.get_cad_finish_corner2(),ui.get_cad_finish_corner3(),ui.get_cad_finish_opening()).into(),
+                format!(
+                    "{}:{}:{}:{}:{}",
+                    ui.get_cad_finish_corner0(),
+                    ui.get_cad_finish_corner1(),
+                    ui.get_cad_finish_corner2(),
+                    ui.get_cad_finish_corner3(),
+                    ui.get_cad_finish_opening()
+                )
+                .into(),
                 ui.get_cad_size_y(),
                 ui.get_cad_size_z(),
                 ui.get_cad_pos_x(),
@@ -160,7 +169,13 @@ pub(super) fn bind(ui: &MainWindow, shared: &Rc<RefCell<AppState>>) {
             let flags = [
                 ui.get_cad_reverse(),
                 ui.get_cad_through_all(),
-                ui.get_cad_transform_copy(),ui.get_cad_drive_x(),ui.get_cad_drive_y(),ui.get_cad_drive_width(),ui.get_cad_drive_height(),ui.get_cad_equal_sides(),ui.get_cad_centered(),
+                ui.get_cad_transform_copy(),
+                ui.get_cad_drive_x(),
+                ui.get_cad_drive_y(),
+                ui.get_cad_drive_width(),
+                ui.get_cad_drive_height(),
+                ui.get_cad_equal_sides(),
+                ui.get_cad_centered(),
             ];
             let key = format!(
                 "{:?}|{:?}|{:?}|{:?}|{}|{:?}|{:?}",

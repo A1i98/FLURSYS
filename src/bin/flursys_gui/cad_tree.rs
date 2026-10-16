@@ -38,7 +38,11 @@ fn row(
 }
 pub(super) fn recipe_name(recipe: &CadRecipe) -> &'static str {
     match recipe {
-        CadRecipe::Finish{kind,..} => match kind {0=>"Prism fillet",1=>"Prism chamfer",_=>"Prism shell"},
+        CadRecipe::Finish { kind, .. } => match kind {
+            0 => "Prism fillet",
+            1 => "Prism chamfer",
+            _ => "Prism shell",
+        },
         CadRecipe::Primitive { shape, .. } => match shape {
             flursys::CadPrimitive::Box { .. } => "Box",
             flursys::CadPrimitive::Cylinder { .. } => "Cylinder",
@@ -192,7 +196,8 @@ fn sketch(
             format!("Region {} · {}", region.id.get(), shape),
             format!(
                 "{}{}",
-                g.cad_sketch_degrees_of_freedom(region.id).map_or("free profile".into(),|n|format!("{n} DOF")),
+                g.cad_sketch_degrees_of_freedom(region.id)
+                    .map_or("free profile".into(), |n| format!("{n} DOF")),
                 if in_use { " · input" } else { "" }
             ),
             selected,

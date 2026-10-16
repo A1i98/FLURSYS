@@ -27,12 +27,21 @@ pub(super) fn load(ui: &MainWindow, state: &mut AppState, body: BodyId) -> Resul
         .clone();
     ui.set_cad_reverse(false);
     let operation = match &recipe {
-        CadRecipe::Finish{kind,amount,corners,opening,..} => {
-            ui.set_cad_size_x(super::cad_units::display_length(ui,*amount));
-            ui.set_cad_finish_corner0(corners&1!=0);ui.set_cad_finish_corner1(corners&2!=0);
-            ui.set_cad_finish_corner2(corners&4!=0);ui.set_cad_finish_corner3(corners&8!=0);ui.set_cad_finish_opening(i32::from(*opening));
-            53+i32::from(*kind)
-        },
+        CadRecipe::Finish {
+            kind,
+            amount,
+            corners,
+            opening,
+            ..
+        } => {
+            ui.set_cad_size_x(super::cad_units::display_length(ui, *amount));
+            ui.set_cad_finish_corner0(corners & 1 != 0);
+            ui.set_cad_finish_corner1(corners & 2 != 0);
+            ui.set_cad_finish_corner2(corners & 4 != 0);
+            ui.set_cad_finish_corner3(corners & 8 != 0);
+            ui.set_cad_finish_opening(i32::from(*opening));
+            53 + i32::from(*kind)
+        }
         CadRecipe::Primitive { shape, position: p } => {
             let (kind, x, y, z) = match *shape {
                 flursys::CadPrimitive::Box {
@@ -100,9 +109,17 @@ pub(super) fn load(ui: &MainWindow, state: &mut AppState, body: BodyId) -> Resul
             46
         }
         CadRecipe::Loft { sections } => {
-            state.wb_selected_targets = sections.iter().copied().map(GeometrySelectionTarget::Face).collect();
+            state.wb_selected_targets = sections
+                .iter()
+                .copied()
+                .map(GeometrySelectionTarget::Face)
+                .collect();
             state.geometry_editor.selection = state.wb_selected_targets.clone();
-            state.selected_tree = state.wb_selected_targets.last().copied().and_then(tree_selection_for_target);
+            state.selected_tree = state
+                .wb_selected_targets
+                .last()
+                .copied()
+                .and_then(tree_selection_for_target);
             state.tree_dirty = true;
             20
         }
@@ -180,7 +197,8 @@ pub(super) fn editable(g: &flursys::GeometryTopology, id: BodyId) -> bool {
             .is_some_and(|r| {
                 matches!(
                     r,
-                    CadRecipe::Finish { .. } | CadRecipe::Primitive { .. }
+                    CadRecipe::Finish { .. }
+                        | CadRecipe::Primitive { .. }
                         | CadRecipe::Revolve { .. }
                         | CadRecipe::Sweep { .. }
                         | CadRecipe::Taper { .. }

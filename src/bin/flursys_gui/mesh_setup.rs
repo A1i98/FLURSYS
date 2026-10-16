@@ -688,16 +688,20 @@ mod tests {
                 std::fs::write(format!("/tmp/flursys-mesh-{w}-{task}.ppm"), ppm).unwrap();
             }
         }
-        for (w,h) in [(1440u32,900u32),(1100,650)] {
-            window.set_size(slint::PhysicalSize::new(w,h));
-            for step in [2,3] {
-                apply_workflow_step(&ui,&mut state.borrow_mut(),step);
+        for (w, h) in [(1440u32, 900u32), (1100, 650)] {
+            window.set_size(slint::PhysicalSize::new(w, h));
+            for step in [2, 3] {
+                apply_workflow_step(&ui, &mut state.borrow_mut(), step);
                 window.request_redraw();
-                let mut pixels=vec![slint::Rgb8Pixel::default();(w*h) as usize];
-                window.draw_if_needed(|renderer|{renderer.render(&mut pixels,w as usize);});
-                let mut ppm=format!("P6\n{w} {h}\n255\n").into_bytes();
-                for p in pixels {ppm.extend([p.r,p.g,p.b]);}
-                std::fs::write(format!("/tmp/flursys-workflow-{w}-{step}.ppm"),ppm).unwrap();
+                let mut pixels = vec![slint::Rgb8Pixel::default(); (w * h) as usize];
+                window.draw_if_needed(|renderer| {
+                    renderer.render(&mut pixels, w as usize);
+                });
+                let mut ppm = format!("P6\n{w} {h}\n255\n").into_bytes();
+                for p in pixels {
+                    ppm.extend([p.r, p.g, p.b]);
+                }
+                std::fs::write(format!("/tmp/flursys-workflow-{w}-{step}.ppm"), ppm).unwrap();
             }
         }
         ui.invoke_mesh_edit_condition(0);

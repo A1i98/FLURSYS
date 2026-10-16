@@ -25,7 +25,10 @@ impl CancellationToken {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum JobProgress {
-    Metrics { iteration:usize, values:[f64;4] },
+    Metrics {
+        iteration: usize,
+        values: [f64; 4],
+    },
     Started,
     Message(String),
     Iteration {
@@ -115,7 +118,7 @@ impl WorkbenchJobExecutor {
                 let _ = sender.send(WorkbenchJobEvent::SolveProgress(JobProgress::Started));
                 let progress_sender = sender.clone();
                 let control_cancellation = cancellation.clone();
-                let metrics_sender=sender.clone();
+                let metrics_sender = sender.clone();
                 let control = SolveControl::new(
                     move || control_cancellation.is_cancelled(),
                     move |iteration, max, residual| {
@@ -127,8 +130,11 @@ impl WorkbenchJobExecutor {
                             },
                         ));
                     },
-                ).with_metrics(move |iteration,values| {
-                    let _=metrics_sender.send(WorkbenchJobEvent::SolveProgress(JobProgress::Metrics{iteration,values}));
+                )
+                .with_metrics(move |iteration, values| {
+                    let _ = metrics_sender.send(WorkbenchJobEvent::SolveProgress(
+                        JobProgress::Metrics { iteration, values },
+                    ));
                 });
                 let result = solve_incompressible_with_control(&case, &control);
                 let cancelled = cancellation.is_cancelled();

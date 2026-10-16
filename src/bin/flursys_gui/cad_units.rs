@@ -56,7 +56,12 @@ fn formatted(value: f64) -> SharedString {
     value.to_string().into()
 }
 pub(super) fn length_symbol(ui: &MainWindow) -> &'static str {
-    match ui.get_cad_length_unit() {1=>"cm",2=>"m",3=>"in",_=>"mm"}
+    match ui.get_cad_length_unit() {
+        1 => "cm",
+        2 => "m",
+        3 => "in",
+        _ => "mm",
+    }
 }
 pub(super) fn display_length(ui: &MainWindow, value: f64) -> SharedString {
     formatted(value / factor(ui.get_cad_length_unit()))

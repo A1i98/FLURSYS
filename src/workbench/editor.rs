@@ -157,9 +157,10 @@ impl GeometryEditorState {
             GeometryTool::Line => Some(PreviewPrimitive::Line(start, cursor)),
             GeometryTool::Rectangle => Some(PreviewPrimitive::Rectangle(start, cursor)),
             GeometryTool::Circle => Some(PreviewPrimitive::Circle(start, distance(start, cursor))),
-            GeometryTool::Select | GeometryTool::Trim | GeometryTool::Extend | GeometryTool::Split => {
-                None
-            }
+            GeometryTool::Select
+            | GeometryTool::Trim
+            | GeometryTool::Extend
+            | GeometryTool::Split => None,
         }
     }
     pub fn has_start(&self) -> bool {
@@ -261,9 +262,15 @@ impl GeometryEditorState {
             self.push_undo(before);
             self.redo.clear();
             self.selection = if faces.is_empty() {
-                edges.into_iter().map(GeometrySelectionTarget::Edge).collect()
+                edges
+                    .into_iter()
+                    .map(GeometrySelectionTarget::Edge)
+                    .collect()
             } else {
-                faces.into_iter().map(GeometrySelectionTarget::Face).collect()
+                faces
+                    .into_iter()
+                    .map(GeometrySelectionTarget::Face)
+                    .collect()
             };
             self.hover_target = None;
             return Ok(true);

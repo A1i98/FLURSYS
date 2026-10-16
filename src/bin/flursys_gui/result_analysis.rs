@@ -177,7 +177,11 @@ pub(super) fn profile_svg(points: &[ProfilePoint], title: &str, log: bool) -> St
     }
     let xmin = series.first().map_or(0.0, |p| p.0);
     let end = series.last().map_or(1.0, |p| p.0);
-    let xmax = if end > xmin {end} else {xmin + xmin.abs().max(1.0) * 0.05};
+    let xmax = if end > xmin {
+        end
+    } else {
+        xmin + xmin.abs().max(1.0) * 0.05
+    };
     let mut ymin = finite.iter().map(|p| p.1).fold(f64::INFINITY, f64::min);
     let mut ymax = finite.iter().map(|p| p.1).fold(f64::NEG_INFINITY, f64::max);
     if ymin == ymax {
@@ -323,7 +327,10 @@ pub(super) fn report(state: &AppState) -> Result<String, String> {
             &state.post.profile_label,
             false,
         ));
-        out.push_str(&format!("<pre>{}</pre>",escape(&line_measurements(&state.post.profile))));
+        out.push_str(&format!(
+            "<pre>{}</pre>",
+            escape(&line_measurements(&state.post.profile))
+        ));
         out.push_str("<p>Piecewise-constant owning-cell samples. Gaps indicate locations outside the fluid mesh. No wall values are extrapolated.</p>");
     }
     if let Some(run) = state

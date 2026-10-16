@@ -32,11 +32,11 @@ pub use cases::{Case, CaseKind};
 pub use fields::{CellField, FaceField, FieldError};
 pub use geometry::{
     BodyId, BoxEntities, CadExtrudeFeature, CadFeatureId, CadPlaneFrame, CadPocketFeature,
-    CadSketch, CadSketchId, CadSketchPlane, CadSketchProfile, CadSketchConstraints, CircleHoleEntities, EdgeGeometry,
-    EdgeId, ExtrudeEntities, FaceId, FaceRayHit, GeometryBody, GeometryBodyRepresentation,
-    GeometryEdge, GeometryError, GeometryFace, GeometryFaceRepresentation, GeometryRevision,
-    GeometryTopology, GeometryVertex, OrientedEdge, Ray3, RectangleEntities, RenderableFace,
-    RigidBodyTransform, VertexId,
+    CadSketch, CadSketchConstraints, CadSketchId, CadSketchPlane, CadSketchProfile,
+    CircleHoleEntities, EdgeGeometry, EdgeId, ExtrudeEntities, FaceId, FaceRayHit, GeometryBody,
+    GeometryBodyRepresentation, GeometryEdge, GeometryError, GeometryFace,
+    GeometryFaceRepresentation, GeometryRevision, GeometryTopology, GeometryVertex, OrientedEdge,
+    Ray3, RectangleEntities, RenderableFace, RigidBodyTransform, VertexId,
 };
 pub use io::gmsh::{load_gmsh, parse_gmsh, GmshError};
 pub use linear::{
@@ -135,4 +135,6 @@ pub use workbench::{
     LEGACY_PROJECT_FORMATS,
 };
 
-pub use geometry::cad::{CadAxisReference, CadBody, CadBoolean, CadPrimitive, CadRecipe, CadTransform};
+pub use geometry::cad::{
+    CadAxisReference, CadBody, CadBoolean, CadPrimitive, CadRecipe, CadTransform,
+};

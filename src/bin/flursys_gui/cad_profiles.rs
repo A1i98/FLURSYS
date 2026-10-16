@@ -60,17 +60,27 @@ fn assign_body(ui: &MainWindow, state: &mut AppState, tool: bool) -> Result<Stri
 }
 fn assign_pocket_stop_face(ui: &MainWindow, state: &mut AppState) -> Result<String, String> {
     let g = state.workbench.geometry();
-    let face = state.wb_selected_targets.iter().find_map(|target| match target {
-        GeometrySelectionTarget::Face(face) => Some(*face),
-        _ => None,
-    }).ok_or("Select a planar stop face on the same solid")?;
-    let profile = super::cad_axis::profile(ui, g).ok_or("Choose the pocket sketch profile first")?;
-    let base = g.sketches().find(|sketch| sketch.profile_face == Some(profile))
+    let face = state
+        .wb_selected_targets
+        .iter()
+        .find_map(|target| match target {
+            GeometrySelectionTarget::Face(face) => Some(*face),
+            _ => None,
+        })
+        .ok_or("Select a planar stop face on the same solid")?;
+    let profile =
+        super::cad_axis::profile(ui, g).ok_or("Choose the pocket sketch profile first")?;
+    let base = g
+        .sketches()
+        .find(|sketch| sketch.profile_face == Some(profile))
         .and_then(|sketch| sketch.host_face)
         .and_then(|host| g.cad_owner(host))
         .ok_or("Pocket sketch is not attached to a solid face")?;
-    if g.cad_owner(face) != Some(base) { return Err("Pocket stop face must belong to the same solid as the sketch".into()); }
-    g.sketch_frame_for_face(face).map_err(|error| error.to_string())?;
+    if g.cad_owner(face) != Some(base) {
+        return Err("Pocket stop face must belong to the same solid as the sketch".into());
+    }
+    g.sketch_frame_for_face(face)
+        .map_err(|error| error.to_string())?;
     ui.set_cad_pocket_stop_face(face.get().to_string().into());
     ui.set_cad_pick_role(0);
     super::cad_properties::invalidate(ui, state);

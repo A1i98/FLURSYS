@@ -1,6 +1,6 @@
 #[path = "result_slice.rs"]
 mod result_slice;
-pub(super) use result_slice::{render_result_slice, pick_result_slice_cell};
+pub(super) use result_slice::{pick_result_slice_cell, render_result_slice};
 #[path = "sketch_visual.rs"]
 mod sketch_visual;
 use super::{residual_level, MeshColorMode, ResidualSample, PREVIEW_HEIGHT, PREVIEW_WIDTH};
@@ -151,7 +151,8 @@ pub(super) fn render_workbench_mesh(
             selected.is_some_and(|entry| entry.target() == MeshSelectionTarget::Face(face_index));
         let hovered_face =
             hovered.is_some_and(|entry| entry.target() == MeshSelectionTarget::Face(face_index));
-        let patch_selected = highlighted_patch.is_some() && highlighted_patch == cache.face_patch_indices()[face_index];
+        let patch_selected = highlighted_patch.is_some()
+            && highlighted_patch == cache.face_patch_indices()[face_index];
         if selected_face {
             [255, 214, 95, 255]
         } else if hovered_face {
@@ -191,11 +192,23 @@ pub(super) fn render_workbench_mesh(
                 }
             }
         } else {
-            let mut triangles = cache.surface_triangles().iter().zip(cache.triangle_faces()).collect::<Vec<_>>();
-            let depth = |t: &[usize;3]| t.iter().map(|i| { let p=cache.positions()[*i]; p.x+p.y+p.z }).sum::<f64>();
-            triangles.sort_by(|(a,_),(b,_)| depth(b).total_cmp(&depth(a)));
+            let mut triangles = cache
+                .surface_triangles()
+                .iter()
+                .zip(cache.triangle_faces())
+                .collect::<Vec<_>>();
+            let depth = |t: &[usize; 3]| {
+                t.iter()
+                    .map(|i| {
+                        let p = cache.positions()[*i];
+                        p.x + p.y + p.z
+                    })
+                    .sum::<f64>()
+            };
+            triangles.sort_by(|(a, _), (b, _)| depth(b).total_cmp(&depth(a)));
             for (triangle, &face_index) in triangles {
-                let points = triangle.map(|index| project_result_3d(cache, cache.positions()[index]));
+                let points =
+                    triangle.map(|index| project_result_3d(cache, cache.positions()[index]));
                 draw_filled_triangle(&mut pixels, width, height, points, face_color(face_index));
             }
         }
@@ -249,33 +262,55 @@ pub(super) fn render_persisted_result(
     display_range: Option<(f64, f64)>,
     view: &ViewTransform,
     streamlines: &[StreamlinePath],
-    levels:usize,
-    edges:bool,
+    levels: usize,
+    edges: bool,
 ) -> Image {
     let (width, height) = (PREVIEW_WIDTH, PREVIEW_HEIGHT);
-    let mut pixels=render_persisted_pixels(
-            width,
-            height,
-            cache,
-            field,
-            colormap,
-            plot,
-            vector_density,
-            vector_scale,
-            display_range,
-            view,
-            streamlines,
-        );
-    if cache.mesh_cache().dimension()==MeshDimension::TwoD {
-        if matches!(plot,1|2) {draw_result_contours(&mut pixels,width,height,cache,field,view,display_range,levels);}
-        if edges {for edge in cache.mesh_cache().edges() {
-            let a=cache.mesh_cache().positions()[edge[0]];let b=cache.mesh_cache().positions()[edge[1]];
-            let a=view.world_to_screen((a.x,a.y));let b=view.world_to_screen((b.x,b.y));
-            draw_line(&mut pixels,width,height,(a.0 as i32,a.1 as i32),(b.0 as i32,b.1 as i32),[62,91,106,255]);
-        }}
+    let mut pixels = render_persisted_pixels(
+        width,
+        height,
+        cache,
+        field,
+        colormap,
+        plot,
+        vector_density,
+        vector_scale,
+        display_range,
+        view,
+        streamlines,
+    );
+    if cache.mesh_cache().dimension() == MeshDimension::TwoD {
+        if matches!(plot, 1 | 2) {
+            draw_result_contours(
+                &mut pixels,
+                width,
+                height,
+                cache,
+                field,
+                view,
+                display_range,
+                levels,
+            );
+        }
+        if edges {
+            for edge in cache.mesh_cache().edges() {
+                let a = cache.mesh_cache().positions()[edge[0]];
+                let b = cache.mesh_cache().positions()[edge[1]];
+                let a = view.world_to_screen((a.x, a.y));
+                let b = view.world_to_screen((b.x, b.y));
+                draw_line(
+                    &mut pixels,
+                    width,
+                    height,
+                    (a.0 as i32, a.1 as i32),
+                    (b.0 as i32, b.1 as i32),
+                    [62, 91, 106, 255],
+                );
+            }
+        }
     }
-    draw_colormap_legend(&mut pixels,width,height,colormap);
-    image_from_rgba(width,height,pixels)
+    draw_colormap_legend(&mut pixels, width, height, colormap);
+    image_from_rgba(width, height, pixels)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -317,17 +352,34 @@ fn render_persisted_pixels(
         }
     } else if mesh_cache.dimension() == MeshDimension::ThreeD && plot != 3 {
         // Draw far faces before near faces in the orthographic viewing direction.
-        let mut triangles = mesh_cache.surface_triangles().iter()
-            .zip(mesh_cache.triangle_faces()).collect::<Vec<_>>();
-        let depth = |triangle: &[usize;3]| triangle.iter().map(|i| {
-            let p = mesh_cache.positions()[*i]; p.x+p.y+p.z
-        }).sum::<f64>();
-        triangles.sort_by(|(a,_),(b,_)| depth(b).total_cmp(&depth(a)));
+        let mut triangles = mesh_cache
+            .surface_triangles()
+            .iter()
+            .zip(mesh_cache.triangle_faces())
+            .collect::<Vec<_>>();
+        let depth = |triangle: &[usize; 3]| {
+            triangle
+                .iter()
+                .map(|i| {
+                    let p = mesh_cache.positions()[*i];
+                    p.x + p.y + p.z
+                })
+                .sum::<f64>()
+        };
+        triangles.sort_by(|(a, _), (b, _)| depth(b).total_cmp(&depth(a)));
         for (triangle, &face) in triangles {
-            let Some(value) = cache.scalar_for_face(field, face) else { continue; };
-            let points = triangle.map(|index| project_result_3d(mesh_cache, mesh_cache.positions()[index]));
-            draw_filled_triangle(&mut pixels, width, height, points,
-                scalar_color(normalize(value, minimum, maximum), colormap));
+            let Some(value) = cache.scalar_for_face(field, face) else {
+                continue;
+            };
+            let points =
+                triangle.map(|index| project_result_3d(mesh_cache, mesh_cache.positions()[index]));
+            draw_filled_triangle(
+                &mut pixels,
+                width,
+                height,
+                points,
+                scalar_color(normalize(value, minimum, maximum), colormap),
+            );
         }
     }
 
@@ -424,12 +476,25 @@ fn draw_result_vectors(
             (end.0 as i32, end.1 as i32),
             [238, 246, 250, 255],
         );
-        let dx=end.0-start.0;let dy=end.1-start.1;let length=dx.hypot(dy);
-        if length>2.5 {
-            let angle=dy.atan2(dx);let head=(length*0.35).min(4.0);
-            for offset in [-0.5f64,0.5] {
-                let tip=(end.0-head*(angle+offset).cos(),end.1-head*(angle+offset).sin());
-                draw_line(pixels,width,height,(end.0 as i32,end.1 as i32),(tip.0 as i32,tip.1 as i32),[238,246,250,255]);
+        let dx = end.0 - start.0;
+        let dy = end.1 - start.1;
+        let length = dx.hypot(dy);
+        if length > 2.5 {
+            let angle = dy.atan2(dx);
+            let head = (length * 0.35).min(4.0);
+            for offset in [-0.5f64, 0.5] {
+                let tip = (
+                    end.0 - head * (angle + offset).cos(),
+                    end.1 - head * (angle + offset).sin(),
+                );
+                draw_line(
+                    pixels,
+                    width,
+                    height,
+                    (end.0 as i32, end.1 as i32),
+                    (tip.0 as i32, tip.1 as i32),
+                    [238, 246, 250, 255],
+                );
             }
         }
     }
@@ -470,7 +535,8 @@ fn draw_result_vectors_3d(
             (positions[triangle[0]].y + positions[triangle[1]].y + positions[triangle[2]].y) / 3.0,
             (positions[triangle[0]].z + positions[triangle[1]].z + positions[triangle[2]].z) / 3.0,
         );
-        let scale = (mesh_cache.bounds().1 - mesh_cache.bounds().0).norm() * 0.08 / max_speed * vector_scale_multiplier(manual_scale);
+        let scale = (mesh_cache.bounds().1 - mesh_cache.bounds().0).norm() * 0.08 / max_speed
+            * vector_scale_multiplier(manual_scale);
         let start = project_result_3d(mesh_cache, center);
         let end = project_result_3d(mesh_cache, center + velocity * scale);
         draw_line(
@@ -481,12 +547,25 @@ fn draw_result_vectors_3d(
             (end.0 as i32, end.1 as i32),
             [238, 246, 250, 255],
         );
-        let dx=end.0-start.0;let dy=end.1-start.1;let length=dx.hypot(dy);
-        if length>2.5 {
-            let angle=dy.atan2(dx);let head=(length*0.35).min(4.0);
-            for offset in [-0.5f64,0.5] {
-                let tip=(end.0-head*(angle+offset).cos(),end.1-head*(angle+offset).sin());
-                draw_line(pixels,width,height,(end.0 as i32,end.1 as i32),(tip.0 as i32,tip.1 as i32),[238,246,250,255]);
+        let dx = end.0 - start.0;
+        let dy = end.1 - start.1;
+        let length = dx.hypot(dy);
+        if length > 2.5 {
+            let angle = dy.atan2(dx);
+            let head = (length * 0.35).min(4.0);
+            for offset in [-0.5f64, 0.5] {
+                let tip = (
+                    end.0 - head * (angle + offset).cos(),
+                    end.1 - head * (angle + offset).sin(),
+                );
+                draw_line(
+                    pixels,
+                    width,
+                    height,
+                    (end.0 as i32, end.1 as i32),
+                    (tip.0 as i32, tip.1 as i32),
+                    [238, 246, 250, 255],
+                );
             }
         }
     }
@@ -514,28 +593,34 @@ fn vector_scale_multiplier(text: &str) -> f64 {
 }
 
 /// Fit any model size and origin into the result viewport.
-pub(super) fn result_screen_ray(cache: &MeshRenderCache, point: (f64,f64)) -> (Vec3,Vec3) {
-    let (lo,hi)=cache.bounds();
-    let center=(lo+hi)*0.5;
-    let extent=hi-lo;
-    let scale=(f64::from(PREVIEW_WIDTH)*0.85/(extent.x+extent.y).max(1e-12))
-        .min(f64::from(PREVIEW_HEIGHT)*0.8/(extent.z+0.5*(extent.x+extent.y)).max(1e-12));
-    let u=(point.0-f64::from(PREVIEW_WIDTH)*0.5)/scale;
-    let v=(f64::from(PREVIEW_HEIGHT)*0.5-point.1)/scale;
-    (center+Vec3::new(0.5*u,-0.5*u,v)-Vec3::new(1.0,1.0,1.0)*extent.norm().max(1e-12)*2.0,Vec3::new(1.0,1.0,1.0))
+pub(super) fn result_screen_ray(cache: &MeshRenderCache, point: (f64, f64)) -> (Vec3, Vec3) {
+    let (lo, hi) = cache.bounds();
+    let center = (lo + hi) * 0.5;
+    let extent = hi - lo;
+    let scale = (f64::from(PREVIEW_WIDTH) * 0.85 / (extent.x + extent.y).max(1e-12))
+        .min(f64::from(PREVIEW_HEIGHT) * 0.8 / (extent.z + 0.5 * (extent.x + extent.y)).max(1e-12));
+    let u = (point.0 - f64::from(PREVIEW_WIDTH) * 0.5) / scale;
+    let v = (f64::from(PREVIEW_HEIGHT) * 0.5 - point.1) / scale;
+    (
+        center + Vec3::new(0.5 * u, -0.5 * u, v)
+            - Vec3::new(1.0, 1.0, 1.0) * extent.norm().max(1e-12) * 2.0,
+        Vec3::new(1.0, 1.0, 1.0),
+    )
 }
 
 fn project_result_3d(cache: &flursys::MeshRenderCache, point: Vec3) -> (f64, f64) {
     let (lo, hi) = cache.bounds();
     let center = (lo + hi) * 0.5;
     let extent = hi - lo;
-    let scale = (f64::from(PREVIEW_WIDTH) * 0.85 / (extent.x + extent.y).max(1e-12))
-        .min(f64::from(PREVIEW_HEIGHT) * 0.80 / (extent.z + 0.5 * (extent.x + extent.y)).max(1e-12));
+    let scale = (f64::from(PREVIEW_WIDTH) * 0.85 / (extent.x + extent.y).max(1e-12)).min(
+        f64::from(PREVIEW_HEIGHT) * 0.80 / (extent.z + 0.5 * (extent.x + extent.y)).max(1e-12),
+    );
     let p = point - center;
-    (f64::from(PREVIEW_WIDTH) * 0.5 + (p.x-p.y)*scale,
-     f64::from(PREVIEW_HEIGHT) * 0.5 - (p.z - 0.5*(p.x+p.y))*scale)
+    (
+        f64::from(PREVIEW_WIDTH) * 0.5 + (p.x - p.y) * scale,
+        f64::from(PREVIEW_HEIGHT) * 0.5 - (p.z - 0.5 * (p.x + p.y)) * scale,
+    )
 }
-
 
 fn draw_filled_polygon(
     pixels: &mut [u8],
@@ -945,9 +1030,9 @@ pub(super) fn render_canonical_geometry_3d(
             continue;
         }
         let selected = selected_targets.contains(&GeometrySelectionTarget::Face(surface.face))
-            || surface
-                .body
-                .is_some_and(|body| selected_targets.contains(&GeometrySelectionTarget::Body(body)));
+            || surface.body.is_some_and(|body| {
+                selected_targets.contains(&GeometrySelectionTarget::Body(body))
+            });
         let hovered = hovered_target == Some(GeometrySelectionTarget::Face(surface.face))
             || surface
                 .body
@@ -1080,33 +1165,70 @@ pub(super) fn render_canonical_geometry_3d(
     }
     // Exact topological boundaries, independent of triangle edges. Visibility
     // follows the same depth buffer as the shaded solid.
-    for (_,body) in topology.cad_bodies().filter(|(_,b)|b.visible) {
+    for (_, body) in topology.cad_bodies().filter(|(_, b)| b.visible) {
         for edge in body.edges.iter() {
-            draw_cad_curve(&mut pixels,&cad_depth,width,height,&camera,&edge.path,[62,105,121,255]);
+            draw_cad_curve(
+                &mut pixels,
+                &cad_depth,
+                width,
+                height,
+                &camera,
+                &edge.path,
+                [62, 105, 121, 255],
+            );
         }
     }
-    if pick_mode==2 {
-        for (_,body) in topology.cad_bodies().filter(|(_,b)|b.visible) {
+    if pick_mode == 2 {
+        for (_, body) in topology.cad_bodies().filter(|(_, b)| b.visible) {
             for vertex in body.vertices.iter() {
-                let Some(v)=topology.vertex(vertex.id) else {continue;};
-                let (x,y)=camera.project(v.position);
-                if x<0||y<0||x>=width as i32||y>=height as i32 {continue;}
-                if camera.depth(&[v.position])<=cad_depth[y as usize*width as usize+x as usize]+2.0/camera.scale {
-                    draw_ellipse(&mut pixels,width,height,(x,y),3,3,[104,222,237,255]);
+                let Some(v) = topology.vertex(vertex.id) else {
+                    continue;
+                };
+                let (x, y) = camera.project(v.position);
+                if x < 0 || y < 0 || x >= width as i32 || y >= height as i32 {
+                    continue;
+                }
+                if camera.depth(&[v.position])
+                    <= cad_depth[y as usize * width as usize + x as usize] + 2.0 / camera.scale
+                {
+                    draw_ellipse(
+                        &mut pixels,
+                        width,
+                        height,
+                        (x, y),
+                        3,
+                        3,
+                        [104, 222, 237, 255],
+                    );
                 }
             }
         }
     }
     // Entity picks use the same stable IDs and camera as the geometry tree.
-    for (target, color) in std::iter::once((hovered_target, [142, 232, 176, 255]))
-        .chain(selected_targets.iter().copied().map(|target|(Some(target),[255,226,143,255]))) {
+    for (target, color) in std::iter::once((hovered_target, [142, 232, 176, 255])).chain(
+        selected_targets
+            .iter()
+            .copied()
+            .map(|target| (Some(target), [255, 226, 143, 255])),
+    ) {
         match target {
             Some(GeometrySelectionTarget::Vertex(id)) => {
                 if let Some(vertex) = topology.vertex(id) {
                     let center = camera.project(vertex.position);
                     if topology.cad_vertex_owner(id).is_some() {
-                        if center.0<0 || center.1<0 || center.0>=width as i32 || center.1>=height as i32 {continue;}
-                        if camera.depth(&[vertex.position])>cad_depth[center.1 as usize*width as usize+center.0 as usize]+2.0/camera.scale {continue;}
+                        if center.0 < 0
+                            || center.1 < 0
+                            || center.0 >= width as i32
+                            || center.1 >= height as i32
+                        {
+                            continue;
+                        }
+                        if camera.depth(&[vertex.position])
+                            > cad_depth[center.1 as usize * width as usize + center.0 as usize]
+                                + 2.0 / camera.scale
+                        {
+                            continue;
+                        }
                     }
                     draw_ellipse(&mut pixels, width, height, center, 6, 6, color);
                     draw_marker(&mut pixels, width, height, center, color);
@@ -1118,7 +1240,15 @@ pub(super) fn render_canonical_geometry_3d(
                     .and_then(|edge| canonical_edge_path(topology, &edge.geometry))
                 {
                     if topology.cad_edge(id).is_some() {
-                        draw_cad_curve(&mut pixels,&cad_depth,width,height,&camera,&path,color);
+                        draw_cad_curve(
+                            &mut pixels,
+                            &cad_depth,
+                            width,
+                            height,
+                            &camera,
+                            &path,
+                            color,
+                        );
                         continue;
                     }
                     for segment in path.windows(2) {
@@ -1143,28 +1273,56 @@ pub(super) fn render_canonical_geometry_3d(
     image_from_rgba(width, height, pixels)
 }
 
-fn draw_cad_curve(pixels:&mut [u8],depth:&[f64],width:u32,height:u32,camera:&CanonicalCamera,path:&[Vec3],color:[u8;4]) {
+fn draw_cad_curve(
+    pixels: &mut [u8],
+    depth: &[f64],
+    width: u32,
+    height: u32,
+    camera: &CanonicalCamera,
+    path: &[Vec3],
+    color: [u8; 4],
+) {
     for segment in path.windows(2) {
-        let (a,b)=(camera.project(segment[0]),camera.project(segment[1]));
-        let (ax,ay)=(a.0 as f64,a.1 as f64);
-        let (dx,dy)=(b.0 as f64-ax,b.1 as f64-ay);
-        let (mut lo,mut hi)=(0.0f64,1.0f64);
-        let mut visible=true;
-        for (p,q) in [(-dx,ax),(dx,width as f64-1.0-ax),(-dy,ay),(dy,height as f64-1.0-ay)] {
-            if p==0.0 {if q<0.0 {visible=false;break;}}
-            else {let t=q/p;if p<0.0 {lo=lo.max(t);}else{hi=hi.min(t);}}
+        let (a, b) = (camera.project(segment[0]), camera.project(segment[1]));
+        let (ax, ay) = (a.0 as f64, a.1 as f64);
+        let (dx, dy) = (b.0 as f64 - ax, b.1 as f64 - ay);
+        let (mut lo, mut hi) = (0.0f64, 1.0f64);
+        let mut visible = true;
+        for (p, q) in [
+            (-dx, ax),
+            (dx, width as f64 - 1.0 - ax),
+            (-dy, ay),
+            (dy, height as f64 - 1.0 - ay),
+        ] {
+            if p == 0.0 {
+                if q < 0.0 {
+                    visible = false;
+                    break;
+                }
+            } else {
+                let t = q / p;
+                if p < 0.0 {
+                    lo = lo.max(t);
+                } else {
+                    hi = hi.min(t);
+                }
+            }
         }
-        if !visible || lo>hi {continue;}
-        let steps=(dx.abs().max(dy.abs())*(hi-lo)).ceil().max(1.0) as usize;
-        let za=camera.depth(&segment[..1]);
-        let zb=camera.depth(&segment[1..]);
+        if !visible || lo > hi {
+            continue;
+        }
+        let steps = (dx.abs().max(dy.abs()) * (hi - lo)).ceil().max(1.0) as usize;
+        let za = camera.depth(&segment[..1]);
+        let zb = camera.depth(&segment[1..]);
         for i in 0..=steps {
-            let t=lo+(hi-lo)*i as f64/steps as f64;
-            let (x,y)=((ax+dx*t).round() as i32,(ay+dy*t).round() as i32);
-            if x<0||y<0||x>=width as i32||y>=height as i32 {continue;}
-            let index=y as usize*width as usize+x as usize;
-            if za+(zb-za)*t<=depth[index]+2.0/camera.scale {
-                pixels[index*4..index*4+4].copy_from_slice(&color);
+            let t = lo + (hi - lo) * i as f64 / steps as f64;
+            let (x, y) = ((ax + dx * t).round() as i32, (ay + dy * t).round() as i32);
+            if x < 0 || y < 0 || x >= width as i32 || y >= height as i32 {
+                continue;
+            }
+            let index = y as usize * width as usize + x as usize;
+            if za + (zb - za) * t <= depth[index] + 2.0 / camera.scale {
+                pixels[index * 4..index * 4 + 4].copy_from_slice(&color);
             }
         }
     }
@@ -1291,10 +1449,13 @@ pub(super) fn pick_canonical_geometry_target(
                 let position = camera.project(vertex.position);
                 let distance =
                     (point.0 - f64::from(position.0)).hypot(point.1 - f64::from(position.1));
-                (distance <= 9.0 && visible(vertex.position))
-                    .then_some((distance,(vertex.position-ray.origin).dot(ray.direction), GeometrySelectionTarget::Vertex(vertex.id)))
+                (distance <= 9.0 && visible(vertex.position)).then_some((
+                    distance,
+                    (vertex.position - ray.origin).dot(ray.direction),
+                    GeometrySelectionTarget::Vertex(vertex.id),
+                ))
             })
-            .min_by(|a, b| a.0.total_cmp(&b.0).then_with(||a.1.total_cmp(&b.1)))
+            .min_by(|a, b| a.0.total_cmp(&b.0).then_with(|| a.1.total_cmp(&b.1)))
             .map(|(_, _, target)| target);
     }
     if mode != 1 {
@@ -1308,8 +1469,8 @@ pub(super) fn pick_canonical_geometry_target(
             path.windows(2)
                 .filter_map(|segment| {
                     let (a, b) = (camera.project(segment[0]), camera.project(segment[1]));
-                    let dx = f64::from(b.0)-f64::from(a.0);
-                    let dy = f64::from(b.1)-f64::from(a.1);
+                    let dx = f64::from(b.0) - f64::from(a.0);
+                    let dy = f64::from(b.1) - f64::from(a.1);
                     let t = if dx == 0.0 && dy == 0.0 {
                         0.0
                     } else {
@@ -1323,12 +1484,13 @@ pub(super) fn pick_canonical_geometry_target(
                         (f64::from(a.0), f64::from(a.1)),
                         (f64::from(b.0), f64::from(b.1)),
                     );
-                    (distance <= 8.0 && visible(closest)).then_some((distance,(closest-ray.origin).dot(ray.direction)))
+                    (distance <= 8.0 && visible(closest))
+                        .then_some((distance, (closest - ray.origin).dot(ray.direction)))
                 })
-                .min_by(|a,b|a.0.total_cmp(&b.0).then_with(||a.1.total_cmp(&b.1)))
-                .map(|(distance,depth)| (distance,depth, GeometrySelectionTarget::Edge(edge.id)))
+                .min_by(|a, b| a.0.total_cmp(&b.0).then_with(|| a.1.total_cmp(&b.1)))
+                .map(|(distance, depth)| (distance, depth, GeometrySelectionTarget::Edge(edge.id)))
         })
-        .min_by(|a, b| a.0.total_cmp(&b.0).then_with(||a.1.total_cmp(&b.1)))
+        .min_by(|a, b| a.0.total_cmp(&b.0).then_with(|| a.1.total_cmp(&b.1)))
         .map(|(_, _, target)| target)
 }
 
@@ -1337,7 +1499,7 @@ fn canonical_edge_path(
     edge: &flursys::EdgeGeometry,
 ) -> Option<Vec<Vec3>> {
     match *edge {
-        flursys::EdgeGeometry::Kernel {id,..} => Some(topology.cad_edge(id)?.path.clone()),
+        flursys::EdgeGeometry::Kernel { id, .. } => Some(topology.cad_edge(id)?.path.clone()),
         flursys::EdgeGeometry::Line { start, end } => Some(vec![
             topology.vertex(start)?.position,
             topology.vertex(end)?.position,
@@ -1854,7 +2016,7 @@ pub(super) fn render_geometry_editor(
     }
     for edge in topology.edges().filter(|e| topology.is_edge_visible(e.id)) {
         let in_sketch_plane = match edge.geometry {
-            flursys::EdgeGeometry::Kernel {..} => false,
+            flursys::EdgeGeometry::Kernel { .. } => false,
             flursys::EdgeGeometry::Line { start, end } => [start, end].into_iter().all(|id| {
                 topology
                     .vertex(id)
@@ -1899,7 +2061,7 @@ pub(super) fn render_geometry_editor(
             [104, 222, 237, 255]
         };
         match edge.geometry {
-            flursys::EdgeGeometry::Kernel {..} => {},
+            flursys::EdgeGeometry::Kernel { .. } => {}
             flursys::EdgeGeometry::Line { start, end } => {
                 if let (Some(a), Some(b)) = (topology.vertex(start), topology.vertex(end)) {
                     let a = to_screen((a.position.x, a.position.y));
@@ -3558,10 +3720,12 @@ fn scalar_range(values: &[f64], symmetric: bool) -> (f64, f64) {
         min_value = -bound;
         max_value = bound;
     } else if !min_value.is_finite() || !max_value.is_finite() {
-        min_value = 0.0; max_value = 1.0;
-    } else if max_value<=min_value {
-        let pad=(min_value.abs()*0.01).max(1e-12);
-        min_value-=pad;max_value+=pad;
+        min_value = 0.0;
+        max_value = 1.0;
+    } else if max_value <= min_value {
+        let pad = (min_value.abs() * 0.01).max(1e-12);
+        min_value -= pad;
+        max_value += pad;
     }
     (min_value, max_value)
 }
@@ -3741,36 +3905,80 @@ fn draw_velocity_vectors(pixels: &mut [u8], width: u32, height: u32, field: &Fie
 /// Workbench jobs report continuity during the solve; do not substitute
 /// histories belonging to the separate structured solver.
 pub(super) fn render_workbench_continuity_chart(history: &VecDeque<ResidualSample>) -> Image {
-    let (width,height)=(PREVIEW_WIDTH,PREVIEW_HEIGHT);
-    let mut pixels=vec![0u8;(width*height*4) as usize];
-    fill(&mut pixels,[11,18,24,255]);
-    let positive=history.iter().map(|s|s.continuity).filter(|v|v.is_finite() && *v>0.0).collect::<Vec<_>>();
-    if positive.is_empty(){
-        if history.iter().any(|s|s.continuity==0.0) {
-            for n in 0..=4 {let y=12+(height-25)*n/4;draw_line(&mut pixels,width,height,(12,y as i32),(width as i32-13,y as i32),[29,48,61,255]);}
-            draw_line(&mut pixels,width,height,(12,height as i32-13),(width as i32-13,height as i32-13),[77,168,184,255]);
+    let (width, height) = (PREVIEW_WIDTH, PREVIEW_HEIGHT);
+    let mut pixels = vec![0u8; (width * height * 4) as usize];
+    fill(&mut pixels, [11, 18, 24, 255]);
+    let positive = history
+        .iter()
+        .map(|s| s.continuity)
+        .filter(|v| v.is_finite() && *v > 0.0)
+        .collect::<Vec<_>>();
+    if positive.is_empty() {
+        if history.iter().any(|s| s.continuity == 0.0) {
+            for n in 0..=4 {
+                let y = 12 + (height - 25) * n / 4;
+                draw_line(
+                    &mut pixels,
+                    width,
+                    height,
+                    (12, y as i32),
+                    (width as i32 - 13, y as i32),
+                    [29, 48, 61, 255],
+                );
+            }
+            draw_line(
+                &mut pixels,
+                width,
+                height,
+                (12, height as i32 - 13),
+                (width as i32 - 13, height as i32 - 13),
+                [77, 168, 184, 255],
+            );
         }
-        return image_from_rgba(width,height,pixels);
+        return image_from_rgba(width, height, pixels);
     }
-    let lo=positive.iter().copied().fold(f64::INFINITY,f64::min).log10().floor()-0.25;
-    let hi=positive.iter().copied().fold(0.0,f64::max).log10().ceil()+0.25;
-    let span=(hi-lo).max(1.0);
+    let lo = positive
+        .iter()
+        .copied()
+        .fold(f64::INFINITY, f64::min)
+        .log10()
+        .floor()
+        - 0.25;
+    let hi = positive.iter().copied().fold(0.0, f64::max).log10().ceil() + 0.25;
+    let span = (hi - lo).max(1.0);
     for n in 0..=4 {
-        let y=12+(height-25)*n/4;
-        draw_line(&mut pixels,width,height,(12,y as i32),(width as i32-13,y as i32),[29,48,61,255]);
+        let y = 12 + (height - 25) * n / 4;
+        draw_line(
+            &mut pixels,
+            width,
+            height,
+            (12, y as i32),
+            (width as i32 - 13, y as i32),
+            [29, 48, 61, 255],
+        );
     }
-    let mut previous=None;
-    for (index,sample) in history.iter().enumerate() {
-        if !sample.continuity.is_finite() || sample.continuity<0.0 {previous=None;continue;}
-        let log=if sample.continuity>0.0 {sample.continuity.log10()} else {lo};
-        let x=12+(width-25) as usize*index/history.len().saturating_sub(1).max(1);
-        let y=12.0+(hi-log).clamp(0.0,span)/span*f64::from(height-25);
-        let point=(x as i32,y.round() as i32);
-        if let Some(old)=previous {draw_line(&mut pixels,width,height,old,point,[77,168,184,255]);}
-        else {draw_marker(&mut pixels,width,height,point,[77,168,184,255]);}
-        previous=Some(point);
+    let mut previous = None;
+    for (index, sample) in history.iter().enumerate() {
+        if !sample.continuity.is_finite() || sample.continuity < 0.0 {
+            previous = None;
+            continue;
+        }
+        let log = if sample.continuity > 0.0 {
+            sample.continuity.log10()
+        } else {
+            lo
+        };
+        let x = 12 + (width - 25) as usize * index / history.len().saturating_sub(1).max(1);
+        let y = 12.0 + (hi - log).clamp(0.0, span) / span * f64::from(height - 25);
+        let point = (x as i32, y.round() as i32);
+        if let Some(old) = previous {
+            draw_line(&mut pixels, width, height, old, point, [77, 168, 184, 255]);
+        } else {
+            draw_marker(&mut pixels, width, height, point, [77, 168, 184, 255]);
+        }
+        previous = Some(point);
     }
-    image_from_rgba(width,height,pixels)
+    image_from_rgba(width, height, pixels)
 }
 
 pub(super) fn render_residual_chart(history: &VecDeque<ResidualSample>) -> Image {
@@ -4298,36 +4506,96 @@ mod tests {
 }
 
 /// Display-only contour reconstruction; stored cell data is never modified.
-fn draw_result_contours(pixels:&mut[u8],width:u32,height:u32,cache:&ResultRenderCache,field:ResultFieldKind,view:&ViewTransform,range:Option<(f64,f64)>,levels:usize) {
-    let values=(0..cache.cell_count()).map(|c|cache.scalar_for_cell(field,c).unwrap_or(0.0)).collect::<Vec<_>>();
-    let (lo,hi)=range.unwrap_or_else(||scalar_range(&values,false));
-    if !(hi>lo) || values.iter().all(|v|*v==values[0]) {return;}
-    let mut nodes=std::collections::HashMap::<(u64,u64),(f64,usize)>::new();
-    for (i,v) in values.iter().enumerate() {if let Some(poly)=cache.mesh_cache().cell_polygon(i) {for &(x,y) in poly {let a=nodes.entry((x.to_bits(),y.to_bits())).or_default();a.0+=v;a.1+=1;}}}
-    for (i,&v) in values.iter().enumerate() {
-        let Some(poly)=cache.mesh_cache().cell_polygon(i) else {continue};
-        if poly.len()<3 {continue;}
-        let center=(poly.iter().map(|p|p.0).sum::<f64>()/poly.len() as f64,poly.iter().map(|p|p.1).sum::<f64>()/poly.len() as f64);
+fn draw_result_contours(
+    pixels: &mut [u8],
+    width: u32,
+    height: u32,
+    cache: &ResultRenderCache,
+    field: ResultFieldKind,
+    view: &ViewTransform,
+    range: Option<(f64, f64)>,
+    levels: usize,
+) {
+    let values = (0..cache.cell_count())
+        .map(|c| cache.scalar_for_cell(field, c).unwrap_or(0.0))
+        .collect::<Vec<_>>();
+    let (lo, hi) = range.unwrap_or_else(|| scalar_range(&values, false));
+    if !(hi > lo) || values.iter().all(|v| *v == values[0]) {
+        return;
+    }
+    let mut nodes = std::collections::HashMap::<(u64, u64), (f64, usize)>::new();
+    for (i, v) in values.iter().enumerate() {
+        if let Some(poly) = cache.mesh_cache().cell_polygon(i) {
+            for &(x, y) in poly {
+                let a = nodes.entry((x.to_bits(), y.to_bits())).or_default();
+                a.0 += v;
+                a.1 += 1;
+            }
+        }
+    }
+    for (i, &v) in values.iter().enumerate() {
+        let Some(poly) = cache.mesh_cache().cell_polygon(i) else {
+            continue;
+        };
+        if poly.len() < 3 {
+            continue;
+        }
+        let center = (
+            poly.iter().map(|p| p.0).sum::<f64>() / poly.len() as f64,
+            poly.iter().map(|p| p.1).sum::<f64>() / poly.len() as f64,
+        );
         for j in 0..poly.len() {
-            let (a,b)=(poly[j],poly[(j+1)%poly.len()]);
-            let value=|p:(f64,f64)| {let n=nodes[&(p.0.to_bits(),p.1.to_bits())];n.0/n.1 as f64};
-            let triangle=[(center,v),(a,value(a)),(b,value(b))];
-            for level in 1..levels.clamp(3,32) {
-                let iso=lo+(hi-lo)*level as f64/levels as f64;
-                let mut intersections=Vec::with_capacity(2);
+            let (a, b) = (poly[j], poly[(j + 1) % poly.len()]);
+            let value = |p: (f64, f64)| {
+                let n = nodes[&(p.0.to_bits(), p.1.to_bits())];
+                n.0 / n.1 as f64
+            };
+            let triangle = [(center, v), (a, value(a)), (b, value(b))];
+            for level in 1..levels.clamp(3, 32) {
+                let iso = lo + (hi - lo) * level as f64 / levels as f64;
+                let mut intersections = Vec::with_capacity(2);
                 for k in 0..3 {
-                    let ((a,va),(b,vb))=(triangle[k],triangle[(k+1)%3]);
-                    if (va<iso && vb>=iso)||(vb<iso && va>=iso) {let t=(iso-va)/(vb-va);intersections.push(view.world_to_screen((a.0+(b.0-a.0)*t,a.1+(b.1-a.1)*t)));}
+                    let ((a, va), (b, vb)) = (triangle[k], triangle[(k + 1) % 3]);
+                    if (va < iso && vb >= iso) || (vb < iso && va >= iso) {
+                        let t = (iso - va) / (vb - va);
+                        intersections.push(
+                            view.world_to_screen((a.0 + (b.0 - a.0) * t, a.1 + (b.1 - a.1) * t)),
+                        );
+                    }
                 }
-                if intersections.len()==2 {let (a,b)=(intersections[0],intersections[1]);draw_line(pixels,width,height,(a.0 as i32,a.1 as i32),(b.0 as i32,b.1 as i32),[26,39,48,255]);}
+                if intersections.len() == 2 {
+                    let (a, b) = (intersections[0], intersections[1]);
+                    draw_line(
+                        pixels,
+                        width,
+                        height,
+                        (a.0 as i32, a.1 as i32),
+                        (b.0 as i32, b.1 as i32),
+                        [26, 39, 48, 255],
+                    );
+                }
             }
         }
     }
 }
 
-pub(super) fn overlay_markers(image:Image,points:&[(f64,f64)],view:&ViewTransform)->Image {
-    let Some(buffer)=image.to_rgba8() else{return image};
-    let (w,h)=(buffer.width(),buffer.height());let mut pixels=buffer.as_bytes().to_vec();
-    for &point in points {let p=view.world_to_screen(point);draw_ellipse(&mut pixels,w,h,(p.0 as i32,p.1 as i32),3,3,[255,248,207,255]);}
-    image_from_rgba(w,h,pixels)
+pub(super) fn overlay_markers(image: Image, points: &[(f64, f64)], view: &ViewTransform) -> Image {
+    let Some(buffer) = image.to_rgba8() else {
+        return image;
+    };
+    let (w, h) = (buffer.width(), buffer.height());
+    let mut pixels = buffer.as_bytes().to_vec();
+    for &point in points {
+        let p = view.world_to_screen(point);
+        draw_ellipse(
+            &mut pixels,
+            w,
+            h,
+            (p.0 as i32, p.1 as i32),
+            3,
+            3,
+            [255, 248, 207, 255],
+        );
+    }
+    image_from_rgba(w, h, pixels)
 }

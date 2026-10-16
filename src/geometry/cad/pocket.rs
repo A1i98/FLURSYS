@@ -162,7 +162,10 @@ impl GeometryTopology {
             if through_all {
                 "Through all".into()
             } else if stop_face.is_some() {
-                format!("Up to Face #{}", stop_face.map(|face| face.get()).unwrap_or_default())
+                format!(
+                    "Up to Face #{}",
+                    stop_face.map(|face| face.get()).unwrap_or_default()
+                )
             } else {
                 format!("Depth {depth}")
             }
@@ -217,20 +220,28 @@ impl GeometryTopology {
             .fold(0.0f64, f64::max);
         let clearance = (tolerance * 4.0).max(extent * 1e-6).max(1e-5);
         if through_all && stop_face.is_some() {
-            return Err(error("Pocket end condition must be either Through all or Up to face"));
+            return Err(error(
+                "Pocket end condition must be either Through all or Up to face",
+            ));
         }
         let depth = if let Some(stop) = stop_face {
             if self.cad_owner(stop) != Some(base) {
-                return Err(error("Pocket stop face must belong to the same source body"));
+                return Err(error(
+                    "Pocket stop face must belong to the same source body",
+                ));
             }
             let stop_frame = self.sketch_frame_for_face(stop)?;
             if stop_frame.normal.dot(normal).abs() < 1.0 - 1.0e-7 {
-                return Err(error("Up to face currently requires a planar face parallel to the sketch plane"));
+                return Err(error(
+                    "Up to face currently requires a planar face parallel to the sketch plane",
+                ));
             }
             let travel = -normal;
             let distance = (stop_frame.origin - origin).dot(travel);
             if !distance.is_finite() || distance <= tolerance {
-                return Err(error("Pocket stop face must lie ahead of the sketch along the cut direction"));
+                return Err(error(
+                    "Pocket stop face must lie ahead of the sketch along the cut direction",
+                ));
             }
             // `pocket_tool_solid` starts outside the host by `clearance` and
             // sweeps back across that offset, so this depth places the end

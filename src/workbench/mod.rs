@@ -11,8 +11,8 @@ pub mod legacy_import;
 pub mod mesh_viewport;
 pub mod picking;
 pub mod project;
-pub mod results;
 mod result_slice;
+pub mod results;
 pub mod selection;
 pub mod session;
 

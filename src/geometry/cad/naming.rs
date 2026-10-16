@@ -22,19 +22,29 @@ impl GeometryTopology {
             }
         };
         let names: Option<Vec<String>> = match recipe {
-            Some(CadRecipe::Finish{kind,corners,opening,..}) => {
-                let names=if kind==2 {
-                    (0..count).map(|i|format!("shell:opening:{opening}:face:{i}")).collect::<Vec<_>>()
-                }else{
-                    let mut names=vec![format!("finish:{kind}:start")];
+            Some(CadRecipe::Finish {
+                kind,
+                corners,
+                opening,
+                ..
+            }) => {
+                let names = if kind == 2 {
+                    (0..count)
+                        .map(|i| format!("shell:opening:{opening}:face:{i}"))
+                        .collect::<Vec<_>>()
+                } else {
+                    let mut names = vec![format!("finish:{kind}:start")];
                     for corner in 0..4 {
-                        if corners & (1<<corner)!=0 {names.push(format!("finish:{kind}:corner:{corner}"));}
+                        if corners & (1 << corner) != 0 {
+                            names.push(format!("finish:{kind}:corner:{corner}"));
+                        }
                         names.push(format!("finish:{kind}:side:{corner}"));
                     }
-                    names.push(format!("finish:{kind}:end"));names
+                    names.push(format!("finish:{kind}:end"));
+                    names
                 };
-                (names.len()==count).then_some(names)
-            },
+                (names.len() == count).then_some(names)
+            }
             Some(CadRecipe::Primitive { shape, .. }) => {
                 let kind = match shape {
                     CadPrimitive::Box { .. } => "box",

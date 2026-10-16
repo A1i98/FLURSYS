@@ -12,7 +12,7 @@ pub(super) struct State {
     pub profile: Vec<result_analysis::ProfilePoint>,
     pub profile_label: String,
     pub boundary_summary: String,
-    pub boundary_reports:Vec<flursys::workbench::boundary_reports::BoundaryFlowReport>,
+    pub boundary_reports: Vec<flursys::workbench::boundary_reports::BoundaryFlowReport>,
     pub playing: bool,
     pub phase: f64,
     pub probes: Vec<ResultProbe>,
@@ -242,7 +242,8 @@ fn chart_caption(state: &AppState, kind: i32) -> String {
 }
 
 pub(super) fn bind(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
-    let weak=ui.as_weak();let shared=state.clone();
+    let weak = ui.as_weak();
+    let shared = state.clone();
     ui.on_post_profile(move |preset| {
         let Some(ui)=weak.upgrade() else{return};let mut state=shared.borrow_mut();
         let result=(||->Result<(),String>{
@@ -630,7 +631,13 @@ pub(super) fn refresh(ui: &MainWindow, state: &AppState) {
     ui.set_post_probe_count(state.post.probes.len() as i32);
     ui.set_post_balance((result_analysis::balance(state)+"\n\n"+if state.solving{""}else if state.post.boundary_summary.is_empty(){"Patch details were not recorded for this archive. New solves save patch flow integrals."}else{&state.post.boundary_summary}).into());
     ui.set_post_convergence_summary(result_analysis::convergence_summary(state).into());
-    if state.post.profile.is_empty(){ui.set_post_profile_image(render::render_empty_image());ui.set_post_profile_caption("Choose a line and sample the selected field. Profiles use the active archived mesh.".into());}
+    if state.post.profile.is_empty() {
+        ui.set_post_profile_image(render::render_empty_image());
+        ui.set_post_profile_caption(
+            "Choose a line and sample the selected field. Profiles use the active archived mesh."
+                .into(),
+        );
+    }
     let probes = state
         .post
         .probes

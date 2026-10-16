@@ -6,13 +6,11 @@ use std::sync::Arc;
 use truck_meshalgo::prelude::*;
 use truck_modeling::{builder, EuclideanSpace, InnerSpace, Point3, Rad, Solid, Vector3, Wire};
 mod advanced;
-mod finishing;
-mod subtractive;
 mod axis;
 mod constraints;
-mod regions;
 mod datum;
 mod exchange;
+mod finishing;
 mod history;
 mod naming;
 mod operations;
@@ -20,8 +18,10 @@ mod parametric;
 mod pocket;
 mod primitives;
 mod regenerate;
+mod regions;
 mod sketch;
 mod subelements;
+mod subtractive;
 pub use subelements::{CadEdge, CadVertex};
 mod visibility;
 pub use primitives::CadPrimitive;
@@ -88,12 +88,25 @@ pub enum CadTransform {
 }
 /// An associative axis reference resolved from current sketch/B-rep geometry.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum CadAxisReference { Edge(EdgeId), ProfileX(FaceId), ProfileY(FaceId) }
+pub enum CadAxisReference {
+    Edge(EdgeId),
+    ProfileX(FaceId),
+    ProfileY(FaceId),
+}
 /// Persisted modeling intent, independent of display text and tessellation.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum CadRecipe {
-    Finish { source: BodyId, kind: u8, amount: f64, corners:u8, opening:u8 },
-    Primitive { shape: CadPrimitive, position: Vec3 },
+    Finish {
+        source: BodyId,
+        kind: u8,
+        amount: f64,
+        corners: u8,
+        opening: u8,
+    },
+    Primitive {
+        shape: CadPrimitive,
+        position: Vec3,
+    },
     Extrude {
         face: FaceId,
         distance: f64,
@@ -312,8 +325,9 @@ impl GeometryTopology {
                 minor_radius,
             } => format!("Torus · major R {major_radius} · minor R {minor_radius}"),
         };
-        let id=self.cad_insert(solid,name,&description)?;
-        self.cad_bodies.get_mut(&id).unwrap().recipe=Some(CadRecipe::Primitive{shape,position});
+        let id = self.cad_insert(solid, name, &description)?;
+        self.cad_bodies.get_mut(&id).unwrap().recipe =
+            Some(CadRecipe::Primitive { shape, position });
         self.name_constructed_faces(id)?;
         Ok(id)
     }

@@ -46,7 +46,7 @@ impl GeometryTopology {
             .sketch(id)
             .ok_or_else(|| error("Sketch not found"))?
             .clone();
-        if offset!=sketch.attachment_offset && next.cad_sketch_region_count(id)>1 {
+        if offset != sketch.attachment_offset && next.cad_sketch_region_count(id) > 1 {
             return Err(error("This sketch has multiple regions sharing one support. Independent region plane offsets are not allowed"));
         }
         let delta = sketch.frame.normal * (offset - sketch.attachment_offset);

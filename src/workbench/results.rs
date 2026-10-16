@@ -8,10 +8,10 @@ use super::MeshRenderCache;
 use crate::{CellDefinition, MeshDimension, Point, UnstructuredMesh, Vec3};
 use std::path::Path;
 
-#[path = "streamlines.rs"]
-pub mod streamlines;
 #[path = "result_derivatives.rs"]
 mod derivatives;
+#[path = "streamlines.rs"]
+pub mod streamlines;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ResultFieldKind {
@@ -94,9 +94,10 @@ impl ResultDataset {
                 "velocity magnitude is non-finite".into(),
             ));
         }
-        let (vorticity,divergence)=derivatives::velocity_derivatives(mesh,&velocity);
+        let (vorticity, divergence) = derivatives::velocity_derivatives(mesh, &velocity);
         Ok(Self {
-            vorticity, divergence,
+            vorticity,
+            divergence,
             run_id,
             mesh: mesh.clone(),
             pressure,
@@ -177,7 +178,10 @@ impl ResultDataset {
     pub fn write_cell_csv(&self, path: &Path) -> Result<(), std::io::Error> {
         use std::io::Write;
         let mut file = std::io::BufWriter::new(std::fs::File::create(path)?);
-        writeln!(file, "cell,x,y,z,cell_measure,p_over_rho,ux,uy,uz,speed,vorticity_lsq,div_u_lsq")?;
+        writeln!(
+            file,
+            "cell,x,y,z,cell_measure,p_over_rho,ux,uy,uz,speed,vorticity_lsq,div_u_lsq"
+        )?;
         for (index, cell) in self.mesh.cells().iter().enumerate() {
             let u = self.velocity[index];
             writeln!(
@@ -238,7 +242,8 @@ impl ResultRenderCache {
             velocity: dataset.velocity.clone(),
             velocity_magnitude: dataset.velocity_magnitude.clone(),
             velocity_components: dataset.velocity_components.clone(),
-            vorticity: dataset.vorticity.clone(), divergence: dataset.divergence.clone(),
+            vorticity: dataset.vorticity.clone(),
+            divergence: dataset.divergence.clone(),
             face_owners: dataset.mesh.faces().iter().map(|face| face.owner).collect(),
         })
     }

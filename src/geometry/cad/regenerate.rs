@@ -5,7 +5,13 @@ use super::*;
 impl GeometryTopology {
     fn replay_recipe(&mut self, recipe: &CadRecipe) -> Result<BodyId, GeometryError> {
         match recipe {
-            CadRecipe::Finish {source,kind,amount,corners,opening} => self.cad_finish_prism(*source,*kind,*amount,*corners,*opening),
+            CadRecipe::Finish {
+                source,
+                kind,
+                amount,
+                corners,
+                opening,
+            } => self.cad_finish_prism(*source, *kind, *amount, *corners, *opening),
             CadRecipe::Primitive { shape, position } => {
                 self.cad_add_primitive(*shape, *position, "Primitive")
             }
@@ -90,7 +96,14 @@ impl GeometryTopology {
             .and_then(|b| b.recipe.as_ref())
             .ok_or_else(|| error("Body has no saved recipe"))?;
         let compatible = match (old, &recipe) {
-            (CadRecipe::Finish{source:a,kind:b,..},CadRecipe::Finish{source:c,kind:d,..}) => a==c && b==d,
+            (
+                CadRecipe::Finish {
+                    source: a, kind: b, ..
+                },
+                CadRecipe::Finish {
+                    source: c, kind: d, ..
+                },
+            ) => a == c && b == d,
             (CadRecipe::Primitive { shape: a, .. }, CadRecipe::Primitive { shape: b, .. }) => {
                 std::mem::discriminant(a) == std::mem::discriminant(b)
             }
@@ -155,8 +168,16 @@ impl GeometryTopology {
             if sections.len() < 2 {
                 return Err(error("A Loft requires at least two ordered profiles"));
             }
-            let dependencies = next.cad_bodies.get_mut(&body).unwrap().dependencies
-                .get_or_insert(CadDependencies { bodies: Vec::new(), profiles: Vec::new(), replayable_pad: false });
+            let dependencies = next
+                .cad_bodies
+                .get_mut(&body)
+                .unwrap()
+                .dependencies
+                .get_or_insert(CadDependencies {
+                    bodies: Vec::new(),
+                    profiles: Vec::new(),
+                    replayable_pad: false,
+                });
             dependencies.profiles = sections.clone();
         }
         next.cad_bodies.get_mut(&body).unwrap().recipe = Some(recipe);

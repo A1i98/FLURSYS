@@ -55,10 +55,14 @@ impl AppState {
         ];
         self.install_result_dataset(dataset)?;
         self.post.metric_histories = histories;
-        if let Some((mesh,solution))=self.workbench.mesh().zip(self.workbench.solution()) {
-            let reports=flursys::workbench::boundary_reports::boundary_flow_reports(&mesh.mesh,solution,self.workbench.material().density);
-            self.post.boundary_summary=result_analysis::boundary_summary(&reports);
-            self.post.boundary_reports=reports;
+        if let Some((mesh, solution)) = self.workbench.mesh().zip(self.workbench.solution()) {
+            let reports = flursys::workbench::boundary_reports::boundary_flow_reports(
+                &mesh.mesh,
+                solution,
+                self.workbench.material().density,
+            );
+            self.post.boundary_summary = result_analysis::boundary_summary(&reports);
+            self.post.boundary_reports = reports;
         }
         Ok(())
     }

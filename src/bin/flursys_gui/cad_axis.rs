@@ -135,9 +135,10 @@ pub(super) fn command(
             })
             .ok_or("Select a straight edge in the viewport or Project tree, then capture it")?
     } else {
-        super::cad_properties::invalidate(ui,state);
+        super::cad_properties::invalidate(ui, state);
         ui.set_cad_pick_role(2);
-        state.geometry_editor.set_tool(GeometryTool::Select);state.geometry_editor.prefer_faces=false;
+        state.geometry_editor.set_tool(GeometryTool::Select);
+        state.geometry_editor.prefer_faces = false;
         state.geometry_pick_mode = 1;
         ui.set_geometry_pick_mode(1);
         return Ok("Edge selection enabled. Select a line, then use Capture selected edge. The profile remains assigned.".into());
@@ -148,8 +149,9 @@ pub(super) fn command(
         .cad_reference_axis(CadAxisReference::Edge(edge))
         .map_err(|e| e.to_string())?;
     ui.set_cad_axis_edge(edge.get().to_string().into());
-    ui.set_cad_axis_mode(3);ui.set_cad_pick_role(0);
-    super::cad_properties::invalidate(ui,state);
+    ui.set_cad_axis_mode(3);
+    ui.set_cad_pick_role(0);
+    super::cad_properties::invalidate(ui, state);
     select_tree_geometry_target(state, GeometrySelectionTarget::Edge(edge), false);
     Ok(format!(
         "Axis linked to edge {}. It follows geometry changes during rebuild.",

@@ -8,9 +8,9 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
 pub mod cad;
-mod picking;
-mod line_edit;
 mod circle_cut;
+mod line_edit;
+mod picking;
 pub use cad::{CadBody, CadBoolean, CadPrimitive, CadTransform};
 
 pub use picking::{FaceRayHit, Ray3};
@@ -1747,10 +1747,25 @@ impl GeometryTopology {
                     message: "canonical sketch map key does not match its stable ID".into(),
                 });
             }
-            if let Some(owner)=sketch.region_owner {
-                let root=self.sketch(owner).ok_or_else(||GeometryError::InvalidPrimitive{message:"Sketch region owner is missing".into()})?;
-                if owner==id || root.region_owner.is_some() || root.plane!=sketch.plane || root.host_face!=sketch.host_face || (root.attachment_offset-sketch.attachment_offset).abs()>1e-8 || (root.frame.origin-sketch.frame.origin).norm()>1e-8 || (root.frame.x_axis-sketch.frame.x_axis).norm()>1e-8 || (root.frame.y_axis-sketch.frame.y_axis).norm()>1e-8 {
-                    return Err(GeometryError::InvalidPrimitive{message:"Sketch regions must share their owner's support and local frame".into()});
+            if let Some(owner) = sketch.region_owner {
+                let root = self
+                    .sketch(owner)
+                    .ok_or_else(|| GeometryError::InvalidPrimitive {
+                        message: "Sketch region owner is missing".into(),
+                    })?;
+                if owner == id
+                    || root.region_owner.is_some()
+                    || root.plane != sketch.plane
+                    || root.host_face != sketch.host_face
+                    || (root.attachment_offset - sketch.attachment_offset).abs() > 1e-8
+                    || (root.frame.origin - sketch.frame.origin).norm() > 1e-8
+                    || (root.frame.x_axis - sketch.frame.x_axis).norm() > 1e-8
+                    || (root.frame.y_axis - sketch.frame.y_axis).norm() > 1e-8
+                {
+                    return Err(GeometryError::InvalidPrimitive {
+                        message: "Sketch regions must share their owner's support and local frame"
+                            .into(),
+                    });
                 }
             }
             self.cad_validate_sketch_constraints(id)?;
