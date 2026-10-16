@@ -26,6 +26,9 @@ pub struct MomentumOptions<'a> {
     pub least_squares_stencil: Option<&'a LeastSquaresGradientStencil>,
     pub under_relaxation: f64,
     pub diffusion: DiffusionOptions,
+    /// Permit owner extrapolation at an intermediate pressure-outlet iterate.
+    /// The coupled solver must reject backflow in the final converged field.
+    pub allow_iterative_outlet_backflow: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -107,6 +110,7 @@ impl<'a> MomentumOptions<'a> {
             least_squares_stencil: None,
             under_relaxation: 1.0,
             diffusion: DiffusionOptions::default(),
+            allow_iterative_outlet_backflow: false,
         }
     }
 }
@@ -292,7 +296,7 @@ pub fn assemble_momentum_component(
                     rhs[face.owner] += diffusion * value - phi.min(0.0) * value;
                 }
                 ScalarBoundaryCondition::ZeroGradient => {
-                    if phi < 0.0 {
+                    if phi < 0.0 && !options.allow_iterative_outlet_backflow {
                         return Err(MomentumError::BackflowOnZeroGradient { face: face_index });
                     }
                     entries.push((face.owner, face.owner, phi));

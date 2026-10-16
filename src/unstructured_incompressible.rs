@@ -29,6 +29,7 @@ pub struct IncompressibleMaterial {
 pub struct IncompressibleSolverOptions {
     pub max_outer_iterations: usize,
     pub continuity_absolute_tolerance: f64,
+    pub coupling_relative_tolerance: f64,
     pub velocity_relaxation: f64,
     pub pressure_relaxation: f64,
     pub momentum_solver: LinearSolverOptions,
@@ -38,8 +39,9 @@ pub struct IncompressibleSolverOptions {
 impl Default for IncompressibleSolverOptions {
     fn default() -> Self {
         Self {
-            max_outer_iterations: 200,
+            max_outer_iterations: 1000,
             continuity_absolute_tolerance: 1.0e-10,
+            coupling_relative_tolerance: 1.0e-6,
             velocity_relaxation: 0.7,
             pressure_relaxation: 0.3,
             momentum_solver: LinearSolverOptions::default(),
@@ -415,6 +417,34 @@ fn solve_incompressible_impl(
     control: Option<&SolveControl<'_>>,
 ) -> Result<IncompressibleSolution, IncompressibleSolveError> {
     let resolved = case.resolve_boundaries()?;
+    let prescribed_flux = case
+        .mesh
+        .faces()
+        .iter()
+        .enumerate()
+        .filter(|(_, face)| face.neighbour.is_none())
+        .map(|(index, _)| resolved.boundary_flux()[index])
+        .sum::<f64>();
+    if prescribed_flux > 1.0e-12 {
+        if let Some((name, _)) = case.boundaries.iter().find(|(_, condition)| {
+            matches!(
+                condition,
+                IncompressibleBoundaryCondition::PressureOutlet { .. }
+            )
+        }) {
+            let patch = case
+                .mesh
+                .boundary_patches()
+                .iter()
+                .find(|patch| patch.name == *name)
+                .expect("resolved patch exists");
+            return Err(IncompressibleSolveError::BackflowAtPressureOutlet {
+                patch: name.clone(),
+                face: patch.face_indices[0],
+                flux: -prescribed_flux,
+            });
+        }
+    }
     let pressure_stencil =
         LeastSquaresGradientStencil::new(&case.mesh, resolved.pressure_boundary())
             .map_err(IncompressibleCaseError::from)?;
@@ -461,6 +491,7 @@ fn solve_incompressible_impl(
     }
     options.max_outer_iterations = case.solver.max_outer_iterations;
     options.continuity_absolute_tolerance = case.solver.continuity_absolute_tolerance;
+    options.coupling_relative_tolerance = case.solver.coupling_relative_tolerance;
     options.velocity_relaxation = case.solver.velocity_relaxation;
     options.pressure_relaxation = case.solver.pressure_relaxation;
     options.momentum_solver = case.solver.momentum_solver;
@@ -478,6 +509,28 @@ fn solve_incompressible_impl(
     )
     .map_err(|error| match error {
         SimpleError::Cancelled => IncompressibleSolveError::Cancelled,
+        SimpleError::Momentum(crate::MomentumError::BackflowOnZeroGradient { face }) => {
+            if let Some((patch, _)) = case.boundaries.iter().find(|(name, condition)| {
+                matches!(
+                    condition,
+                    IncompressibleBoundaryCondition::PressureOutlet { .. }
+                ) && case
+                    .mesh
+                    .boundary_patches()
+                    .iter()
+                    .any(|p| p.name == *name && p.face_indices.contains(&face))
+            }) {
+                IncompressibleSolveError::BackflowAtPressureOutlet {
+                    patch: patch.clone(),
+                    face,
+                    flux: state.face_flux[face],
+                }
+            } else {
+                IncompressibleSolveError::Simple(SimpleError::Momentum(
+                    crate::MomentumError::BackflowOnZeroGradient { face },
+                ))
+            }
+        }
         error => IncompressibleSolveError::Simple(error),
     })?;
     let status = if simple.converged {

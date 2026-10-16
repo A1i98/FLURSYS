@@ -26,6 +26,7 @@ pub enum SimpleError {
     InvalidPressureReference { cell: usize, cell_count: usize },
     InvalidPressureRelaxation { value: f64 },
     InvalidContinuityTolerance { value: f64 },
+    InvalidCouplingTolerance { value: f64 },
     InvalidOuterIterations { value: usize },
     MomentumLinearDidNotConverge,
     PressureLinearDidNotConverge,
@@ -103,6 +104,9 @@ pub struct SimpleOptions<'a> {
     pub reference_cell: usize,
     pub max_outer_iterations: usize,
     pub continuity_absolute_tolerance: f64,
+    /// Both momentum-residual reduction and the relative velocity update must
+    /// meet this tolerance; pressure projection alone cannot end a steady solve.
+    pub coupling_relative_tolerance: f64,
     pub momentum_solver: LinearSolverOptions,
     pub pressure_solver: LinearSolverOptions,
     pub velocity_relaxation: f64,
@@ -122,8 +126,9 @@ impl<'a> SimpleOptions<'a> {
             pressure_boundary: None,
             pressure_correction_boundary: None,
             reference_cell: 0,
-            max_outer_iterations: 200,
+            max_outer_iterations: 1000,
             continuity_absolute_tolerance: 1.0e-10,
+            coupling_relative_tolerance: 1.0e-6,
             momentum_solver: LinearSolverOptions::default(),
             pressure_solver: LinearSolverOptions::default(),
             velocity_relaxation: 0.7,
@@ -139,6 +144,8 @@ pub struct SimpleReport {
     pub initial_continuity_rms: f64,
     pub final_continuity_rms: f64,
     pub continuity_history: Vec<f64>,
+    pub final_momentum_relative_residual: f64,
+    pub final_velocity_relative_change: f64,
     pub momentum_reports: Option<[LinearSolveReport; 3]>,
     pub pressure_report: Option<LinearSolveReport>,
 }
@@ -187,10 +194,24 @@ pub fn solve_simple_with_control(
         });
     }
     let initial = continuity_rms(mesh, &state.face_flux)?;
+    if !options.coupling_relative_tolerance.is_finite()
+        || options.coupling_relative_tolerance <= 0.0
+    {
+        return Err(SimpleError::InvalidCouplingTolerance {
+            value: options.coupling_relative_tolerance,
+        });
+    }
     let mut history = vec![initial];
+    let mut momentum_reference = 0.0_f64;
+    let mut momentum_relative = f64::INFINITY;
+    let mut velocity_relative = f64::INFINITY;
 
     let mut last_momentum = None;
     let mut last_pressure = None;
+    let correction_stencil = options
+        .pressure_correction_boundary
+        .map(|boundary| LeastSquaresGradientStencil::new(mesh, boundary))
+        .transpose()?;
     for iteration in 1..=options.max_outer_iterations {
         if is_cancelled() {
             return Err(SimpleError::Cancelled);
@@ -219,6 +240,7 @@ pub fn solve_simple_with_control(
                     least_squares_stencil: None,
                     under_relaxation: options.velocity_relaxation,
                     diffusion: DiffusionOptions::default(),
+                    allow_iterative_outlet_backflow: options.pressure_correction_boundary.is_some(),
                 },
             )
         };
@@ -234,15 +256,53 @@ pub fn solve_simple_with_control(
         if !momentum_reports.iter().all(LinearSolveReport::converged) {
             return Err(SimpleError::MomentumLinearDidNotConverge);
         }
+        let momentum_initial = momentum_reports
+            .iter()
+            .map(|report| report.initial_residual)
+            .fold(0.0_f64, f64::max);
+        momentum_reference = momentum_reference.max(momentum_initial);
+        momentum_relative = momentum_initial / momentum_reference.max(1.0e-30);
+        let old_velocity = state.velocity.clone();
         let diagonal = x_system.matrix().diagonal()?;
-        let r_au = CellField::from_values(mesh, momentum_inverse_diagonal(&diagonal)?)?;
-        let mut predicted_flux = rhie_chow_predicted_flux(
+        // Momentum is assembled in integrated form (a_P U = -V grad(p)+...).
+        // Pressure response is V/a_P, including on nonuniform cells.
+        let inverse = momentum_inverse_diagonal(&diagonal)?;
+        let r_au = CellField::from_values(
+            mesh,
+            inverse
+                .iter()
+                .zip(mesh.cells())
+                .map(|(a, cell)| a * cell.volume)
+                .collect(),
+        )?;
+        let coefficients = match options.pressure_correction_boundary {
+            Some(boundary) => pressure_face_coefficients_with_boundary(mesh, &r_au, boundary)?,
+            None => pressure_face_coefficients(mesh, &r_au)?,
+        };
+        let mut coefficients = coefficients;
+        for (index, face) in mesh.faces().iter().enumerate() {
+            if coefficients[index] == 0.0 {
+                continue;
+            }
+            let target = face
+                .neighbour
+                .map(|n| mesh.cells()[n].center)
+                .unwrap_or(face.center);
+            let d = target - mesh.cells()[face.owner].center;
+            let projection = face.area_vector.dot(d);
+            // Over-relaxed orthogonal part: |S|²/(S·d), with the matching
+            // deferred pressure-gradient term in Rhie--Chow interpolation.
+            coefficients[index] *=
+                face.area_vector.norm_squared() * d.norm_squared() / (projection * projection);
+        }
+        let mut predicted_flux = rhie_chow_flux_with_coefficients(
             mesh,
             &predictor,
             &state.pressure,
             &r_au,
             options.pressure_stencil,
             &state.face_flux,
+            &coefficients,
         )?;
         if let Some(correction_boundary) = options.pressure_correction_boundary {
             correction_boundary.ensure_mesh(mesh)?;
@@ -254,13 +314,18 @@ pub fn solve_simple_with_control(
                     )
                 {
                     predicted_flux[face_index] = predictor[face.owner].dot(face.area_vector);
+                    if let Some(ScalarBoundaryCondition::FixedValue(pressure)) = options
+                        .pressure_boundary
+                        .and_then(|boundary| boundary.condition(face_index))
+                    {
+                        let d = face.center - mesh.cells()[face.owner].center;
+                        predicted_flux[face_index] -= coefficients[face_index]
+                            * (pressure_source[face.owner].dot(d) + pressure
+                                - state.pressure[face.owner]);
+                    }
                 }
             }
         }
-        let coefficients = match options.pressure_correction_boundary {
-            Some(boundary) => pressure_face_coefficients_with_boundary(mesh, &r_au, boundary)?,
-            None => pressure_face_coefficients(mesh, &r_au)?,
-        };
         let pressure_system = match options.pressure_correction_boundary {
             Some(boundary) => assemble_pressure_correction_with_boundary(
                 mesh,
@@ -289,10 +354,23 @@ pub fn solve_simple_with_control(
         {
             *pressure += options.pressure_relaxation * correction;
         }
-        let correction_gradient =
-            least_squares_gradient(mesh, options.pressure_stencil, &correction)?;
+        let correction_gradient = least_squares_gradient(
+            mesh,
+            correction_stencil
+                .as_ref()
+                .unwrap_or(options.pressure_stencil),
+            &correction,
+        )?;
         state.velocity =
             correct_cell_velocity_from_gradient(mesh, &predictor, &r_au, &correction_gradient)?;
+        let mut update_sq = 0.0_f64;
+        let mut scale_sq = 0.0_f64;
+        for (old, new) in old_velocity.values().iter().zip(state.velocity.values()) {
+            let delta = *new - *old;
+            update_sq += delta.dot(delta);
+            scale_sq += new.dot(*new);
+        }
+        velocity_relative = (update_sq / scale_sq.max(1.0e-60)).sqrt();
         state.face_flux = match options.pressure_correction_boundary {
             Some(boundary) => correct_face_flux_with_boundary(
                 mesh,
@@ -308,13 +386,19 @@ pub fn solve_simple_with_control(
         on_iteration(iteration, continuity);
         last_momentum = Some(momentum_reports);
         last_pressure = Some(pressure_report);
-        if continuity <= options.continuity_absolute_tolerance {
+        if continuity <= options.continuity_absolute_tolerance
+            && (momentum_relative <= options.coupling_relative_tolerance
+                || momentum_initial <= options.momentum_solver.absolute_tolerance)
+            && velocity_relative <= options.coupling_relative_tolerance
+        {
             return Ok(SimpleReport {
                 converged: true,
                 outer_iterations: iteration,
                 initial_continuity_rms: initial,
                 final_continuity_rms: continuity,
                 continuity_history: history,
+                final_momentum_relative_residual: momentum_relative,
+                final_velocity_relative_change: velocity_relative,
                 momentum_reports: last_momentum,
                 pressure_report: last_pressure,
             });
@@ -326,6 +410,8 @@ pub fn solve_simple_with_control(
         initial_continuity_rms: initial,
         final_continuity_rms: *history.last().expect("initial continuity exists"),
         continuity_history: history,
+        final_momentum_relative_residual: momentum_relative,
+        final_velocity_relative_change: velocity_relative,
         momentum_reports: last_momentum,
         pressure_report: last_pressure,
     })
@@ -803,38 +889,53 @@ pub fn rhie_chow_predicted_flux(
     pressure_stencil: &LeastSquaresGradientStencil,
     wall_flux: &FaceField<f64>,
 ) -> Result<FaceField<f64>, SimpleError> {
+    let coefficients = pressure_face_coefficients(mesh, r_au)?;
+    rhie_chow_flux_with_coefficients(
+        mesh,
+        predictor_velocity,
+        pressure,
+        r_au,
+        pressure_stencil,
+        wall_flux,
+        &coefficients,
+    )
+}
+
+fn rhie_chow_flux_with_coefficients(
+    mesh: &UnstructuredMesh,
+    predictor_velocity: &CellField<Vec3>,
+    pressure: &CellField<f64>,
+    r_au: &CellField<f64>,
+    pressure_stencil: &LeastSquaresGradientStencil,
+    wall_flux: &FaceField<f64>,
+    coefficients: &FaceField<f64>,
+) -> Result<FaceField<f64>, SimpleError> {
     predictor_velocity.ensure_mesh(mesh)?;
     pressure.ensure_mesh(mesh)?;
     r_au.ensure_mesh(mesh)?;
     pressure_stencil.ensure_mesh(mesh)?;
     wall_flux.ensure_mesh(mesh)?;
 
-    let mut face_velocity = FaceField::filled(mesh, Vec3::ZERO);
-    interpolate_vector_into(
-        mesh,
-        predictor_velocity,
-        ScalarBoundaryValue::OwnerValue,
-        &mut face_velocity,
-    )?;
     let pressure_gradient = least_squares_gradient(mesh, pressure_stencil, pressure)?;
-    let pressure_response =
-        CellField::from_cells(mesh, |cell, _| pressure_gradient[cell] * r_au[cell]);
-    let mut face_pressure_response = FaceField::filled(mesh, Vec3::ZERO);
-    interpolate_vector_into(
-        mesh,
-        &pressure_response,
-        ScalarBoundaryValue::OwnerValue,
-        &mut face_pressure_response,
-    )?;
-    let coefficients = pressure_face_coefficients(mesh, r_au)?;
     let mut flux = wall_flux.clone();
     for (face_index, face) in mesh.faces().iter().enumerate() {
         let Some(neighbour) = face.neighbour else {
             continue;
         };
-        flux[face_index] = face_velocity[face_index].dot(face.area_vector)
-            + face_pressure_response[face_index].dot(face.area_vector)
-            - coefficients[face_index] * (pressure[neighbour] - pressure[face.owner]);
+        let owner_distance = (face.center - mesh.cells()[face.owner].center).norm();
+        let neighbour_distance = (face.center - mesh.cells()[neighbour].center).norm();
+        let weight = neighbour_distance / (owner_distance + neighbour_distance);
+        let velocity = predictor_velocity[face.owner] * weight
+            + predictor_velocity[neighbour] * (1.0 - weight);
+        let gradient =
+            pressure_gradient[face.owner] * weight + pressure_gradient[neighbour] * (1.0 - weight);
+        let d = mesh.cells()[neighbour].center - mesh.cells()[face.owner].center;
+        // Use the same orthogonal pressure operator for the interpolated and
+        // direct pressure differences. Their non-orthogonal terms cancel, so
+        // a linear pressure field introduces no artificial Rhie--Chow flux.
+        flux[face_index] = velocity.dot(face.area_vector)
+            + coefficients[face_index]
+                * (gradient.dot(d) - (pressure[neighbour] - pressure[face.owner]));
         if !flux[face_index].is_finite() {
             return Err(SimpleError::InvalidPressureFaceCoefficient {
                 face: face_index,

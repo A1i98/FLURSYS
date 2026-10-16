@@ -384,6 +384,27 @@ fn high_level_velocity_inlet_pressure_outlet_channel_converges_with_balanced_bou
     let left_pressure = (solution.pressure[0] + solution.pressure[2]) * 0.5;
     let right_pressure = (solution.pressure[1] + solution.pressure[3]) * 0.5;
     assert!(left_pressure > right_pressure);
+
+    let mut unfinished = case.clone();
+    unfinished.solver.max_outer_iterations = 1;
+    let projected = solve_incompressible(&unfinished).unwrap();
+    assert!(
+        projected.report.final_continuity_rms <= unfinished.solver.continuity_absolute_tolerance
+    );
+    assert!(
+        !projected.report.converged(),
+        "Mass projection alone must not declare a steady solution"
+    );
+
+    let mut shifted = case.clone();
+    shifted.boundaries[1].1 = IncompressibleBoundaryCondition::PressureOutlet { pressure: 7.0 };
+    shifted.initial_conditions = flursys::IncompressibleInitialConditions::uniform(Vec3::ZERO, 7.0);
+    let shifted_solution = solve_incompressible(&shifted).unwrap();
+    assert!(shifted_solution.report.converged());
+    for cell in 0..case.mesh.cell_count() {
+        assert!((shifted_solution.velocity[cell] - solution.velocity[cell]).norm() < 1e-7);
+        assert!((shifted_solution.pressure[cell] - solution.pressure[cell] - 7.0).abs() < 1e-6);
+    }
 }
 
 #[test]
