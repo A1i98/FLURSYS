@@ -171,6 +171,37 @@ impl LeastSquaresGradientStencil {
             let inverse = match inverse_normal_matrix(mesh, normal, cell_index) {
                 Ok(inverse) => inverse,
                 Err(NumericsError::SingularLeastSquaresStencil { .. })
+                    if mesh.dimension() == crate::MeshDimension::TwoD =>
+                {
+                    // A corner triangle can have just one internal neighbour.
+                    // Enlarge only deficient stencils using actual cell values;
+                    // this preserves linear exactness without inventing wall
+                    // values or regularizing an otherwise rank-one matrix.
+                    let mut extended = Vec::new();
+                    for &neighbour in &cell.neighbours {
+                        extended.extend(mesh.cells()[neighbour].neighbours.iter().copied());
+                    }
+                    extended.sort_unstable();
+                    extended.dedup();
+                    for neighbour in extended {
+                        if neighbour == cell_index || cell.neighbours.contains(&neighbour) {
+                            continue;
+                        }
+                        let offset = mesh.cells()[neighbour].center - cell.center;
+                        let distance_squared = offset.norm_squared();
+                        if !distance_squared.is_finite() || distance_squared <= f64::EPSILON {
+                            continue;
+                        }
+                        let direction = offset / distance_squared.sqrt();
+                        add_normal_outer_product(&mut normal, direction);
+                        cell_equations.push(LeastSquaresEquation {
+                            rhs_coefficient: offset / distance_squared,
+                            source: LeastSquaresSource::Neighbour(neighbour),
+                        });
+                    }
+                    inverse_normal_matrix(mesh, normal, cell_index)?
+                }
+                Err(NumericsError::SingularLeastSquaresStencil { .. })
                     if mesh.dimension() == crate::MeshDimension::ThreeD =>
                 {
                     for normal_direction in zero_gradient_normals {
@@ -646,7 +677,9 @@ pub fn gauss_gradient_from_faces(
 /// Reconstructs cell-centred scalar gradients using a prevalidated weighted LSQ cache.
 ///
 /// The stencil uses cell-centre differences for internal faces and face-centre
-/// `FixedValue` boundary differences. `ZeroGradient` boundaries are omitted.
+/// `FixedValue` boundary differences. Rank-deficient 2D stencils include
+/// second-ring cell neighbours. `ZeroGradient` faces supply no value difference;
+/// deficient 3D stencils may use their normals as homogeneous constraints.
 pub fn least_squares_gradient_into(
     mesh: &UnstructuredMesh,
     stencil: &LeastSquaresGradientStencil,
