@@ -250,6 +250,9 @@ fn build_channel() -> Result<WorkbenchSession, ExampleProjectError> {
         }],
         ..MeshRecipe::default()
     });
+    // Stretched wall cells need conservative coupling while momentum settles;
+    // mass projection alone no longer declares this example converged.
+    session.set_solver_controls(1000, 0.3, 0.1, 1.0e-8)?;
     Ok(session)
 }
 

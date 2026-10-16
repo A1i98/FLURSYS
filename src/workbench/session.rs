@@ -19,6 +19,7 @@ use crate::{
     MeshingError, RectangleEntities, Vec3,
 };
 use std::collections::BTreeMap;
+mod flow_domain;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum SolveStatus {
@@ -91,6 +92,7 @@ impl From<IncompressibleCaseError> for WorkbenchError {
 /// geometry → Named Selections → Gmsh mesh → boundary conditions → solution.
 pub struct WorkbenchSession {
     geometry: GeometryTopology,
+    fluid_face_selection: Option<FaceId>,
     rectangle: Option<RectangleEntities>,
     box_body: Option<BoxEntities>,
     named_selections: NamedSelectionStore,
@@ -122,6 +124,7 @@ impl WorkbenchSession {
     pub fn new() -> Self {
         Self {
             geometry: GeometryTopology::new(),
+            fluid_face_selection: None,
             rectangle: None,
             box_body: None,
             named_selections: NamedSelectionStore::default(),
@@ -157,7 +160,10 @@ impl WorkbenchSession {
             })?;
         let mut session = Self::new();
         session.geometry = project.geometry.clone();
+        session.fluid_face_selection = project.fluid_face;
+        session.solver.coupling_relative_tolerance = project.solver.coupling_relative_tolerance;
         session.geometry.ensure_extrusion_edges()?;
+        session.geometry.ensure_cad_subelements()?;
         session.set_mesh_configuration(
             project.mesh.dimension,
             project.mesh.global_size,
@@ -209,6 +215,7 @@ impl WorkbenchSession {
     pub fn to_project(&self, name: impl Into<String>) -> WorkbenchProject {
         let mut project = WorkbenchProject::blank(name);
         project.geometry = self.geometry.clone();
+        project.fluid_face = self.fluid_face_selection;
         project.named_selections = self.named_selections.iter().cloned().collect();
         project.mesh.dimension = self.mesh_dimension;
         project.mesh.global_size = self.global_size;
@@ -220,6 +227,7 @@ impl WorkbenchSession {
         project.material.kinematic_viscosity = self.material.kinematic_viscosity;
         project.solver.max_outer_iterations = self.solver.max_outer_iterations;
         project.solver.continuity_absolute_tolerance = self.solver.continuity_absolute_tolerance;
+        project.solver.coupling_relative_tolerance = self.solver.coupling_relative_tolerance;
         project.solver.velocity_relaxation = self.solver.velocity_relaxation;
         project.solver.pressure_relaxation = self.solver.pressure_relaxation;
         project.boundaries = self
@@ -325,6 +333,7 @@ impl WorkbenchSession {
         self.mesh_hover = None;
         self.solution = None;
         self.status = SolveStatus::Idle;
+        self.fluid_face_selection = self.fluid_face_selection.filter(|id| self.geometry.face(*id).is_some());
         let geometry = &self.geometry;
         self.named_selections.retain_targets(|target| match target {
             GeometrySelectionTarget::Vertex(id) => geometry.vertex(id).is_some(),
@@ -332,6 +341,7 @@ impl WorkbenchSession {
             GeometrySelectionTarget::Face(id) => geometry.face(id).is_some(),
             GeometrySelectionTarget::Body(id) => geometry.body(id).is_some(),
         });
+        self.boundaries.retain(|name, _| self.named_selections.get(name).is_some());
         self.rectangle = self
             .rectangle
             .take()
@@ -438,17 +448,19 @@ impl WorkbenchSession {
     }
 
     pub fn fluid_face(&self) -> Option<FaceId> {
+        if let Some(face) = self.fluid_face_selection {
+            return self.geometry.face(face).map(|_| face);
+        }
         self.rectangle
             .as_ref()
             .map(|rectangle| rectangle.face)
             .or_else(|| {
-                self.geometry.faces().find_map(|face| {
-                    matches!(
-                        face.representation,
-                        crate::GeometryFaceRepresentation::Planar { .. }
-                    )
-                    .then_some(face.id)
-                })
+                let mut faces = self.geometry.faces().filter(|face| {
+                    matches!(face.representation, crate::GeometryFaceRepresentation::Planar { .. })
+                        && self.geometry.is_face_visible(face.id) && self.geometry.cad_owner(face.id).is_none()
+                });
+                let face = faces.next()?.id;
+                faces.next().is_none().then_some(face)
             })
     }
 
@@ -505,8 +517,7 @@ impl WorkbenchSession {
             }
         }
         self.named_selections.create(name, targets, |_| true)?;
-        self.status = SolveStatus::Idle;
-        self.solution = None;
+        self.invalidate_mesh();
         Ok(())
     }
 
@@ -516,11 +527,28 @@ impl WorkbenchSession {
         new_name: &str,
     ) -> Result<(), WorkbenchError> {
         self.named_selections.rename(old_name, new_name)?;
+        if let Some(condition) = self.boundaries.remove(old_name) {
+            self.boundaries.insert(new_name.trim().into(), condition);
+        }
+        let rename_target = |target: &mut MeshControlTarget| {
+            if let MeshControlTarget::NamedSelection(name) = target {
+                if name == old_name { *name = new_name.trim().into(); }
+            }
+        };
+        for control in &mut self.mesh_recipe.local_sizes { control.targets.iter_mut().for_each(rename_target); }
+        for control in &mut self.mesh_recipe.boundary_layers { control.targets.iter_mut().for_each(rename_target); }
+        for control in &mut self.mesh_recipe.refinements { control.targets.iter_mut().for_each(rename_target); }
+        self.invalidate_mesh();
         Ok(())
     }
 
     pub fn delete_named_selection(&mut self, name: &str) -> bool {
-        self.named_selections.delete(name)
+        let deleted = self.named_selections.delete(name);
+        if deleted {
+            self.boundaries.remove(name);
+            self.invalidate_mesh();
+        }
+        deleted
     }
 
     /// Deterministic physical-group input derived from Named Selections.
@@ -574,6 +602,9 @@ impl WorkbenchSession {
         mut export: GeometryGmshExport,
     ) -> Result<GeometryGmshExport, WorkbenchError> {
         let mut source = String::from("\n// FLURSYS persisted advanced mesh recipe.\n");
+        if self.mesh_dimension == MeshDimension::TwoD && self.geometry.edges().any(|e| matches!(e.geometry, crate::EdgeGeometry::CircularArc { .. })) {
+            source.push_str("Mesh.MinimumCirclePoints = 64;\nMesh.MeshSizeFromCurvature = 32;\n");
+        }
         let entity_kind = match self.mesh_dimension {
             MeshDimension::TwoD => "Curve",
             MeshDimension::ThreeD => "Surface",
@@ -730,10 +761,17 @@ impl WorkbenchSession {
                 let face = self.fluid_face().ok_or(WorkbenchError::NoGeometry {
                     needed: "planar fluid face",
                 })?;
+                let groups = self.boundary_groups_2d()?;
+                if let Some(crate::GeometryFace { representation: crate::GeometryFaceRepresentation::Planar { outer_loop, inner_loops }, .. }) = self.geometry.face(face) {
+                    let assigned = groups.iter().flat_map(|(_, edges)| edges).copied().collect::<std::collections::BTreeSet<_>>();
+                    let missing = outer_loop.iter().chain(inner_loops.iter().flatten())
+                        .filter(|e| !assigned.contains(&e.edge)).map(|e| e.edge.get().to_string()).collect::<Vec<_>>();
+                    if !missing.is_empty() { return Err(WorkbenchError::InvalidGrouping { message: format!("Assign every fluid boundary edge to a Named Selection before meshing. Missing edges: {}", missing.join(", ")) }); }
+                }
                 Ok(GmshGeometryExporter::planar(
                     &self.geometry,
                     face,
-                    self.boundary_groups_2d()?,
+                    groups,
                     "fluid",
                 )?)
             }
@@ -839,6 +877,10 @@ impl WorkbenchSession {
             element_order,
         };
         options.validate()?;
+        if self.mesh_dimension != dimension || self.global_size != global_size
+            || self.min_size != min_size || self.max_size != max_size || self.element_order != element_order {
+            self.invalidate_mesh();
+        }
         self.mesh_dimension = dimension;
         self.global_size = global_size;
         self.min_size = min_size;
@@ -938,7 +980,7 @@ impl WorkbenchSession {
                     .map(|patch| patch.name.clone())
                     .collect()
             })
-            .unwrap_or_default()
+            .unwrap_or_else(|| self.named_selections.iter().map(|s| s.name.clone()).collect())
     }
 
     pub fn assign_boundary(
@@ -946,6 +988,9 @@ impl WorkbenchSession {
         patch: &str,
         condition: IncompressibleBoundaryCondition,
     ) -> Result<(), WorkbenchError> {
+        if self.mesh.is_none() {
+            return self.configure_named_boundary(patch, condition);
+        }
         if !self.patch_names().iter().any(|name| name == patch) {
             return Err(WorkbenchError::InvalidGrouping {
                 message: format!("boundary patch {patch:?} does not exist in the current mesh"),
@@ -992,7 +1037,9 @@ impl WorkbenchSession {
     }
 
     pub fn unassign_boundary(&mut self, patch: &str) -> bool {
-        self.boundaries.remove(patch).is_some()
+        let removed = self.boundaries.remove(patch).is_some();
+        if removed { self.solution = None; self.status = SolveStatus::Idle; }
+        removed
     }
 
     pub fn boundary_assignment(&self, patch: &str) -> Option<&IncompressibleBoundaryCondition> {
@@ -1019,6 +1066,10 @@ impl WorkbenchSession {
                     value: kinematic_viscosity,
                 },
             ));
+        }
+        if self.material.density != density || self.material.kinematic_viscosity != kinematic_viscosity {
+            self.solution = None;
+            self.status = SolveStatus::Idle;
         }
         self.material = IncompressibleMaterial {
             density,
@@ -1059,6 +1110,11 @@ impl WorkbenchSession {
         }
         if !(continuity_absolute_tolerance.is_finite() && continuity_absolute_tolerance > 0.0) {
             return Err(invalid("continuity tolerance must be finite and positive"));
+        }
+        if self.solver.max_outer_iterations != max_outer_iterations || self.solver.velocity_relaxation != velocity_relaxation
+            || self.solver.pressure_relaxation != pressure_relaxation || self.solver.continuity_absolute_tolerance != continuity_absolute_tolerance {
+            self.solution = None;
+            self.status = SolveStatus::Idle;
         }
         self.solver.max_outer_iterations = max_outer_iterations;
         self.solver.velocity_relaxation = velocity_relaxation;

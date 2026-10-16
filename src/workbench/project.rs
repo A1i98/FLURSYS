@@ -163,6 +163,8 @@ impl Default for WorkbenchMaterial {
 pub struct WorkbenchSolverSettings {
     pub max_outer_iterations: usize,
     pub continuity_absolute_tolerance: f64,
+    #[serde(default = "default_coupling_tolerance")]
+    pub coupling_relative_tolerance: f64,
     pub velocity_relaxation: f64,
     pub pressure_relaxation: f64,
 }
@@ -170,12 +172,17 @@ pub struct WorkbenchSolverSettings {
 impl Default for WorkbenchSolverSettings {
     fn default() -> Self {
         Self {
-            max_outer_iterations: 200,
+            max_outer_iterations: 1000,
             continuity_absolute_tolerance: 1.0e-10,
+            coupling_relative_tolerance: default_coupling_tolerance(),
             velocity_relaxation: 0.7,
             pressure_relaxation: 0.3,
         }
     }
+}
+
+fn default_coupling_tolerance() -> f64 {
+    1.0e-6
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -210,6 +217,8 @@ pub struct WorkbenchProject {
     pub project_id: String,
     pub name: String,
     pub geometry: GeometryTopology,
+    #[serde(default)]
+    pub fluid_face: Option<crate::FaceId>,
     pub named_selections: Vec<NamedSelection>,
     pub mesh: WorkbenchMeshSettings,
     #[serde(default)]
@@ -234,6 +243,7 @@ impl WorkbenchProject {
             project_id: unique_id("project"),
             name: name.into(),
             geometry: GeometryTopology::new(),
+            fluid_face: None,
             named_selections: Vec::new(),
             mesh: WorkbenchMeshSettings::default(),
             mesh_recipe: MeshRecipe::default(),
@@ -259,6 +269,20 @@ impl WorkbenchProject {
         self.geometry
             .validate()
             .map_err(|error| ProjectDocumentError::Invalid(error.to_string()))?;
+        if !self.solver.coupling_relative_tolerance.is_finite()
+            || self.solver.coupling_relative_tolerance <= 0.0
+        {
+            return Err(ProjectDocumentError::Invalid(
+                "Momentum/velocity relative tolerance must be finite and positive".into(),
+            ));
+        }
+        if self.fluid_face.is_some_and(|id| {
+            self.geometry.face(id).is_none() || self.geometry.cad_owner(id).is_some()
+        }) {
+            return Err(ProjectDocumentError::Invalid(
+                "The selected 2D fluid domain is missing or belongs to a solid".into(),
+            ));
+        }
         if !(self.mesh.global_size.is_finite()
             && self.mesh.global_size > 0.0
             && self.mesh.min_size.is_finite()
@@ -551,6 +575,10 @@ pub fn finalize_workspace_run(
         "material": &project.material,
         "solver_settings": &project.solver,
         "boundaries": &project.boundaries,
+        "coupling_convergence": session.solution().map(|solution| serde_json::json!({
+            "momentum_relative_residual": solution.report.simple.final_momentum_relative_residual,
+            "velocity_relative_change": solution.report.simple.final_velocity_relative_change,
+        })),
     });
     atomic_json_write(&run_directory.join("report.json"), &report)?;
     project.runs.push(record.clone());
@@ -1012,6 +1040,15 @@ mod tests {
         session
             .create_named_selection("inlet", vec![GeometrySelectionTarget::Edge(rectangle.left)])
             .unwrap();
+        session
+            .create_named_selection(
+                "other",
+                [rectangle.bottom, rectangle.right, rectangle.top]
+                    .into_iter()
+                    .map(GeometrySelectionTarget::Edge)
+                    .collect(),
+            )
+            .unwrap();
         session.set_mesh_recipe(MeshRecipe {
             local_sizes: vec![LocalMeshSize {
                 id: 1,
@@ -1051,6 +1088,15 @@ mod tests {
             .create_named_selection(
                 "wall",
                 vec![GeometrySelectionTarget::Edge(rectangle.bottom)],
+            )
+            .unwrap();
+        session
+            .create_named_selection(
+                "other",
+                [rectangle.left, rectangle.right, rectangle.top]
+                    .into_iter()
+                    .map(GeometrySelectionTarget::Edge)
+                    .collect(),
             )
             .unwrap();
         session.set_mesh_recipe(MeshRecipe {
@@ -1438,6 +1484,7 @@ mod tests {
             .unwrap();
         session.install_mesh(generated);
         let solution = solve_incompressible(&session.prepare_case().unwrap());
+        assert!(solution.is_ok(), "Channel solve failed: {solution:?}");
         session.complete_solve(solution);
 
         let mut project = session.to_project("channel postprocess acceptance");
