@@ -10,6 +10,8 @@ use std::path::Path;
 
 #[path = "streamlines.rs"]
 pub mod streamlines;
+#[path = "result_derivatives.rs"]
+mod derivatives;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ResultFieldKind {
@@ -18,6 +20,8 @@ pub enum ResultFieldKind {
     VelocityX,
     VelocityY,
     VelocityZ,
+    VorticityMagnitude,
+    VelocityDivergence,
 }
 
 impl ResultFieldKind {
@@ -28,6 +32,8 @@ impl ResultFieldKind {
             Self::VelocityX => "Velocity X",
             Self::VelocityY => "Velocity Y",
             Self::VelocityZ => "Velocity Z",
+            Self::VorticityMagnitude => "Reconstructed vorticity magnitude",
+            Self::VelocityDivergence => "Reconstructed velocity divergence",
         }
     }
 }
@@ -50,6 +56,8 @@ pub struct ResultDataset {
     velocity: Vec<Vec3>,
     velocity_magnitude: Vec<f64>,
     velocity_components: [Vec<f64>; 3],
+    vorticity: Vec<f64>,
+    divergence: Vec<f64>,
 }
 
 impl ResultDataset {
@@ -86,7 +94,9 @@ impl ResultDataset {
                 "velocity magnitude is non-finite".into(),
             ));
         }
+        let (vorticity,divergence)=derivatives::velocity_derivatives(mesh,&velocity);
         Ok(Self {
+            vorticity, divergence,
             run_id,
             mesh: mesh.clone(),
             pressure,
@@ -123,6 +133,8 @@ impl ResultDataset {
             ResultFieldKind::VelocityX => &self.velocity_components[0],
             ResultFieldKind::VelocityY => &self.velocity_components[1],
             ResultFieldKind::VelocityZ => &self.velocity_components[2],
+            ResultFieldKind::VorticityMagnitude => &self.vorticity,
+            ResultFieldKind::VelocityDivergence => &self.divergence,
         }
     }
 
@@ -165,12 +177,12 @@ impl ResultDataset {
     pub fn write_cell_csv(&self, path: &Path) -> Result<(), std::io::Error> {
         use std::io::Write;
         let mut file = std::io::BufWriter::new(std::fs::File::create(path)?);
-        writeln!(file, "cell,x,y,z,cell_measure,p_over_rho,ux,uy,uz,speed")?;
+        writeln!(file, "cell,x,y,z,cell_measure,p_over_rho,ux,uy,uz,speed,vorticity_lsq,div_u_lsq")?;
         for (index, cell) in self.mesh.cells().iter().enumerate() {
             let u = self.velocity[index];
             writeln!(
                 file,
-                "{index},{:.17e},{:.17e},{:.17e},{:.17e},{:.17e},{:.17e},{:.17e},{:.17e},{:.17e}",
+                "{index},{:.17e},{:.17e},{:.17e},{:.17e},{:.17e},{:.17e},{:.17e},{:.17e},{:.17e},{:.17e},{:.17e}",
                 cell.center.x,
                 cell.center.y,
                 cell.center.z,
@@ -179,7 +191,7 @@ impl ResultDataset {
                 u.x,
                 u.y,
                 u.z,
-                self.velocity_magnitude[index]
+                self.velocity_magnitude[index],self.vorticity[index],self.divergence[index]
             )?;
         }
         file.flush()
@@ -208,6 +220,8 @@ pub struct ResultRenderCache {
     velocity: Vec<Vec3>,
     velocity_magnitude: Vec<f64>,
     velocity_components: [Vec<f64>; 3],
+    vorticity: Vec<f64>,
+    divergence: Vec<f64>,
     face_owners: Vec<usize>,
 }
 
@@ -224,6 +238,7 @@ impl ResultRenderCache {
             velocity: dataset.velocity.clone(),
             velocity_magnitude: dataset.velocity_magnitude.clone(),
             velocity_components: dataset.velocity_components.clone(),
+            vorticity: dataset.vorticity.clone(), divergence: dataset.divergence.clone(),
             face_owners: dataset.mesh.faces().iter().map(|face| face.owner).collect(),
         })
     }
@@ -254,6 +269,8 @@ impl ResultRenderCache {
             ResultFieldKind::VelocityX => self.velocity_components[0].get(cell).copied(),
             ResultFieldKind::VelocityY => self.velocity_components[1].get(cell).copied(),
             ResultFieldKind::VelocityZ => self.velocity_components[2].get(cell).copied(),
+            ResultFieldKind::VorticityMagnitude => self.vorticity.get(cell).copied(),
+            ResultFieldKind::VelocityDivergence => self.divergence.get(cell).copied(),
         }
     }
 
