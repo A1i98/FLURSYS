@@ -12,6 +12,8 @@ impl GeometryTopology {
             profiles: vec![face],
             replayable_pad: true,
         });
+        self.cad_bodies.get_mut(&id).unwrap().recipe = Some(CadRecipe::Extrude { face, distance });
+        self.name_constructed_faces(id)?;
         Ok(id)
     }
     pub fn cad_revolve(
@@ -68,44 +70,20 @@ impl GeometryTopology {
             profiles: vec![face],
             replayable_pad: false,
         });
+        self.cad_bodies.get_mut(&id).unwrap().recipe = Some(CadRecipe::Revolve {
+            face,
+            pivot,
+            axis,
+            degrees,
+            axis_reference: None,
+            axis_reversed: false,
+        });
+        self.name_constructed_faces(id)?;
         Ok(id)
     }
     /// Ruled loft between two closed planar profiles with matching edge counts.
     pub fn cad_loft(&mut self, first: FaceId, second: FaceId) -> Result<BodyId, GeometryError> {
-        if first == second {
-            return Err(error("Loft requires two different profiles"));
-        }
-        let mut a = self.cad_profile(first)?;
-        let b = self.cad_profile(second)?;
-        let wa = a.boundaries();
-        let wb = b.boundaries();
-        if wa.len() != wb.len() {
-            return Err(error(
-                "Loft profiles must have the same number of boundary loops",
-            ));
-        }
-        let mut shell = truck_modeling::Shell::new();
-        for (a, b) in wa.iter().zip(&wb) {
-            let mut sides = builder::try_wire_homotopy(a, b)
-                .map_err(|e| error(format!("Loft edge correspondence: {e}")))?;
-            shell.append(&mut sides);
-        }
-        a.invert();
-        shell.push(a);
-        shell.push(b);
-        let solid = Solid::try_new(vec![shell])
-            .map_err(|e| error(format!("Loft is not a closed solid: {e}")))?;
-        let id = self.cad_insert(
-            solid,
-            "Loft",
-            &format!("Ruled loft Face {} → {}", first.get(), second.get()),
-        )?;
-        self.cad_bodies.get_mut(&id).unwrap().dependencies = Some(CadDependencies {
-            bodies: Vec::new(),
-            profiles: vec![first, second],
-            replayable_pad: false,
-        });
-        Ok(id)
+        self.cad_loft_sections(&[first, second])
     }
     pub fn cad_boolean(
         &mut self,
@@ -146,8 +124,15 @@ impl GeometryTopology {
             .as_mut()
             .unwrap()
             .bodies = vec![a, b];
+        self.cad_bodies.get_mut(&id).unwrap().recipe = Some(CadRecipe::Boolean {
+            left: a,
+            right: b,
+            operation,
+            tolerance,
+        });
         self.cad_bodies.get_mut(&a).unwrap().visible = false;
         self.cad_bodies.get_mut(&b).unwrap().visible = false;
+        self.name_constructed_faces(id)?;
         Ok(id)
     }
     pub fn cad_transform(
@@ -156,6 +141,17 @@ impl GeometryTopology {
         transform: CadTransform,
         copy: bool,
     ) -> Result<BodyId, GeometryError> {
+        if !copy
+            && self.cad_bodies.iter().any(|(other, body)| {
+                *other != id
+                    && body
+                        .dependencies
+                        .as_ref()
+                        .is_some_and(|d| d.bodies.contains(&id))
+            })
+        {
+            return Err(error("This body has dependent features; transform a copy or edit the source sketch so the feature graph can rebuild"));
+        }
         if !copy
             && self.sketches.values().any(|s| {
                 s.host_face.is_some_and(|face| {
@@ -182,6 +178,11 @@ impl GeometryTopology {
                 .as_mut()
                 .unwrap()
                 .bodies = vec![id];
+            self.cad_bodies.get_mut(&copy_id).unwrap().recipe = Some(CadRecipe::Transform {
+                source: id,
+                transform,
+            });
+            self.name_constructed_faces(copy_id)?;
             return Ok(copy_id);
         }
         let data = prepare(&solid)?;
@@ -197,6 +198,11 @@ impl GeometryTopology {
                 .zip(data.1)
                 .zip(planes)
                 .map(|((face, triangles), plane)| CadFaceMesh {
+                    semantic_name: body
+                        .face_meshes
+                        .iter()
+                        .find(|m| m.face == face)
+                        .and_then(|m| m.semantic_name.clone()),
                     face,
                     triangles,
                     plane,
@@ -204,10 +210,16 @@ impl GeometryTopology {
                 .collect(),
         );
         body.operation = format!("{transform:?}");
+        body.recipe = body.recipe.take().map(|source| CadRecipe::Modified {
+            source: Box::new(source),
+            transform,
+        });
         if let Some(dependencies) = body.dependencies.as_mut() {
             dependencies.replayable_pad = false;
         }
         self.bump_revision();
+        self.name_constructed_faces(id)?;
+        self.refresh_subelements(id)?;
         Ok(id)
     }
     pub fn cad_pattern(
@@ -250,6 +262,11 @@ impl GeometryTopology {
                 .as_mut()
                 .unwrap()
                 .bodies = vec![id];
+            candidate.cad_bodies.get_mut(&instance).unwrap().recipe = Some(CadRecipe::Transform {
+                source: id,
+                transform,
+            });
+            candidate.name_constructed_faces(instance)?;
             ids.push(instance);
         }
         *self = candidate;

@@ -5,13 +5,24 @@ use super::*;
 use std::sync::Arc;
 use truck_meshalgo::prelude::*;
 use truck_modeling::{builder, EuclideanSpace, InnerSpace, Point3, Rad, Solid, Vector3, Wire};
+mod advanced;
+mod finishing;
+mod subtractive;
+mod axis;
+mod constraints;
+mod regions;
+mod datum;
 mod exchange;
 mod history;
+mod naming;
 mod operations;
 mod parametric;
 mod pocket;
 mod primitives;
+mod regenerate;
 mod sketch;
+mod subelements;
+pub use subelements::{CadEdge, CadVertex};
 mod visibility;
 pub use primitives::CadPrimitive;
 
@@ -29,24 +40,32 @@ pub struct CadBody {
     pub visible: bool,
     #[serde(default)]
     pub dependencies: Option<CadDependencies>,
+    #[serde(default)]
+    pub recipe: Option<CadRecipe>,
     /// Truck's compressed exact B-rep; the display mesh is never used for CSG.
     pub brep: Arc<serde_json::Value>,
     pub face_meshes: Arc<Vec<CadFaceMesh>>,
+    #[serde(default)]
+    pub edges: Arc<Vec<CadEdge>>,
+    #[serde(default)]
+    pub vertices: Arc<Vec<CadVertex>>,
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct CadFaceMesh {
     pub face: FaceId,
     #[serde(default)]
+    pub semantic_name: Option<String>,
+    #[serde(default)]
     pub plane: Option<CadPlaneFrame>,
     pub triangles: Vec<[Vec3; 3]>,
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CadBoolean {
     Union,
     Difference,
     Intersection,
 }
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub enum CadTransform {
     Translate(Vec3),
     Rotate {
@@ -54,9 +73,74 @@ pub enum CadTransform {
         axis: Vec3,
         degrees: f64,
     },
+    Mirror {
+        pivot: Vec3,
+        normal: Vec3,
+    },
+    ScaleAxes {
+        pivot: Vec3,
+        factors: Vec3,
+    },
     Scale {
         pivot: Vec3,
         factor: f64,
+    },
+}
+/// An associative axis reference resolved from current sketch/B-rep geometry.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CadAxisReference { Edge(EdgeId), ProfileX(FaceId), ProfileY(FaceId) }
+/// Persisted modeling intent, independent of display text and tessellation.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub enum CadRecipe {
+    Finish { source: BodyId, kind: u8, amount: f64, corners:u8, opening:u8 },
+    Primitive { shape: CadPrimitive, position: Vec3 },
+    Extrude {
+        face: FaceId,
+        distance: f64,
+    },
+    Revolve {
+        face: FaceId,
+        pivot: Vec3,
+        axis: Vec3,
+        degrees: f64,
+        #[serde(default)]
+        axis_reference: Option<CadAxisReference>,
+        #[serde(default)]
+        axis_reversed: bool,
+    },
+    Loft {
+        sections: Vec<FaceId>,
+    },
+    Sweep {
+        face: FaceId,
+        displacement: Vec3,
+    },
+    Taper {
+        face: FaceId,
+        distance: f64,
+        factor: f64,
+    },
+    Boolean {
+        left: BodyId,
+        right: BodyId,
+        operation: CadBoolean,
+        tolerance: f64,
+    },
+    Transform {
+        source: BodyId,
+        transform: CadTransform,
+    },
+    Modified {
+        source: Box<CadRecipe>,
+        transform: CadTransform,
+    },
+    PocketTool {
+        face: FaceId,
+        depth: f64,
+        through_all: bool,
+        #[serde(default)]
+        stop_face: Option<FaceId>,
+        tolerance: f64,
     },
 }
 fn error(message: impl Into<String>) -> GeometryError {
@@ -83,6 +167,14 @@ fn finite(v: Vec3) -> Result<(), GeometryError> {
 
 impl GeometryTopology {
     pub(super) fn validate_cad_bodies(&self) -> Result<(), GeometryError> {
+        for sketch in self.sketches.values() {
+            if !sketch.attachment_offset.is_finite() {
+                return Err(error("Non-finite sketch attachment offset"));
+            }
+            if sketch.locked_position.is_some() || sketch.locked_profile.is_some() {
+                self.cad_sketch_parameters(sketch.id)?;
+            }
+        }
         for (&id, cad) in &self.cad_bodies {
             let body = self.body(id).ok_or_else(|| error("Orphaned CAD body"))?;
             if let Some(dependencies) = &cad.dependencies {
@@ -107,6 +199,26 @@ impl GeometryTopology {
                     .ne(cad.face_meshes.iter().map(|m| m.face))
             {
                 return Err(error("CAD face identity mismatch"));
+            }
+            if !cad.edges.is_empty() || !cad.vertices.is_empty() {
+                let face_ids = body.faces.iter().copied().collect::<BTreeSet<_>>();
+                for edge in cad.edges.iter() {
+                    if edge.path.len()<2 || !edge.length.is_finite() || edge.length<=0.0
+                        || edge.faces.is_empty() || edge.faces.iter().any(|f|!face_ids.contains(f))
+                        || !self.edges.get(&edge.id).is_some_and(|e|matches!(e.geometry,EdgeGeometry::Kernel{id,start,end} if id==edge.id && start==edge.start && end==edge.end)) {
+                        return Err(error("Invalid CAD edge identity or curve cache"));
+                    }
+                    for p in &edge.path {
+                        finite(*p)?;
+                    }
+                }
+                for vertex in cad.vertices.iter() {
+                    if vertex.faces.is_empty() || vertex.faces.iter().any(|f| !face_ids.contains(f))
+                    {
+                        return Err(error("Invalid CAD vertex adjacency"));
+                    }
+                    finite(self.require_vertex(vertex.id)?.position)?;
+                }
             }
             let solid = self.cad_solid(id)?;
             if solid.face_iter().count() != cad.face_meshes.len() {
@@ -200,7 +312,10 @@ impl GeometryTopology {
                 minor_radius,
             } => format!("Torus · major R {major_radius} · minor R {minor_radius}"),
         };
-        self.cad_insert(solid, name, &description)
+        let id=self.cad_insert(solid,name,&description)?;
+        self.cad_bodies.get_mut(&id).unwrap().recipe=Some(CadRecipe::Primitive{shape,position});
+        self.name_constructed_faces(id)?;
+        Ok(id)
     }
     pub(super) fn cad_solid(&self, id: BodyId) -> Result<Solid, GeometryError> {
         let body = self
@@ -244,6 +359,9 @@ impl GeometryTopology {
                 operation: operation.into(),
                 visible: true,
                 dependencies: Some(CadDependencies::default()),
+                recipe: None,
+                edges: Arc::new(Vec::new()),
+                vertices: Arc::new(Vec::new()),
                 brep: Arc::new(brep),
                 face_meshes: Arc::new(
                     ids.into_iter()
@@ -251,6 +369,7 @@ impl GeometryTopology {
                         .zip(solid.face_iter().map(kernel_plane))
                         .map(|((face, triangles), plane)| CadFaceMesh {
                             face,
+                            semantic_name: None,
                             triangles,
                             plane,
                         })
@@ -258,6 +377,7 @@ impl GeometryTopology {
                 ),
             },
         );
+        self.refresh_subelements(id)?;
         Ok(id)
     }
     fn cad_profile(&self, id: FaceId) -> Result<truck_modeling::Face, GeometryError> {
@@ -283,6 +403,11 @@ impl GeometryTopology {
                     .edge(oriented.edge)
                     .ok_or_else(|| error("Missing profile edge"))?;
                 let mut edge = match edge.geometry {
+                    EdgeGeometry::Kernel { .. } => {
+                        return Err(error(
+                            "Project kernel edges into a sketch before constructing a profile",
+                        ))
+                    }
                     EdgeGeometry::Line { start, end } => {
                         builder::line(&vertices[&start], &vertices[&end])
                     }
@@ -331,6 +456,34 @@ fn apply_transform(s: &Solid, t: CadTransform) -> Result<Solid, GeometryError> {
                 Rad(degrees.to_radians()),
             )
         }
+        CadTransform::Mirror { pivot, normal } => {
+            finite(pivot)?;
+            finite(normal)?;
+            if normal.norm() < 1e-12 {
+                return Err(error("Mirror plane requires a nonzero normal"));
+            }
+            let n = normal * (1.0 / normal.norm());
+            let reflect = |v: Vec3| v - n * (2.0 * v.dot(n));
+            let x = reflect(Vec3::new(1.0, 0.0, 0.0));
+            let y = reflect(Vec3::new(0.0, 1.0, 0.0));
+            let z = reflect(Vec3::new(0.0, 0.0, 1.0));
+            let t = pivot - reflect(pivot);
+            let matrix = truck_modeling::Matrix4::new(
+                x.x, x.y, x.z, 0.0, y.x, y.y, y.z, 0.0, z.x, z.y, z.z, 0.0, t.x, t.y, t.z, 1.0,
+            );
+            let mut result = builder::transformed(s, matrix);
+            // Reflection reverses handedness; restore outward shell orientation.
+            result.not();
+            result
+        }
+        CadTransform::ScaleAxes { pivot, factors } => {
+            finite(pivot)?;
+            finite(factors)?;
+            for value in [factors.x, factors.y, factors.z] {
+                primitives::positive(value, "Axis scale")?;
+            }
+            builder::scaled(s, point(pivot), vector(factors))
+        }
         CadTransform::Scale { pivot, factor } => {
             finite(pivot)?;
             primitives::positive(factor, "Scale factor")?;
@@ -339,6 +492,12 @@ fn apply_transform(s: &Solid, t: CadTransform) -> Result<Solid, GeometryError> {
     })
 }
 fn prepare(solid: &Solid) -> Result<(serde_json::Value, Vec<Vec<[Vec3; 3]>>), GeometryError> {
+    prepare_with_tolerance(solid, None)
+}
+fn prepare_with_tolerance(
+    solid: &Solid,
+    requested: Option<f64>,
+) -> Result<(serde_json::Value, Vec<Vec<[Vec3; 3]>>), GeometryError> {
     if solid.boundaries().is_empty() || solid.face_iter().count() == 0 {
         return Err(error("Operation produced an empty solid"));
     }
@@ -361,7 +520,12 @@ fn prepare(solid: &Solid) -> Result<(serde_json::Value, Vec<Vec<[Vec3; 3]>>), Ge
     if diagonal < 1e-5 {
         return Err(error("Solid is smaller than the kernel modeling tolerance"));
     }
-    let tolerance = (diagonal * 0.002).max(1e-5);
+    let tolerance = requested.unwrap_or_else(|| (diagonal * 0.002).max(1e-5));
+    if requested.is_some()
+        && (!tolerance.is_finite() || tolerance < 1e-6 || tolerance > diagonal * 0.1)
+    {
+        return Err(error("Tessellation tolerance must be at least 1e-6 and at most 10% of the vertex bounding-box diagonal"));
+    }
     let mut faces = Vec::new();
     let mut count = 0;
     for shell in solid.boundaries() {

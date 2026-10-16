@@ -9,6 +9,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 pub mod cad;
 mod picking;
+mod line_edit;
+mod circle_cut;
 pub use cad::{CadBody, CadBoolean, CadPrimitive, CadTransform};
 
 pub use picking::{FaceRayHit, Ray3};
@@ -78,9 +80,29 @@ pub struct CadSketch {
     #[serde(default)]
     pub host_face: Option<FaceId>,
     #[serde(default)]
+    pub attachment_offset: f64,
+    #[serde(default)]
     pub profile: Option<CadSketchProfile>,
     #[serde(default)]
     pub profile_face: Option<FaceId>,
+    #[serde(default)]
+    pub locked_position: Option<[f64; 2]>,
+    #[serde(default)]
+    pub locked_profile: Option<CadSketchProfile>,
+    #[serde(default)]
+    pub constraints: CadSketchConstraints,
+    /// Additional regions share their owner's support and local frame.
+    #[serde(default)]
+    pub region_owner: Option<CadSketchId>,
+}
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct CadSketchConstraints {
+    pub x: Option<f64>,
+    pub y: Option<f64>,
+    pub size_x: Option<f64>,
+    pub size_y: Option<f64>,
+    pub equal_sides: bool,
+    pub centered: bool,
 }
 
 /// Persisted 2D profile intent on a canonical sketch plane.
@@ -114,6 +136,8 @@ pub struct CadPocketFeature {
     pub body: BodyId,
     pub depth: f64,
     pub through_all: bool,
+    #[serde(default)]
+    pub stop_face: Option<FaceId>,
     pub tolerance: f64,
 }
 
@@ -125,6 +149,12 @@ pub struct GeometryVertex {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum EdgeGeometry {
+    /// Exact B-rep curve; sampled picking data belongs to the owning CAD body.
+    Kernel {
+        id: EdgeId,
+        start: VertexId,
+        end: VertexId,
+    },
     Line {
         start: VertexId,
         end: VertexId,
@@ -650,15 +680,20 @@ impl GeometryTopology {
             plane,
             frame,
             host_face,
+            attachment_offset: 0.0,
             profile: None,
             profile_face: None,
+            locked_position: None,
+            locked_profile: None,
+            constraints: CadSketchConstraints::default(),
+            region_owner: None,
         };
         self.sketches.insert(id, sketch.clone());
         self.bump_revision();
         Ok(sketch)
     }
 
-    fn planar_face_frame(&self, face: FaceId) -> Result<CadPlaneFrame, GeometryError> {
+    pub(crate) fn planar_face_frame(&self, face: FaceId) -> Result<CadPlaneFrame, GeometryError> {
         if self.cad_owner(face).is_some() {
             return self.cad_face_frame(face);
         }
@@ -668,7 +703,8 @@ impl GeometryTopology {
                 .map(|oriented| {
                     let (start, end) = match self.require_edge(oriented.edge)?.geometry {
                         EdgeGeometry::Line { start, end }
-                        | EdgeGeometry::CircularArc { start, end, .. } => (start, end),
+                        | EdgeGeometry::CircularArc { start, end, .. }
+                        | EdgeGeometry::Kernel { start, end, .. } => (start, end),
                     };
                     self.vertex_position(if oriented.reversed { end } else { start })
                 })
@@ -882,6 +918,15 @@ impl GeometryTopology {
         center: VertexId,
         end: VertexId,
     ) -> Result<EdgeId, GeometryError> {
+        if [start, center, end]
+            .iter()
+            .any(|v| self.cad_vertex_owner(*v).is_some())
+        {
+            return Err(GeometryError::InvalidPrimitive {
+                message: "Kernel vertices are read-only; create independent sketch points first"
+                    .into(),
+            });
+        }
         let start_position = self.vertex_position(start)?;
         let center_position = self.vertex_position(center)?;
         let end_position = self.vertex_position(end)?;
@@ -1030,6 +1075,7 @@ impl GeometryTopology {
                 message: "circle center and radius must be finite and positive".into(),
             });
         }
+        self.validate_circle_cut(face, center, radius)?;
         let outer = match &self.require_face(face)?.representation {
             GeometryFaceRepresentation::Planar { outer_loop, .. } => outer_loop.clone(),
             GeometryFaceRepresentation::PrimitiveSurface => {
@@ -1234,6 +1280,11 @@ impl GeometryTopology {
         for oriented in &boundary {
             let edge = self.require_edge(oriented.edge)?;
             let (start, end, center) = match edge.geometry {
+                EdgeGeometry::Kernel { .. } => {
+                    return Err(GeometryError::InvalidPrimitive {
+                        message: "Kernel curves require the CAD extrusion path".into(),
+                    })
+                }
                 EdgeGeometry::Line { start, end } => (start, end, None),
                 EdgeGeometry::CircularArc { start, center, end } => (start, end, Some(center)),
             };
@@ -1249,6 +1300,11 @@ impl GeometryTopology {
         for oriented in &boundary {
             let edge = self.require_edge(oriented.edge)?;
             let copy = match edge.geometry {
+                EdgeGeometry::Kernel { .. } => {
+                    return Err(GeometryError::InvalidPrimitive {
+                        message: "Kernel curves require the CAD extrusion path".into(),
+                    })
+                }
                 EdgeGeometry::Line { start, end } => {
                     self.add_line(top_vertices[&start], top_vertices[&end])?
                 }
@@ -1351,6 +1407,13 @@ impl GeometryTopology {
 
     pub fn remove_edge(&mut self, id: EdgeId) -> Result<GeometryEdge, GeometryError> {
         self.require_edge(id)?;
+        if self.cad_edge_owner(id).is_some() {
+            return Err(GeometryError::EntityInUse {
+                entity: "edge",
+                id: id.get(),
+                used_by: "CAD body",
+            });
+        }
         if self
             .faces
             .values()
@@ -1467,7 +1530,33 @@ impl GeometryTopology {
                 used_by: "face-hosted sketch",
             });
         }
+        if let Some(cad) = self.cad_body(id) {
+            let edges = cad.edges.iter().map(|e| e.id).collect::<BTreeSet<_>>();
+            let vertices = cad.vertices.iter().map(|v| v.id).collect::<BTreeSet<_>>();
+            if self.edges.values().any(|e| {
+                !edges.contains(&e.id)
+                    && edge_vertices(&e.geometry)
+                        .iter()
+                        .any(|v| vertices.contains(v))
+            }) || self.faces.values().any(|f| {
+                face_edges(&f.representation)
+                    .iter()
+                    .any(|e| edges.contains(e))
+            }) {
+                return Err(GeometryError::EntityInUse {
+                    entity: "body",
+                    id: id.get(),
+                    used_by: "external geometry",
+                });
+            }
+        }
         if let Some(body) = self.cad_bodies.remove(&id) {
+            for edge in body.edges.iter() {
+                self.edges.remove(&edge.id);
+            }
+            for vertex in body.vertices.iter() {
+                self.vertices.remove(&vertex.id);
+            }
             for mesh in body.face_meshes.iter() {
                 self.faces.remove(&mesh.face);
             }
@@ -1567,6 +1656,19 @@ impl GeometryTopology {
         self.validate_cad_bodies()?;
         for edge in self.edges.values() {
             match edge.geometry {
+                EdgeGeometry::Kernel { id, start, end } => {
+                    if id != edge.id
+                        || self
+                            .cad_edge(id)
+                            .is_none_or(|e| e.start != start || e.end != end)
+                    {
+                        return Err(GeometryError::InvalidPrimitive {
+                            message: "Orphaned kernel edge".into(),
+                        });
+                    }
+                    self.require_vertex(start)?;
+                    self.require_vertex(end)?;
+                }
                 EdgeGeometry::Line { start, end } => self.validate_line(start, end)?,
                 EdgeGeometry::CircularArc { start, center, end } => {
                     let start_position = self.vertex_position(start)?;
@@ -1645,6 +1747,13 @@ impl GeometryTopology {
                     message: "canonical sketch map key does not match its stable ID".into(),
                 });
             }
+            if let Some(owner)=sketch.region_owner {
+                let root=self.sketch(owner).ok_or_else(||GeometryError::InvalidPrimitive{message:"Sketch region owner is missing".into()})?;
+                if owner==id || root.region_owner.is_some() || root.plane!=sketch.plane || root.host_face!=sketch.host_face || (root.attachment_offset-sketch.attachment_offset).abs()>1e-8 || (root.frame.origin-sketch.frame.origin).norm()>1e-8 || (root.frame.x_axis-sketch.frame.x_axis).norm()>1e-8 || (root.frame.y_axis-sketch.frame.y_axis).norm()>1e-8 {
+                    return Err(GeometryError::InvalidPrimitive{message:"Sketch regions must share their owner's support and local frame".into()});
+                }
+            }
+            self.cad_validate_sketch_constraints(id)?;
             validate_plane_frame(sketch.frame)?;
             match (sketch.plane, sketch.host_face) {
                 (CadSketchPlane::Face, Some(face)) => {
@@ -1805,7 +1914,8 @@ impl GeometryTopology {
                 let edge = self.edge(oriented.edge)?;
                 let (start, end) = match edge.geometry {
                     EdgeGeometry::Line { start, end }
-                    | EdgeGeometry::CircularArc { start, end, .. } => (start, end),
+                    | EdgeGeometry::CircularArc { start, end, .. }
+                    | EdgeGeometry::Kernel { start, end, .. } => (start, end),
                 };
                 self.vertex(if oriented.reversed { end } else { start })
                     .map(|vertex| vertex.position)
@@ -1825,6 +1935,13 @@ impl GeometryTopology {
 
     fn oriented_edge_path(&self, oriented: OrientedEdge) -> Option<Vec<Vec3>> {
         match self.edge(oriented.edge)?.geometry {
+            EdgeGeometry::Kernel { id, .. } => {
+                let mut path = self.cad_edge(id)?.path.clone();
+                if oriented.reversed {
+                    path.reverse();
+                }
+                Some(path)
+            }
             EdgeGeometry::Line { start, end } => Some(vec![
                 self.vertex_position(if oriented.reversed { end } else { start })
                     .ok()?,
@@ -1875,6 +1992,12 @@ impl GeometryTopology {
     }
 
     fn validate_line(&self, start: VertexId, end: VertexId) -> Result<(), GeometryError> {
+        if self.cad_vertex_owner(start).is_some() || self.cad_vertex_owner(end).is_some() {
+            return Err(GeometryError::InvalidPrimitive {
+                message: "Kernel vertices are read-only; create independent sketch points first"
+                    .into(),
+            });
+        }
         let start_position = self.vertex_position(start)?;
         let end_position = self.vertex_position(end)?;
         if start == end || (end_position - start_position).norm() <= GEOMETRY_EPSILON {
@@ -1893,6 +2016,14 @@ impl GeometryTopology {
         let mut previous_end = None;
         let mut used = BTreeSet::new();
         for oriented in loop_edges {
+            if matches!(
+                self.require_edge(oriented.edge)?.geometry,
+                EdgeGeometry::Kernel { .. }
+            ) {
+                return Err(GeometryError::InvalidLoop {
+                    message: "Project kernel curves into independent sketch geometry first".into(),
+                });
+            }
             if !used.insert(oriented.edge) {
                 return Err(GeometryError::InvalidLoop {
                     message: "loop repeats an edge".into(),
@@ -1924,9 +2055,9 @@ impl GeometryTopology {
     ) -> Result<(VertexId, VertexId), GeometryError> {
         let edge = self.require_edge(oriented.edge)?;
         let (start, end) = match edge.geometry {
-            EdgeGeometry::Line { start, end } | EdgeGeometry::CircularArc { start, end, .. } => {
-                (start, end)
-            }
+            EdgeGeometry::Line { start, end }
+            | EdgeGeometry::CircularArc { start, end, .. }
+            | EdgeGeometry::Kernel { start, end, .. } => (start, end),
         };
         Ok(if oriented.reversed {
             (end, start)
@@ -2024,7 +2155,9 @@ fn is_finite_vec3(vector: Vec3) -> bool {
 
 fn edge_vertices(geometry: &EdgeGeometry) -> Vec<VertexId> {
     match *geometry {
-        EdgeGeometry::Line { start, end } => vec![start, end],
+        EdgeGeometry::Line { start, end } | EdgeGeometry::Kernel { start, end, .. } => {
+            vec![start, end]
+        }
         EdgeGeometry::CircularArc { start, center, end } => vec![start, center, end],
     }
 }

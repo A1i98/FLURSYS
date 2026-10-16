@@ -4,6 +4,7 @@ use super::*;
 
 impl GeometryTopology {
     pub fn cad_delete_sketch(&mut self, id: CadSketchId) -> Result<(), GeometryError> {
+        if self.sketches().any(|s|s.region_owner==Some(id)){return Err(error("Delete the additional regions before deleting their owning sketch"));}
         if self.extrude_features.values().any(|f| f.sketch == id)
             || self.pocket_features.values().any(|f| f.sketch == id)
         {
@@ -31,7 +32,9 @@ impl GeometryTopology {
             let vertices = edges
                 .iter()
                 .flat_map(|id| match next.edges[id].geometry {
-                    EdgeGeometry::Line { start, end } => vec![start, end],
+                    EdgeGeometry::Line { start, end } | EdgeGeometry::Kernel { start, end, .. } => {
+                        vec![start, end]
+                    }
                     EdgeGeometry::CircularArc { start, center, end } => vec![start, center, end],
                 })
                 .collect::<BTreeSet<_>>();
@@ -91,7 +94,16 @@ impl GeometryTopology {
             }
             profile = feature.source_face;
         } else {
+            let finishing_source=match next.cad_body(body).and_then(|b|b.recipe.as_ref()) {
+                Some(CadRecipe::Finish{source,..})=>Some(*source),
+                _=>None,
+            };
             next.remove_body(body)?;
+            if let Some(source)=finishing_source {
+                if !next.cad_bodies().any(|(_,b)|b.dependencies.as_ref().is_some_and(|d|d.bodies.contains(&source))) {
+                    next.cad_set_visible(source,true)?;
+                }
+            }
             next.validate()?;
             *self = next;
             return Ok(());

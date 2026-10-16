@@ -12,12 +12,17 @@ use crate::{
 const MIN_GEOMETRY: f64 = 1.0e-9;
 const HISTORY_LIMIT: usize = 64;
 
+mod line_tools;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GeometryTool {
     Select,
     Line,
     Rectangle,
     Circle,
+    Trim,
+    Extend,
+    Split,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -152,7 +157,9 @@ impl GeometryEditorState {
             GeometryTool::Line => Some(PreviewPrimitive::Line(start, cursor)),
             GeometryTool::Rectangle => Some(PreviewPrimitive::Rectangle(start, cursor)),
             GeometryTool::Circle => Some(PreviewPrimitive::Circle(start, distance(start, cursor))),
-            GeometryTool::Select => None,
+            GeometryTool::Select | GeometryTool::Trim | GeometryTool::Extend | GeometryTool::Split => {
+                None
+            }
         }
     }
     pub fn has_start(&self) -> bool {
@@ -173,12 +180,31 @@ impl GeometryEditorState {
     pub fn cancel(&mut self) {
         self.set_tool(GeometryTool::Select);
     }
+    /// Context picking is edge-specific, independent of the face/vertex pick
+    /// preference. Parametric profile and solid boundaries remain protected.
+    pub fn select_open_line_at(&mut self, topology: &GeometryTopology, screen: (f64, f64)) -> bool {
+        let Some((id, _, _)) = line_tools::pick_line(topology, &self.transform, screen) else {
+            return false;
+        };
+        let mut probe = topology.clone();
+        if probe.remove_edge(id).is_err() {
+            return false;
+        }
+        self.cancel();
+        self.selection = vec![GeometrySelectionTarget::Edge(id)];
+        true
+    }
     pub fn cursor_moved(&mut self, topology: &GeometryTopology, screen: (f64, f64)) {
-        let world = self.snap(topology, self.transform.screen_to_world(screen));
+        let world = self.pointer_world(topology, screen);
         self.cursor = Some(world);
-        self.hover_target = (self.active_tool == GeometryTool::Select)
-            .then(|| self.pick(topology, screen, 8.0))
-            .flatten();
+        self.hover_target = match self.active_tool {
+            GeometryTool::Select => self.pick(topology, screen, 8.0),
+            GeometryTool::Trim | GeometryTool::Extend | GeometryTool::Split => {
+                line_tools::pick_line(topology, &self.transform, screen)
+                    .map(|(id, _, _)| GeometrySelectionTarget::Edge(id))
+            }
+            _ => None,
+        };
     }
     pub fn click(
         &mut self,
@@ -186,7 +212,7 @@ impl GeometryEditorState {
         screen: (f64, f64),
         additive: bool,
     ) -> Result<bool, GeometryError> {
-        let world = self.snap(topology, self.transform.screen_to_world(screen));
+        let world = self.pointer_world(topology, screen);
         self.cursor = Some(world);
         if self.active_tool == GeometryTool::Select {
             let hit = self.pick(topology, screen, 8.0);
@@ -206,13 +232,52 @@ impl GeometryEditorState {
             }
             return Ok(false);
         }
+        if matches!(
+            self.active_tool,
+            GeometryTool::Trim | GeometryTool::Extend | GeometryTool::Split
+        ) {
+            let before = topology.clone();
+            let edges = line_tools::apply(
+                topology,
+                &self.transform,
+                screen,
+                self.active_tool,
+                self.snap_enabled,
+            )?;
+            for &edge in &edges {
+                close_line_loop_if_possible(topology, edge);
+            }
+            let faces = topology
+                .faces()
+                .filter(|face| before.face(face.id).is_none())
+                .map(|face| face.id)
+                .collect::<Vec<_>>();
+            for &face in &faces {
+                if let Err(error) = topology.cad_register_xy_region(face) {
+                    *topology = before;
+                    return Err(error);
+                }
+            }
+            self.push_undo(before);
+            self.redo.clear();
+            self.selection = if faces.is_empty() {
+                edges.into_iter().map(GeometrySelectionTarget::Edge).collect()
+            } else {
+                faces.into_iter().map(GeometrySelectionTarget::Face).collect()
+            };
+            self.hover_target = None;
+            return Ok(true);
+        }
         if let Some(start) = self.start {
             let before = topology.clone();
             let result = match self.active_tool {
                 GeometryTool::Line => add_line_at(topology, start, world),
                 GeometryTool::Rectangle => add_rectangle_at(topology, start, world),
                 GeometryTool::Circle => add_circle(topology, start, world),
-                GeometryTool::Select => unreachable!(),
+                GeometryTool::Select
+                | GeometryTool::Trim
+                | GeometryTool::Extend
+                | GeometryTool::Split => unreachable!(),
             };
             if let Err(error) = result {
                 *topology = before;
@@ -320,7 +385,9 @@ impl GeometryEditorState {
         topology
             .vertices()
             .filter(|vertex| {
-                topology.is_vertex_visible(vertex.id) && vertex.position.z.abs() <= MIN_GEOMETRY
+                topology.is_vertex_visible(vertex.id)
+                    && topology.cad_vertex_owner(vertex.id).is_none()
+                    && vertex.position.z.abs() <= MIN_GEOMETRY
             })
             .filter_map(|vertex| {
                 let d = distance((vertex.position.x, vertex.position.y), point);
@@ -347,7 +414,11 @@ impl GeometryEditorState {
     pub fn fit_view(&mut self, topology: &GeometryTopology) {
         let mut points = topology
             .vertices()
-            .filter(|v| topology.is_vertex_visible(v.id) && v.position.z.abs() <= MIN_GEOMETRY)
+            .filter(|v| {
+                topology.is_vertex_visible(v.id)
+                    && topology.cad_vertex_owner(v.id).is_none()
+                    && v.position.z.abs() <= MIN_GEOMETRY
+            })
             .map(|v| (v.position.x, v.position.y));
         let Some((x, y)) = points.next() else {
             self.transform.fit(None);
@@ -369,7 +440,11 @@ impl GeometryEditorState {
         let tolerance = 10.0 / self.transform.pixels_per_unit;
         if let Some(vertex) = topology
             .vertices()
-            .filter(|v| topology.is_vertex_visible(v.id) && v.position.z.abs() <= MIN_GEOMETRY)
+            .filter(|v| {
+                topology.is_vertex_visible(v.id)
+                    && topology.cad_vertex_owner(v.id).is_none()
+                    && v.position.z.abs() <= MIN_GEOMETRY
+            })
             .min_by(|a, b| {
                 distance((a.position.x, a.position.y), point)
                     .total_cmp(&distance((b.position.x, b.position.y), point))
@@ -385,6 +460,17 @@ impl GeometryEditorState {
             (point.0 / grid).round() * grid,
             (point.1 / grid).round() * grid,
         )
+    }
+    fn pointer_world(&self, topology: &GeometryTopology, screen: (f64, f64)) -> (f64, f64) {
+        let point = self.transform.screen_to_world(screen);
+        if matches!(
+            self.active_tool,
+            GeometryTool::Trim | GeometryTool::Extend | GeometryTool::Split
+        ) {
+            point
+        } else {
+            self.snap(topology, point)
+        }
     }
     fn push_undo(&mut self, snapshot: GeometryTopology) {
         if self.undo.len() == HISTORY_LIMIT {
@@ -421,6 +507,7 @@ fn add_vertex_if_needed(
 ) -> Result<VertexId, GeometryError> {
     if let Some(vertex) = topology.vertices().find(|v| {
         topology.is_vertex_visible(v.id)
+            && topology.cad_vertex_owner(v.id).is_none()
             && v.position.z.abs() <= MIN_GEOMETRY
             && distance((v.position.x, v.position.y), point) <= MIN_GEOMETRY
     }) {
@@ -685,6 +772,7 @@ fn edge_distance(
     point: (f64, f64),
 ) -> Option<f64> {
     match geometry {
+        EdgeGeometry::Kernel { .. } => None,
         EdgeGeometry::Line { start, end } => Some(segment_distance(
             point,
             vertex_point(topology, start)?,
@@ -754,7 +842,8 @@ fn face_on_xy(topology: &GeometryTopology, representation: &GeometryFaceRepresen
             };
             let (start, end) = match edge.geometry {
                 EdgeGeometry::Line { start, end }
-                | EdgeGeometry::CircularArc { start, end, .. } => (start, end),
+                | EdgeGeometry::CircularArc { start, end, .. }
+                | EdgeGeometry::Kernel { start, end, .. } => (start, end),
             };
             [start, end].into_iter().all(|id| {
                 topology
@@ -766,7 +855,9 @@ fn face_on_xy(topology: &GeometryTopology, representation: &GeometryFaceRepresen
 
 fn edge_on_xy(topology: &GeometryTopology, geometry: &EdgeGeometry) -> bool {
     let vertices = match *geometry {
-        EdgeGeometry::Line { start, end } => vec![start, end],
+        EdgeGeometry::Line { start, end } | EdgeGeometry::Kernel { start, end, .. } => {
+            vec![start, end]
+        }
         EdgeGeometry::CircularArc { start, center, end } => vec![start, center, end],
     };
     vertices.into_iter().all(|id| {
@@ -783,6 +874,7 @@ fn point_in_loop(topology: &GeometryTopology, edges: &[OrientedEdge], point: (f6
                 return Vec::new();
             };
             match edge.geometry {
+                EdgeGeometry::Kernel { .. } => Vec::new(),
                 EdgeGeometry::Line { start, end } => {
                     vertex_point(topology, if oriented.reversed { end } else { start })
                         .into_iter()

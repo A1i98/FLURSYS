@@ -32,7 +32,7 @@ pub use cases::{Case, CaseKind};
 pub use fields::{CellField, FaceField, FieldError};
 pub use geometry::{
     BodyId, BoxEntities, CadExtrudeFeature, CadFeatureId, CadPlaneFrame, CadPocketFeature,
-    CadSketch, CadSketchId, CadSketchPlane, CadSketchProfile, CircleHoleEntities, EdgeGeometry,
+    CadSketch, CadSketchId, CadSketchPlane, CadSketchProfile, CadSketchConstraints, CircleHoleEntities, EdgeGeometry,
     EdgeId, ExtrudeEntities, FaceId, FaceRayHit, GeometryBody, GeometryBodyRepresentation,
     GeometryEdge, GeometryError, GeometryFace, GeometryFaceRepresentation, GeometryRevision,
     GeometryTopology, GeometryVertex, OrientedEdge, Ray3, RectangleEntities, RenderableFace,
@@ -135,4 +135,4 @@ pub use workbench::{
     LEGACY_PROJECT_FORMATS,
 };
 
-pub use geometry::cad::{CadBody, CadBoolean, CadPrimitive, CadTransform};
+pub use geometry::cad::{CadAxisReference, CadBody, CadBoolean, CadPrimitive, CadRecipe, CadTransform};

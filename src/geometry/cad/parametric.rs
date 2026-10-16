@@ -1,4 +1,4 @@
-//! Transactional dimension editing for circle/rectangle sketches and Pad chains.
+//! Transactional dimension editing for circle/rectangle sketches and feature graphs.
 //! Unsupported consumers stop regeneration rather than keeping stale solids.
 use super::*;
 use std::collections::BTreeSet;
@@ -85,6 +85,15 @@ impl GeometryTopology {
                 (bounds.0, bounds.1)
             }
         };
+        if s.locked_position.is_some_and(|p| {
+            !p[0].is_finite()
+                || !p[1].is_finite()
+                || (p[0] - x).abs() > 1e-7
+                || (p[1] - y).abs() > 1e-7
+        }) || s.locked_profile.as_ref().is_some_and(|p| p != &profile)
+        {
+            return Err(error("Saved sketch constraints do not match its geometry"));
+        }
         Ok((x, y, profile))
     }
 
@@ -100,6 +109,7 @@ impl GeometryTopology {
         if !x.is_finite() || !y.is_finite() {
             return Err(error("Sketch position must be finite"));
         }
+        let (x, y, profile) = self.cad_resolve_sketch_parameters(id, x, y, profile)?;
         let (old_x, old_y, old) = self.cad_sketch_parameters(id)?;
         let record = self.sketch(id).unwrap().clone();
         let face = record.profile_face.unwrap();
@@ -180,7 +190,7 @@ impl GeometryTopology {
             next.vertices.get_mut(&vertex).unwrap().position = position;
         }
         next.sketches.get_mut(&id).unwrap().profile = Some(profile);
-        let result = next.regenerate_pads(id)?;
+        let result = next.regenerate_features(id)?;
         next.bump_revision();
         next.validate()?;
         *self = next;
@@ -202,14 +212,52 @@ impl GeometryTopology {
             .ok_or_else(|| error("Pad not found"))?;
         let sketch = feature.sketch;
         feature.distance = Some(distance);
-        let result = next.regenerate_pads(sketch)?;
+        let result_body = feature.body;
+        let source_face = feature.source_face;
+        let additive = feature.additive;
+        let tool = if additive {
+            next.cad_body(result_body)
+                .and_then(|b| b.dependencies.as_ref())
+                .and_then(|d| {
+                    d.bodies.iter().copied().find(|id| {
+                        next.cad_body(*id).is_some_and(|b| {
+                            b.dependencies
+                                .as_ref()
+                                .is_some_and(|d| d.profiles.contains(&source_face))
+                        })
+                    })
+                })
+                .ok_or_else(|| error("Additive Pad has no saved extrusion tool"))?
+        } else {
+            result_body
+        };
+        if let Some(recipe) = next
+            .cad_bodies
+            .get_mut(&tool)
+            .and_then(|b| b.recipe.as_mut())
+        {
+            fn set_depth(recipe: &mut CadRecipe, face: FaceId, depth: f64) -> bool {
+                match recipe {
+                    CadRecipe::Extrude { face: f, distance } if *f == face => {
+                        *distance = depth;
+                        true
+                    }
+                    CadRecipe::Modified { source, .. } => set_depth(source, face, depth),
+                    _ => false,
+                }
+            }
+            if !set_depth(recipe, source_face, distance) {
+                return Err(error("Feature has no editable Pad depth recipe"));
+            }
+        }
+        let result = next.regenerate_features(sketch)?;
         next.bump_revision();
         next.validate()?;
         *self = next;
         Ok(result)
     }
 
-    fn profile_edge_ids(&self, face: FaceId) -> Result<BTreeSet<EdgeId>, GeometryError> {
+    pub(super) fn profile_edge_ids(&self, face: FaceId) -> Result<BTreeSet<EdgeId>, GeometryError> {
         match &self.require_face(face)?.representation {
             GeometryFaceRepresentation::Planar {
                 outer_loop,
@@ -221,145 +269,23 @@ impl GeometryTopology {
         }
     }
 
-    fn profile_vertices(&self, face: FaceId) -> Result<BTreeSet<VertexId>, GeometryError> {
+    pub(super) fn profile_vertices(
+        &self,
+        face: FaceId,
+    ) -> Result<BTreeSet<VertexId>, GeometryError> {
         Ok(self
             .profile_edge_ids(face)?
             .iter()
             .flat_map(|id| edge_vertex_ids(&self.edges[id]))
             .collect())
     }
-
-    fn regenerate_pads(&mut self, sketch: CadSketchId) -> Result<Vec<BodyId>, GeometryError> {
-        // Operations without a replay recipe must not silently retain old geometry.
-        let features = self.extrude_features.values().cloned().collect::<Vec<_>>();
-        let mut affected_sketches = BTreeSet::from([sketch]);
-        let mut affected_bodies = BTreeSet::new();
-        // A sketch edit changes its own consumers, not the body hosting it.
-        // Close the graph before rebuilding so unsupported downstream consumers
-        // are rejected even if they occur later in the document.
-        loop {
-            let before = (affected_sketches.len(), affected_bodies.len());
-            for f in &features {
-                if affected_sketches.contains(&f.sketch) {
-                    affected_bodies.insert(f.body);
-                }
-            }
-            for s in self.sketches.values() {
-                if s.host_face
-                    .and_then(|face| self.cad_owner(face))
-                    .is_some_and(|body| affected_bodies.contains(&body))
-                {
-                    affected_sketches.insert(s.id);
-                }
-            }
-            if before == (affected_sketches.len(), affected_bodies.len()) {
-                break;
-            }
-        }
-        let affected_profiles = affected_sketches
-            .iter()
-            .filter_map(|id| self.sketch(*id).and_then(|s| s.profile_face))
-            .collect::<BTreeSet<_>>();
-        if self
-            .cad_bodies()
-            .any(|(body, data)| match &data.dependencies {
-                None => true,
-                Some(d) => {
-                    !features.iter().any(|f| f.body == body)
-                        && (d.bodies.iter().any(|id| affected_bodies.contains(id))
-                            || d.profiles.iter().any(|id| affected_profiles.contains(id)))
-                }
-            })
-        {
-            return Err(error("A legacy operation has incomplete dependency metadata, or an affected downstream operation has no regeneration recipe. Resolve the dependent operation before editing"));
-        }
-        let mut dirty = BTreeSet::from([sketch]);
-        let mut rebuilt = Vec::new();
-        for feature in features {
-            if !dirty.contains(&feature.sketch) {
-                continue;
-            }
-            if feature.additive {
-                return Err(error(
-                    "Regeneration of additive Boolean Pads is not supported yet",
-                ));
-            }
-            let depth = feature
-                .distance
-                .ok_or_else(|| error("Legacy feature has no saved Pad depth"))?;
-            let old = self
-                .cad_body(feature.body)
-                .ok_or_else(|| error("Legacy extrusion cannot be regenerated as a kernel Pad"))?
-                .clone();
-            if !old
-                .dependencies
-                .as_ref()
-                .is_some_and(|d| d.replayable_pad && d.profiles == vec![feature.source_face])
-            {
-                return Err(error("Pad has been transformed; its transform must become a history feature before regeneration"));
-            }
-            let old_faces = self.bodies[&feature.body].faces.clone();
-            let temporary = self.cad_extrude(feature.source_face, depth)?;
-            let mut replacement = self.cad_bodies.remove(&temporary).unwrap();
-            let temporary_body = self.bodies.remove(&temporary).unwrap();
-            if old_faces.len() != replacement.face_meshes.len()
-                || old
-                    .face_meshes
-                    .iter()
-                    .zip(replacement.face_meshes.iter())
-                    .any(|(a, b)| a.plane.is_some() != b.plane.is_some() || matches!((a.plane,b.plane),(Some(x),Some(y)) if x.normal.dot(y.normal)<0.999999))
-            {
-                return Err(error(
-                    "Regeneration changed face topology; attachment mapping needs review",
-                ));
-            }
-            replacement.face_meshes = Arc::new(
-                replacement
-                    .face_meshes
-                    .iter()
-                    .cloned()
-                    .zip(old_faces.iter())
-                    .map(|(mut m, id)| {
-                        m.face = *id;
-                        m
-                    })
-                    .collect(),
-            );
-            replacement.name = old.name;
-            replacement.visible = old.visible;
-            for id in temporary_body.faces {
-                self.faces.remove(&id);
-            }
-            self.cad_bodies.insert(feature.body, replacement);
-            rebuilt.push(feature.body);
-            let attached = self
-                .sketches
-                .values()
-                .filter(|s| s.host_face.is_some_and(|f| old_faces.contains(&f)))
-                .cloned()
-                .collect::<Vec<_>>();
-            for s in attached {
-                let frame = self.sketch_frame_for_face(s.host_face.unwrap())?;
-                if let Some(face) = s.profile_face {
-                    for id in self.profile_vertices(face)? {
-                        let d = self.vertices[&id].position - s.frame.origin;
-                        self.vertices.get_mut(&id).unwrap().position = frame.origin
-                            + frame.x_axis * d.dot(s.frame.x_axis)
-                            + frame.y_axis * d.dot(s.frame.y_axis)
-                            + frame.normal * d.dot(s.frame.normal);
-                    }
-                }
-                self.sketches.get_mut(&s.id).unwrap().frame = frame;
-                dirty.insert(s.id);
-            }
-        }
-        Ok(rebuilt)
-    }
 }
 
 fn edge_vertex_ids(edge: &GeometryEdge) -> Vec<VertexId> {
     match edge.geometry {
-        EdgeGeometry::Line { start, end } => vec![start, end],
+        EdgeGeometry::Line { start, end } | EdgeGeometry::Kernel { start, end, .. } => {
+            vec![start, end]
+        }
         EdgeGeometry::CircularArc { start, center, end } => vec![start, center, end],
     }
 }

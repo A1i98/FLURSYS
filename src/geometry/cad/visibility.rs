@@ -29,6 +29,9 @@ impl GeometryTopology {
     }
 
     pub fn is_edge_visible(&self, id: EdgeId) -> bool {
+        if let Some(body) = self.cad_edge_owner(id) {
+            return self.cad_bodies[&body].visible;
+        }
         let mut hidden = false;
         for face in self.faces.values() {
             if let GeometryFaceRepresentation::Planar {
@@ -52,10 +55,15 @@ impl GeometryTopology {
     }
 
     pub fn is_vertex_visible(&self, id: VertexId) -> bool {
+        if let Some(body) = self.cad_vertex_owner(id) {
+            return self.cad_bodies[&body].visible;
+        }
         let mut hidden = false;
         for edge in self.edges.values() {
             let vertices = match edge.geometry {
-                EdgeGeometry::Line { start, end } => vec![start, end],
+                EdgeGeometry::Line { start, end } | EdgeGeometry::Kernel { start, end, .. } => {
+                    vec![start, end]
+                }
                 EdgeGeometry::CircularArc { start, center, end } => vec![start, center, end],
             };
             if vertices.contains(&id) {
