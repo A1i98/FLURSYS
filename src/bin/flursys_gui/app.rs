@@ -44,6 +44,8 @@ mod cad_constraints;
 mod cad_regions;
 #[path = "cad_tree.rs"]
 mod cad_tree;
+#[path = "mesh_setup.rs"]
+mod mesh_setup;
 #[path = "flow_setup.rs"]
 mod flow_setup;
 #[path = "measure.rs"]
@@ -203,6 +205,7 @@ struct AppState {
     logs: VecDeque<String>,
     last_update: Option<SolverUpdate>,
     residual_history: VecDeque<ResidualSample>,
+    wb_residual_history: VecDeque<ResidualSample>,
     frames: VecDeque<FieldUpdate>,
     frame_index: usize,
     animation_playing: bool,
@@ -243,6 +246,7 @@ struct AppState {
     face_sketch_cursor: Option<(f64, f64)>,
     geometry_pan_anchor: Option<(f64, f64)>,
     mesh_view: ViewTransform,
+    mesh_pan_anchor: Option<(f32,f32,f64,f64)>,
     mesh_display_mode: MeshDisplayMode,
     mesh_pick_mode: MeshPickMode,
     mesh_color_mode: MeshColorMode,
@@ -331,6 +335,7 @@ impl AppState {
             logs,
             last_update: None,
             residual_history: VecDeque::new(),
+            wb_residual_history: VecDeque::new(),
             frames: VecDeque::new(),
             frame_index: 0,
             animation_playing: false,
@@ -373,6 +378,7 @@ impl AppState {
             face_sketch_start: None,
             face_sketch_cursor: None,
             geometry_pan_anchor: None,
+            mesh_pan_anchor: None,
             mesh_view: {
                 let mut view = ViewTransform::default();
                 view.set_viewport(f64::from(PREVIEW_WIDTH), f64::from(PREVIEW_HEIGHT));
@@ -480,6 +486,7 @@ impl AppState {
         self.pending_recovery_workspace = None;
         self.last_update = None;
         self.residual_history.clear();
+        self.wb_residual_history.clear();
         self.frames.clear();
         self.frame_index = 0;
         self.animation_playing = false;
@@ -641,11 +648,12 @@ impl AppState {
                         self.log("Gmsh generation cancelled.");
                     } else {
                         self.log(format!("Mesh generation failed: {error}"));
-                        self.log("Adjust the mesh panel settings and try again.");
+
                     }
                     changed = true;
                 }
                 WorkbenchJobEvent::SolveProgress(JobProgress::Started) => {
+                    self.wb_residual_history.clear();
                     self.log("Solve worker started.");
                     changed = true;
                 }
@@ -654,6 +662,10 @@ impl AppState {
                     max,
                     residual,
                 }) => {
+                    if let Some(value) = residual.filter(|v| v.is_finite()) {
+                        push_bounded(&mut self.wb_residual_history, ResidualSample {continuity:value,momentum:0.0,pressure:0.0},400);
+                    }
+                    changed = true;
                     if current == 1 || current == max || current % 10 == 0 {
                         self.log(format!(
                             "Solve iteration {current}/{max}, continuity {:.3e}.",
@@ -3329,7 +3341,7 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
             return;
         };
         let mut state = pick_boundary_state.borrow_mut();
-        let result_cell = state.result_render_cache().and_then(|cache| {
+        let result_cell = state.result_render_cache().filter(|_| state.current_step == 4 && !state.show_mesh && !state.show_geometry_3d).and_then(|cache| {
             let mesh_cache = cache.mesh_cache();
             match mesh_cache.dimension() {
                 MeshDimension::TwoD => {
@@ -3343,7 +3355,10 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
                 }
                 MeshDimension::ThreeD => {
                     let point = geometry_editor_point(x, y, preview_width, preview_height);
-                    let (origin, direction) = mesh_screen_ray(point);
+                    if ui.get_result_slice_axis() > 0 {
+                        return state.active_result().and_then(|result| render::pick_result_slice_cell(result, ui.get_result_slice_axis(), ui.get_result_slice_percent(), point));
+                    }
+                    let (origin, direction) = render::result_screen_ray(mesh_cache, point);
                     mesh_cache
                         .pick_face_3d(origin, direction)
                         .and_then(|selection| match selection.target() {
@@ -3391,6 +3406,7 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
             refresh_ui(&ui, &state);
             return;
         }
+        if state.current_step == 4 && !state.show_mesh && !state.show_geometry_3d { return; }
         if state.show_mesh {
             let point = geometry_editor_point(x, y, preview_width, preview_height);
             if let Some(cache) = state.workbench.mesh_render_cache() {
@@ -3403,7 +3419,7 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
                         cache.pick_cell_2d(state.mesh_view.screen_to_world(point))
                     }
                     (MeshDimension::ThreeD, MeshPickMode::Face) => {
-                        let (origin, direction) = mesh_screen_ray(point);
+                        let (origin, direction) = render::result_screen_ray(cache, point);
                         cache.pick_face_3d(origin, direction)
                     }
                     (MeshDimension::ThreeD, MeshPickMode::Cell) => None,
@@ -3489,7 +3505,8 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
         let Some(ui) = weak_ui.upgrade() else {
             return;
         };
-        ui.set_result_field_index(index.clamp(0, 3));
+        ui.set_result_field_index(index.clamp(0, 6));
+        results_state.borrow_mut().result_manual_range = None;
         let mut state = results_state.borrow_mut();
         state.show_mesh = false;
         state.show_geometry_3d = false;
@@ -4030,24 +4047,24 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
         let global_size = parse_number(ui.get_wb_global_size().as_str(), 0.0);
         let min_size = parse_number(ui.get_wb_min_size().as_str(), 0.0);
         let max_size = parse_number(ui.get_wb_max_size().as_str(), 0.0);
-        if let Err(error) =
-            state
-                .workbench
-                .set_mesh_configuration(dimension, global_size, min_size, max_size, 1)
-        {
-            state.log(format!("Invalid mesh configuration: {error}"));
-            refresh_ui(&ui, &state);
-            return;
-        }
-        state.mark_workbench_dirty();
-        match state.workbench.mesh_generation_inputs() {
+        let inputs = (|| -> Result<_, String> {
+            let mut draft = WorkbenchSession::from_project(&state.workbench.to_project("Mesh generation")).map_err(|e|e.to_string())?;
+            draft.set_mesh_configuration(dimension, global_size, min_size, max_size, 1).map_err(|e|e.to_string())?;
+            draft.mesh_generation_inputs().map_err(|e|e.to_string())
+        })();
+        match inputs {
             Ok((export, options)) => match state.workbench_jobs.start_mesh(export, options) {
                 Ok(()) => {
-                    state.meshing = true;
-                    state.log(format!(
-                        "Gmsh generation started ({:?}, global size {global_size}).",
-                        dimension
-                    ));
+                    // These values were validated on the complete draft above.
+                    if let Err(error) = state.workbench.set_mesh_configuration(dimension, global_size, min_size, max_size, 1) {
+                        state.workbench_jobs.cancel();
+                        state.log(format!("Cannot apply mesh settings: {error}"));
+                    } else {
+                        state.mark_workbench_dirty();
+                        state.meshing = true;
+                        state.mesh_pan_anchor = None;
+                        state.log(format!("Gmsh generation started ({dimension:?}, global size {global_size})."));
+                    }
                 }
                 Err(error) => state.log(format!("Cannot start meshing: {error}")),
             },
@@ -4128,6 +4145,7 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
             return;
         };
         let mut state = solver_state_wb.borrow_mut();
+        if state.meshing || state.solving { return; }
         match sync_solver_panel(&ui, &mut state.workbench) {
             Ok(()) => {
                 state.mark_workbench_dirty();
@@ -4326,6 +4344,14 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
             3 => MeshQualityMetric::CellMeasure,
             _ => MeshQualityMetric::AspectRatio,
         };
+        state.mesh_quality_threshold = match state.mesh_quality_metric {
+            MeshQualityMetric::AspectRatio => 10.0,
+            MeshQualityMetric::Skewness => 0.85,
+            MeshQualityMetric::NonOrthogonality => 70.0,
+            MeshQualityMetric::CellMeasure => state.workbench.mesh_render_cache().and_then(|c|c.quality().color_range(MeshQualityMetric::CellMeasure)).map(|(_,max)|max*0.9).unwrap_or(1.0),
+        };
+        ui.set_mesh_quality_threshold(state.mesh_quality_threshold.to_string().into());
+        state.mesh_color_mode = MeshColorMode::Quality;
         refresh_ui(&ui, &state);
     });
     let weak_ui = ui.as_weak();
@@ -4385,7 +4411,7 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
                         cache.pick_cell_2d(state.mesh_view.screen_to_world(screen))
                     }
                     (MeshDimension::ThreeD, MeshPickMode::Face) => {
-                        let (origin, direction) = mesh_screen_ray(screen);
+                        let (origin, direction) = render::result_screen_ray(cache, screen);
                         cache.pick_face_3d(origin, direction)
                     }
                     (MeshDimension::ThreeD, MeshPickMode::Cell) => None,
@@ -4453,7 +4479,17 @@ fn apply_workflow_step(ui: &MainWindow, state: &mut AppState, step: i32) {
     state.wb_selected_targets.clear();
     ui.set_inspector_mode(inspector_mode_for(TREE_KIND_STAGE, step as usize) as i32);
     match step {
-        0 | 2 => {
+        2 => {
+            state.show_mesh = state.workbench.has_mesh();
+            state.show_geometry_3d = !state.show_mesh;
+            state.mesh_color_mode = MeshColorMode::Patches;
+            if let Some(name) = state.patch_names.get(ui.get_patch_index().max(0) as usize) {
+                push_boundary_fields(ui, &state.workbench, name);
+                state.selected_tree = Some(TreeSelection {kind:TREE_KIND_PATCH,payload:ui.get_patch_index().max(0)});
+            }
+            state.animation_playing = false;
+        }
+        0 => {
             state.show_geometry_3d = true;
             state.show_mesh = false;
             state.animation_playing = false;
@@ -5013,20 +5049,21 @@ fn set_velocity_fields(ui: &MainWindow, velocity: Vec3) {
 
 /// Validates the material/SIMPLE panel inputs against the session.
 fn sync_solver_panel(ui: &MainWindow, session: &mut WorkbenchSession) -> Result<(), String> {
-    session.set_coupling_tolerance(parse_number(ui.get_wb_coupling_tolerance().as_str(), f64::NAN)).map_err(|e| e.to_string())?;
+    let tolerance = parse_number(ui.get_wb_coupling_tolerance().as_str(), f64::NAN);
     let density = parse_number(ui.get_material_density().as_str(), f64::NAN);
     let viscosity = parse_number(ui.get_material_viscosity().as_str(), f64::NAN);
-    session
-        .set_material(density, viscosity)
-        .map_err(|error| format!("Invalid material: {error}"))?;
-    session
-        .set_solver_controls(
-            ui.get_wb_max_iterations().max(1) as usize,
-            parse_number(ui.get_wb_velocity_relaxation().as_str(), f64::NAN),
-            parse_number(ui.get_wb_pressure_relaxation().as_str(), f64::NAN),
-            parse_number(ui.get_wb_continuity_tolerance().as_str(), f64::NAN),
-        )
-        .map_err(|error| format!("Invalid solver controls: {error}"))?;
+    let iterations = ui.get_wb_max_iterations().max(1) as usize;
+    let velocity = parse_number(ui.get_wb_velocity_relaxation().as_str(), f64::NAN);
+    let pressure = parse_number(ui.get_wb_pressure_relaxation().as_str(), f64::NAN);
+    let continuity = parse_number(ui.get_wb_continuity_tolerance().as_str(), f64::NAN);
+    // Validate the complete form before invalidating an existing solution.
+    let mut draft = WorkbenchSession::from_project(&session.to_project("Solver validation")).map_err(|e|e.to_string())?;
+    draft.set_material(density, viscosity).map_err(|e|e.to_string())?;
+    draft.set_coupling_tolerance(tolerance).map_err(|e|e.to_string())?;
+    draft.set_solver_controls(iterations, velocity, pressure, continuity).map_err(|e|e.to_string())?;
+    session.set_material(density, viscosity).map_err(|e|e.to_string())?;
+    session.set_coupling_tolerance(tolerance).map_err(|e|e.to_string())?;
+    session.set_solver_controls(iterations, velocity, pressure, continuity).map_err(|e|e.to_string())?;
     Ok(())
 }
 
@@ -5528,7 +5565,9 @@ fn refresh_ui(ui: &MainWindow, state: &AppState) {
     ui.set_log_text(SharedString::from(
         state.logs.iter().cloned().collect::<Vec<_>>().join("\n"),
     ));
-    ui.set_residual_image(render_residual_chart(&state.residual_history));
+    ui.set_residual_image(if state.last_update.is_some() && state.workbench.geometry().vertices().next().is_none() {
+        render_residual_chart(&state.residual_history)
+    } else { render::render_workbench_continuity_chart(&state.wb_residual_history) });
     ui.set_mesh_inspection(SharedString::from(mesh_inspection(&state.project)));
 
     // ---- Workbench pipeline ----
@@ -5553,6 +5592,9 @@ fn refresh_ui(ui: &MainWindow, state: &AppState) {
 
     let busy = state.meshing || state.solving;
     ui.set_wb_busy(busy);
+    if state.meshing { ui.set_status("Meshing".into()); }
+    else if state.solving { ui.set_status("Solving".into()); }
+    else if state.workbench.has_mesh() { ui.set_status(format!("{:?}",state.workbench.status()).into()); }
     ui.set_wb_gmsh_status(SharedString::from(state.gmsh_status.as_str()));
     let mesh_summary = state
         .workbench
@@ -5569,6 +5611,7 @@ fn refresh_ui(ui: &MainWindow, state: &AppState) {
                 )
             },
         );
+    ui.set_mesh_inspection(SharedString::from(mesh_summary.clone()));
     ui.set_wb_mesh_summary(SharedString::from(mesh_summary));
     let recipe = state.workbench.mesh_recipe();
     ui.set_wb_mesh_recipe_summary(SharedString::from(format!(
@@ -5602,7 +5645,7 @@ fn refresh_ui(ui: &MainWindow, state: &AppState) {
         MeshPickMode::Cell => 1,
     });
     ui.set_wb_solution_summary(SharedString::from(solution_summary_text(&state.workbench)));
-    ui.set_can_run_workbench(!busy && state.workbench.readiness().is_ok());
+    ui.set_can_run_workbench(!busy && state.workspace_path.is_some() && state.workbench.readiness().is_ok());
     ui.set_geometry_face_sketch_editing(state.face_sketch_host.is_some());
     ui.set_geometry_pick_mode(state.geometry_pick_mode);
     ui.set_geometry_selection_detail(SharedString::from(
@@ -5948,7 +5991,10 @@ fn refresh_ui(ui: &MainWindow, state: &AppState) {
         let plot = ui.get_result_plot_index().clamp(0, 3);
         let colormap = ui.get_result_colormap_index().clamp(0, 3);
         let (title, field, unavailable) = match selected {
-            1 => ("PERSISTED PRESSURE", ResultFieldKind::Pressure, None),
+            1 => ("KINEMATIC GAUGE PRESSURE p/rho", ResultFieldKind::Pressure, None),
+            4 => ("VELOCITY X", ResultFieldKind::VelocityX, None),
+            5 => ("VELOCITY Y", ResultFieldKind::VelocityY, None),
+            6 => ("VELOCITY Z", ResultFieldKind::VelocityZ, None),
             2 => (
                 "VORTICITY UNAVAILABLE",
                 ResultFieldKind::VelocityMagnitude,
@@ -5969,9 +6015,12 @@ fn refresh_ui(ui: &MainWindow, state: &AppState) {
             .result_display_range()
             .map(Ok)
             .unwrap_or_else(|| result.scalar_range(field))
-            .map(|(minimum, maximum)| format!(" · range {minimum:.4e}..{maximum:.4e}"))
+            .map(|(minimum, maximum)| format!(" · range {minimum:.4e}..{maximum:.4e} · volume mean {:.4e}", result.volume_mean(field).unwrap_or(f64::NAN)))
             .unwrap_or_default();
-        ui.set_visualization_title(SharedString::from(title));
+        let slice_label = if result.mesh().dimension() == MeshDimension::ThreeD && ui.get_result_slice_axis() > 0 {
+            format!(" · {} slice at {}% · cell values", match ui.get_result_slice_axis() {1=>"XY",2=>"XZ",_=>"YZ"},ui.get_result_slice_percent())
+        } else { String::new() };
+        ui.set_visualization_title(SharedString::from(format!("{title}{slice_label}")));
         ui.set_animation_status(SharedString::from(format!(
             "Run {} · {} · {}{}{}",
             result.run_id(),
@@ -5984,6 +6033,9 @@ fn refresh_ui(ui: &MainWindow, state: &AppState) {
         )));
         ui.set_visualization_image(match unavailable {
             Some(_) => render_empty_image(),
+            None if result.mesh().dimension() == MeshDimension::ThreeD && ui.get_result_slice_axis() > 0 => render::render_result_slice(
+                result, field, ui.get_result_slice_axis(), ui.get_result_slice_percent(), colormap, state.result_display_range(),
+            ),
             None => render_persisted_result(
                 cache,
                 field,
@@ -6006,6 +6058,9 @@ fn refresh_ui(ui: &MainWindow, state: &AppState) {
                 "PRESSURE FIELD",
                 render_scalar_field(field, &field.pressure, true, colormap, plot, contour_levels),
             ),
+            4 => ("VELOCITY X", render_scalar_field(field, &field.velocity_x, true, colormap, plot, contour_levels)),
+            5 => ("VELOCITY Y", render_scalar_field(field, &field.velocity_y, true, colormap, plot, contour_levels)),
+            6 => ("VELOCITY Z UNAVAILABLE IN 2D", render_empty_image()),
             2 => (
                 "VORTICITY FIELD",
                 render_scalar_field(

@@ -1,4 +1,4 @@
-    import { Button, ComboBox, LineEdit, SpinBox, TextEdit } from "std-widgets.slint";
+    import { Button, ComboBox, LineEdit, SpinBox, TextEdit, ScrollView } from "std-widgets.slint";
 
     export struct ProjectTreeRow {
         index: int,
@@ -60,6 +60,15 @@
         border-color: rgb(48, 74, 92);
         border-width: 1px;
         border-radius: 5px;
+    }
+
+    // Scroll controls independently from the mesh / boundary viewport.
+    export component WorkflowControlCard inherits Card {
+        ScrollView {
+            width:parent.width;height:parent.height;
+            horizontal-scrollbar-policy:always-off;
+            VerticalLayout {padding:14px;spacing:8px;@children}
+        }
     }
 
     export component MetricCard inherits Card {

@@ -47,6 +47,91 @@ fn selected_face(state: &AppState) -> Result<flursys::FaceId, String> {
 }
 
 pub(super) fn bind(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
+    super::mesh_setup::bind(ui, state);
+    let weak = ui.as_weak();
+    let shared = state.clone();
+    ui.on_export_result_csv(move || {
+        let Some(ui) = weak.upgrade() else { return };
+        let dataset = shared.borrow().active_result().cloned();
+        let Some(dataset) = dataset else {
+            shared
+                .borrow_mut()
+                .log("Select a saved workbench result before exporting cell data.");
+            refresh_ui(&ui, &shared.borrow());
+            return;
+        };
+        let Some(path) = rfd::FileDialog::new()
+            .set_title("Export result cell data")
+            .add_filter("CSV", &["csv"])
+            .set_file_name("cell-data.csv")
+            .save_file()
+        else {
+            return;
+        };
+        let result = dataset.write_cell_csv(&path);
+        shared.borrow_mut().log(match result {
+            Ok(()) => format!(
+                "Cell data exported: {} (pressure column is p/rho)",
+                path.display()
+            ),
+            Err(e) => format!("CSV export failed: {e}"),
+        });
+        refresh_ui(&ui, &shared.borrow());
+    });
+    for three_d in [false, true] {
+        let weak = ui.as_weak();
+        let shared = state.clone();
+        let handler = move || {
+            let Some(ui) = weak.upgrade() else { return };
+            let mut state = shared.borrow_mut();
+            let result = (|| -> Result<String, String> {
+                if state.meshing
+                    || state.solving
+                    || state.cad_job.is_some()
+                    || state.cad_preview.is_some()
+                {
+                    return Err("Finish the current CAD, mesh or solve operation first".into());
+                }
+                let face = selected_face(&state)?;
+                if three_d {
+                    let depth = number(ui.get_wb_channel_depth().as_str(), "Spanwise depth")?;
+                    let before = state.workbench.geometry().clone();
+                    state
+                        .workbench
+                        .prepare_extruded_channel(face, depth)
+                        .map_err(|e| e.to_string())?;
+                    state.geometry_editor.record_snapshot(&before);
+                    state.show_geometry_3d = true;
+                    state.show_sketch_editor = false;
+                    state.show_mesh = false;
+                } else {
+                    state
+                        .workbench
+                        .prepare_cavity_boundaries(face)
+                        .map_err(|e| e.to_string())?;
+                }
+                state.wb_selected_targets.clear();
+                state.geometry_editor.selection.clear();
+                state.mark_workbench_dirty();
+                rebuild_tree_rows(&mut state);
+                ui.set_mesh_dimension_index(if three_d { 1 } else { 0 });
+                ui.set_patch_index(0);
+                if let Some(patch) = state.patch_names.first() {
+                    push_boundary_fields(&ui, &state.workbench, patch);
+                }
+                Ok(if three_d {"3D fluid channel prepared. Review inlet, outlet, walls, obstacle and span_walls in Setup, then mesh."} else {"2D cavity prepared: lid U=(1,0,0), stationary walls, closed-domain pressure gauge. Edit lid speed and viscosity in Setup."}.into())
+            })();
+            let message = result.unwrap_or_else(|e| e);
+            ui.set_wb_flow_feedback(message.clone().into());
+            state.log(message);
+            refresh_ui(&ui, &state);
+        };
+        if three_d {
+            ui.on_extrude_flow_channel(handler);
+        } else {
+            ui.on_prepare_cavity(handler);
+        }
+    }
     let weak = ui.as_weak();
     let shared = state.clone();
     ui.on_cut_flow_obstacle(move || {
@@ -109,7 +194,11 @@ pub(super) fn bind(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
         let Some(ui) = weak.upgrade() else { return };
         let mut state = shared.borrow_mut();
         if let Some(name) = state.workbench.patch_names().get(index.max(0) as usize) {
+            ui.set_patch_index(index);
             push_boundary_fields(&ui, &state.workbench, name);
+            state.show_mesh = true;
+            state.show_geometry_3d = false;
+            state.mesh_color_mode = MeshColorMode::Patches;
             state.selected_tree = Some(TreeSelection {
                 kind: TREE_KIND_PATCH,
                 payload: index,
@@ -120,6 +209,18 @@ pub(super) fn bind(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
 }
 
 pub(super) fn refresh(ui: &MainWindow, state: &AppState) {
+    super::mesh_setup::refresh(ui, state);
+    ui.set_result_probe_text(state.active_result_probe().map(|p| format!(
+        "Cell {} · center ({:.4e}, {:.4e}, {:.4e}) · p/rho {:.5e} · U=({:.5e}, {:.5e}, {:.5e}) · |U|={:.5e}",
+        p.cell_index,p.center.x,p.center.y,p.center.z,p.pressure,p.velocity.x,p.velocity.y,p.velocity.z,p.velocity_magnitude
+    )).unwrap_or_else(|| "Click a result cell to inspect pressure and velocity.".into()).into());
+
+    if state.workbench.mesh_dimension() == flursys::MeshDimension::ThreeD {
+        ui.set_wb_domain_status(
+            "3D fluid volume · review all surface patches before solving".into(),
+        );
+        return;
+    }
     let message = match state.workbench.fluid_face().and_then(|id| state.workbench.geometry().face(id)) {
         Some(face) => match &face.representation {
             flursys::GeometryFaceRepresentation::Planar { inner_loops, .. } => format!("2D fluid face {} · {} obstacle loop(s)", face.id.get(), inner_loops.len()),
