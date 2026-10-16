@@ -602,7 +602,7 @@ impl WorkbenchSession {
         mut export: GeometryGmshExport,
     ) -> Result<GeometryGmshExport, WorkbenchError> {
         let mut source = String::from("\n// FLURSYS persisted advanced mesh recipe.\n");
-        if self.mesh_dimension == MeshDimension::TwoD && self.geometry.edges().any(|e| matches!(e.geometry, crate::EdgeGeometry::CircularArc { .. })) {
+        if self.geometry.edges().any(|e| matches!(e.geometry, crate::EdgeGeometry::CircularArc { .. })) {
             source.push_str("Mesh.MinimumCirclePoints = 64;\nMesh.MeshSizeFromCurvature = 32;\n");
         }
         let entity_kind = match self.mesh_dimension {

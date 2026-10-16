@@ -71,8 +71,11 @@ impl GmshGeometryExporter {
             });
         };
         validate_name(fluid_name.as_ref())?;
-        let boundary_edges = outer_loop.iter().chain(inner_loops.iter().flatten())
-            .map(|e| e.edge).collect::<BTreeSet<_>>();
+        let boundary_edges = outer_loop
+            .iter()
+            .chain(inner_loops.iter().flatten())
+            .map(|e| e.edge)
+            .collect::<BTreeSet<_>>();
         let mut assigned = BTreeMap::new();
         let mut groups = boundary_groups
             .into_iter()
@@ -88,7 +91,12 @@ impl GmshGeometryExporter {
             }
             for &edge in edges {
                 if !boundary_edges.contains(&edge) {
-                    return Err(GeometryError::InvalidPrimitive { message: format!("Group {name:?} contains edge {}, outside the selected fluid face", edge.get()) });
+                    return Err(GeometryError::InvalidPrimitive {
+                        message: format!(
+                            "Group {name:?} contains edge {}, outside the selected fluid face",
+                            edge.get()
+                        ),
+                    });
                 }
                 if let Some(previous) = assigned.insert(edge, name) {
                     return Err(GeometryError::InvalidPrimitive { message: format!("Edge {} belongs to both {previous:?} and {name:?}; boundary groups must not overlap", edge.get()) });
@@ -290,6 +298,21 @@ impl GmshGeometryExporter {
             .map(|(name, faces)| (name.as_ref().to_owned(), faces))
             .collect::<Vec<_>>();
         groups.sort_by(|left, right| left.0.cmp(&right.0));
+        let mut assigned = std::collections::BTreeSet::new();
+        for (name, faces) in &groups {
+            for face in faces {
+                if !assigned.insert(*face) {
+                    return Err(GeometryError::InvalidPrimitive { message: format!("Extrusion boundary face {} is assigned more than once (group {name:?})", face.get()) });
+                }
+            }
+        }
+        if body_entity
+            .faces
+            .iter()
+            .any(|face| !assigned.contains(face))
+        {
+            return Err(GeometryError::InvalidPrimitive { message: "Assign every extrusion boundary face to exactly one physical group before meshing".into() });
+        }
         for (name, faces) in groups {
             validate_name(&name)?;
             if faces.is_empty() || faces.iter().any(|face| !body_entity.faces.contains(face)) {

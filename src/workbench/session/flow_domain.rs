@@ -182,6 +182,149 @@ mod tests {
 }
 
 impl WorkbenchSession {
+    /// Prepare a closed cavity with a +X moving lid and a pressure gauge.
+    pub fn prepare_cavity_boundaries(&mut self, face: FaceId) -> Result<(), WorkbenchError> {
+        if matches!(self.geometry.face(face).map(|f| &f.representation), Some(GeometryFaceRepresentation::Planar {inner_loops, ..}) if !inner_loops.is_empty())
+        {
+            return Err(invalid("A lid-driven cavity must have no obstacle holes"));
+        }
+        if self.named_selections.iter().next().is_some() {
+            return Err(invalid(
+                "Remove existing boundary groups before preparing a cavity",
+            ));
+        }
+        let mut staged = Self::from_project(&self.to_project("Cavity preparation"))?;
+        staged.prepare_channel_boundaries(face)?;
+        let mut horizontal = staged
+            .named_selections
+            .get("walls")
+            .unwrap()
+            .edges()
+            .iter()
+            .map(|id| {
+                let EdgeGeometry::Line { start, end } =
+                    &staged.geometry.edge(*id).unwrap().geometry
+                else {
+                    unreachable!()
+                };
+                (
+                    *id,
+                    (staged.geometry.vertex(*start).unwrap().position.y
+                        + staged.geometry.vertex(*end).unwrap().position.y)
+                        * 0.5,
+                )
+            })
+            .collect::<Vec<_>>();
+        horizontal.sort_by(|a, b| a.1.total_cmp(&b.1));
+        let lid = horizontal[1].0;
+        let walls = staged
+            .named_selections
+            .iter()
+            .flat_map(|g| g.edges())
+            .filter(|e| *e != lid)
+            .map(GeometrySelectionTarget::Edge)
+            .collect::<Vec<_>>();
+        let mut selections = NamedSelectionStore::default();
+        selections.create("lid", vec![GeometrySelectionTarget::Edge(lid)], |_| true)?;
+        selections.create("walls", walls, |_| true)?;
+        self.named_selections = selections;
+        self.boundaries.clear();
+        self.boundaries.insert(
+            "lid".into(),
+            IncompressibleBoundaryCondition::MovingWall {
+                velocity: Vec3::new(1.0, 0.0, 0.0),
+            },
+        );
+        self.boundaries
+            .insert("walls".into(), IncompressibleBoundaryCondition::NoSlipWall);
+        self.fluid_face_selection = Some(face);
+        self.mesh_dimension = MeshDimension::TwoD;
+        self.invalidate_mesh();
+        Ok(())
+    }
+
+    /// Lift the fluid profile and its circular holes into a 3D channel.
+    /// The spanwise caps are explicit no-slip walls, not implicit symmetry planes.
+    pub fn prepare_extruded_channel(
+        &mut self,
+        face: FaceId,
+        depth: f64,
+    ) -> Result<crate::ExtrudeEntities, WorkbenchError> {
+        if !depth.is_finite() || depth <= 0.0 {
+            return Err(invalid("Channel depth must be finite and positive"));
+        }
+        if self.geometry.bodies().next().is_some() || self.geometry.cad_bodies().next().is_some() {
+            return Err(invalid(
+                "Start from an unextruded fluid sketch; a body already exists",
+            ));
+        }
+        let mut staged = Self::from_project(&self.to_project("3D channel preparation"))?;
+        staged.prepare_channel_boundaries(face)?;
+        let GeometryFaceRepresentation::Planar {
+            outer_loop,
+            inner_loops,
+        } = &staged.geometry.face(face).unwrap().representation
+        else {
+            unreachable!()
+        };
+        let edges = outer_loop
+            .iter()
+            .chain(inner_loops.iter().flatten())
+            .map(|e| e.edge)
+            .collect::<Vec<_>>();
+        let extrusion = staged.geometry.extrude_planar_face(face, depth)?;
+        let mut selections = NamedSelectionStore::default();
+        for group in staged.named_selections.iter() {
+            let faces = group
+                .edges()
+                .iter()
+                .map(|edge| {
+                    let index = edges.iter().position(|e| e == edge).unwrap();
+                    GeometrySelectionTarget::Face(extrusion.side_faces[index])
+                })
+                .collect::<Vec<_>>();
+            selections.create(&group.name, faces, |_| true)?;
+        }
+        selections.create(
+            "span_walls",
+            vec![
+                GeometrySelectionTarget::Face(face),
+                GeometrySelectionTarget::Face(extrusion.top_face),
+            ],
+            |_| true,
+        )?;
+        let groups = selections
+            .iter()
+            .map(|g| {
+                (
+                    g.name.clone(),
+                    g.targets
+                        .iter()
+                        .filter_map(|t| {
+                            if let GeometrySelectionTarget::Face(f) = t {
+                                Some(*f)
+                            } else {
+                                None
+                            }
+                        })
+                        .collect::<Vec<_>>(),
+                )
+            })
+            .collect::<Vec<_>>();
+        GmshGeometryExporter::extruded(&staged.geometry, extrusion.body, groups, "fluid")?;
+        self.geometry = staged.geometry;
+        self.named_selections = selections;
+        self.boundaries = staged.boundaries;
+        self.boundaries.insert(
+            "span_walls".into(),
+            IncompressibleBoundaryCondition::NoSlipWall,
+        );
+        self.fluid_face_selection = Some(face);
+        self.mesh_dimension = MeshDimension::ThreeD;
+        self.mesh_recipe = MeshRecipe::default();
+        self.invalidate_mesh();
+        Ok(extrusion)
+    }
     pub fn set_coupling_tolerance(&mut self, tolerance: f64) -> Result<(), WorkbenchError> {
         if !tolerance.is_finite() || tolerance <= 0.0 {
             return Err(invalid(
