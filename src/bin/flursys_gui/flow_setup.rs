@@ -78,91 +78,9 @@ pub(super) fn bind(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
         });
         refresh_ui(&ui, &shared.borrow());
     });
-    for three_d in [false, true] {
-        let weak = ui.as_weak();
-        let shared = state.clone();
-        let handler = move || {
-            let Some(ui) = weak.upgrade() else { return };
-            let mut state = shared.borrow_mut();
-            let result = (|| -> Result<String, String> {
-                if state.meshing
-                    || state.solving
-                    || state.cad_job.is_some()
-                    || state.cad_preview.is_some()
-                {
-                    return Err("Finish the current CAD, mesh or solve operation first".into());
-                }
-                let face = selected_face(&state)?;
-                if three_d {
-                    let depth = number(ui.get_wb_channel_depth().as_str(), "Spanwise depth")?;
-                    let before = state.workbench.geometry().clone();
-                    state
-                        .workbench
-                        .prepare_extruded_channel(face, depth)
-                        .map_err(|e| e.to_string())?;
-                    state.geometry_editor.record_snapshot(&before);
-                    state.show_geometry_3d = true;
-                    state.show_sketch_editor = false;
-                    state.show_mesh = false;
-                } else {
-                    state
-                        .workbench
-                        .prepare_cavity_boundaries(face)
-                        .map_err(|e| e.to_string())?;
-                }
-                state.wb_selected_targets.clear();
-                state.geometry_editor.selection.clear();
-                state.mark_workbench_dirty();
-                rebuild_tree_rows(&mut state);
-                ui.set_mesh_dimension_index(if three_d { 1 } else { 0 });
-                ui.set_patch_index(0);
-                if let Some(patch) = state.patch_names.first() {
-                    push_boundary_fields(&ui, &state.workbench, patch);
-                }
-                Ok(if three_d {"3D fluid channel prepared. Review inlet, outlet, walls, obstacle and span_walls in Setup, then mesh."} else {"2D cavity prepared: lid U=(1,0,0), stationary walls, closed-domain pressure gauge. Edit lid speed and viscosity in Setup."}.into())
-            })();
-            let message = result.unwrap_or_else(|e| e);
-            ui.set_wb_flow_feedback(message.clone().into());
-            state.log(message);
-            refresh_ui(&ui, &state);
-        };
-        if three_d {
-            ui.on_extrude_flow_channel(handler);
-        } else {
-            ui.on_prepare_cavity(handler);
-        }
-    }
     let weak = ui.as_weak();
     let shared = state.clone();
-    ui.on_cut_flow_obstacle(move || {
-        let Some(ui) = weak.upgrade() else { return };
-        let mut state = shared.borrow_mut();
-        let result = (|| {
-            if state.meshing || state.solving || state.cad_job.is_some() || state.cad_preview.is_some() {
-                return Err("Finish the current CAD, mesh or solve operation first".into());
-            }
-            let face = selected_face(&state)?;
-            let center = Vec3::new(number(ui.get_wb_obstacle_x().as_str(), "Center X")?, number(ui.get_wb_obstacle_y().as_str(), "Center Y")?, 0.0);
-            let radius = number(ui.get_wb_obstacle_radius().as_str(), "Obstacle radius")?;
-            let before = state.workbench.geometry().clone();
-            state.workbench.geometry_mut().add_circle_hole(face, center, radius).map_err(|e| e.to_string())?;
-            state.geometry_editor.record_snapshot(&before);
-            state.workbench.geometry_changed();
-            state.workbench.select_fluid_face(face).map_err(|e| e.to_string())?;
-            state.wb_selected_targets = vec![GeometrySelectionTarget::Face(face)];
-            state.geometry_editor.selection = state.wb_selected_targets.clone();
-            state.mark_workbench_dirty();
-            rebuild_tree_rows(&mut state);
-            Ok(format!("Circular obstacle subtracted (radius {radius}). Prepare or update its boundary groups, then remesh. Undo restores the original face."))
-        })();
-        let message = result.unwrap_or_else(|e: String| e);
-        ui.set_wb_flow_feedback(message.clone().into());
-        state.log(message);
-        refresh_ui(&ui, &state);
-    });
-    let weak = ui.as_weak();
-    let shared = state.clone();
-    ui.on_prepare_flow_domain(move |channel| {
+    ui.on_select_fluid_domain(move || {
         let Some(ui) = weak.upgrade() else { return };
         let mut state = shared.borrow_mut();
         let result = (|| {
@@ -170,8 +88,8 @@ pub(super) fn bind(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
                 return Err("Finish the current CAD preview, mesh or solve first".into());
             }
             let face = selected_face(&state)?;
-            if channel { state.workbench.prepare_channel_boundaries(face) }
-            else { state.workbench.select_fluid_face(face) }.map_err(|e| e.to_string())?;
+            state.workbench.select_fluid_face(face).map_err(|e|e.to_string())?;
+            state.show_geometry_3d=true;state.show_mesh=false;state.show_sketch_editor=false;
             state.mark_workbench_dirty();
             rebuild_tree_rows(&mut state);
             ui.set_patch_index(0);
@@ -180,8 +98,7 @@ pub(super) fn bind(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
             ui.set_inspector_mode(2);
             ui.set_current_step(1);
             state.current_step = 1;
-            Ok(if channel { "Channel patches prepared. Defaults: inlet U=(1,0,0), outlet p=0, no-slip walls and obstacle. Edit each condition in Setup, then generate the mesh.".to_string() }
-            else { format!("Face {} selected as the 2D fluid domain. Group every outer and obstacle boundary before meshing.", face.get()) })
+            Ok(format!("Face {} selected as the fluid domain. Select its boundary edges and create groups before meshing.",face.get()))
         })();
         let message = result.unwrap_or_else(|e: String| e);
         ui.set_wb_flow_feedback(SharedString::from(&message));
@@ -196,8 +113,17 @@ pub(super) fn bind(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
         if let Some(name) = state.workbench.patch_names().get(index.max(0) as usize) {
             ui.set_patch_index(index);
             push_boundary_fields(&ui, &state.workbench, name);
-            state.show_mesh = true;
-            state.show_geometry_3d = false;
+            state.show_mesh = state.workbench.has_mesh();
+            state.show_geometry_3d = !state.show_mesh;
+            if !state.show_mesh {
+                state.wb_selected_targets = state
+                    .workbench
+                    .named_selections()
+                    .get(name)
+                    .map(|g| g.targets.clone())
+                    .unwrap_or_default();
+                state.geometry_editor.selection = state.wb_selected_targets.clone();
+            }
             state.mesh_color_mode = MeshColorMode::Patches;
             state.selected_tree = Some(TreeSelection {
                 kind: TREE_KIND_PATCH,

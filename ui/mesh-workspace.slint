@@ -1,0 +1,232 @@
+import { Button, ComboBox, LineEdit, SpinBox, ScrollView, ListView } from "std-widgets.slint";
+import { UiTheme, InteractiveGeometryPreview } from "components.slint";
+
+component ToolButton inherits Button {
+    min-width:0px; min-height:30px; max-height:34px;
+}
+component Label inherits Text {
+    color:UiTheme.text-muted;font-size:11px;wrap:word-wrap;
+}
+component Field inherits VerticalLayout {
+    in property <string> label;
+    in-out property <string> value;
+    spacing:4px;
+    Label {text:root.label;}
+    LineEdit {text <=> root.value;min-width:0px;}
+}
+
+// Geometry grouping and mesh controls share one viewport, with a bounded task pane.
+export component MeshWorkspace inherits Rectangle {
+    in property <bool> busy;
+    in-out property <int> task;
+    in-out property <int> dimension;
+    in property <int> entity-mode;
+    in property <bool> geometry-view;
+    in property <string> selection;
+    in property <string> coverage;
+    in property <[string]> groups;
+    in property <[string]> group-names;
+    in-out property <int> local-group-index;
+    in property <int> group-index;
+    in-out property <string> group-name;
+    in property <string> feedback;
+    in property <string> domain;
+    in property <string> readiness;
+    in property <string> summary;
+    in property <string> gmsh;
+    in-out property <string> global-size;
+    in-out property <string> min-size;
+    in-out property <string> max-size;
+    in-out property <string> local-target;
+    in-out property <string> local-size;
+    in-out property <string> refine-min;
+    in-out property <string> refine-max;
+    in-out property <string> refine-distance;
+    in-out property <string> layer-first;
+    in-out property <string> layer-growth;
+    in-out property <int> layer-count;
+    in property <[string]> controls;
+    in-out property <int> display-mode;
+    in-out property <int> color-mode;
+    in-out property <int> quality-mode;
+    in-out property <string> quality-threshold;
+    in property <string> inspection;
+    in property <[string]> bad-cells;
+    in property <image> preview;
+    private property <bool> advanced:false;
+    private property <bool> layers:false;
+    private property <int> control-index:0;
+    callback task-changed(int);
+    callback select-filter(int);
+    callback show-geometry(bool);
+    callback pick(float,float,float,float,bool);
+    callback pick-mesh(float,float,float,float);
+    callback select-group(int);
+    callback edit-condition(int);
+    callback group-action(int);
+    callback use-face();callback check();callback generate();callback cancel();
+    callback preset(int);callback add-local();callback add-refinement();callback add-layers();
+    callback remove-control(int);
+    callback display(int);callback select-color(int);callback quality(int);callback threshold();callback select-bad(int);
+    callback hover(float,float,float,float);
+    callback drag(float,float,float,float,float,float);callback drag-end();callback zoom(float);callback fit();
+    callback continue();
+    background:UiTheme.background;
+    VerticalLayout {
+        padding:12px;spacing:10px;
+        HorizontalLayout {
+            height:36px;spacing:8px;
+            Text {text:"02  Mesh";color:UiTheme.text;font-size:20px;font-weight:700;vertical-alignment:center;}
+            Rectangle {horizontal-stretch:1;}
+            ToolButton {text:root.task==0 ? "● Boundary groups" : "Boundary groups";clicked=>{root.task=0;root.task-changed(0);}}
+            ToolButton {text:root.task==1 ? "● Sizing" : "Sizing";clicked=>{root.task=1;root.task-changed(1);}}
+            ToolButton {text:root.task==2 ? "● Quality" : "Quality";clicked=>{root.task=2;root.task-changed(2);}}
+        }
+        HorizontalLayout {
+            spacing:10px;
+            Rectangle {
+                width:300px;
+                background:UiTheme.sidebar;border-width:1px;border-color:UiTheme.border;border-radius:4px;
+                pane := ScrollView {
+                    width:parent.width;height:parent.height;horizontal-scrollbar-policy:always-off;
+                    VerticalLayout {
+                        width:pane.visible-width;padding:12px;spacing:9px;
+                        if root.task==0 : VerticalLayout {
+                            spacing:9px;
+                            Text {text:"NAMED BOUNDARIES";color:UiTheme.accent;font-size:12px;font-weight:700;}
+                            Label {text:"Select edges in 2D or surfaces in 3D. Shift-click adds or removes a member.";}
+                            HorizontalLayout {
+                                ToolButton {text:root.entity-mode==1 ? "✓ Edges" : "Edges";enabled:!root.busy && root.dimension==0;clicked=>{root.select-filter(1);}}
+                                ToolButton {text:root.entity-mode==0 ? "✓ Faces" : "Faces";enabled:!root.busy;clicked=>{root.select-filter(0);}}
+                            }
+                            Text {text:root.selection;color:UiTheme.text;font-size:11px;wrap:word-wrap;}
+                            HorizontalLayout {
+                                ToolButton {text:"Clear selection";enabled:!root.busy;clicked=>{root.group-action(0);}}
+                                ToolButton {text:"Ungrouped";enabled:!root.busy;clicked=>{root.group-action(5);}}
+                            }
+                            Field {label:"Boundary name";value <=> root.group-name;}
+                            ToolButton {text:"+ Create boundary group";enabled:!root.busy && root.group-name!="" && root.group-index<0;clicked=>{root.group-action(1);}}
+                            Label {text:"Groups define mesh zones. Assign wall, inlet or outlet conditions in Setup.";}
+                            Rectangle {height:1px;background:UiTheme.border;}
+                            Label {text:"EXISTING GROUPS";}
+                            ListView {
+                                height:min(220px,max(75px,root.groups.length*34px));
+                                for group[index] in root.groups : ToolButton {
+                                    text:(index==root.group-index ? "● " : "○ ")+group;
+                                    enabled:!root.busy;clicked=>{root.select-group(index);}
+                                }
+                            }
+                            if root.group-index>=0 : VerticalLayout {
+                                spacing:6px;
+                                ToolButton {text:"Set boundary condition →";enabled:!root.busy;clicked=>{root.edit-condition(root.group-index);}}
+                                ToolButton {text:"Replace members with selection";enabled:!root.busy;clicked=>{root.group-action(2);}}
+                                HorizontalLayout {
+                                    ToolButton {text:"Rename";enabled:!root.busy;clicked=>{root.group-action(3);}}
+                                    ToolButton {text:"Delete group";enabled:!root.busy;clicked=>{root.group-action(4);}}
+                                }
+                            }
+                            Text {text:root.coverage;color:UiTheme.text-soft;font-size:11px;wrap:word-wrap;}
+                            Rectangle {height:1px;background:UiTheme.border;}
+                            Label {text:"FLUID DOMAIN";}
+                            Text {text:root.domain;color:UiTheme.text;font-size:11px;wrap:word-wrap;}
+                            ToolButton {text:"Use selected face as 2D domain";enabled:!root.busy && root.dimension==0;clicked=>{root.use-face();}}
+                        }
+                        if root.task==1 : VerticalLayout {
+                            spacing:9px;
+                            Text {text:"GLOBAL SIZING";color:UiTheme.accent;font-size:12px;font-weight:700;}
+                            ComboBox {model:["2D planar domain","3D fluid volume"];current-index <=> root.dimension;enabled:!root.busy;selected(value)=>{root.select-filter(root.dimension==0 ? 1 : 0);}}
+                            Label {text:root.domain;}
+                            Field {label:"Target element size (model units)";value <=> root.global-size;}
+                            HorizontalLayout {
+                                Field {label:"Minimum";value <=> root.min-size;}
+                                Field {label:"Maximum";value <=> root.max-size;}
+                            }
+                            HorizontalLayout {
+                                ToolButton {text:"Coarse";enabled:!root.busy;clicked=>{root.preset(0);}}
+                                ToolButton {text:"Medium";enabled:!root.busy;clicked=>{root.preset(1);}}
+                                ToolButton {text:"Fine";enabled:!root.busy;clicked=>{root.preset(2);}}
+                            }
+                            Label {text:"Sizes are lengths in the same units as the geometry. Linear elements are supported.";}
+                            Rectangle {height:1px;background:UiTheme.border;}
+                            Text {text:"LOCAL SIZING";color:UiTheme.accent;font-size:12px;font-weight:700;}
+                            Label {text:"Boundary group";}
+                            ComboBox {model:root.group-names;current-index <=> root.local-group-index;enabled:!root.busy && root.group-names.length>0;selected(value)=>{root.local-target=value;}}
+                            Field {label:"Local element size";value <=> root.local-size;}
+                            ToolButton {text:"Add local size";enabled:!root.busy;clicked=>{root.add-local();}}
+                            ToolButton {text:root.advanced ? "▾ Distance refinement" : "▸ Distance refinement";clicked=>{root.advanced=!root.advanced;}}
+                            if root.advanced : VerticalLayout {
+                                spacing:7px;
+                                HorizontalLayout {Field {label:"Near size";value <=> root.refine-min;} Field {label:"Far size";value <=> root.refine-max;}}
+                                Field {label:"Influence distance";value <=> root.refine-distance;}
+                                ToolButton {text:"Add distance field";enabled:!root.busy;clicked=>{root.add-refinement();}}
+                            }
+                            ToolButton {text:root.layers ? "▾ Boundary layers" : "▸ Boundary layers";enabled:root.dimension==0;clicked=>{root.layers=!root.layers;}}
+                            if root.layers && root.dimension==0 : VerticalLayout {
+                                spacing:7px;
+                                Field {label:"First layer height";value <=> root.layer-first;}
+                                Field {label:"Growth ratio (>1)";value <=> root.layer-growth;}
+                                Label {text:"Number of layers";}
+                                SpinBox {value <=> root.layer-count;minimum:1;maximum:64;}
+                                ToolButton {text:"Add boundary layers";enabled:!root.busy;clicked=>{root.add-layers();}}
+                            }
+                            if root.controls.length>0 : VerticalLayout {
+                                spacing:6px;
+                                Label {text:"ACTIVE MESH CONTROLS";}
+                                ComboBox {model:root.controls;current-index <=> root.control-index;}
+                                ToolButton {text:"Remove selected control";enabled:!root.busy;clicked=>{root.remove-control(root.control-index);}}
+                            }
+                        }
+                        if root.task==2 : VerticalLayout {
+                            spacing:9px;
+                            Text {text:"MESH QUALITY";color:UiTheme.accent;font-size:12px;font-weight:700;}
+                            Label {text:root.summary;}
+                            Label {text:"Metric";}
+                            ComboBox {model:["Aspect ratio","Skewness","Non-orthogonality","Cell measure"];current-index <=> root.quality-mode;selected(value)=>{root.quality(self.current-index);}}
+                            Field {label:"Highlight cells above threshold";value <=> root.quality-threshold;}
+                            ToolButton {text:"Apply threshold";clicked=>{root.threshold();}}
+                            Label {text:root.inspection;}
+                            if root.bad-cells.length>0 : ListView {
+                                height:180px;
+                                for cell[index] in root.bad-cells : ToolButton {text:cell;clicked=>{root.select-bad(index);}}
+                            }
+                            Label {text:root.gmsh;}
+                        }
+                        Rectangle {vertical-stretch:1;min-height:1px;}
+                    }
+                }
+            }
+            VerticalLayout {
+                spacing:8px;
+                HorizontalLayout {
+                    height:34px;spacing:6px;
+                    ToolButton {text:root.geometry-view ? "✓ Geometry" : "Geometry";clicked=>{root.show-geometry(true);}}
+                    ToolButton {text:!root.geometry-view ? "✓ Mesh" : "Mesh";clicked=>{root.show-geometry(false);}}
+                    Rectangle {horizontal-stretch:1;}
+                    if !root.geometry-view : ComboBox {model:["Wireframe","Surface","Surface + edges"];current-index <=> root.display-mode;selected(value)=>{root.display(self.current-index);}}
+                    if !root.geometry-view : ComboBox {model:["Neutral","Boundary zones","Quality"];current-index <=> root.color-mode;selected(value)=>{root.select-color(self.current-index);}}
+                    ToolButton {text:"⊡ Fit";clicked=>{root.fit();}}
+                }
+                InteractiveGeometryPreview {
+                    vertical-stretch:1;preview-image:root.preview;
+                    help-text:root.geometry-view ? "CLICK: SELECT · SHIFT-CLICK: ADD / REMOVE · DRAG: ORBIT (3D) · WHEEL: ZOOM" : root.dimension==0 ? "CLICK: INSPECT FACE · DRAG: PAN · WHEEL: ZOOM" : "CLICK: INSPECT SURFACE · FIXED ISOMETRIC VIEW";
+                    pick-modified(x,y,w,h,additive)=>{if root.geometry-view {root.pick(x,y,w,h,additive);} else {root.pick-mesh(x,y,w,h);}}
+                    hover(x,y,w,h)=>{root.hover(x,y,w,h);}
+                    orbit(x,y,px,py)=>{root.drag(x,y,px,py,self.width/1px,self.height/1px);}
+                    orbit-end=>{root.drag-end();}
+                    zoom(delta)=>{root.zoom(delta);}
+                    reset-view=>{root.fit();}
+                }
+                Text {text:root.feedback;color:UiTheme.text-soft;font-size:11px;wrap:word-wrap;max-height:48px;overflow:elide;}
+                Label {text:root.readiness;}
+                HorizontalLayout {
+                    height:36px;spacing:8px;
+                    ToolButton {text:"Check mesh";enabled:!root.busy;clicked=>{root.check();}}
+                    ToolButton {text:root.busy ? "Generating…" : "Generate mesh";enabled:!root.busy;clicked=>{root.generate();}}
+                    if root.busy : ToolButton {text:"Cancel";clicked=>{root.cancel();}}
+                    Rectangle {horizontal-stretch:1;}
+                    ToolButton {text:"Setup →";enabled:!root.busy;clicked=>{root.continue();}}
+                }
+            }
+        }
+    }
+}

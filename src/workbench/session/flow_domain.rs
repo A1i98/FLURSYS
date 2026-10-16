@@ -42,6 +42,79 @@ mod tests {
     }
 
     #[test]
+    fn manual_boundary_groups_are_explicit_disjoint_and_transactional() {
+        let mut s=WorkbenchSession::new();
+        let r=s.add_rectangle(1.0,1.0).unwrap();
+        let edge=GeometrySelectionTarget::Edge;
+        assert_eq!(s.boundary_geometry_targets().unwrap().len(),4);
+        assert!(s.patch_names().is_empty());
+        s.set_boundary_group("top",vec![edge(r.top)],false).unwrap();
+        assert!(s.boundary_assignment("top").is_none());
+        let snapshot=|session:&WorkbenchSession| {
+            let mut value=serde_json::to_value(session.to_project("manual")).unwrap();
+            value.as_object_mut().unwrap().remove("project_id");value
+        };
+        let before=snapshot(&s);
+        assert!(s.set_boundary_group("overlap",vec![edge(r.top)],false).is_err());
+        assert!(s.set_boundary_group("wrong-kind",vec![GeometrySelectionTarget::Face(r.face)],false).is_err());
+        assert!(s.set_boundary_group("top",vec![],true).is_err());
+        assert_eq!(before,snapshot(&s));
+        s.set_boundary_group("fixed",vec![edge(r.left),edge(r.bottom),edge(r.right)],false).unwrap();
+        assert!(s.mesh_generation_inputs().is_ok());
+        assert!(s.to_project("manual").boundaries.is_empty());
+        s.assign_boundary("top",IncompressibleBoundaryCondition::MovingWall{velocity:Vec3::new(1.0,0.0,0.0)}).unwrap();
+        s.rename_named_selection("top","moving_surface").unwrap();
+        assert!(s.boundary_assignment("moving_surface").is_some());
+        let project=s.to_project("manual");
+        let restored=WorkbenchSession::from_project(&project).unwrap();
+        assert_eq!(restored.patch_names(),s.patch_names());
+        assert!(restored.boundary_assignment("fixed").is_none());
+        assert!(s.set_boundary_group("fixed",vec![edge(r.top)],true).is_err());
+        s.set_boundary_group("fixed",vec![edge(r.left),edge(r.bottom)],true).unwrap();
+        assert!(s.mesh_generation_inputs().is_err());
+    }
+
+    #[test]
+    fn manual_boundary_groups_support_3d_surface_zones() {
+        let mut s=WorkbenchSession::new();
+        s.add_box(1.0,1.0,1.0).unwrap();
+        s.set_mesh_configuration(MeshDimension::ThreeD,0.2,0.1,0.3,1).unwrap();
+        let faces=s.boundary_geometry_targets().unwrap();
+        assert_eq!(faces.len(),6);
+        assert!(faces.iter().all(|t|matches!(t,GeometrySelectionTarget::Face(_))));
+        s.set_boundary_group("external_surfaces",faces,false).unwrap();
+        assert!(s.mesh_generation_inputs().is_ok());
+        assert!(s.to_project("manual volume").boundaries.is_empty());
+    }
+
+    #[test]
+    #[ignore = "requires the Gmsh executable"]
+    fn manual_boundary_groups_mesh_and_solve_closed_flow() {
+        let mut s=WorkbenchSession::new();
+        let r=s.add_rectangle(1.0,1.0).unwrap();
+        let edge=GeometrySelectionTarget::Edge;
+        s.set_boundary_group("driven",vec![edge(r.top)],false).unwrap();
+        s.set_boundary_group("stationary",vec![edge(r.left),edge(r.right),edge(r.bottom)],false).unwrap();
+        s.set_mesh_configuration(MeshDimension::TwoD,0.1,0.05,0.1,1).unwrap();
+        let (export,options)=s.mesh_generation_inputs().unwrap();
+        let generated=s.mesher().generate(&export.document,&options).unwrap();
+        assert_eq!(generated.mesh.boundary_patches().len(),2);
+        let cells=generated.mesh.cell_count();
+        s.install_mesh(generated);
+        assert!(s.readiness().is_err(),"Meshing must not assign boundary physics");
+        s.assign_boundary("driven",IncompressibleBoundaryCondition::MovingWall{velocity:Vec3::new(1.0,0.0,0.0)}).unwrap();
+        assert!(s.readiness().is_err(),"Every patch must be assigned explicitly");
+        s.assign_boundary("stationary",IncompressibleBoundaryCondition::NoSlipWall).unwrap();
+        s.set_material(1.0,0.01).unwrap();
+        s.set_solver_controls(1500,0.7,0.3,1e-8).unwrap();
+        s.readiness().unwrap();
+        let solution=crate::solve_incompressible(&s.prepare_case().unwrap()).unwrap();
+        eprintln!("manual-closed-flow: cells={cells}, iterations={}, converged={}, continuity={:.3e}",solution.report.outer_iterations,solution.report.converged(),solution.report.final_continuity_rms);
+        assert!(solution.report.converged());
+        assert!(solution.report.final_continuity_rms.is_finite());
+    }
+
+    #[test]
     fn drawn_channel_preparation_preserves_hole_and_persists_conditions() {
         let mut s = drawn_channel();
         let face = s.fluid_face().unwrap();
@@ -182,63 +255,49 @@ mod tests {
 }
 
 impl WorkbenchSession {
-    /// Prepare a closed cavity with a +X moving lid and a pressure gauge.
-    pub fn prepare_cavity_boundaries(&mut self, face: FaceId) -> Result<(), WorkbenchError> {
-        if matches!(self.geometry.face(face).map(|f| &f.representation), Some(GeometryFaceRepresentation::Planar {inner_loops, ..}) if !inner_loops.is_empty())
-        {
-            return Err(invalid("A lid-driven cavity must have no obstacle holes"));
-        }
-        if self.named_selections.iter().next().is_some() {
-            return Err(invalid(
-                "Remove existing boundary groups before preparing a cavity",
-            ));
-        }
-        let mut staged = Self::from_project(&self.to_project("Cavity preparation"))?;
-        staged.prepare_channel_boundaries(face)?;
-        let mut horizontal = staged
-            .named_selections
-            .get("walls")
-            .unwrap()
-            .edges()
-            .iter()
-            .map(|id| {
-                let EdgeGeometry::Line { start, end } =
-                    &staged.geometry.edge(*id).unwrap().geometry
-                else {
-                    unreachable!()
+    /// Stable exterior entities of the active fluid domain, in deterministic order.
+    pub fn boundary_geometry_targets(&self) -> Result<Vec<GeometrySelectionTarget>, WorkbenchError> {
+        let mut targets = match self.mesh_dimension {
+            MeshDimension::TwoD => {
+                let face = self.fluid_face().ok_or_else(|| invalid("Select a planar fluid domain first"))?;
+                let Some(crate::GeometryFace { representation: GeometryFaceRepresentation::Planar {outer_loop, inner_loops}, .. }) = self.geometry.face(face) else {
+                    return Err(invalid("The fluid domain must be a planar face"));
                 };
-                (
-                    *id,
-                    (staged.geometry.vertex(*start).unwrap().position.y
-                        + staged.geometry.vertex(*end).unwrap().position.y)
-                        * 0.5,
-                )
-            })
-            .collect::<Vec<_>>();
-        horizontal.sort_by(|a, b| a.1.total_cmp(&b.1));
-        let lid = horizontal[1].0;
-        let walls = staged
-            .named_selections
-            .iter()
-            .flat_map(|g| g.edges())
-            .filter(|e| *e != lid)
-            .map(GeometrySelectionTarget::Edge)
-            .collect::<Vec<_>>();
-        let mut selections = NamedSelectionStore::default();
-        selections.create("lid", vec![GeometrySelectionTarget::Edge(lid)], |_| true)?;
-        selections.create("walls", walls, |_| true)?;
-        self.named_selections = selections;
-        self.boundaries.clear();
-        self.boundaries.insert(
-            "lid".into(),
-            IncompressibleBoundaryCondition::MovingWall {
-                velocity: Vec3::new(1.0, 0.0, 0.0),
-            },
-        );
-        self.boundaries
-            .insert("walls".into(), IncompressibleBoundaryCondition::NoSlipWall);
-        self.fluid_face_selection = Some(face);
-        self.mesh_dimension = MeshDimension::TwoD;
+                outer_loop.iter().chain(inner_loops.iter().flatten())
+                    .map(|edge| GeometrySelectionTarget::Edge(edge.edge)).collect::<Vec<_>>()
+            }
+            MeshDimension::ThreeD => {
+                let mut bodies = self.geometry.bodies().filter(|body| self.geometry.cad_body(body.id).is_none_or(|cad| cad.visible));
+                let body = bodies.next().ok_or_else(|| invalid("Create a fluid volume first"))?;
+                if bodies.next().is_some() {return Err(invalid("Keep one visible fluid body for boundary selection"));}
+                body.faces.iter().copied().map(GeometrySelectionTarget::Face).collect::<Vec<_>>()
+            }
+        };
+        targets.sort();
+        targets.dedup();
+        Ok(targets)
+    }
+
+    /// Create or replace an explicit, disjoint boundary zone. This does not assign physics.
+    pub fn set_boundary_group(&mut self, name: &str, targets: Vec<GeometrySelectionTarget>, replace: bool) -> Result<(), WorkbenchError> {
+        let name = name.trim();
+        let allowed = self.boundary_geometry_targets()?;
+        if targets.is_empty() {return Err(invalid("Select at least one boundary entity"));}
+        for target in &targets {
+            if !allowed.contains(target) {
+                return Err(invalid(format!("{target:?} is not an exterior entity of the active fluid domain")));
+            }
+            if let Some(group) = self.named_selections.iter().find(|group| (!replace || group.name != name) && group.targets.contains(target)) {
+                return Err(invalid(format!("{target:?} already belongs to {:?}; edit that group first", group.name)));
+            }
+        }
+        let mut staged = self.named_selections.clone();
+        if replace {
+            if staged.get(name).is_none() {return Err(invalid("Select an existing boundary group to replace"));}
+            staged.delete(name);
+        }
+        staged.create(name, targets, |_| true)?;
+        self.named_selections = staged;
         self.invalidate_mesh();
         Ok(())
     }

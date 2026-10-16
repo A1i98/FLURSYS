@@ -20,44 +20,35 @@ export component TopBar inherits Rectangle {
     callback select-step(int);
     callback run-workbench();
 
-    min-height: 56px;
-    preferred-height: 60px;
-    max-height: 64px;
-    background: UiTheme.topbar;
-    border-color: UiTheme.border-strong;
-    border-width: 1px;
-
-    HorizontalLayout {
-        padding-left: root.compact-ui ? 10px : 14px;
-        padding-right: root.compact-ui ? 10px : 14px;
-        padding-top: 10px;
-        padding-bottom: 10px;
-        spacing: root.compact-ui ? 8px : 11px;
-        Text { text: "FLURSYS"; color: UiTheme.text-title; font-size: root.compact-ui ? 19px : 23px; font-weight: 800; vertical-alignment: center; }
-        if !root.compact-ui : Rectangle { width: 1px; background: UiTheme.divider-strong; }
-        if !root.compact-ui : Text { text: "CFD WORKBENCH"; color: UiTheme.text-label; font-size: 12px; vertical-alignment: center; }
-        Button { text: "NEW PROJECT"; clicked => { root.new-project(); } }
-        Button { text: "EXAMPLES"; clicked => { root.show-examples(); } }
-        Button { text: root.compact-ui ? "OPEN" : "OPEN PROJECT"; clicked => { root.open-project(); } }
-        if !root.compact-ui && root.recent-project-model.length > 0 : ComboBox { model: root.recent-project-model; current-index <=> root.recent-project-index; min-width: 170px; }
-        if !root.compact-ui && root.recent-project-index >= 0 : Button { text: "OPEN RECENT"; clicked => { root.open-recent-project(root.recent-project-index); } }
-        Button { text: "SAVE"; clicked => { root.save-project(); } }
-        Button { text: root.compact-ui ? "SAVE AS" : "SAVE AS…"; clicked => { root.save-project-as(); } }
-        if !root.compact-ui : Button { text: "SAVE TEMPLATE…"; clicked => { root.save-template(); } }
-        Rectangle { width: 1px; background: UiTheme.divider-strong; }
-        Text { text: "WORKFLOW"; color: UiTheme.text-label; font-size: 10px; vertical-alignment: center; }
-        Button { text: "GEOMETRY"; clicked => { root.select-step(0); } }
-        Button { text: "MESH"; clicked => { root.select-step(1); } }
-        Button { text: "SETUP"; clicked => { root.select-step(2); } }
-        Button { text: "SOLUTION"; clicked => { root.select-step(3); } }
-        Button { text: "RESULTS"; clicked => { root.select-step(4); } }
-        Rectangle { horizontal-stretch: 1; }
-        Button { text: root.wb-busy ? "BUSY…" : "RUN"; enabled: root.can-run-workbench && !root.wb-busy; clicked => { root.run-workbench(); } }
-        Rectangle { width: 1px; background: UiTheme.divider-strong; }
-        if !root.compact-ui : Text { text: "PROJECT"; color: UiTheme.text-label; font-size: 10px; vertical-alignment: center; }
-        Text { text: root.project-loaded ? root.project-name : "No project loaded"; color: UiTheme.text-project; font-size: 12px; max-width: root.compact-ui ? 170px : 260px; overflow: elide; vertical-alignment: center; }
-        Rectangle { width: 1px; background: UiTheme.divider-strong; }
-        Text { text: "SOLVER"; color: UiTheme.text-label; font-size: 10px; vertical-alignment: center; }
-        Text { text: root.status; color: UiTheme.accent; font-size: 12px; font-weight: 700; max-width: root.compact-ui ? 100px : 160px; overflow: elide; vertical-alignment: center; }
+    min-height:88px;preferred-height:88px;max-height:88px;
+    background:UiTheme.topbar;border-color:UiTheme.border-strong;border-width:1px;
+    VerticalLayout {
+        padding:8px;spacing:5px;
+        HorizontalLayout {
+            height:33px;spacing:7px;
+            Text {text:"FLURSYS";color:UiTheme.text-title;font-size:21px;font-weight:800;vertical-alignment:center;}
+            if !root.compact-ui : Text {text:"CFD WORKBENCH";color:UiTheme.text-label;font-size:11px;vertical-alignment:center;}
+            Button {min-width:0px;text:root.compact-ui ? "NEW" : "NEW PROJECT";clicked=>{root.new-project();}}
+            Button {min-width:0px;text:"EXAMPLES";clicked=>{root.show-examples();}}
+            Button {min-width:0px;text:"OPEN";clicked=>{root.open-project();}}
+            Button {min-width:0px;text:"SAVE";clicked=>{root.save-project();}}
+            Button {min-width:0px;text:"SAVE AS…";clicked=>{root.save-project-as();}}
+            if !root.compact-ui : Button {min-width:0px;text:"SAVE TEMPLATE…";clicked=>{root.save-template();}}
+            if !root.compact-ui && root.recent-project-model.length>0 : ComboBox {model:root.recent-project-model;current-index <=> root.recent-project-index;min-width:0px;preferred-width:150px;}
+            if !root.compact-ui && root.recent-project-index>=0 : Button {min-width:0px;text:"OPEN RECENT";clicked=>{root.open-recent-project(root.recent-project-index);}}
+            Text {text:root.project-loaded ? root.project-name : "No project loaded";color:UiTheme.text-project;font-size:11px;min-width:0px;horizontal-stretch:1;overflow:elide;horizontal-alignment:right;vertical-alignment:center;}
+        }
+        HorizontalLayout {
+            height:32px;spacing:7px;
+            Text {text:"WORKFLOW";color:UiTheme.text-label;font-size:10px;vertical-alignment:center;}
+            Button {min-width:0px;text:"GEOMETRY";clicked=>{root.select-step(0);}}
+            Button {min-width:0px;text:"MESH";clicked=>{root.select-step(1);}}
+            Button {min-width:0px;text:"SETUP";clicked=>{root.select-step(2);}}
+            Button {min-width:0px;text:"SOLUTION";clicked=>{root.select-step(3);}}
+            Button {min-width:0px;text:"RESULTS";clicked=>{root.select-step(4);}}
+            Rectangle {horizontal-stretch:1;}
+            Text {text:root.status;color:UiTheme.accent;font-size:11px;font-weight:700;vertical-alignment:center;max-width:160px;overflow:elide;}
+            Button {min-width:0px;text:root.wb-busy ? "BUSY…" : "RUN";enabled:root.can-run-workbench && !root.wb-busy;clicked=>{root.run-workbench();}}
+        }
     }
 }

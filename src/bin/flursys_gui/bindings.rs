@@ -625,7 +625,7 @@ pub(super) fn build_project_tree_rows(
     if !named_selections.is_empty() {
         rows.push((
             1,
-            "Named Selections".to_string(),
+            "Boundary groups".to_string(),
             format!("{} groups", named_selections.len()),
             TREE_KIND_INERT,
             TREE_GROUP_NAMED,

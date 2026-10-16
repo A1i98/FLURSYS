@@ -76,7 +76,6 @@ CadToolButton {icon:@image-url("icons/split.svg");label:"Split an open XY line a
 }
 CadRibbonGroup {title:"2D FLUID DOMAIN";width:88px;
 CadToolButton {icon:@image-url("icons/fluid-domain.svg");label:"Use the selected planar face as the 2D fluid domain";enabled:!root.locked;clicked=>{root.utility(9);}}
-CadToolButton {icon:@image-url("icons/boundary-flow.svg");label:"Prepare inlet, outlet, wall and obstacle patches for a rectangular XY channel";enabled:!root.locked;clicked=>{root.utility(10);}}
 }
 CadRibbonGroup {title:"SOLID FEATURES";width:278px;
 CadToolButton {icon:@image-url("icons/pad.svg");label:"Pad / extrusion";enabled:!root.locked;active:root.operation==1;clicked=>{root.activate(1);}}
