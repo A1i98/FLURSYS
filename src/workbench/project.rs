@@ -575,6 +575,9 @@ pub fn finalize_workspace_run(
         "material": &project.material,
         "solver_settings": &project.solver,
         "boundaries": &project.boundaries,
+        "boundary_flow_reports": session.mesh().zip(session.solution()).map(|(mesh,solution)|super::boundary_reports::boundary_flow_reports(&mesh.mesh,solution,session.material().density)),
+        "continuity_history": session.solution().map(|solution| &solution.report.continuity_history),
+        "convergence_histories": session.solution().map(|s|serde_json::json!({"momentum":s.report.simple.momentum_relative_history,"velocity":s.report.simple.velocity_change_history,"pressure_linear":s.report.simple.pressure_linear_history})),
         "coupling_convergence": session.solution().map(|solution| serde_json::json!({
             "momentum_relative_residual": solution.report.simple.final_momentum_relative_residual,
             "velocity_relative_change": solution.report.simple.final_velocity_relative_change,

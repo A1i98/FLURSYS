@@ -4,6 +4,7 @@
 //! created only after project data has been validated against the capabilities
 //! of a concrete numerical backend.
 
+pub mod boundary_reports;
 pub mod editor;
 pub mod examples;
 pub mod legacy_import;

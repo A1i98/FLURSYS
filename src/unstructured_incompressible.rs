@@ -331,6 +331,7 @@ pub struct IncompressibleSolution {
 pub struct SolveControl<'a> {
     is_cancelled: Box<dyn Fn() -> bool + Send + Sync + 'a>,
     on_iteration: Box<dyn Fn(usize, usize, f64) + Send + Sync + 'a>,
+    on_metrics: Option<Box<dyn Fn(usize,[f64;4]) + Send + Sync + 'a>>,
 }
 
 impl<'a> SolveControl<'a> {
@@ -341,7 +342,13 @@ impl<'a> SolveControl<'a> {
         Self {
             is_cancelled: Box::new(is_cancelled),
             on_iteration: Box::new(on_iteration),
+            on_metrics:None,
         }
+    }
+
+    /// Optional detailed progress, without changing legacy iteration callbacks.
+    pub fn with_metrics(mut self, callback:impl Fn(usize,[f64;4])+Send+Sync+'a)->Self {
+        self.on_metrics=Some(Box::new(callback)); self
     }
 
     fn cancelled(&self) -> bool {
@@ -496,14 +503,15 @@ fn solve_incompressible_impl(
     options.pressure_relaxation = case.solver.pressure_relaxation;
     options.momentum_solver = case.solver.momentum_solver;
     options.pressure_solver = case.solver.pressure_solver;
-    let simple = crate::solve_simple_with_control(
+    let simple = crate::simple::solve_simple_with_monitor(
         &case.mesh,
         &mut state,
         options,
         || control.is_some_and(SolveControl::cancelled),
-        |iteration, residual| {
+        |iteration, metrics| {
             if let Some(control) = control {
-                control.report_iteration(iteration, case.solver.max_outer_iterations, residual);
+                control.report_iteration(iteration, case.solver.max_outer_iterations, metrics[0]);
+                if let Some(callback)=&control.on_metrics {callback(iteration,metrics);}
             }
         },
     )

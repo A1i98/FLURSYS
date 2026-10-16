@@ -144,6 +144,9 @@ pub struct SimpleReport {
     pub initial_continuity_rms: f64,
     pub final_continuity_rms: f64,
     pub continuity_history: Vec<f64>,
+    pub momentum_relative_history: Vec<f64>,
+    pub velocity_change_history: Vec<f64>,
+    pub pressure_linear_history: Vec<f64>,
     pub final_momentum_relative_residual: f64,
     pub final_velocity_relative_change: f64,
     pub momentum_reports: Option<[LinearSolveReport; 3]>,
@@ -168,8 +171,20 @@ pub fn solve_simple_with_control(
     mesh: &UnstructuredMesh,
     state: &mut SimpleState,
     options: SimpleOptions<'_>,
-    mut is_cancelled: impl FnMut() -> bool,
+    is_cancelled: impl FnMut() -> bool,
     mut on_iteration: impl FnMut(usize, f64),
+) -> Result<SimpleReport, SimpleError> {
+    solve_simple_with_monitor(mesh,state,options,is_cancelled,|iteration,metrics|on_iteration(iteration,metrics[0]))
+}
+
+/// Publishes continuity, momentum relative residual, velocity relative change,
+/// and pressure linear residual after each completed outer iteration.
+pub fn solve_simple_with_monitor(
+    mesh: &UnstructuredMesh,
+    state: &mut SimpleState,
+    options: SimpleOptions<'_>,
+    mut is_cancelled: impl FnMut() -> bool,
+    mut on_iteration: impl FnMut(usize, [f64;4]),
 ) -> Result<SimpleReport, SimpleError> {
     state.velocity.ensure_mesh(mesh)?;
     state.pressure.ensure_mesh(mesh)?;
@@ -202,6 +217,7 @@ pub fn solve_simple_with_control(
         });
     }
     let mut history = vec![initial];
+    let mut momentum_history=Vec::new();let mut velocity_history=Vec::new();let mut pressure_history=Vec::new();
     let mut momentum_reference = 0.0_f64;
     let mut momentum_relative = f64::INFINITY;
     let mut velocity_relative = f64::INFINITY;
@@ -383,7 +399,8 @@ pub fn solve_simple_with_control(
         };
         let continuity = continuity_rms(mesh, &state.face_flux)?;
         history.push(continuity);
-        on_iteration(iteration, continuity);
+        momentum_history.push(momentum_relative);velocity_history.push(velocity_relative);pressure_history.push(pressure_report.final_residual);
+        on_iteration(iteration, [continuity,momentum_relative,velocity_relative,pressure_report.final_residual]);
         last_momentum = Some(momentum_reports);
         last_pressure = Some(pressure_report);
         if continuity <= options.continuity_absolute_tolerance
@@ -397,6 +414,7 @@ pub fn solve_simple_with_control(
                 initial_continuity_rms: initial,
                 final_continuity_rms: continuity,
                 continuity_history: history,
+                momentum_relative_history:momentum_history,velocity_change_history:velocity_history,pressure_linear_history:pressure_history,
                 final_momentum_relative_residual: momentum_relative,
                 final_velocity_relative_change: velocity_relative,
                 momentum_reports: last_momentum,
@@ -410,6 +428,7 @@ pub fn solve_simple_with_control(
         initial_continuity_rms: initial,
         final_continuity_rms: *history.last().expect("initial continuity exists"),
         continuity_history: history,
+        momentum_relative_history:momentum_history,velocity_change_history:velocity_history,pressure_linear_history:pressure_history,
         final_momentum_relative_residual: momentum_relative,
         final_velocity_relative_change: velocity_relative,
         momentum_reports: last_momentum,
