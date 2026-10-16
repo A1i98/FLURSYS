@@ -1,0 +1,190 @@
+import { Button, ScrollView } from "std-widgets.slint";
+import { CadToolButton } from "cad-tools.slint";
+import { UiTheme } from "components.slint";
+
+component CadRibbonGroup inherits Rectangle {
+    in property <string> title;
+    min-width:self.width;max-width:self.width;
+    preferred-height:62px;min-height:62px;max-height:62px;
+    border-width:1px;border-color:UiTheme.border;border-radius:4px;
+    HorizontalLayout {x:6px;y:3px;height:34px;spacing:4px;@children}
+    Text {x:6px;y:42px;width:parent.width - 12px;height:16px;text:root.title;color:UiTheme.text-muted;font-size:10px;horizontal-alignment:center;}
+}
+export component CadRibbon inherits Rectangle {
+    in property <int> workbench;
+    in property <int> operation;
+    in property <int> active-tool;
+    in property <int> pick-mode;
+    in property <bool> busy;
+    in property <bool> previewing;
+    in property <bool> editing;
+    in property <bool> face-editing;
+    in property <bool> has-body;
+    in property <bool> has-sketch;
+    in property <bool> grid;
+    in property <bool> snap;
+    in property <bool> view-3d;
+    in property <string> task-title;
+    property <bool> drawing-locked:root.busy || root.previewing || root.editing;
+    property <bool> locked:root.drawing-locked || root.face-editing;
+    callback activate(int);
+    callback command(int);
+    callback drawing(int);
+    callback select-mode(int);
+    callback utility(int);
+    min-height:158px;preferred-height:158px;max-height:158px;
+    background:UiTheme.toolbar;border-color:UiTheme.border;border-width:1px;
+    VerticalLayout {
+        padding:5px;spacing:4px;
+        HorizontalLayout {
+            height:28px;spacing:5px;
+            Text {text:"CAD";color:UiTheme.accent;font-weight:800;vertical-alignment:center;}
+            for title[index] in ["Sketch", "Solids", "Transform", "Boolean", "Files"] : Button {
+                text:root.workbench==index ? "● "+title : title;
+                enabled:!root.locked && !root.face-editing;
+                clicked=>{root.activate(index==0 ? 1 : index==1 ? 200 : index==2 ? 3 : index==3 ? 9 : 49);}
+            }
+            Rectangle {horizontal-stretch:1;}
+            Text {text:root.busy ? "BUILDING" : root.previewing ? "PREVIEW" : root.editing || root.face-editing ? "SKETCH EDIT" : "PART DESIGN";color:UiTheme.text-muted;font-size:10px;vertical-alignment:center;}
+        }
+        ScrollView {
+            preferred-height:76px;min-height:76px;max-height:76px;
+            vertical-scrollbar-policy:always-off;
+            HorizontalLayout {spacing:6px;
+if root.workbench==0 : HorizontalLayout {spacing:6px;
+CadRibbonGroup {title:"REMOVE MATERIAL";width:88px;
+CadToolButton {icon:@image-url("icons/hole.svg");label:"Hole on selected planar face";enabled:!root.locked && root.has-body;active:root.operation==56;clicked=>{root.activate(56);}}
+CadToolButton {icon:@image-url("icons/revolved-cut.svg");label:"Revolved cut from attached sketch";enabled:!root.locked && root.has-sketch;active:root.operation==57;clicked=>{root.activate(57);}}
+}
+
+CadRibbonGroup {title:"SKETCH";width:204px;
+CadToolButton {icon:@image-url("icons/new-sketch.svg");label:"New sketch on a principal plane";enabled:!root.locked;active:root.operation==210;clicked=>{root.activate(210);}}
+CadToolButton {icon:@image-url("icons/datum.svg");label:"New offset sketch plane";enabled:!root.locked;active:root.operation==211;clicked=>{root.activate(211);}}
+CadToolButton {icon:@image-url("icons/sketch.svg");label:"New sketch attached to the selected solid face";enabled:!root.locked;active:root.operation==213;clicked=>{root.activate(213);}}
+CadToolButton {icon:@image-url("icons/additive.svg");label:"Add a closed region to the selected sketch";enabled:!root.locked && root.has-sketch;active:false;clicked=>{root.command(92);}}
+CadToolButton {icon:@image-url("icons/sketch.svg");label:"Edit selected sketch in the viewport";enabled:!root.locked && root.has-sketch;active:false;clicked=>{root.command(39);}}
+}
+CadRibbonGroup {title:"XY DRAWING";width:126px;
+CadToolButton {icon:@image-url("icons/line.svg");label:"Draw connected lines in XY";enabled:!root.locked && !root.face-editing;active:root.active-tool==1;clicked=>{root.drawing(1);}}
+CadToolButton {icon:@image-url("icons/rectangle.svg");label:"Draw rectangle";enabled:!root.drawing-locked;active:root.active-tool==2;clicked=>{root.drawing(2);}}
+CadToolButton {icon:@image-url("icons/circle.svg");label:"Draw circle";enabled:!root.drawing-locked;active:root.active-tool==3;clicked=>{root.drawing(3);}}
+}
+CadRibbonGroup {title:"MODIFY XY LINES";width:126px;
+CadToolButton {icon:@image-url("icons/trim.svg");label:"Trim an open XY line between intersections (T)";enabled:!root.locked;active:root.active-tool==4;clicked=>{root.drawing(4);}}
+CadToolButton {icon:@image-url("icons/extend.svg");label:"Extend an open XY line to the next boundary (X)";enabled:!root.locked;active:root.active-tool==5;clicked=>{root.drawing(5);}}
+CadToolButton {icon:@image-url("icons/split.svg");label:"Split an open XY line at the clicked point (S)";enabled:!root.locked;active:root.active-tool==6;clicked=>{root.drawing(6);}}
+}
+CadRibbonGroup {title:"2D FLUID DOMAIN";width:88px;
+CadToolButton {icon:@image-url("icons/fluid-domain.svg");label:"Use the selected planar face as the 2D fluid domain";enabled:!root.locked;clicked=>{root.utility(9);}}
+CadToolButton {icon:@image-url("icons/boundary-flow.svg");label:"Prepare inlet, outlet, wall and obstacle patches for a rectangular XY channel";enabled:!root.locked;clicked=>{root.utility(10);}}
+}
+CadRibbonGroup {title:"SOLID FEATURES";width:278px;
+CadToolButton {icon:@image-url("icons/pad.svg");label:"Pad / extrusion";enabled:!root.locked;active:root.operation==1;clicked=>{root.activate(1);}}
+CadToolButton {icon:@image-url("icons/additive.svg");label:"Additive Pad into the host solid";enabled:!root.locked;active:root.operation==24;clicked=>{root.activate(24);}}
+CadToolButton {icon:@image-url("icons/cut.svg");label:"Pocket / subtractive extrusion";enabled:!root.locked;active:root.operation==34;clicked=>{root.activate(34);}}
+CadToolButton {icon:@image-url("icons/revolve.svg");label:"Revolve a profile";enabled:!root.locked;active:root.operation==2;clicked=>{root.activate(2);}}
+CadToolButton {icon:@image-url("icons/loft.svg");label:"Loft ordered profiles";enabled:!root.locked;active:root.operation==20;clicked=>{root.activate(20);}}
+CadToolButton {icon:@image-url("icons/sweep.svg");label:"Sweep along a displacement vector";enabled:!root.locked;active:root.operation==43;clicked=>{root.activate(43);}}
+CadToolButton {icon:@image-url("icons/taper.svg");label:"Tapered extrusion";enabled:!root.locked;active:root.operation==46;clicked=>{root.activate(46);}}
+}
+CadRibbonGroup {title:"CONSTRAINTS";width:126px;
+CadToolButton {icon:@image-url("icons/lock-position.svg");label:"Lock or release sketch position";enabled:!root.locked && root.has-sketch;active:false;clicked=>{root.command(50);}}
+CadToolButton {icon:@image-url("icons/lock-size.svg");label:"Lock or release sketch dimensions";enabled:!root.locked && root.has-sketch;active:false;clicked=>{root.command(51);}}
+CadToolButton {icon:@image-url("icons/unlock.svg");label:"Release sketch constraints";enabled:!root.locked && root.has-sketch;active:false;clicked=>{root.command(52);}}
+}
+}
+if root.workbench==1 : HorizontalLayout {spacing:6px;
+CadRibbonGroup {title:"PRIMITIVES";width:202px;
+CadToolButton {icon:@image-url("icons/cube.svg");label:"Box";enabled:!root.locked;active:root.operation==200;clicked=>{root.activate(200);}}
+CadToolButton {icon:@image-url("icons/cylinder.svg");label:"Cylinder";enabled:!root.locked;active:root.operation==201;clicked=>{root.activate(201);}}
+CadToolButton {icon:@image-url("icons/sphere.svg");label:"Sphere";enabled:!root.locked;active:root.operation==202;clicked=>{root.activate(202);}}
+CadToolButton {icon:@image-url("icons/cone.svg");label:"Cone";enabled:!root.locked;active:root.operation==203;clicked=>{root.activate(203);}}
+CadToolButton {icon:@image-url("icons/torus.svg");label:"Torus";enabled:!root.locked;active:root.operation==204;clicked=>{root.activate(204);}}
+}
+CadRibbonGroup {title:"FEATURES";width:202px;
+CadToolButton {icon:@image-url("icons/pad.svg");label:"Pad a sketch profile";enabled:!root.locked;active:root.operation==1;clicked=>{root.activate(1);}}
+CadToolButton {icon:@image-url("icons/cut.svg");label:"Pocket a face sketch";enabled:!root.locked;active:root.operation==34;clicked=>{root.activate(34);}}
+CadToolButton {icon:@image-url("icons/revolve.svg");label:"Revolve";enabled:!root.locked;active:root.operation==2;clicked=>{root.activate(2);}}
+CadToolButton {icon:@image-url("icons/loft.svg");label:"Loft";enabled:!root.locked;active:root.operation==20;clicked=>{root.activate(20);}}
+CadToolButton {icon:@image-url("icons/taper.svg");label:"Tapered extrusion";enabled:!root.locked;active:root.operation==46;clicked=>{root.activate(46);}}
+}
+CadRibbonGroup {title:"BODY";width:164px;
+CadToolButton {icon:@image-url("icons/eye.svg");label:"Show or hide active body";enabled:!root.locked && root.has-body;active:false;clicked=>{root.command(12);}}
+CadToolButton {icon:@image-url("icons/check.svg");label:"Check exact solid geometry";enabled:!root.locked && root.has-body;active:false;clicked=>{root.command(48);}}
+CadToolButton {icon:@image-url("icons/sketch.svg");label:"Rename active body";enabled:!root.locked && root.has-body;active:root.operation==13;clicked=>{root.activate(13);}}
+CadToolButton {icon:@image-url("icons/delete.svg");label:"Delete terminal body or feature";enabled:!root.locked && root.has-body;active:false;clicked=>{root.command(14);}}
+}
+}
+if root.workbench==2 : HorizontalLayout {spacing:6px;
+CadRibbonGroup {title:"TRANSFORM";width:240px;
+CadToolButton {icon:@image-url("icons/move.svg");label:"Move";enabled:!root.locked && root.has-body;active:root.operation==3;clicked=>{root.activate(3);}}
+CadToolButton {icon:@image-url("icons/rotate.svg");label:"Rotate";enabled:!root.locked && root.has-body;active:root.operation==4;clicked=>{root.activate(4);}}
+CadToolButton {icon:@image-url("icons/scale.svg");label:"Uniform scale";enabled:!root.locked && root.has-body;active:root.operation==5;clicked=>{root.activate(5);}}
+CadToolButton {icon:@image-url("icons/scale-axes.svg");label:"Independent X / Y / Z scale copy";enabled:!root.locked && root.has-body;active:root.operation==42;clicked=>{root.activate(42);}}
+CadToolButton {icon:@image-url("icons/mirror.svg");label:"Mirror copy about a plane";enabled:!root.locked && root.has-body;active:root.operation==41;clicked=>{root.activate(41);}}
+CadToolButton {icon:@image-url("icons/copy.svg");label:"Translated copy";enabled:!root.locked && root.has-body;active:root.operation==6;clicked=>{root.activate(6);}}
+}
+CadRibbonGroup {title:"PATTERN";width:88px;
+CadToolButton {icon:@image-url("icons/pattern.svg");label:"Linear pattern";enabled:!root.locked && root.has-body;active:root.operation==7;clicked=>{root.activate(7);}}
+CadToolButton {icon:@image-url("icons/rotate.svg");label:"Circular pattern about selected axis";enabled:!root.locked && root.has-body;active:root.operation==44;clicked=>{root.activate(44);}}
+}
+CadRibbonGroup {title:"BODY";width:88px;
+CadToolButton {icon:@image-url("icons/sketch.svg");label:"Rename active body";enabled:!root.locked && root.has-body;active:root.operation==13;clicked=>{root.activate(13);}}
+CadToolButton {icon:@image-url("icons/eye.svg");label:"Show or hide body";enabled:!root.locked && root.has-body;active:false;clicked=>{root.command(12);}}
+}
+}
+if root.workbench==3 : HorizontalLayout {spacing:6px;
+CadRibbonGroup {title:"BOOLEAN";width:126px;
+CadToolButton {icon:@image-url("icons/union.svg");label:"Union / fuse bodies";enabled:!root.locked && root.has-body;active:root.operation==9;clicked=>{root.activate(9);}}
+CadToolButton {icon:@image-url("icons/cut.svg");label:"Difference / cut tool from source";enabled:!root.locked && root.has-body;active:root.operation==10;clicked=>{root.activate(10);}}
+CadToolButton {icon:@image-url("icons/common.svg");label:"Intersection / common volume";enabled:!root.locked && root.has-body;active:root.operation==11;clicked=>{root.activate(11);}}
+}
+CadRibbonGroup {title:"INSPECT";width:88px;
+CadToolButton {icon:@image-url("icons/check.svg");label:"Check solid consistency";enabled:!root.locked && root.has-body;active:false;clicked=>{root.command(48);}}
+CadToolButton {icon:@image-url("icons/eye.svg");label:"Show or hide Boolean input bodies";enabled:!root.locked && root.has-body;active:false;clicked=>{root.command(12);}}
+}
+}
+if root.workbench==4 : HorizontalLayout {spacing:6px;
+CadRibbonGroup {title:"PRISM FINISHING";width:126px;
+CadToolButton {icon:@image-url("icons/fillet.svg");label:"Fillet selected longitudinal prism edges";enabled:!root.locked && root.has-body;active:root.operation==53;clicked=>{root.activate(53);}}
+CadToolButton {icon:@image-url("icons/chamfer.svg");label:"Chamfer selected longitudinal prism edges";enabled:!root.locked && root.has-body;active:root.operation==54;clicked=>{root.activate(54);}}
+CadToolButton {icon:@image-url("icons/shell.svg");label:"Shell prism: remove selected face";enabled:!root.locked && root.has-body;active:root.operation==55;clicked=>{root.activate(55);}}
+}
+
+CadRibbonGroup {title:"IMPORT";width:88px;
+CadToolButton {icon:@image-url("icons/import.svg");label:"Import STEP solid";enabled:!root.locked;active:false;clicked=>{root.command(19);}}
+CadToolButton {icon:@image-url("icons/import.svg");label:"Import native B-rep";enabled:!root.locked;active:false;clicked=>{root.command(18);}}
+}
+CadRibbonGroup {title:"EXPORT";width:164px;
+CadToolButton {icon:@image-url("icons/export.svg");label:"Export STEP exact geometry";enabled:!root.locked && root.has-body;active:false;clicked=>{root.command(15);}}
+CadToolButton {icon:@image-url("icons/export.svg");label:"Export STL display mesh";enabled:!root.locked && root.has-body;active:false;clicked=>{root.command(16);}}
+CadToolButton {icon:@image-url("icons/export.svg");label:"Export OBJ display mesh";enabled:!root.locked && root.has-body;active:false;clicked=>{root.command(45);}}
+CadToolButton {icon:@image-url("icons/export.svg");label:"Export native B-rep";enabled:!root.locked && root.has-body;active:false;clicked=>{root.command(17);}}
+}
+CadRibbonGroup {title:"QUALITY";width:88px;
+CadToolButton {icon:@image-url("icons/grid.svg");label:"Set display and faceted mesh tolerance";enabled:!root.locked && root.has-body;active:root.operation==49;clicked=>{root.activate(49);}}
+CadToolButton {icon:@image-url("icons/check.svg");label:"Check exact geometry";enabled:!root.locked && root.has-body;active:false;clicked=>{root.command(48);}}
+}
+}
+            Rectangle {horizontal-stretch:1;}
+            }
+        }
+        HorizontalLayout {
+            height:34px;spacing:4px;
+CadToolButton {icon:@image-url("icons/face.svg");label:"Select faces";enabled:!root.locked && !root.face-editing;active:root.pick-mode==0;clicked=>{root.select-mode(0);}}
+CadToolButton {icon:@image-url("icons/edge.svg");label:"Select edges";enabled:!root.locked && !root.face-editing;active:root.pick-mode==1;clicked=>{root.select-mode(1);}}
+CadToolButton {icon:@image-url("icons/vertex.svg");label:"Select vertices";enabled:!root.locked && !root.face-editing;active:root.pick-mode==2;clicked=>{root.select-mode(2);}}
+CadToolButton {icon:@image-url("icons/fit.svg");label:"Fit model to view";enabled:!root.busy;active:false;clicked=>{root.utility(0);}}
+CadToolButton {icon:@image-url("icons/cube.svg");label:"Toggle 3D / XY sketch view";enabled:!root.locked && !root.face-editing;active:root.view-3d;clicked=>{root.utility(1);}}
+CadToolButton {icon:@image-url("icons/grid.svg");label:"Show sketch grid";enabled:!root.busy;active:root.grid;clicked=>{root.utility(2);}}
+CadToolButton {icon:@image-url("icons/snap.svg");label:"Snap to sketch grid";enabled:!root.busy;active:root.snap;clicked=>{root.utility(3);}}
+CadToolButton {icon:@image-url("icons/undo.svg");label:"Undo";enabled:!root.busy && !root.previewing;active:false;clicked=>{root.utility(4);}}
+CadToolButton {icon:@image-url("icons/redo.svg");label:"Redo";enabled:!root.busy && !root.previewing;active:false;clicked=>{root.utility(5);}}
+CadToolButton {icon:@image-url("icons/measure.svg");label:"Measure geometry";enabled:!root.locked && !root.face-editing;active:false;clicked=>{root.utility(6);}}
+CadToolButton {icon:@image-url("icons/clear.svg");label:"Clear selection";enabled:!root.locked;active:false;clicked=>{root.utility(7);}}
+            CadToolButton {icon:@image-url("icons/delete.svg");label:"Delete selected sketch entities";enabled:!root.locked && !root.face-editing;clicked=>{root.utility(8);}}
+            Rectangle {horizontal-stretch:1;}
+            Text {text:root.task-title;color:UiTheme.accent;font-size:11px;vertical-alignment:center;overflow:elide;}
+        }
+    }
+}

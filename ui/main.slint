@@ -1,5 +1,7 @@
-import { CadToolButton, SketchDimension, SketchDimensionsOverlay } from "cad-tools.slint";
+import { SketchDimension, SketchDimensionsOverlay } from "cad-tools.slint";
 import { CadTaskPanel } from "cad.slint";
+import { CadContextMenu, SketchLineContextMenu } from "cad-context.slint";
+import { CadRibbon } from "cad-ribbon.slint";
 import { Button, ComboBox, LineEdit, SpinBox, TextEdit, ScrollView, ListView, Palette } from "std-widgets.slint";
 import { SectionTitle, SectionHint, Card, MetricCard, InteractiveGeometryPreview, WorkflowItem, TreeRowView, InspectorLabel, InspectorValue, ProjectTreeRow, UiTheme } from "components.slint";
 import { TopBar } from "layout/topbar.slint";
@@ -18,6 +20,37 @@ export component MainWindow inherits Window {
     background: UiTheme.background;
 
     in-out property <int> cad-workbench: 0;
+    in-out property <int> cad-operation:1;
+    in-out property <bool> cad-task-open:false;
+    in-out property <bool> cad-auto-preview:true;
+    in-out property <string> cad-auto-preview-status;
+    in-out property <int> cad-preview-generation:0;
+    in-out property <int> cad-pick-role:0;
+    in-out property <[string]> cad-profiles;
+    in-out property <int> cad-profile-index:0;
+    in-out property <bool> cad-profile-valid:false;
+    in-out property <string> cad-region-owner;
+    in-out property <bool> cad-region-grouped:false;
+    in-out property <bool> cad-drive-x:false;
+    in-out property <bool> cad-drive-y:false;
+    in-out property <bool> cad-drive-width:false;
+    in-out property <bool> cad-drive-height:false;
+    in-out property <bool> cad-equal-sides:false;
+    in-out property <bool> cad-centered:false;
+    in-out property <string> cad-constraint-status;
+    in-out property <int> cad-length-unit:0;
+    in-out property <int> cad-angle-unit:0;
+    in-out property <bool> cad-reverse:false;
+    in-out property <bool> cad-transform-copy:false;
+    private property <int> cad-last-length-unit:0;
+    private property <int> cad-last-angle-unit:0;
+    in-out property <string> cad-axis-x:"0";
+    in-out property <string> cad-axis-y:"0";
+    in-out property <string> cad-axis-z:"1";
+    callback cad-parameters-changed();
+    callback cad-units-changed(int,int);
+    in-out property <string> cad-task-title:"Pad";
+    callback cad-activate-tool(int);
     in-out property <int> cad-primitive-kind: 0;
     in-out property <int> cad-axis: 1;
     in-out property <bool> cad-can-loft: false;
@@ -26,6 +59,11 @@ export component MainWindow inherits Window {
     in-out property <int> cad-target: 1;
     in-out property <int> cad-count: 4;
     in-out property <string> cad-name: "Body";
+    in-out property <bool> cad-finish-corner0:true;
+    in-out property <bool> cad-finish-corner1:true;
+    in-out property <bool> cad-finish-corner2:true;
+    in-out property <bool> cad-finish-corner3:true;
+    in-out property <int> cad-finish-opening:5;
     in-out property <string> cad-size-x: "10";
     in-out property <string> cad-size-y: "8";
     in-out property <string> cad-size-z: "6";
@@ -56,17 +94,44 @@ export component MainWindow inherits Window {
     in-out property <bool> cad-preview-active:false;
     in-out property <string> cad-preview-label;
     in-out property <bool> cad-through-all:false;
+    in-out property <int> cad-pocket-end-mode:0;
+    in-out property <string> cad-pocket-stop-face;
+    in-out property <bool> cad-editing-pocket:false;
+    in-out property <string> cad-sketch-offset:"0";
     in-out property <bool> cad-measure-active:false;
     in-out property <int> cad-measure-kind:0;
     in-out property <string> cad-measure-result:"Select geometry to measure.";
     in-out property <string> cad-history;
     in-out property <int> cad-edit-sketch-id:0;
     in-out property <bool> cad-editing-pad:false;
+    in-out property <string> cad-edit-body-id;
+    in-out property <string> cad-sketch-host;
+    in-out property <string> cad-profile-face;
+    in-out property <int> cad-axis-mode:0;
+    in-out property <string> cad-axis-edge;
+    in-out property <int> cad-axis-edge-index:0;
+    in-out property <[string]> cad-axis-edges;
+    in-out property <[string]> cad-loft-sections;
+    in-out property <int> cad-loft-index:0;
     in-out property <int> cad-feature-index:0;
     in-out property <[string]> cad-features;
+    in-out property <[string]> cad-history-profiles;
+    in-out property <int> cad-history-profile-index:0;
+    in-out property <[string]> cad-history-parents;
+    in-out property <int> cad-history-parent-index:0;
     in-out property <image> cad-orientation-image;
     callback cad-pick-orientation(float,float);
     callback cad-command(int);
+    callback cad-context-pick(float,float,float,float) -> bool;
+    in-out property <[string]> cad-selection-items;
+    callback cad-unselect(int);
+    in-out property <bool> cad-selection-body:false;
+    in-out property <bool> cad-selection-editable:false;
+    in-out property <bool> cad-selection-source-sketch:false;
+    in-out property <bool> cad-selection-edge:false;
+    in-out property <string> cad-selection-label;
+    in-out property <bool> cad-selection-planar:false;
+    in-out property <bool> cad-selection-sketch:false;
     callback cad-select-body(int);
 
     // Keep the responsive size-class independent from Window layout constraints.
@@ -227,6 +292,7 @@ export component MainWindow inherits Window {
     callback pick-boundary(float, float, float, float);
     callback start-sketch(); callback sketch-on-face(); callback sketch-on-plane(); callback draw-on-face(); callback select-sketch-tool(int); callback sketch-click(float, float, float, float); callback sketch-preview(float, float, float, float); callback sketch-undo(); callback sketch-redo(); callback apply-driving-dimension();
     callback geometry-tool(int); callback geometry-pointer-down(float, float, float, float) -> bool; callback geometry-pointer(float, float, float, float, bool); callback geometry-move(float, float, float, float); callback geometry-wheel(float, float, float, float, float); callback geometry-fit(); callback geometry-undo(); callback geometry-redo(); callback geometry-delete-selection(); callback geometry-toggle-snap(); callback geometry-toggle-grid();
+    callback geometry-line-context(float, float, float, float) -> bool;
     callback geometry-pan-begin(float, float, float, float); callback geometry-pan-move(float, float, float, float); callback geometry-shortcut(int);
     callback geometry-select-face-mode(); callback geometry-select-entity-mode();
     callback select-geometry-pick-mode(int); callback clear-geometry-selection();
@@ -282,10 +348,11 @@ export component MainWindow inherits Window {
     in-out property <string> bc-assigned: "Unassigned";
     in-out property <string> material-density: "1.0";
     in-out property <string> material-viscosity: "0.01";
-    in-out property <int> wb-max-iterations: 200;
+    in-out property <int> wb-max-iterations: 1000;
     in-out property <string> wb-velocity-relaxation: "0.7";
     in-out property <string> wb-pressure-relaxation: "0.3";
     in-out property <string> wb-continuity-tolerance: "1e-10";
+    in-out property <string> wb-coupling-tolerance:"1e-6";
     in-out property <bool> can-run-workbench: false;
     in-out property <bool> wb-busy: false;
     in-out property <string> wb-solution-summary: "No solution yet.";
@@ -294,6 +361,9 @@ export component MainWindow inherits Window {
     in-out property <string> status-continuity: "continuity —";
 
     callback select-tree-row(int, bool);
+    callback cad-tree-edit(int);
+    callback cad-tree-context(int)->bool;
+    callback cad-tree-expand(bool);
     callback toggle-tree-row(int);
     callback create-named-selection();
     callback rename-named-selection();
@@ -301,6 +371,14 @@ export component MainWindow inherits Window {
     callback translate-selected-body();
     callback rotate-selected-body();
     callback generate-mesh-wb();
+    callback prepare-flow-domain(bool);
+    callback select-patch-wb(int);
+    in-out property <string> wb-domain-status;
+    in-out property <string> wb-flow-feedback;
+    callback cut-flow-obstacle();
+    in-out property <string> wb-obstacle-x:"0.2";
+    in-out property <string> wb-obstacle-y:"0.2";
+    in-out property <string> wb-obstacle-radius:"0.05";
     callback add-local-size-wb();
     callback add-threshold-refinement-wb();
     callback add-boundary-layer-wb();
@@ -344,6 +422,14 @@ export component MainWindow inherits Window {
                 project-tree-model: root.project-tree-model;
                 select-tree-row(index, additive) => { root.select-tree-row(index, additive); }
                 toggle-tree-row(index) => { root.toggle-tree-row(index); }
+                edit-tree-row(index)=>{root.cad-tree-edit(index);}
+                context-tree-row(index)=>{root.cad-tree-context(index)}
+                expand-history(expand)=>{root.cad-tree-expand(expand);}
+                command(action)=>{root.cad-command(action);}
+                activate(action)=>{root.cad-activate-tool(action);}
+                can-edit-feature:root.cad-selection-editable;has-source-sketch:root.cad-selection-source-sketch;
+                has-body:root.cad-selection-body;has-sketch:root.cad-selection-sketch;planar-face:root.cad-selection-planar;has-edge:root.cad-selection-edge;
+                selection-label:root.cad-selection-label;locked:root.cad-busy || root.cad-task-open;
             }
 
             HorizontalLayout {
@@ -374,61 +460,39 @@ export component MainWindow inherits Window {
                     width: parent.width; height: parent.height;
                     VerticalLayout {
                         padding: 8px; spacing: 6px;
-                        Rectangle {
-                            min-height: 112px;
-                            preferred-height: 118px;
-                            max-height: 126px;
-                            background: UiTheme.toolbar;
-                            border-color: UiTheme.border;
-                            border-width: 1px;
-
-                            VerticalLayout {
-                                padding: 6px;
-                                spacing: 4px;
-
-                                HorizontalLayout {
-                                    spacing: 6px;
-                                    Text {text:"CAD";color:UiTheme.accent;font-weight:800;vertical-alignment:center;}
-                                    for label[index] in ["Sketch", "Solid", "Transform", "Boolean", "Exchange"] : Button {
-                                        enabled:!root.cad-direct-sketch-editing && !root.cad-preview-active && !root.cad-busy;
-                                        text: root.cad-workbench == index ? "● " + label : label;
-                                        clicked => {root.cad-workbench=index;root.geometry-sidebar-tab=0;}
-                                    }
-                                    Rectangle {horizontal-stretch:1;}
-                                    Text {text:root.cad-busy ? "BUILDING" : "PART DESIGN";color:UiTheme.text-muted;font-size:10px;vertical-alignment:center;}
-                                }
-                                HorizontalLayout {
-                                    spacing: 5px;
-
-                                    Text { text: "GEOMETRY"; color: UiTheme.accent; font-size: 10px; font-weight: 800; vertical-alignment: center; }
-                                    Rectangle { width: 1px; background: UiTheme.divider; }
-
-                                    CadToolButton {icon:@image-url("icons/face.svg");label:"Select faces";active:root.geometry-active-tool == 0 && root.geometry-prefer-faces;enabled:!root.geometry-face-sketch-editing && !root.cad-direct-sketch-editing;clicked=>{root.geometry-select-face-mode();}}
-                                    CadToolButton {icon:@image-url("icons/edge.svg");label:"Select edges / vertices";active:root.geometry-active-tool == 0 && !root.geometry-prefer-faces;enabled:!root.geometry-face-sketch-editing && !root.cad-direct-sketch-editing;clicked=>{root.geometry-select-entity-mode();}}
-                                    CadToolButton {icon:@image-url("icons/line.svg");label:"Line";active:root.geometry-active-tool == 1;enabled:!root.geometry-face-sketch-editing && !root.cad-direct-sketch-editing;clicked=>{root.geometry-cad-view-3d=false;root.geometry-tool(1);}}
-                                    CadToolButton {icon:@image-url("icons/rectangle.svg");label:"Rectangle";active:root.geometry-active-tool == 2;enabled:!root.cad-direct-sketch-editing;clicked=>{root.geometry-cad-view-3d=false;root.geometry-tool(2);}}
-                                    CadToolButton {icon:@image-url("icons/circle.svg");label:"Circle";active:root.geometry-active-tool == 3;enabled:!root.cad-direct-sketch-editing;clicked=>{if root.geometry-face-sketch-editing {root.geometry-tool(3);} else {root.geometry-cad-view-3d=false;root.geometry-tool(3);}}}
-                                    CadToolButton {icon:@image-url("icons/snap.svg");label:"Snap to grid";active:root.geometry-snap;enabled:true;clicked=>{root.geometry-toggle-snap();}}
-                                    CadToolButton {icon:@image-url("icons/grid.svg");label:"Show grid";active:root.geometry-grid;enabled:true;clicked=>{root.geometry-toggle-grid();}}
-                                    CadToolButton {icon:@image-url("icons/undo.svg");label:"Undo";active:false;enabled:true;clicked=>{root.geometry-undo();}}
-                                    CadToolButton {icon:@image-url("icons/redo.svg");label:"Redo";active:false;enabled:true;clicked=>{root.geometry-redo();}}
-                                    CadToolButton {icon:@image-url("icons/delete.svg");label:"Delete selection";active:false;enabled:!root.cad-direct-sketch-editing;clicked=>{root.geometry-delete-selection();}}
-                                    Rectangle { horizontal-stretch: 1; }
-                                }
-
-                                HorizontalLayout {
-                                    spacing: 5px;
-
-                                    Text { text: "VIEW"; color: UiTheme.text-dim; font-size: 10px; font-weight: 700; vertical-alignment: center; }
-
-                                    CadToolButton {icon:@image-url("icons/fit.svg");label:"Fit view";active:false;enabled:true;clicked=>{if root.geometry-cad-view-3d {root.reset-geometry-view();} else {root.geometry-fit();}}}
-                                    CadToolButton {icon:@image-url("icons/cube.svg");label:"Toggle sketch / 3D view";active:root.geometry-cad-view-3d;enabled:!root.geometry-face-sketch-editing && !root.cad-direct-sketch-editing;clicked=>{root.geometry-cad-view-3d=!root.geometry-cad-view-3d;if root.geometry-cad-view-3d {root.show-geometry-3d();}}}
-                                    CadToolButton {icon:@image-url("icons/sketch.svg");label:"Sketch on selected face";active:root.geometry-face-sketch-editing;enabled:!root.cad-direct-sketch-editing;clicked=>{if root.geometry-face-sketch-editing {root.geometry-shortcut(0);} else {root.draw-on-face();}}}
-                                    CadToolButton {icon:@image-url("icons/pad.svg");label:"Pad / revolve";active:false;enabled:root.geometry-can-extrude;clicked=>{root.cad-workbench=0;root.geometry-sidebar-tab=0;}}
-                                    CadToolButton {icon:@image-url("icons/measure.svg");label:"Measure";active:root.cad-measure-active;enabled:!root.cad-busy && !root.cad-preview-active && !root.cad-direct-sketch-editing;clicked=>{root.cad-command(23);}}
-                                    Rectangle { horizontal-stretch: 1; }
-                                }
-
+                        CadRibbon {
+                            workbench:root.cad-workbench;operation:root.cad-operation;
+                            task-title:root.cad-task-title;
+                            active-tool:root.geometry-active-tool;pick-mode:root.geometry-pick-mode;
+                            busy:root.cad-busy;previewing:root.cad-preview-active;
+                            editing:root.cad-direct-sketch-editing;face-editing:root.geometry-face-sketch-editing;
+                            has-body:root.cad-bodies.length>0;has-sketch:root.cad-sketches.length>0;
+                            grid:root.geometry-grid;snap:root.geometry-snap;view-3d:root.geometry-cad-view-3d;
+                            activate(action)=>{root.cad-activate-tool(action);}
+                            command(action)=>{root.cad-command(action);}
+                            drawing(tool)=>{
+                                root.cad-workbench=0;root.cad-operation=1;root.feature-kind-index=0;
+                                root.cad-task-title="Sketch / Pad";root.geometry-sidebar-tab=0;
+                                root.cad-sketch-editing=false;
+                                if !root.geometry-face-sketch-editing {root.geometry-cad-view-3d=false;}
+                                root.geometry-tool(tool);
+                            }
+                            select-mode(mode)=>{
+                                root.select-geometry-pick-mode(mode);
+                                if mode==0 {root.geometry-select-face-mode();} else {root.geometry-select-entity-mode();}
+                            }
+                            utility(action)=>{
+                                if action==0 {if root.geometry-cad-view-3d {root.reset-geometry-view();} else {root.geometry-fit();}}
+                                if action==1 {root.geometry-cad-view-3d=!root.geometry-cad-view-3d;if root.geometry-cad-view-3d {root.show-geometry-3d();}}
+                                if action==2 {root.geometry-toggle-grid();}
+                                if action==3 {root.geometry-toggle-snap();}
+                                if action==4 {root.geometry-undo();}
+                                if action==5 {root.geometry-redo();}
+                                if action==6 {root.cad-command(23);}
+                                if action==7 {root.clear-geometry-selection();}
+                                if action==8 {root.geometry-delete-selection();}
+                                if action==9 {root.prepare-flow-domain(false);}
+                                if action==10 {root.prepare-flow-domain(true);}
                             }
                         }
                         HorizontalLayout {
@@ -450,17 +514,29 @@ export component MainWindow inherits Window {
                                         Button { text: root.compact-ui ? "INSPECT" : "INSPECTOR"; clicked => { root.geometry-sidebar-tab = 2; } }
                                     }
 
-                                    ScrollView {
-                                        vertical-stretch: 1;
-                                        horizontal-scrollbar-policy: always-off;
-
-                                        VerticalLayout {
-                                            spacing: 8px;
                                      if root.geometry-sidebar-tab == 0 : CadTaskPanel {
                                          vertical-stretch: 1;
                                          workbench <=> root.cad-workbench;
+                                         operation:root.cad-operation;
+                                         task-title:root.cad-task-title;
+                                         task-open:root.cad-task-open;preview-label:root.cad-preview-label;
+                                         auto-preview <=> root.cad-auto-preview;
+                                         auto-status:root.cad-auto-preview-status;
+                                         profiles:root.cad-profiles;profile-index <=> root.cad-profile-index;
+                                         profile-valid:root.cad-profile-valid;pick-role:root.cad-pick-role;
+                                         region-owner:root.cad-region-owner;region-grouped:root.cad-region-grouped;
+                                         drive-x <=> root.cad-drive-x;drive-y <=> root.cad-drive-y;
+                                         drive-width <=> root.cad-drive-width;drive-height <=> root.cad-drive-height;
+                                         equal-sides <=> root.cad-equal-sides;centered <=> root.cad-centered;
+                                         constraint-status:root.cad-constraint-status;
+                                         length-unit <=> root.cad-length-unit;angle-unit <=> root.cad-angle-unit;
+                                         reverse <=> root.cad-reverse;transform-copy <=> root.cad-transform-copy;
+                                         axis-x <=> root.cad-axis-x;axis-y <=> root.cad-axis-y;axis-z <=> root.cad-axis-z;
+                                         units-changed()=>{root.cad-units-changed(root.cad-last-length-unit,root.cad-last-angle-unit);root.cad-last-length-unit=root.cad-length-unit;root.cad-last-angle-unit=root.cad-angle-unit;}
                                          face-editing:root.geometry-face-sketch-editing;
                                          through-all <=> root.cad-through-all;
+                                         pocket-end-mode <=> root.cad-pocket-end-mode;
+                                         pocket-stop-face <=> root.cad-pocket-stop-face;
                                          previewing:root.cad-preview-active;
                                          sketch-plane <=> root.cad-sketch-plane;
                                          sketch-kind <=> root.cad-sketch-kind;
@@ -471,23 +547,50 @@ export component MainWindow inherits Window {
                                          editing-pad <=> root.cad-editing-pad;
                                          feature-index <=> root.cad-feature-index;
                                          features:root.cad-features;
+                                         history-profiles:root.cad-history-profiles;
+                                         history-profile-index <=> root.cad-history-profile-index;
+                                         history-parents:root.cad-history-parents;
+                                         history-parent-index <=> root.cad-history-parent-index;
+                                         editing-recipe:root.cad-edit-body-id!="";
+                                         sketch-host:root.cad-sketch-host;
+                                         profile-face:root.cad-profile-face;
+                                         axis-mode <=> root.cad-axis-mode;
+                                         axis-edge:root.cad-axis-edge;
+                                         axis-edge-index <=> root.cad-axis-edge-index;
+                                         axis-edges:root.cad-axis-edges;
+                                         loft-sections:root.cad-loft-sections;
+                                         loft-index <=> root.cad-loft-index;
                                          primitive-kind <=> root.cad-primitive-kind;
                                          axis <=> root.cad-axis; can-loft: root.cad-can-loft;
                                          feature-mode <=> root.feature-kind-index;can-pocket:root.cad-can-pocket;
                                          source <=> root.cad-source; target <=> root.cad-target;
                                          count <=> root.cad-count; name <=> root.cad-name;
+                                         selection-items:root.cad-selection-items;unselect(index)=>{root.cad-unselect(index);}
+                                         finish-corner0 <=> root.cad-finish-corner0;finish-corner1 <=> root.cad-finish-corner1;
+                                         finish-corner2 <=> root.cad-finish-corner2;finish-corner3 <=> root.cad-finish-corner3;finish-opening <=> root.cad-finish-opening;
                                          size-x <=> root.cad-size-x; size-y <=> root.cad-size-y; size-z <=> root.cad-size-z;
                                          pos-x <=> root.cad-pos-x; pos-y <=> root.cad-pos-y; pos-z <=> root.cad-pos-z;
                                          revolve-x <=> root.cad-revolve-x;revolve-y <=> root.cad-revolve-y;revolve-z <=> root.cad-revolve-z;
                                          angle <=> root.cad-angle; factor <=> root.cad-factor; tolerance <=> root.cad-tolerance;
                                          bodies: root.cad-bodies; inspector: root.cad-inspector;
-                                         feedback: root.cad-feedback; busy: root.cad-busy || root.cad-preview-active; has-profile: root.geometry-can-extrude;
+                                         feedback: root.cad-feedback; busy: root.cad-busy; has-profile: root.geometry-can-extrude;
                                          command(action) => {root.cad-command(action);}
+                                         activate(action)=>{root.cad-activate-tool(action);}
                                          edit-status:root.cad-sketch-edit-status;
+                                         editing-pocket:root.cad-editing-pocket;
+                                         sketch-offset <=> root.cad-sketch-offset;
                                          direct-editing:root.cad-direct-sketch-editing;
-                                         parameters-edited()=>{root.cad-sketch-parameters-edited();}
+                                         parameters-edited()=>{root.cad-parameters-changed();root.cad-sketch-parameters-edited();}
                                          select-body(index) => {root.cad-select-body(index);}
                                      }
+
+                                    if root.geometry-sidebar-tab != 0 : ScrollView {
+                                        vertical-stretch: 1;
+                                        horizontal-scrollbar-policy: always-off;
+
+                                        VerticalLayout {
+                                            spacing: 8px;
+
 
                                      if root.geometry-sidebar-tab == 1 : VerticalLayout {
                                          Button { text: root.geometry-domain-open ? "▾  CASE / DOMAIN" : "▸  CASE / DOMAIN"; clicked => { root.geometry-domain-open = !root.geometry-domain-open; } }
@@ -554,14 +657,6 @@ export component MainWindow inherits Window {
                                 horizontal-stretch: 3;
                                 VerticalLayout {
                                     padding: 12px; spacing: 8px;
-                                     if root.cad-preview-active : Rectangle {
-                                         min-height:58px;preferred-height:58px;background:UiTheme.toolbar;border-width:1px;border-color:UiTheme.accent;border-radius:5px;
-                                         HorizontalLayout {padding:7px;spacing:8px;
-                                             Text {text:"PREVIEW · " + root.cad-preview-label;wrap:word-wrap;color:UiTheme.accent;font-size:11px;vertical-alignment:center;horizontal-stretch:1;}
-                                             Button {text:"Apply";min-width:0px;max-height:30px;clicked=>{root.cad-command(35);}}
-                                             Button {text:"Cancel";min-width:0px;max-height:30px;clicked=>{root.cad-command(36);}}
-                                         }
-                                     }
                                      if root.cad-measure-active : Rectangle {
                                          min-height:86px;preferred-height:86px;background:UiTheme.toolbar;border-color:UiTheme.accent;border-width:1px;border-radius:5px;
                                          VerticalLayout {padding:8px;spacing:5px;
@@ -575,14 +670,44 @@ export component MainWindow inherits Window {
                                          }
                                      }
                                      HorizontalLayout { Text { text: root.cad-direct-sketch-editing && !root.geometry-cad-view-3d ? "EDIT SKETCH · " + root.cad-sketch-plane-label : root.geometry-cad-view-3d ? "3D CAD · SELECT A FACE" : root.geometry-face-sketch-editing ? "SKETCH ON SELECTED FACE" : "2D GEOMETRY EDITOR"; color: UiTheme.accent; font-size: 11px; font-weight: 800; } Rectangle { horizontal-stretch: 1; } Text { text: root.cad-direct-sketch-editing && !root.geometry-cad-view-3d ? "DRAG HANDLES · LOCAL PLANE" : root.geometry-cad-view-3d ? "ORBIT · PICK · EXTRUDE" : root.geometry-face-sketch-editing ? "LOCAL FACE PLANE · mm" : "XY PLANE · mm"; color: UiTheme.text-dim; font-size: 10px; } }
-                                     if root.geometry-cad-view-3d : InteractiveGeometryPreview {
-                                         vertical-stretch: 1;
+                                     if root.geometry-cad-view-3d : Rectangle {
+                                         vertical-stretch:1;
+                                         property <length> menu-x:0px;
+                                         property <length> menu-y:0px;
+                                         context-menu := CadContextMenu {
+                                             x:parent.menu-x;y:parent.menu-y;
+                                             can-edit-feature:root.cad-selection-editable;has-source-sketch:root.cad-selection-source-sketch;
+                                             has-body:root.cad-selection-body;planar-face:root.cad-selection-planar;has-sketch:root.cad-selection-sketch;
+                                             has-edge:root.cad-selection-edge;selection-label:root.cad-selection-label;
+                                             axis-task:root.cad-task-open && (root.cad-operation==2 || root.cad-operation==57);
+                                             locked:root.cad-busy || root.cad-task-open || root.cad-preview-active || root.geometry-face-sketch-editing;
+                                             command(action)=>{root.cad-command(action);}
+                                             activate(action)=>{root.cad-activate-tool(action);}
+                                             fit=>{root.reset-geometry-view();}
+                                         }
+                                         InteractiveGeometryPreview {
+                                         width:parent.width;height:parent.height;
+                                         context-menu(x,y,w,h)=>{
+                                             if root.cad-context-pick(x,y,w,h) {
+                                                 parent.menu-x=max(0px,min(x*1px,parent.width - 270px));
+                                                 parent.menu-y=max(0px,min(y*1px,parent.height - context-menu.menu-height));
+                                                 context-menu.show();
+                                             }
+                                         }
                                          preview-image: root.visualization-image;
                                          orientation-image:root.cad-orientation-image;
                                          pick-orientation(x,y)=>{root.cad-pick-orientation(x,y);}
                                          view-axis: root.geometry-view-axis;
                                          select-geometry: true;
-                                         help-text: root.geometry-pick-mode == 0 ? "CLICK FACE: SELECT  ·  DRAG: ORBIT  ·  WHEEL: ZOOM  ·  DOUBLE-CLICK: FIT" : root.geometry-pick-mode == 1 ? "CLICK A SKETCH EDGE: SELECT  ·  DRAG: ORBIT  ·  WHEEL: ZOOM" : "CLICK A SKETCH VERTEX: SELECT  ·  DRAG: ORBIT  ·  WHEEL: ZOOM";
+                                         help-text: root.geometry-pick-mode == 0 ? "CLICK FACE: SELECT  ·  DRAG: ORBIT  ·  WHEEL: ZOOM  ·  DOUBLE-CLICK: FIT" : root.geometry-pick-mode == 1 ? "CLICK AN EDGE: SELECT  ·  DRAG: ORBIT  ·  WHEEL: ZOOM" : "CLICK A VERTEX: SELECT  ·  DRAG: ORBIT  ·  WHEEL: ZOOM";
+                                         shortcut(action)=>{
+                                             if action==0 {if root.cad-task-open || root.cad-preview-active {root.cad-command(61);}else{root.geometry-shortcut(0);}}
+                                             else if action==1 && root.cad-task-open {root.cad-command(60);}
+                                             else if action==2 {root.cad-command(75);}
+                                             else if action==3 {root.cad-command(76);}
+                                             else if action==4 {root.reset-geometry-view();}
+                                             else if action==5 && root.cad-selection-body && !root.cad-task-open && !root.cad-busy {root.cad-command(12);}
+                                         }
                                          orbit(x, y, pressed-x, pressed-y) => { root.geometry-drag(x, y, pressed-x, pressed-y); }
                                          orbit-end => { root.geometry-drag-end(); }
                                          zoom(delta) => { root.geometry-zoom(delta); }
@@ -591,20 +716,20 @@ export component MainWindow inherits Window {
                                          pick-boundary(x, y, w, h) => { root.pick-boundary(x, y, w, h); }
                                          hover(x, y, w, h) => { root.mesh-hover(x, y, w, h); }
                                      }
-                                     if root.geometry-cad-view-3d : HorizontalLayout {
-                                         spacing: 6px;
-                                         Text { text: "PICK"; color: UiTheme.text-dim; font-size: 10px; font-weight: 700; vertical-alignment: center; }
-                                         Button { text: root.geometry-pick-mode == 0 ? "FACE ✓" : "FACE"; clicked => { root.select-geometry-pick-mode(0); } }
-                                         Button { text: root.geometry-pick-mode == 1 ? "EDGE ✓" : "EDGE"; clicked => { root.select-geometry-pick-mode(1); } }
-                                         Button { text: root.geometry-pick-mode == 2 ? "VERTEX ✓" : "VERTEX"; clicked => { root.select-geometry-pick-mode(2); } }
-                                         Rectangle { horizontal-stretch: 1; }
-                                         Button { text: "CLEAR"; clicked => { root.clear-geometry-selection(); } }
                                      }
                                      if !root.geometry-cad-view-3d : Rectangle {
                                         vertical-stretch: 1;
                                         background: UiTheme.viewport;
                                         border-color: UiTheme.viewport-border;
                                         border-width: 1px;
+                                        line-menu := SketchLineContextMenu {
+                                            edit(tool)=>{
+                                                root.geometry-tool(tool);
+                                                root.geometry-pointer(line-menu.pick-x,line-menu.pick-y,parent.width/1px,parent.height/1px,false);
+                                                root.geometry-tool(0);
+                                            }
+                                            utility(action)=>{root.geometry-shortcut(action);}
+                                        }
                                         Image { source: root.geometry-editor-image; width: parent.width; height: parent.height; image-fit: contain; }
                                         editor-focus := FocusScope {
                                             width: parent.width; height: parent.height;
@@ -619,6 +744,9 @@ export component MainWindow inherits Window {
                                                 else if !event.modifiers.control && (event.text == "l" || event.text == "L") { root.geometry-shortcut(1); accept }
                                                 else if !event.modifiers.control && (event.text == "r" || event.text == "R") { root.geometry-shortcut(2); accept }
                                                 else if !event.modifiers.control && (event.text == "c" || event.text == "C") { root.geometry-shortcut(3); accept }
+                                                else if !event.modifiers.control && (event.text == "t" || event.text == "T") { root.geometry-shortcut(9); accept }
+                                                else if !event.modifiers.control && (event.text == "x" || event.text == "X") { root.geometry-shortcut(10); accept }
+                                                else if !event.modifiers.control && (event.text == "s" || event.text == "S") { root.geometry-shortcut(11); accept }
                                                 else if event.text == Key.Delete { root.geometry-shortcut(4); accept }
                                                 else if !event.modifiers.control && (event.text == "f" || event.text == "F") { root.geometry-shortcut(5); accept }
                                                 else { reject }
@@ -647,6 +775,16 @@ export component MainWindow inherits Window {
                                                     if event.kind == PointerEventKind.up {root.cad-sketch-drag(2,self.mouse-x/1px,self.mouse-y/1px,self.width/1px,self.height/1px);}
                                                 } else {
 
+                                                if event.button == PointerEventButton.right && event.kind == PointerEventKind.up {
+                                                    editor-focus.focus();
+                                                    if root.geometry-line-context(self.mouse-x/1px,self.mouse-y/1px,self.width/1px,self.height/1px) {
+                                                        line-menu.pick-x=self.mouse-x/1px;
+                                                        line-menu.pick-y=self.mouse-y/1px;
+                                                        line-menu.x=max(0px,min(self.mouse-x,parent.width - 150px));
+                                                        line-menu.y=max(0px,min(self.mouse-y,parent.height - 120px));
+                                                        line-menu.show();
+                                                    }
+                                                }
                                                 if event.button == PointerEventButton.left && event.kind == PointerEventKind.down {
                                                     editor-focus.focus();
                                                     self.press-x = self.mouse-x;
@@ -986,6 +1124,19 @@ export component MainWindow inherits Window {
                                 // 2 — mesh generation
                                 if root.inspector-mode == 2 : VerticalLayout {
                                     spacing: 6px;
+                                    InspectorLabel {text:"FLUID DOMAIN";}
+                                    InspectorValue {text:root.wb-domain-status;}
+                                    if root.wb-flow-feedback != "" : InspectorValue {text:root.wb-flow-feedback;}
+                                    Button {text:"USE SELECTED 2D FACE";enabled:!root.wb-busy;clicked=>{root.prepare-flow-domain(false);}}
+                                    InspectorLabel {text:"CIRCULAR SUBTRACTION · MODEL COORDINATES";}
+                                    HorizontalLayout {
+                                        LineEdit {text <=> root.wb-obstacle-x;placeholder-text:"Center X";}
+                                        LineEdit {text <=> root.wb-obstacle-y;placeholder-text:"Center Y";}
+                                        LineEdit {text <=> root.wb-obstacle-radius;placeholder-text:"Radius";}
+                                    }
+                                    Button {text:"SUBTRACT CIRCLE FROM FLUID FACE";enabled:!root.wb-busy;clicked=>{root.cut-flow-obstacle();}}
+                                    Button {text:"PREPARE CHANNEL BOUNDARIES";enabled:!root.wb-busy;clicked=>{root.prepare-flow-domain(true);}}
+                                    InspectorLabel {text:"Draw a rectangle, then a circle inside it in XY: the circle cuts a fluid hole. Select the remaining face. Channel preparation creates editable inlet (+X, U=1), outlet (p=0), walls and obstacle groups. Geometry and mesh sizes use model coordinates; use consistent length/velocity/viscosity units.";wrap:word-wrap;}
                                     InspectorLabel { text: "DIMENSION"; }
                                     ComboBox {
                                         enabled: !root.wb-busy;
@@ -1033,11 +1184,13 @@ export component MainWindow inherits Window {
                                 // 3 — boundary conditions
                                 if root.inspector-mode == 3 : VerticalLayout {
                                     spacing: 6px;
+                                    if root.wb-flow-feedback != "" : InspectorValue {text:root.wb-flow-feedback;}
                                     InspectorLabel { text: "BOUNDARY PATCH"; }
                                     ComboBox {
                                         enabled: root.patch-model.length > 0 && !root.wb-busy;
                                         model: root.patch-model;
                                         current-index <=> root.patch-index;
+                                        selected(value)=>{root.select-patch-wb(self.current-index);}
                                     }
                                     InspectorLabel { text: "PHYSICAL CONDITION"; }
                                     ComboBox {
@@ -1057,7 +1210,7 @@ export component MainWindow inherits Window {
                                     }
                                     if root.bc-kind-index == 3 : VerticalLayout {
                                         spacing: 4px;
-                                        InspectorLabel { text: "GAUGE PRESSURE P"; }
+                                        InspectorLabel { text: "KINEMATIC GAUGE PRESSURE p/ρ"; }
                                         LineEdit { text <=> root.bc-pressure; }
                                     }
                                     HorizontalLayout {
@@ -1090,6 +1243,9 @@ export component MainWindow inherits Window {
                                     }
                                     InspectorLabel { text: "CONTINUITY TOLERANCE"; }
                                     LineEdit { text <=> root.wb-continuity-tolerance; }
+                                    InspectorLabel {text:"MOMENTUM / VELOCITY RELATIVE TOLERANCE";}
+                                    LineEdit {text <=> root.wb-coupling-tolerance;}
+                                    InspectorLabel {text:"Steady convergence requires mass conservation, momentum residual reduction and a stable velocity field.";wrap:word-wrap;}
                                     Button { text: "APPLY SETTINGS"; clicked => { root.apply-solver-settings-wb(); } }
                                     InspectorLabel { text: "Linear solvers keep their verified backend defaults; advanced controls are intentionally not exposed here."; wrap: word-wrap; color: rgb(126,153,170); font-size: 10px; }
                                     Rectangle { height: 1px; background: UiTheme.border; }

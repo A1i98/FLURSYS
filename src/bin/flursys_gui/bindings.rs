@@ -427,6 +427,10 @@ pub(super) const TREE_KIND_PATCH: i32 = 6;
 pub(super) const TREE_KIND_RUN: i32 = 7;
 pub(super) const TREE_KIND_SKETCH: i32 = 8;
 pub(super) const TREE_KIND_EXTRUDE_FEATURE: i32 = 9;
+pub(super) const TREE_KIND_HISTORY_FEATURE:i32=10;
+pub(super) const TREE_KIND_REGION:i32=11;
+pub(super) const TREE_GROUP_HISTORY:i32=20;
+pub(super) const TREE_GROUP_TOPOLOGY:i32=21;
 pub(super) const TREE_KIND_INERT: i32 = -1;
 pub(super) const TREE_GROUP_SKETCHES: i32 = 10;
 pub(super) const TREE_GROUP_FEATURES: i32 = 11;
@@ -446,6 +450,7 @@ pub(super) struct TreeSelection {
 
 #[derive(Clone, Debug, PartialEq)]
 pub(super) struct ProjectTreeRowData {
+    pub icon:i32,
     pub label: String,
     pub note: String,
     pub depth: usize,
@@ -464,7 +469,7 @@ pub(super) fn inspector_mode_for(kind: i32, step: usize) -> usize {
         | TREE_KIND_EDGE
         | TREE_KIND_VERTEX
         | TREE_KIND_SKETCH
-        | TREE_KIND_EXTRUDE_FEATURE => 0,
+        | TREE_KIND_EXTRUDE_FEATURE | TREE_KIND_HISTORY_FEATURE | TREE_KIND_REGION => 0,
         TREE_KIND_NAMED_SELECTION => 1,
         TREE_KIND_PATCH => 3,
         TREE_KIND_RUN => 6,
@@ -731,6 +736,7 @@ pub(super) fn build_project_tree_rows(
                 }
             };
             ProjectTreeRowData {
+                icon:0,
                 label,
                 note,
                 depth,

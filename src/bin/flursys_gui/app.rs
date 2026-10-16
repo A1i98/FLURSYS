@@ -26,6 +26,26 @@ use flursys::{ExtrudedMesh3D, StructuredMesh2D};
 slint::include_modules!();
 #[path = "cad.rs"]
 mod cad;
+#[path = "cad_tools.rs"]
+mod cad_tools;
+#[path = "cad_units.rs"]
+mod cad_units;
+#[path = "cad_properties.rs"]
+mod cad_properties;
+#[path = "cad_history.rs"]
+mod cad_history;
+#[path = "cad_axis.rs"]
+mod cad_axis;
+#[path = "cad_profiles.rs"]
+mod cad_profiles;
+#[path = "cad_constraints.rs"]
+mod cad_constraints;
+#[path = "cad_regions.rs"]
+mod cad_regions;
+#[path = "cad_tree.rs"]
+mod cad_tree;
+#[path = "flow_setup.rs"]
+mod flow_setup;
 #[path = "measure.rs"]
 mod measure;
 #[path = "sketch_edit.rs"]
@@ -215,6 +235,7 @@ struct AppState {
     pending_recovery_workspace: Option<PathBuf>,
     pending_project_replacement: Option<PendingProjectReplacement>,
     pending_legacy_import: Option<(PendingProjectReplacement, LegacyProjectInspection)>,
+    cad_auto_preview_timer: Timer,
     cad_measure_points: Vec<Vec3>,
     geometry_editor: GeometryEditorState,
     face_sketch_host: Option<flursys::FaceId>,
@@ -339,6 +360,7 @@ impl AppState {
             pending_recovery_workspace: None,
             pending_project_replacement: None,
             pending_legacy_import: None,
+            cad_auto_preview_timer: Timer::default(),
             cad_measure_points: Vec::new(),
             geometry_editor: {
                 let mut editor = GeometryEditorState::new();
@@ -363,6 +385,7 @@ impl AppState {
             mesh_quality_threshold: 10.0,
             tree_rows: Vec::new(),
             collapsed_tree_groups: [
+                (TREE_KIND_INERT, TREE_GROUP_TOPOLOGY),
                 (TREE_KIND_INERT, TREE_GROUP_VERTICES),
                 (TREE_KIND_INERT, TREE_GROUP_EDGES),
                 (TREE_KIND_INERT, TREE_GROUP_RUNS),
@@ -597,6 +620,8 @@ impl AppState {
                         generated.report.patch_count
                     );
                     self.workbench.install_mesh(generated);
+                    self.show_mesh = true;
+                    self.show_geometry_3d = false;
                     if let Some(cache) = self.workbench.mesh_render_cache() {
                         let (min, max) = cache.bounds();
                         if cache.dimension() == MeshDimension::TwoD {
@@ -1028,7 +1053,8 @@ fn selected_extrusion_face(state: &AppState) -> Result<flursys::FaceId, String> 
                     };
                     let (start, end) = match edge.geometry {
                         flursys::EdgeGeometry::Line { start, end }
-                        | flursys::EdgeGeometry::CircularArc { start, end, .. } => (start, end),
+                        | flursys::EdgeGeometry::CircularArc { start, end, .. }
+                        | flursys::EdgeGeometry::Kernel {start,end,..} => (start, end),
                     };
                     selected_vertices.contains(&start) || selected_vertices.contains(&end)
                 })
@@ -1242,6 +1268,14 @@ fn begin_face_sketch(state: &mut AppState) -> Result<String, String> {
         .geometry_editor
         .transform
         .fit(Some((min_x, min_y, max_x, max_y)));
+    // Keep the support face selected while sketching so the user can see
+    // which surface owns the new profile and subsequent tools have a stable
+    // reference.
+    let support = GeometrySelectionTarget::Face(face);
+    state.wb_selected_targets = vec![support];
+    state.geometry_editor.selection = vec![support];
+    state.selected_tree = tree_selection_for_target(support);
+    state.tree_dirty = true;
     state.geometry_editor.set_tool(GeometryTool::Rectangle);
     state.face_sketch_host = Some(face);
     state.face_sketch_start = None;
@@ -1323,7 +1357,10 @@ fn begin_geometry_stroke(state: &mut AppState, screen: (f64, f64)) -> Result<boo
         face_sketch_click(state, point)?;
         return Ok(true);
     }
-    if state.geometry_editor.active_tool == GeometryTool::Select
+    if !matches!(
+        state.geometry_editor.active_tool,
+        GeometryTool::Line | GeometryTool::Rectangle | GeometryTool::Circle
+    )
         || state.geometry_editor.has_start()
     {
         return Ok(false);
@@ -1551,6 +1588,7 @@ pub fn run() -> Result<(), slint::PlatformError> {
 
     bind_callbacks(&ui, &state);
     cad::bind(&ui, &state);
+    flow_setup::bind(&ui, &state);
     let timer = Timer::default();
     let weak_ui = ui.as_weak();
     let poll_state = state.clone();
@@ -1569,7 +1607,16 @@ pub fn run() -> Result<(), slint::PlatformError> {
             state.push_update(update);
             changed = true;
         }
+        let mesh_before = state.workbench.mesh().map(|mesh| mesh.mesh.id());
+        let patch_before = state.patch_names.get(ui.get_patch_index().max(0) as usize).cloned();
         if state.drain_workbench_jobs() {
+            if mesh_before != state.workbench.mesh().map(|mesh| mesh.mesh.id()) {
+                let index = patch_before.as_ref().and_then(|name| state.patch_names.iter().position(|patch| patch == name)).unwrap_or(0);
+                ui.set_patch_index(index as i32);
+                if let Some(patch) = state.patch_names.get(index) {
+                    push_boundary_fields(&ui, &state.workbench, patch);
+                }
+            }
             changed = true;
         }
         match state.autosave_workbench_if_needed() {
@@ -1719,11 +1766,45 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
             1 => GeometryTool::Line,
             2 => GeometryTool::Rectangle,
             3 => GeometryTool::Circle,
+            4 => GeometryTool::Trim,
+            5 => GeometryTool::Extend,
+            6 => GeometryTool::Split,
             _ => GeometryTool::Select,
         });
         let active_tool = state.geometry_editor.active_tool;
         state.log(format!("Geometry tool: {:?}.", active_tool));
         refresh_ui(&ui, &state);
+    });
+    let weak_ui = ui.as_weak();
+    let editor_state = state.clone();
+    ui.on_geometry_line_context(move |x, y, w, h| {
+        let Some(ui) = weak_ui.upgrade() else {
+            return false;
+        };
+        let Some(p) = preview_image_point(x, y, w, h) else {
+            return false;
+        };
+        let mut state = editor_state.borrow_mut();
+        if state.face_sketch_host.is_some()
+            || sketch_edit::valid(&state).is_some()
+            || state.cad_job.is_some()
+            || state.cad_preview.is_some()
+            || ui.get_cad_measure_active()
+        {
+            return false;
+        }
+        let geometry = state.workbench.geometry().clone();
+        if !state.geometry_editor.select_open_line_at(&geometry, p) {
+            return false;
+        }
+        state.wb_selected_targets = state.geometry_editor.selection.clone();
+        state.selected_tree = state
+            .wb_selected_targets
+            .first()
+            .and_then(|target| tree_selection_for_target(*target));
+        rebuild_tree_rows(&mut state);
+        refresh_ui(&ui, &state);
+        true
     });
     let weak_ui = ui.as_weak();
     let editor_state = state.clone();
@@ -1798,6 +1879,8 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
             let point = face_sketch_point(&state, p);
             match face_sketch_click(&mut state, point) {
                 Ok(Some(message)) => {
+                    state.show_geometry_3d=true;
+                    state.show_mesh=false;
                     state.log(message);
                     ui.set_geometry_cad_view_3d(true);
                     rebuild_tree_rows(&mut state);
@@ -1811,11 +1894,16 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
             refresh_ui(&ui, &state);
             return;
         }
+        let old_faces=state.workbench.geometry().faces().map(|f|f.id).collect::<BTreeSet<_>>();
         let mut editor = std::mem::take(&mut state.geometry_editor);
         let result = editor.click(state.workbench.geometry_mut(), p, additive);
         state.geometry_editor = editor;
         match result {
             Ok(true) => {
+                let regions=state.workbench.geometry().faces().filter(|f|!old_faces.contains(&f.id)).map(|f|f.id).collect::<Vec<_>>();
+                for face in regions {
+                    if let Err(e)=state.workbench.geometry_mut().cad_register_xy_region(face){state.log(format!("Sketch registration: {e}"));}
+                }
                 state.workbench.geometry_changed();
                 state.mark_workbench_dirty();
                 state.wb_selected_targets = state.geometry_editor.selection.clone();
@@ -1838,6 +1926,7 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
                 state.log(format!("Geometry edit rejected: {error}"));
             }
         }
+        cad_profiles::consume(&ui,&mut state);
         rebuild_tree_rows(&mut state);
         refresh_ui(&ui, &state);
     });
@@ -1928,7 +2017,7 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
         let mut state = editor_state.borrow_mut();
         if sketch_edit::valid(&state).is_some() {
             if action == 0 {
-                sketch_edit::cancel(&ui, &mut state);
+                cad_properties::close(&ui, &mut state);
             } else if matches!(action, 6 | 7) {
                 sketch_edit::undo(&ui, &mut state, action == 7);
             } else if action == 5 {
@@ -1945,11 +2034,7 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
 
         if state.face_sketch_host.is_some() {
             if action == 0 {
-                state.face_sketch_host = None;
-                state.face_sketch_start = None;
-                state.face_sketch_cursor = None;
-                state.geometry_editor.cancel();
-                ui.set_geometry_cad_view_3d(true);
+                cad_properties::close(&ui, &mut state);
                 state.log("Face sketch cancelled.");
             } else if matches!(action, 2 | 3) {
                 state.geometry_editor.set_tool(if action == 3 {
@@ -1970,6 +2055,9 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
             1 => state.geometry_editor.set_tool(GeometryTool::Line),
             2 => state.geometry_editor.set_tool(GeometryTool::Rectangle),
             3 => state.geometry_editor.set_tool(GeometryTool::Circle),
+            9 => state.geometry_editor.set_tool(GeometryTool::Trim),
+            10 => state.geometry_editor.set_tool(GeometryTool::Extend),
+            11 => state.geometry_editor.set_tool(GeometryTool::Split),
             4 => delete_editor_selection(&mut state),
             5 => {
                 let geometry = state.workbench.geometry().clone();
@@ -2265,6 +2353,8 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
         }
         match begin_face_sketch(&mut state) {
             Ok(message) => {
+                state.show_geometry_3d=false;
+                state.show_mesh=false;
                 ui.set_geometry_cad_view_3d(false);
                 state.log(message);
             }
@@ -3335,8 +3425,9 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
                     state.geometry_editor.selection = vec![target];
                     state.selected_tree = tree_selection_for_target(target);
                     reveal_tree_target(&mut state, target);
+                    cad_profiles::consume(&ui,&mut state);
                     ui.set_inspector_mode(0);
-                    if state.current_step == 0 { ui.set_geometry_sidebar_tab(2); }
+                    if state.current_step == 0 && !ui.get_cad_task_open() { ui.set_geometry_sidebar_tab(2); }
                     state.log(format!("Selected {target:?} from the 3D view."));
                     rebuild_tree_rows(&mut state);
                     refresh_ui(&ui, &state);
@@ -3572,17 +3663,20 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
                 );
                 refresh_ui(&ui, &state);
             }
-            TREE_KIND_BODY | TREE_KIND_FACE | TREE_KIND_EDGE | TREE_KIND_VERTEX => {
-                if let Some(target) = find_geometry_target(&state.workbench, row.kind, row.payload)
+            TREE_KIND_BODY | TREE_KIND_FACE | TREE_KIND_EDGE | TREE_KIND_VERTEX | TREE_KIND_HISTORY_FEATURE => {
+                if let Some(target) = find_geometry_target(&state.workbench, if row.kind==TREE_KIND_HISTORY_FEATURE{TREE_KIND_BODY}else{row.kind}, row.payload)
                 {
                     select_tree_geometry_target(&mut state, target, additive);
+                    if row.kind==TREE_KIND_HISTORY_FEATURE{state.selected_tree=Some(TreeSelection{kind:row.kind,payload:row.payload});}
                 }
+                if row.kind==TREE_KIND_HISTORY_FEATURE && !ui.get_cad_task_open(){ui.set_geometry_sidebar_tab(2);}
+                cad_profiles::consume(&ui,&mut state);
                 ui.set_inspector_mode(0);
                 rebuild_tree_rows(&mut state);
                 refresh_ui(&ui, &state);
             }
-            TREE_KIND_SKETCH | TREE_KIND_EXTRUDE_FEATURE => {
-                let target = if row.kind == TREE_KIND_SKETCH {
+            TREE_KIND_SKETCH | TREE_KIND_REGION | TREE_KIND_EXTRUDE_FEATURE => {
+                let target = if matches!(row.kind,TREE_KIND_SKETCH|TREE_KIND_REGION) {
                     state
                         .workbench
                         .geometry()
@@ -3613,8 +3707,10 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
                     kind: row.kind,
                     payload: row.payload,
                 });
+                if !ui.get_cad_task_open(){ui.set_geometry_sidebar_tab(2);}
                 ui.set_inspector_mode(0);
                 rebuild_tree_rows(&mut state);
+                cad_profiles::consume(&ui,&mut state);
                 refresh_ui(&ui, &state);
             }
             TREE_KIND_NAMED_SELECTION => {
@@ -3975,28 +4071,18 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
             state.log("Generate a mesh before assigning boundary conditions.");
             return;
         };
-        let condition = match ui.get_bc_kind_index() {
-            0 => IncompressibleBoundaryCondition::NoSlipWall,
-            1 => IncompressibleBoundaryCondition::MovingWall {
-                velocity: Vec3::new(
-                    parse_number(ui.get_bc_value_x().as_str(), 0.0),
-                    parse_number(ui.get_bc_value_y().as_str(), 0.0),
-                    parse_number(ui.get_bc_value_z().as_str(), 0.0),
-                ),
-            },
-            2 => IncompressibleBoundaryCondition::VelocityInlet {
-                velocity: Vec3::new(
-                    parse_number(ui.get_bc_value_x().as_str(), 0.0),
-                    parse_number(ui.get_bc_value_y().as_str(), 0.0),
-                    parse_number(ui.get_bc_value_z().as_str(), 0.0),
-                ),
-            },
-            _ => IncompressibleBoundaryCondition::PressureOutlet {
-                pressure: parse_number(ui.get_bc_pressure().as_str(), 0.0),
-            },
+        let condition = match flow_setup::boundary_condition(&ui) {
+            Ok(condition) => condition,
+            Err(error) => {
+                ui.set_wb_flow_feedback(SharedString::from(&error));
+                state.log(error);
+                refresh_ui(&ui, &state);
+                return;
+            }
         };
         match state.workbench.assign_boundary(&patch, condition) {
             Ok(()) => {
+                ui.set_wb_flow_feedback(SharedString::from(format!("Boundary {patch:?} assigned.")));
                 state.mark_workbench_dirty();
                 state.log(format!(
                     "Assigned {:?} to patch '{patch}'.",
@@ -4355,6 +4441,7 @@ fn select_tree_geometry_target(
         .last()
         .copied()
         .and_then(tree_selection_for_target);
+    if state.current_step==0 {cad_tree::reveal(state,target);}
 }
 
 fn apply_workflow_step(ui: &MainWindow, state: &mut AppState, step: i32) {
@@ -4389,6 +4476,7 @@ fn apply_workflow_step(ui: &MainWindow, state: &mut AppState, step: i32) {
 
 /// Rebuilds the Rust-side project tree rows from the session state.
 fn rebuild_tree_rows(state: &mut AppState) {
+    state.patch_names = state.workbench.patch_names();
     let bodies: Vec<u64> = state
         .workbench
         .geometry()
@@ -4413,12 +4501,9 @@ fn rebuild_tree_rows(state: &mut AppState) {
         .edges()
         .map(|edge| edge.id.get())
         .collect();
-    let sketches: Vec<u64> = state
-        .workbench
-        .geometry()
-        .sketches()
-        .map(|sketch| sketch.id.get())
-        .collect();
+    let mut sketch_records=state.workbench.geometry().sketches().collect::<Vec<_>>();
+    sketch_records.sort_by_key(|s|(s.region_owner.unwrap_or(s.id),s.region_owner.is_some(),s.id));
+    let sketches:Vec<u64>=sketch_records.iter().map(|s|s.id.get()).collect();
     let extrude_features: Vec<(u64, u64)> = state
         .workbench
         .geometry()
@@ -4479,6 +4564,15 @@ fn rebuild_tree_rows(state: &mut AppState) {
         state.selected_tree,
     );
     for row in &mut state.tree_rows {
+        if row.kind==TREE_KIND_INERT && row.payload==TREE_GROUP_SKETCHES {
+            row.note=format!("{} sketches · {} regions",state.workbench.geometry().sketches().filter(|s|s.region_owner.is_none()).count(),state.workbench.geometry().sketches().count());
+        }
+        if row.kind==TREE_KIND_SKETCH {
+            if let Some(s)=state.workbench.geometry().sketches().find(|s|s.id.get()==row.payload as u64){
+                if let Some(owner)=s.region_owner {row.depth=3;row.label=format!("Region {}",s.id.get());row.note=format!("Sketch {} · shared plane",owner.get());}
+                else {row.note=format!("{} region(s) · {} DOF in primary region",state.workbench.geometry().cad_sketch_region_count(s.id),state.workbench.geometry().cad_sketch_degrees_of_freedom(s.id).unwrap_or(0));}
+            }
+        }
         if row.kind == TREE_KIND_EXTRUDE_FEATURE {
             if let Some(f) = state
                 .workbench
@@ -4516,13 +4610,14 @@ fn rebuild_tree_rows(state: &mut AppState) {
             }
         }
     }
+    cad_tree::rebuild(state);
 }
 
 fn toggle_tree_group(state: &mut AppState, index: usize) {
     let Some(row) = state.tree_rows.get(index) else {
         return;
     };
-    if !matches!(row.kind, TREE_KIND_STAGE | TREE_KIND_INERT)
+    if !matches!(row.kind, TREE_KIND_STAGE | TREE_KIND_INERT | TREE_KIND_SKETCH | TREE_KIND_BODY | TREE_KIND_HISTORY_FEATURE)
         || !state
             .tree_rows
             .get(index + 1)
@@ -4544,6 +4639,7 @@ fn reveal_tree_target(state: &mut AppState, target: GeometrySelectionTarget) {
         GeometrySelectionTarget::Vertex(_) => TREE_GROUP_VERTICES,
     };
     state.collapsed_tree_groups.remove(&(TREE_KIND_STAGE, 0));
+    state.collapsed_tree_groups.remove(&(TREE_KIND_INERT,TREE_GROUP_TOPOLOGY));
     state
         .collapsed_tree_groups
         .remove(&(TREE_KIND_INERT, section));
@@ -4567,6 +4663,7 @@ fn visible_project_tree_rows(
             .is_some_and(|next| next.depth > row.depth);
         let expanded = !collapsed.contains(&(row.kind, row.payload));
         visible.push(ProjectTreeRow {
+            icon_code:row.icon,
             index: index as i32,
             depth: row.depth as i32,
             label: SharedString::from(row.label.as_str()),
@@ -4680,6 +4777,7 @@ fn geometry_target_inspector(
         GeometrySelectionTarget::Edge(id) => topology.edge(id).map_or_else(
             || format!("Edge {} (deleted)", id.get()),
             |edge| match edge.geometry {
+                flursys::EdgeGeometry::Kernel {id,..} => topology.cad_edge(id).map_or_else(||"Missing kernel curve".into(),|e|format!("Edge {} · B-rep curve\nLength ≈ {:.6} (numerical integration)\n{} adjacent faces",id.get(),e.length,e.faces.len())),
                 flursys::EdgeGeometry::Line { start, end } => {
                     let length = topology
                         .vertex(start)
@@ -4733,7 +4831,8 @@ fn canonical_design_inspector(
     selection: TreeSelection,
 ) -> Option<String> {
     match selection.kind {
-        TREE_KIND_SKETCH => topology
+        TREE_KIND_HISTORY_FEATURE=>cad_tree::details(topology,selection.payload as u64),
+        TREE_KIND_SKETCH | TREE_KIND_REGION => topology
             .sketches()
             .find(|sketch| sketch.id.get() == selection.payload as u64)
             .map(|sketch| {
@@ -4858,6 +4957,7 @@ fn push_workbench_defaults(ui: &MainWindow, session: &WorkbenchSession) {
         material.kinematic_viscosity
     )));
     let solver = session.solver_options();
+    ui.set_wb_coupling_tolerance(SharedString::from(format!("{:e}", solver.coupling_relative_tolerance)));
     ui.set_wb_max_iterations(solver.max_outer_iterations as i32);
     ui.set_wb_velocity_relaxation(SharedString::from(format!(
         "{}",
@@ -4913,6 +5013,7 @@ fn set_velocity_fields(ui: &MainWindow, velocity: Vec3) {
 
 /// Validates the material/SIMPLE panel inputs against the session.
 fn sync_solver_panel(ui: &MainWindow, session: &mut WorkbenchSession) -> Result<(), String> {
+    session.set_coupling_tolerance(parse_number(ui.get_wb_coupling_tolerance().as_str(), f64::NAN)).map_err(|e| e.to_string())?;
     let density = parse_number(ui.get_material_density().as_str(), f64::NAN);
     let viscosity = parse_number(ui.get_material_viscosity().as_str(), f64::NAN);
     session
@@ -4999,11 +5100,13 @@ fn solution_summary_text(session: &WorkbenchSession) -> String {
                 })
                 .collect();
             format!(
-                "status      {}\niterations  {}\ninitial ω   {:.3e}\nfinal ω     {:.3e}\ninflow      {:.5}\noutflow     {:.5}\nnet flux    {:+.3e}\n{}",
+                "status      {}\niterations  {}\ninitial ω   {:.3e}\nfinal ω     {:.3e}\nmomentum rel {:.3e}\nvelocity Δrel {:.3e}\ninflow      {:.5}\noutflow     {:.5}\nnet flux    {:+.3e}\n{}",
                 status_label(session),
                 report.outer_iterations,
                 report.initial_continuity_rms,
                 report.final_continuity_rms,
+                report.simple.final_momentum_relative_residual,
+                report.simple.final_velocity_relative_change,
                 report.total_inflow.abs(),
                 report.total_outflow,
                 report.net_boundary_flux,
@@ -5259,6 +5362,7 @@ fn recent_project_labels(state: &AppState) -> Vec<SharedString> {
 }
 
 fn refresh_ui(ui: &MainWindow, state: &AppState) {
+    flow_setup::refresh(ui, state);
     cad::refresh(ui, state);
     ui.set_project_loaded(state.project_loaded);
     let recent_labels = recent_project_labels(state);
@@ -5544,6 +5648,9 @@ fn refresh_ui(ui: &MainWindow, state: &AppState) {
         GeometryTool::Line => 1,
         GeometryTool::Rectangle => 2,
         GeometryTool::Circle => 3,
+        GeometryTool::Trim => 4,
+        GeometryTool::Extend => 5,
+        GeometryTool::Split => 6,
     });
     ui.set_geometry_snap(state.geometry_editor.snap_enabled);
     ui.set_geometry_grid(state.geometry_editor.grid_enabled);
@@ -5633,6 +5740,9 @@ fn refresh_ui(ui: &MainWindow, state: &AppState) {
                 GeometryTool::Circle => {
                     "CIRCLE · click centre then radius · inside a face creates a hole".to_string()
                 }
+                GeometryTool::Trim => "TRIM · click the section to remove between crossing lines · open XY lines · Esc exits".to_string(),
+                GeometryTool::Extend => "EXTEND · click near an endpoint to reach the next crossing line · open XY lines · Esc exits".to_string(),
+                GeometryTool::Split => "SPLIT · click inside a line · snaps to nearby line intersections · open XY lines · Esc exits".to_string(),
             }
         },
     ));
@@ -5778,6 +5888,7 @@ fn refresh_ui(ui: &MainWindow, state: &AppState) {
             state.geometry_yaw,
             state.geometry_pitch,
             state.geometry_zoom,
+            state.geometry_pick_mode,
             selected_target,
             hovered_target,
         ));
@@ -6538,6 +6649,18 @@ mod tests {
             .click(state.workbench.geometry_mut(), (310.0, 100.0), false)
             .unwrap());
         assert_eq!(state.workbench.geometry().faces().count(), 1);
+    }
+
+    #[test]
+    fn line_editing_tools_wait_for_release_instead_of_starting_a_drawing_stroke() {
+        let mut state = AppState::new();
+        let before = serde_json::to_value(state.workbench.geometry()).unwrap();
+        for tool in [GeometryTool::Trim, GeometryTool::Extend, GeometryTool::Split] {
+            state.geometry_editor.set_tool(tool);
+            assert!(!begin_geometry_stroke(&mut state, (200.0, 210.0)).unwrap());
+            assert!(!state.geometry_editor.has_start());
+            assert_eq!(serde_json::to_value(state.workbench.geometry()).unwrap(), before);
+        }
     }
 
     #[test]

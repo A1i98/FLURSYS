@@ -3,7 +3,7 @@
 use super::*;
 use flursys::{CadSketchId, CadSketchProfile, GeometryTopology};
 
-type Parameters = (f64, f64, CadSketchProfile);
+type Parameters = (f64, f64, CadSketchProfile,flursys::CadSketchConstraints);
 
 pub(super) struct SketchEdit {
     id: CadSketchId,
@@ -15,6 +15,7 @@ pub(super) struct SketchEdit {
     x: f64,
     y: f64,
     profile: CadSketchProfile,
+    constraints: flursys::CadSketchConstraints,
     handle: Option<usize>,
     drag_start: Option<Parameters>,
     undo: Vec<Parameters>,
@@ -22,7 +23,7 @@ pub(super) struct SketchEdit {
 }
 
 fn parameters(d: &SketchEdit) -> Parameters {
-    (d.x, d.y, d.profile.clone())
+    (d.x, d.y, d.profile.clone(),d.constraints.clone())
 }
 fn remember(d: &mut SketchEdit, before: Parameters) {
     if before != parameters(d) {
@@ -49,7 +50,7 @@ pub(super) fn undo(ui: &MainWindow, state: &mut AppState, redo: bool) -> bool {
     let d = state.sketch_edit.as_mut().unwrap();
     finish_drag(d);
     let item = if redo { d.redo.pop() } else { d.undo.pop() };
-    if let Some((x, y, profile)) = item {
+    if let Some((x, y, profile,constraints)) = item {
         let current = parameters(d);
         if redo {
             d.undo.push(current);
@@ -58,7 +59,7 @@ pub(super) fn undo(ui: &MainWindow, state: &mut AppState, redo: bool) -> bool {
         }
         d.x = x;
         d.y = y;
-        d.profile = profile;
+        d.profile = profile;d.constraints=constraints;
         sync_parameters(ui, d);
     }
     true
@@ -92,6 +93,7 @@ pub(super) fn begin(ui: &MainWindow, state: &mut AppState) -> Result<String, Str
         .nth(ui.get_cad_sketch_index().max(0) as usize)
         .ok_or("Select a sketch")?;
     let (x, y, profile) = g.cad_sketch_parameters(s.id).map_err(|e| e.to_string())?;
+    super::cad_constraints::load(ui,g,s.id);ui.set_cad_region_owner("".into());
     let (w, h) = match profile {
         CadSketchProfile::Circle { radius } => (radius * 2.0, radius * 2.0),
         CadSketchProfile::Rectangle { width, height } => (width, height),
@@ -100,7 +102,7 @@ pub(super) fn begin(ui: &MainWindow, state: &mut AppState) -> Result<String, Str
         CadSketchProfile::Circle { radius } => (x - radius, y - radius, x + radius, y + radius),
         _ => (x, y, x + w, y + h),
     };
-    let draft = SketchEdit {
+    let mut draft = SketchEdit {
         id: s.id,
         source: g.clone(),
         workspace: state.workspace_path.clone(),
@@ -110,6 +112,7 @@ pub(super) fn begin(ui: &MainWindow, state: &mut AppState) -> Result<String, Str
         x,
         y,
         profile,
+        constraints:s.constraints.clone(),
         handle: None,
         drag_start: None,
         undo: Vec::new(),
@@ -125,6 +128,7 @@ pub(super) fn begin(ui: &MainWindow, state: &mut AppState) -> Result<String, Str
     state.show_mesh = false;
     ui.set_geometry_cad_view_3d(false);
     ui.set_cad_measure_active(false);
+    ui.set_cad_sketch_offset(super::cad_units::display_length(ui,draft.source.sketch(draft.id).unwrap().attachment_offset));
     ui.set_cad_edit_sketch_id(draft.id.get() as i32);
     ui.set_cad_sketch_kind(
         if matches!(draft.profile, CadSketchProfile::Circle { .. }) {
@@ -139,8 +143,10 @@ pub(super) fn begin(ui: &MainWindow, state: &mut AppState) -> Result<String, Str
         CadSketchPlane::Zx => 2,
         CadSketchPlane::Face => 3,
     });
-    ui.set_cad_sketch_editing(true);
-    sync_parameters(ui, &draft);
+    ui.set_cad_edit_body_id("".into());ui.set_cad_sketch_host("".into());
+    ui.set_cad_sketch_editing(true);ui.set_cad_task_open(true);ui.set_geometry_sidebar_tab(0);
+    ui.set_cad_workbench(0);ui.set_cad_operation(212);ui.set_cad_task_title("Edit sketch".into());
+    sync_parameters(ui, &mut draft);
     state.sketch_edit = Some(draft);
     Ok("Drag the origin handle to move, or resize using the other handles. Preview rebuilds the solids; Cancel preserves the source model.".into())
 }
@@ -167,14 +173,20 @@ fn handles(d: &SketchEdit) -> Vec<(f64, f64)> {
     }
 }
 
-fn sync_parameters(ui: &MainWindow, d: &SketchEdit) {
-    ui.set_cad_pos_x(d.x.to_string().into());
-    ui.set_cad_pos_y(d.y.to_string().into());
+fn sync_parameters(ui: &MainWindow, d: &mut SketchEdit) {
+    if let Ok((x,y,profile))=d.source.cad_resolve_sketch_parameters_using(d.id,d.x,d.y,d.profile.clone(),Some(&d.constraints)) {
+        d.x=x;d.y=y;d.profile=profile;
+    }
+    super::cad_constraints::show(ui,&d.constraints);
+    let dof=d.source.cad_sketch_degrees_of_freedom_using(d.id,Some(&d.constraints)).unwrap_or(0);
+    ui.set_cad_constraint_status(format!("{dof} DOF · {}",if dof==0{"fully constrained"}else{"under constrained"}).into());
+    ui.set_cad_pos_x(super::cad_units::display_length(ui,d.x));
+    ui.set_cad_pos_y(super::cad_units::display_length(ui,d.y));
     match d.profile {
-        CadSketchProfile::Circle { radius } => ui.set_cad_size_x(radius.to_string().into()),
+        CadSketchProfile::Circle { radius } => ui.set_cad_size_x(super::cad_units::display_length(ui,radius)),
         CadSketchProfile::Rectangle { width, height } => {
-            ui.set_cad_size_x(width.to_string().into());
-            ui.set_cad_size_y(height.to_string().into());
+            ui.set_cad_size_x(super::cad_units::display_length(ui,width));
+            ui.set_cad_size_y(super::cad_units::display_length(ui,height));
         }
     }
 }
@@ -232,11 +244,11 @@ pub(super) fn bind(ui: &MainWindow, shared: &Rc<RefCell<AppState>>) {
             } else {
                 d.profile = match d.profile {
                     CadSketchProfile::Circle { .. } => CadSketchProfile::Circle {
-                        radius: (x - d.x).hypot(y - d.y).max(minimum),
+                        radius: (x - d.x).hypot(if d.constraints.centered {2.0*y.abs()}else{y-d.y}).max(minimum),
                     },
                     CadSketchProfile::Rectangle { width, height } => CadSketchProfile::Rectangle {
                         width: if handle == 1 || handle == 2 {
-                            (x - d.x).max(minimum)
+                            (if d.constraints.centered {2.0*x.abs()}else{x-d.x}).max(minimum)
                         } else {
                             width
                         },
@@ -263,7 +275,7 @@ pub(super) fn bind(ui: &MainWindow, shared: &Rc<RefCell<AppState>>) {
         if valid(&state).is_none() || state.cad_job.is_some() || cad::preview(&state).is_some() {
             return;
         }
-        let parse = |s: SharedString| s.trim().parse::<f64>().ok().filter(|v| v.is_finite());
+        let parse = |s: SharedString| super::cad_units::length(&ui,s,"Sketch dimension").ok();
         let Some((x, y, a)) = parse(ui.get_cad_pos_x())
             .zip(parse(ui.get_cad_pos_y()))
             .zip(parse(ui.get_cad_size_x()))
@@ -282,10 +294,12 @@ pub(super) fn bind(ui: &MainWindow, shared: &Rc<RefCell<AppState>>) {
                 CadSketchProfile::Rectangle { width: a, height }
             }
         };
+        let constraints=super::cad_constraints::read(&ui,x,y,a,match &profile{CadSketchProfile::Rectangle{height,..}=>*height,_=>0.0});
+        let resolved=d.source.cad_resolve_sketch_parameters_using(d.id,x,y,profile,Some(&constraints));
+        let (x,y,profile)=match resolved {Ok(v)=>v,Err(e)=>{ui.set_cad_feedback(e.to_string().into());return;}};
         let before = parameters(d);
-        d.x = x;
-        d.y = y;
-        d.profile = profile;
+        d.x=x;d.y=y;d.profile=profile;d.constraints=constraints;
+        sync_parameters(&ui,d);
         remember(d, before);
         refresh_ui(&ui, &state);
     });
@@ -301,7 +315,7 @@ pub(super) fn refresh(ui: &MainWindow, state: &AppState) {
             CadSketchProfile::Circle { radius } => {
                 let p = project((d.x + radius * 0.5, d.y));
                 dimensions.push(SketchDimension {
-                    text: format!("R {:.4}", radius).into(),
+                    text: format!("R {} {}", super::cad_units::display_length(ui,radius), super::cad_units::length_symbol(ui)).into(),
                     x: p.0 as f32,
                     y: (p.1 - 16.0) as f32,
                 });
@@ -310,12 +324,12 @@ pub(super) fn refresh(ui: &MainWindow, state: &AppState) {
                 let a = project((d.x + width * 0.5, d.y));
                 let b = project((d.x + width, d.y + height * 0.5));
                 dimensions.push(SketchDimension {
-                    text: format!("W {:.4}", width).into(),
+                    text: format!("W {} {}", super::cad_units::display_length(ui,width), super::cad_units::length_symbol(ui)).into(),
                     x: a.0 as f32,
                     y: (a.1 + 30.0) as f32,
                 });
                 dimensions.push(SketchDimension {
-                    text: format!("H {:.4}", height).into(),
+                    text: format!("H {} {}", super::cad_units::display_length(ui,height), super::cad_units::length_symbol(ui)).into(),
                     x: (b.0 + 40.0) as f32,
                     y: b.1 as f32,
                 });
@@ -339,27 +353,8 @@ pub(super) fn refresh(ui: &MainWindow, state: &AppState) {
             }
             .into(),
         );
-        ui.set_cad_sketch_edit_status(
-            match d.profile {
-                CadSketchProfile::Circle { radius } => format!(
-                    "Sketch {} · R {:.5} · Ø {:.5} · center ({:.5}, {:.5})",
-                    d.id.get(),
-                    radius,
-                    radius * 2.0,
-                    d.x,
-                    d.y
-                ),
-                CadSketchProfile::Rectangle { width, height } => format!(
-                    "Sketch {} · width {:.5} · height {:.5} · origin ({:.5}, {:.5})",
-                    d.id.get(),
-                    width,
-                    height,
-                    d.x,
-                    d.y
-                ),
-            }
-            .into(),
-        );
+        ui.set_cad_sketch_edit_status(format!("Sketch {} · {} DOF", d.id.get(),
+            d.source.cad_sketch_degrees_of_freedom_using(d.id,Some(&d.constraints)).unwrap_or(0)).into());
     }
 }
 

@@ -874,6 +874,7 @@ pub(super) fn render_canonical_geometry_3d(
     yaw: f32,
     pitch: f32,
     zoom: f32,
+    pick_mode: i32,
     selected_target: Option<GeometrySelectionTarget>,
     hovered_target: Option<GeometrySelectionTarget>,
 ) -> Image {
@@ -1045,6 +1046,25 @@ pub(super) fn render_canonical_geometry_3d(
             }
         }
     }
+    // Exact topological boundaries, independent of triangle edges. Visibility
+    // follows the same depth buffer as the shaded solid.
+    for (_,body) in topology.cad_bodies().filter(|(_,b)|b.visible) {
+        for edge in body.edges.iter() {
+            draw_cad_curve(&mut pixels,&cad_depth,width,height,&camera,&edge.path,[62,105,121,255]);
+        }
+    }
+    if pick_mode==2 {
+        for (_,body) in topology.cad_bodies().filter(|(_,b)|b.visible) {
+            for vertex in body.vertices.iter() {
+                let Some(v)=topology.vertex(vertex.id) else {continue;};
+                let (x,y)=camera.project(v.position);
+                if x<0||y<0||x>=width as i32||y>=height as i32 {continue;}
+                if camera.depth(&[v.position])<=cad_depth[y as usize*width as usize+x as usize]+2.0/camera.scale {
+                    draw_ellipse(&mut pixels,width,height,(x,y),3,3,[104,222,237,255]);
+                }
+            }
+        }
+    }
     // Entity picks use the same stable IDs and camera as the geometry tree.
     for (target, color) in [
         (hovered_target, [142, 232, 176, 255]),
@@ -1054,6 +1074,10 @@ pub(super) fn render_canonical_geometry_3d(
             Some(GeometrySelectionTarget::Vertex(id)) => {
                 if let Some(vertex) = topology.vertex(id) {
                     let center = camera.project(vertex.position);
+                    if topology.cad_vertex_owner(id).is_some() {
+                        if center.0<0 || center.1<0 || center.0>=width as i32 || center.1>=height as i32 {continue;}
+                        if camera.depth(&[vertex.position])>cad_depth[center.1 as usize*width as usize+center.0 as usize]+2.0/camera.scale {continue;}
+                    }
                     draw_ellipse(&mut pixels, width, height, center, 6, 6, color);
                     draw_marker(&mut pixels, width, height, center, color);
                 }
@@ -1063,6 +1087,10 @@ pub(super) fn render_canonical_geometry_3d(
                     .edge(id)
                     .and_then(|edge| canonical_edge_path(topology, &edge.geometry))
                 {
+                    if topology.cad_edge(id).is_some() {
+                        draw_cad_curve(&mut pixels,&cad_depth,width,height,&camera,&path,color);
+                        continue;
+                    }
                     for segment in path.windows(2) {
                         let (a, b) = (camera.project(segment[0]), camera.project(segment[1]));
                         for offset in -1..=1 {
@@ -1083,6 +1111,33 @@ pub(super) fn render_canonical_geometry_3d(
     }
 
     image_from_rgba(width, height, pixels)
+}
+
+fn draw_cad_curve(pixels:&mut [u8],depth:&[f64],width:u32,height:u32,camera:&CanonicalCamera,path:&[Vec3],color:[u8;4]) {
+    for segment in path.windows(2) {
+        let (a,b)=(camera.project(segment[0]),camera.project(segment[1]));
+        let (ax,ay)=(a.0 as f64,a.1 as f64);
+        let (dx,dy)=(b.0 as f64-ax,b.1 as f64-ay);
+        let (mut lo,mut hi)=(0.0f64,1.0f64);
+        let mut visible=true;
+        for (p,q) in [(-dx,ax),(dx,width as f64-1.0-ax),(-dy,ay),(dy,height as f64-1.0-ay)] {
+            if p==0.0 {if q<0.0 {visible=false;break;}}
+            else {let t=q/p;if p<0.0 {lo=lo.max(t);}else{hi=hi.min(t);}}
+        }
+        if !visible || lo>hi {continue;}
+        let steps=(dx.abs().max(dy.abs())*(hi-lo)).ceil().max(1.0) as usize;
+        let za=camera.depth(&segment[..1]);
+        let zb=camera.depth(&segment[1..]);
+        for i in 0..=steps {
+            let t=lo+(hi-lo)*i as f64/steps as f64;
+            let (x,y)=((ax+dx*t).round() as i32,(ay+dy*t).round() as i32);
+            if x<0||y<0||x>=width as i32||y>=height as i32 {continue;}
+            let index=y as usize*width as usize+x as usize;
+            if za+(zb-za)*t<=depth[index]+2.0/camera.scale {
+                pixels[index*4..index*4+4].copy_from_slice(&color);
+            }
+        }
+    }
 }
 
 /// Builds the orthographic canonical CAD ray for a viewport point using the
@@ -1207,10 +1262,10 @@ pub(super) fn pick_canonical_geometry_target(
                 let distance =
                     (point.0 - f64::from(position.0)).hypot(point.1 - f64::from(position.1));
                 (distance <= 9.0 && visible(vertex.position))
-                    .then_some((distance, GeometrySelectionTarget::Vertex(vertex.id)))
+                    .then_some((distance,(vertex.position-ray.origin).dot(ray.direction), GeometrySelectionTarget::Vertex(vertex.id)))
             })
-            .min_by(|a, b| a.0.total_cmp(&b.0))
-            .map(|(_, target)| target);
+            .min_by(|a, b| a.0.total_cmp(&b.0).then_with(||a.1.total_cmp(&b.1)))
+            .map(|(_, _, target)| target);
     }
     if mode != 1 {
         return None;
@@ -1223,8 +1278,8 @@ pub(super) fn pick_canonical_geometry_target(
             path.windows(2)
                 .filter_map(|segment| {
                     let (a, b) = (camera.project(segment[0]), camera.project(segment[1]));
-                    let dx = f64::from(b.0 - a.0);
-                    let dy = f64::from(b.1 - a.1);
+                    let dx = f64::from(b.0)-f64::from(a.0);
+                    let dy = f64::from(b.1)-f64::from(a.1);
                     let t = if dx == 0.0 && dy == 0.0 {
                         0.0
                     } else {
@@ -1238,13 +1293,13 @@ pub(super) fn pick_canonical_geometry_target(
                         (f64::from(a.0), f64::from(a.1)),
                         (f64::from(b.0), f64::from(b.1)),
                     );
-                    (distance <= 8.0 && visible(closest)).then_some(distance)
+                    (distance <= 8.0 && visible(closest)).then_some((distance,(closest-ray.origin).dot(ray.direction)))
                 })
-                .min_by(f64::total_cmp)
-                .map(|distance| (distance, GeometrySelectionTarget::Edge(edge.id)))
+                .min_by(|a,b|a.0.total_cmp(&b.0).then_with(||a.1.total_cmp(&b.1)))
+                .map(|(distance,depth)| (distance,depth, GeometrySelectionTarget::Edge(edge.id)))
         })
-        .min_by(|a, b| a.0.total_cmp(&b.0))
-        .map(|(_, target)| target)
+        .min_by(|a, b| a.0.total_cmp(&b.0).then_with(||a.1.total_cmp(&b.1)))
+        .map(|(_, _, target)| target)
 }
 
 fn canonical_edge_path(
@@ -1252,6 +1307,7 @@ fn canonical_edge_path(
     edge: &flursys::EdgeGeometry,
 ) -> Option<Vec<Vec3>> {
     match *edge {
+        flursys::EdgeGeometry::Kernel {id,..} => Some(topology.cad_edge(id)?.path.clone()),
         flursys::EdgeGeometry::Line { start, end } => Some(vec![
             topology.vertex(start)?.position,
             topology.vertex(end)?.position,
@@ -1768,6 +1824,7 @@ pub(super) fn render_geometry_editor(
     }
     for edge in topology.edges().filter(|e| topology.is_edge_visible(e.id)) {
         let in_sketch_plane = match edge.geometry {
+            flursys::EdgeGeometry::Kernel {..} => false,
             flursys::EdgeGeometry::Line { start, end } => [start, end].into_iter().all(|id| {
                 topology
                     .vertex(id)
@@ -1812,6 +1869,7 @@ pub(super) fn render_geometry_editor(
             [104, 222, 237, 255]
         };
         match edge.geometry {
+            flursys::EdgeGeometry::Kernel {..} => {},
             flursys::EdgeGeometry::Line { start, end } => {
                 if let (Some(a), Some(b)) = (topology.vertex(start), topology.vertex(end)) {
                     let a = to_screen((a.position.x, a.position.y));
@@ -1864,7 +1922,7 @@ pub(super) fn render_geometry_editor(
     }
     for vertex in topology
         .vertices()
-        .filter(|v| topology.is_vertex_visible(v.id))
+        .filter(|v| topology.is_vertex_visible(v.id) && topology.cad_vertex_owner(v.id).is_none())
     {
         if vertex.position.z.abs() > 1.0e-9 {
             continue;
