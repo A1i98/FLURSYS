@@ -32,7 +32,7 @@ required-features = ["gui"]
 
 [features]
 default = ["gui"]
-gui = ["dep:rfd", "dep:slint"]
+gui = ["dep:rfd", "dep:slint", "dep:png", "dep:gif"]
 gui-live-preview = ["gui", "slint/live-preview"]
 
 # Slint and its rendering dependencies make full debug info and incremental
@@ -52,6 +52,8 @@ codegen-units = 1
 panic = "unwind"
 
 [dependencies]
+png = { version = "0.18", optional = true }
+gif = { version = "0.14", optional = true }
 rayon = "1"
 rfd = { version = "0.17", optional = true }
 slint = { version = "1.17", optional = true }

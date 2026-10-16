@@ -1,0 +1,201 @@
+import {Button,ComboBox,LineEdit,SpinBox,Slider,ScrollView,ListView,TextEdit} from "std-widgets.slint";
+import {UiTheme,InteractiveGeometryPreview} from "components.slint";
+component Tool inherits Button {min-width:0px;min-height:30px;max-height:34px;}
+component Label inherits Text {color:UiTheme.text-muted;font-size:11px;wrap:word-wrap;}
+export component ResultsWorkspace inherits Rectangle {
+    in property <image> profile-image;
+    in property <string> profile-caption;
+    in property <string> balance;
+    in-out property <string> line-x0;
+    in-out property <string> line-y0;
+    in-out property <string> line-x1;
+    in-out property <string> line-y1;
+    in-out property <int> line-samples;
+    callback sample-line(int);
+    in property <image> preview;
+    in property <string> title;
+    in property <string> summary;
+    in property <string> legend;
+    in property <string> probe;
+    in property <string> statistics;
+    in property <string> log;
+    in property <string> feedback;
+    in property <string> export-status;
+    in property <bool> has-result;
+    in property <bool> is-3d;
+    in property <bool> playing;
+    in property <bool> export-busy;
+    in property <int> phase;
+    in property <int> probe-count;
+    in property <[string]> probes;
+    in property <[string]> runs;
+    in property <int> run-index;
+    in property <int> field-index;
+    in-out property <int> plot;
+    in-out property <int> palette;
+    in-out property <int> levels;
+    in-out property <string> range-min;
+    in-out property <string> range-max;
+    in-out property <int> vector-density;
+    in-out property <string> vector-scale;
+    in-out property <bool> edges;
+    in-out property <int> slice-axis;
+    in-out property <int> slice-percent;
+    in-out property <int> animation-mode;
+    in-out property <int> animation-rate;
+    in-out property <int> tab:0;
+    callback select-run(int);callback select-field(int);callback style();callback apply-range();callback auto-range();
+    callback action(int);callback export(int);callback export-cells();callback seek(float);callback select-probe(int);
+    callback pick(float,float,float,float);callback hover(float,float,float,float);
+    callback drag(float,float,float,float,float,float);callback drag-end();callback zoom(float);callback fit();
+    background:UiTheme.background;
+    VerticalLayout {
+        padding:12px;spacing:8px;
+        HorizontalLayout {
+            height:34px;spacing:8px;
+            Text {text:"05  Results";color:UiTheme.text;font-size:20px;font-weight:700;vertical-alignment:center;}
+            Rectangle {horizontal-stretch:1;}
+            Label {text:"RUN";vertical-alignment:center;}
+            ComboBox {model:root.runs;current-index:root.run-index;enabled:root.runs.length>0;min-width:0px;preferred-width:300px;selected(value)=>{root.select-run(self.current-index);}}
+        }
+        HorizontalLayout {
+            spacing:10px;
+            VerticalLayout {
+                spacing:7px;
+                HorizontalLayout {
+                    height:34px;spacing:6px;
+                    ComboBox {model:["Speed |U|","Pressure p/ρ","Velocity X","Velocity Y","Velocity Z","Vorticity |curl U|","Divergence div U"];min-width:0px;preferred-width:210px;enabled:root.has-result;
+                        current-index:root.field-index==1 ? 1 : root.field-index==4 ? 2 : root.field-index==5 ? 3 : root.field-index==6 ? 4 : root.field-index==2 ? 5 : root.field-index==7 ? 6 : 0;
+                        selected(value)=>{root.select-field([0,1,4,5,6,2,7][self.current-index]);}
+                    }
+                    Tool {text:"▦ Mesh / field";enabled:root.has-result;clicked=>{root.action(6);}}
+                    Rectangle {horizontal-stretch:1;}
+                    Tool {text:"⊡ Fit";enabled:root.has-result;clicked=>{root.fit();}}
+                    Tool {text:"PNG ↓";enabled:root.has-result;clicked=>{root.export(0);}}
+                }
+                Text {text:root.title;color:UiTheme.accent;font-size:11px;font-weight:700;overflow:elide;}
+                if root.tab!=4 : InteractiveGeometryPreview {
+                    vertical-stretch:1;preview-image:root.preview;
+                    help-text:root.is-3d ? "CLICK: PROBE · FIXED ISOMETRIC VIEW / SECTION" : "CLICK: PROBE · DRAG: PAN · WHEEL: ZOOM · DOUBLE CLICK: FIT";
+                    pick-boundary(x,y,w,h)=>{root.pick(x,y,w,h);}
+                    hover(x,y,w,h)=>{root.hover(x,y,w,h);}
+                    orbit(x,y,px,py)=>{root.drag(x,y,px,py,self.width/1px,self.height/1px);}
+                    orbit-end=>{root.drag-end();}zoom(delta)=>{root.zoom(delta);}reset-view=>{root.fit();}
+                }
+                if root.tab==4 : VerticalLayout {
+                    Image {source:root.profile-image;vertical-stretch:1;image-fit:contain;}
+                    Text {text:root.profile-caption;color:UiTheme.text;wrap:word-wrap;font-size:12px;}
+                }
+                Text {text:root.legend;color:UiTheme.text-soft;font-size:11px;wrap:word-wrap;}
+                Text {text:root.probe;color:UiTheme.text;font-size:11px;wrap:word-wrap;max-height:42px;overflow:elide;}
+                if root.tab!=4 : Rectangle {
+                    height:69px;background:UiTheme.toolbar;border-color:UiTheme.border;border-width:1px;border-radius:4px;
+                    VerticalLayout {padding:6px;spacing:4px;
+                        HorizontalLayout {spacing:6px;
+                            Tool {text:root.playing ? "Ⅱ Pause" : "▶ Play";enabled:root.has-result;clicked=>{root.action(2);}}
+                            Tool {text:"↶";enabled:root.has-result;clicked=>{root.action(3);}}
+                            Label {text:root.is-3d ? "Slice sweep · 3D" : "Steady-flow tracers · 2D";horizontal-stretch:1;vertical-alignment:center;}
+                            SpinBox {min-width:90px;preferred-width:100px;max-width:110px;value <=> root.animation-rate;minimum:10;maximum:400;}
+                            Label {text:"%";vertical-alignment:center;}
+                        }
+                        HorizontalLayout {spacing:8px;
+                            Label {text:"Visual phase";vertical-alignment:center;}
+                            Slider {value:root.phase;minimum:0;maximum:1000;enabled:root.has-result;changed(value)=>{root.seek(value);}}
+                            Label {text:Math.round(root.phase/10)+"%";vertical-alignment:center;}
+                        }
+                    }
+                }
+                Text {text:root.feedback;color:UiTheme.text-soft;font-size:11px;wrap:word-wrap;max-height:32px;overflow:elide;}
+            }
+            Rectangle {
+                width:330px;background:UiTheme.sidebar;border-color:UiTheme.border;border-width:1px;border-radius:4px;
+                VerticalLayout {
+                    padding:8px;spacing:8px;
+                    HorizontalLayout {spacing:3px;
+                        for label[index] in ["Display","Flow","Probes","Info","Plot"] : Tool {text:(index==root.tab ? "● " : "")+label;clicked=>{root.tab=index;}}
+                    }
+                    panel:=ScrollView {
+                        horizontal-scrollbar-policy:always-off;
+                        VerticalLayout {width:panel.visible-width;spacing:8px;padding:4px;
+                            if root.tab==0 : VerticalLayout {spacing:8px;
+                                Label {text:"DISPLAY";color:UiTheme.accent;font-weight:700;}
+                                ComboBox {model:["Filled cells","Contours","Contours + vectors","Vectors only"];current-index <=> root.plot;min-width:0px;selected(value)=>{root.style();}}
+                                ComboBox {model:["Turbo","Viridis","Plasma","Blue–red"];current-index <=> root.palette;min-width:0px;selected(value)=>{root.style();}}
+                                Label {text:"Contour levels";}
+                                SpinBox {value <=> root.levels;minimum:3;maximum:32;edited=>{root.style();}}
+                                Tool {text:root.edges ? "✓ Cell edges" : "Cell edges";enabled:!root.is-3d;clicked=>{root.edges=!root.edges;root.style();}}
+                                Label {text:"COLOR RANGE";}
+                                HorizontalLayout {spacing:5px;
+                                    LineEdit {text <=> root.range-min;placeholder-text:"Minimum";min-width:0px;}
+                                    LineEdit {text <=> root.range-max;placeholder-text:"Maximum";min-width:0px;}
+                                }
+                                HorizontalLayout {Tool {text:"Apply range";clicked=>{root.apply-range();}} Tool {text:"Auto range";clicked=>{root.auto-range();}}}
+                                Label {text:"VECTOR GLYPHS";}
+                                ComboBox {model:["Sparse","Medium","Dense"];current-index <=> root.vector-density;min-width:0px;selected(value)=>{root.style();}}
+                                LineEdit {text <=> root.vector-scale;placeholder-text:"Auto scale or positive multiplier";min-width:0px;accepted=>{root.style();}}
+                                Tool {text:"Apply vector scale";clicked=>{root.style();}}
+                                if root.is-3d : VerticalLayout {spacing:7px;
+                                    Label {text:"SECTION PLANE";}
+                                    ComboBox {model:["3D surface","XY section","XZ section","YZ section"];current-index <=> root.slice-axis;min-width:0px;selected(value)=>{root.style();}}
+                                    Label {text:"Position across model extent (%)";}
+                                    SpinBox {value <=> root.slice-percent;minimum:1;maximum:99;edited=>{root.style();}}
+                                }
+                                Label {text:"Cells retain the exported values. Contour lines use vertex-averaged interpolation. Reconstructed curl/divergence use neighbour LSQ gradients; div U is not the conservative face-flux residual.";}
+                            }
+                            if root.tab==1 : VerticalLayout {spacing:8px;
+                                Label {text:"STREAMLINES & TRACERS";color:UiTheme.accent;font-weight:700;}
+                                Tool {text:"+ Seed grid";enabled:root.has-result && !root.is-3d;clicked=>{root.action(0);}}
+                                Tool {text:"⌖ Pick a seed in viewport";enabled:root.has-result && !root.is-3d;clicked=>{root.action(5);}}
+                                Tool {text:"Clear streamlines";enabled:root.has-result;clicked=>{root.action(1);}}
+                                Label {text:"Paths integrate reconstructed steady velocity using RK4. Tracers loop along these paths; this is an illustrative steady-flow animation, not a transient simulation.";}
+                                Label {text:"In 3D, Play sweeps the selected section plane. Choose its orientation in Display. Section position is animated, not physical time.";}
+                                Tool {text:"Export tracer loop · GIF";enabled:root.has-result && !root.is-3d && !root.export-busy;clicked=>{root.export(1);}}
+                                Label {text:"GIF: 60 frames at 20 fps, viewport resolution. Export runs in the background.";}
+                                Label {text:root.export-status;}
+                            }
+                            if root.tab==2 : VerticalLayout {spacing:8px;
+                                Label {text:"CELL PROBES · "+root.probe-count;color:UiTheme.accent;font-weight:700;}
+                                Label {text:"Click a cell to inspect its centre, pressure and velocity. Up to 32 probes are retained for this run.";}
+                                ListView {height:240px;for probe[index] in root.probes : Tool {text:probe;clicked=>{root.select-probe(index);}}}
+                                Tool {text:"Export probes · CSV";enabled:root.probe-count>0;clicked=>{root.export(2);}}
+                                Tool {text:"Clear probes";clicked=>{root.action(4);}}
+                            }
+                            if root.tab==4 : VerticalLayout {spacing:8px;
+                                Label {text:"LINE PROFILE · 2D";color:UiTheme.accent;font-weight:700;}
+                                Label {text:"Samples the currently selected field on the active run. Update the profile after changing field.";}
+                                Label {text:"Start · X / Y (model coordinates)";}
+                                HorizontalLayout {spacing:5px;LineEdit {text <=> root.line-x0;min-width:0px;}LineEdit {text <=> root.line-y0;min-width:0px;}}
+                                Label {text:"End · X / Y";}
+                                HorizontalLayout {spacing:5px;LineEdit {text <=> root.line-x1;min-width:0px;}LineEdit {text <=> root.line-y1;min-width:0px;}}
+                                Label {text:"Sample count";}
+                                SpinBox {value <=> root.line-samples;minimum:2;maximum:2000;}
+                                Tool {text:"Plot selected field";enabled:root.has-result && !root.is-3d;clicked=>{root.sample-line(0);}}
+                                Tool {text:"Vertical centreline";enabled:root.has-result && !root.is-3d;clicked=>{root.sample-line(1);}}
+                                Tool {text:"Horizontal centreline";enabled:root.has-result && !root.is-3d;clicked=>{root.sample-line(2);}}
+                                Label {text:"Owning-cell values without interpolation. Outside-domain points remain gaps; boundary values are not extrapolated.";}
+                                Tool {text:"Export profile · CSV";enabled:root.has-result;clicked=>{root.export(8);}}
+                                Tool {text:"Export labelled chart · SVG";enabled:root.has-result;clicked=>{root.export(9);}}
+                            }
+                            if root.tab==3 : VerticalLayout {spacing:9px;
+                                Label {text:"SELECTED FIELD";color:UiTheme.accent;font-weight:700;}
+                                Text {text:root.statistics;color:UiTheme.text;font-size:11px;wrap:word-wrap;}
+                                Label {text:"BOUNDARY BALANCE";color:UiTheme.accent;font-weight:700;}
+                                Text {text:root.balance;color:UiTheme.text;font-size:11px;wrap:word-wrap;}
+                                Tool {text:"Boundary flow integrals · CSV";enabled:root.has-result;clicked=>{root.export(10);}}
+                                Tool {text:"Full report · HTML / Print to PDF";enabled:root.has-result;clicked=>{root.export(7);}}
+                                Label {text:"RUN REPORT";color:UiTheme.accent;font-weight:700;}
+                                Text {text:root.summary;color:UiTheme.text;font-size:11px;wrap:word-wrap;}
+                                Tool {text:"Export cell data · CSV";enabled:root.has-result;clicked=>{root.export-cells();}}
+                                Tool {text:"Export run report · JSON";enabled:root.has-result;clicked=>{root.export(5);}}
+                                Tool {text:"Copy result artifact · VTK";enabled:root.has-result;clicked=>{root.export(4);}}
+                                Tool {text:"Export convergence · CSV";clicked=>{root.export(3);}}
+                                Label {text:"SOLVER LOG";}
+                                TextEdit {text:root.log;read-only:true;height:220px;}
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

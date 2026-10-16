@@ -1,4 +1,7 @@
+import { ResultsWorkspace } from "results-workspace.slint";
+import { SolutionWorkspace } from "solution-workspace.slint";
 import { SketchDimension, SketchDimensionsOverlay } from "cad-tools.slint";
+import { MeshWorkspace } from "mesh-workspace.slint";
 import { CadTaskPanel } from "cad.slint";
 import { CadContextMenu, SketchLineContextMenu } from "cad-context.slint";
 import { CadRibbon } from "cad-ribbon.slint";
@@ -138,7 +141,8 @@ export component MainWindow inherits Window {
     // Binding this directly to root.width creates a cycle:
     // root.width -> compact-ui -> child layoutinfo -> root.layoutinfo -> root.width.
     // The backend may toggle this property on resize if automatic compact mode is desired.
-    in-out property <bool> compact-ui: false;
+    in-out property <bool> compact-ui: true;
+    changed width => { root.compact-ui = root.width < 1500px; }
     in-out property <bool> recovery-pending: false;
     in-out property <string> recovery-workspace: "";
     in-out property <bool> unsaved-replacement-pending: false;
@@ -232,6 +236,46 @@ export component MainWindow inherits Window {
     in-out property <string> thermal-expansion: "0.0034";
     in-out property <string> gravity-x: "0.0";
     in-out property <string> gravity-y: "-9.81";
+    in-out property <string> post-balance;
+    in-out property <string> post-convergence-summary;
+    in-out property <image> post-profile-image;
+    in-out property <string> post-profile-caption;
+    in-out property <string> post-line-x0:"0";
+    in-out property <string> post-line-y0:"0";
+    in-out property <string> post-line-x1:"1";
+    in-out property <string> post-line-y1:"1";
+    in-out property <int> post-line-samples:200;
+    callback post-profile(int);
+    in-out property <int> post-tab:0;
+    in-out property <bool> solution-show-log:false;
+    in-out property <bool> post-has-result:false;
+    in-out property <bool> post-is-3d:false;
+    in-out property <bool> post-playing:false;
+    in-out property <bool> post-export-busy:false;
+    in-out property <int> post-phase:0;
+    in-out property <int> post-probe-count:0;
+    in-out property <int> post-run-index:-1;
+    in-out property <[string]> post-probe-model;
+    in-out property <[string]> post-run-model;
+    in-out property <string> post-statistics;
+    in-out property <string> post-legend;
+    in-out property <string> post-feedback:"Select a field, inspect cells, or open Flow to animate the steady velocity field.";
+    in-out property <string> post-export-status;
+    in-out property <bool> post-edges:false;
+    in-out property <int> post-animation-mode:0;
+    in-out property <int> post-animation-rate:100;
+    in-out property <float> wb-solve-progress:0;
+    in-out property <string> wb-solve-monitor;
+    in-out property <int> wb-chart-kind:0;
+    callback post-refresh();
+    callback post-select-run(int);
+    callback post-action(int);
+    callback post-export(int);
+    callback post-seek(float);
+    callback post-select-probe(int);
+    callback post-view-drag(float,float,float,float,float,float);
+    callback post-view-zoom(float);
+    callback post-view-fit();
     in-out property <int> result-field-index: 0;
     in-out property <int> result-plot-index: 2;
     in-out property <int> result-colormap-index: 0;
@@ -240,6 +284,7 @@ export component MainWindow inherits Window {
     in-out property <string> result-range-max: "";
     in-out property <int> result-vector-density: 1;
     in-out property <string> result-vector-scale: "";
+    in-out property <string> continuity-chart-caption;
     in-out property <string> residual-summary: "Waiting for a solver run.";
     in-out property <float> solver-physical-time: 0.0;
     in-out property <float> solver-time-step: 0.0;
@@ -340,7 +385,7 @@ export component MainWindow inherits Window {
     in-out property <string> wb-gmsh-status: "Gmsh: checking…";
     in-out property <[string]> patch-model;
     in-out property <int> patch-index: 0;
-    in-out property <int> bc-kind-index: 2;
+    in-out property <int> bc-kind-index: -1;
     in-out property <string> bc-value-x: "0.1";
     in-out property <string> bc-value-y: "0";
     in-out property <string> bc-value-z: "0";
@@ -370,11 +415,25 @@ export component MainWindow inherits Window {
     callback delete-named-selection();
     callback translate-selected-body();
     callback rotate-selected-body();
-    in-out property <bool> mesh-domain-expanded:false;
-    in-out property <bool> mesh-advanced-expanded:false;
+    in-out property <int> mesh-task:0;
+    in-out property <int> mesh-entity-mode:1;
+    in-out property <bool> mesh-show-geometry:true;
+    in-out property <string> mesh-selection-summary;
+    in-out property <string> mesh-coverage;
+    in-out property <[string]> mesh-group-model;
+    in-out property <int> mesh-group-index:-1;
+    in-out property <int> mesh-local-group-index:-1;
+    callback mesh-pick-geometry(float,float,float,float,bool);
+    callback mesh-group-action(int);
+    callback mesh-select-group(int);
+    callback mesh-edit-condition(int);
+    callback mesh-workspace-view(bool);
+    callback mesh-entity-filter(int);
+    callback mesh-task-changed(int);
     in-out property <string> wb-mesh-readiness;
     in-out property <string> wb-run-readiness;
     in-out property <string> wb-boundary-summary;
+    in-out property <bool> setup-material-expanded:false;
     in-out property <[string]> patch-status-model;
     callback mesh-size-preset(int);
     callback mesh-view-drag(float,float,float,float,float,float);
@@ -386,21 +445,14 @@ export component MainWindow inherits Window {
     callback select-mesh-control(int);
     in-out property <string> wb-operation-feedback;
     callback generate-mesh-wb();
-    callback prepare-flow-domain(bool);
+    callback select-fluid-domain();
     callback select-patch-wb(int);
     in-out property <string> wb-domain-status;
     in-out property <string> wb-flow-feedback;
-    callback cut-flow-obstacle();
-    callback prepare-cavity();
-    callback extrude-flow-channel();
     callback export-result-csv();
     in-out property <string> result-probe-text:"Click a result cell to inspect pressure and velocity.";
     in-out property <int> result-slice-axis:0;
     in-out property <int> result-slice-percent:50;
-    in-out property <string> wb-channel-depth:"0.1";
-    in-out property <string> wb-obstacle-x:"0.2";
-    in-out property <string> wb-obstacle-y:"0.2";
-    in-out property <string> wb-obstacle-radius:"0.05";
     callback add-local-size-wb();
     callback add-threshold-refinement-wb();
     callback add-boundary-layer-wb();
@@ -513,8 +565,7 @@ export component MainWindow inherits Window {
                                 if action==6 {root.cad-command(23);}
                                 if action==7 {root.clear-geometry-selection();}
                                 if action==8 {root.geometry-delete-selection();}
-                                if action==9 {root.prepare-flow-domain(false);}
-                                if action==10 {root.prepare-flow-domain(true);}
+                                if action==9 {root.select-fluid-domain();}
                             }
                         }
                         HorizontalLayout {
@@ -843,155 +894,76 @@ export component MainWindow inherits Window {
                     }
                 }
 
-                if !root.examples-open && root.current-step == 1 : Rectangle {
-                    width: parent.width; height: parent.height;
-                    mesh-scroll := ScrollView {
-                        width: parent.width;
-                        height: parent.height;
-                        horizontal-scrollbar-policy: as-needed;
-
-                        VerticalLayout {
-                            min-height: mesh-scroll.visible-height;
-                            padding: root.page-padding; spacing: root.page-spacing;
-                        SectionTitle { text: "02  Mesh"; }
-                        SectionHint { text: "Generate and inspect the active unstructured mesh before assigning boundaries or solving."; }
-                        Text {text:root.wb-operation-feedback;color:UiTheme.text-soft;wrap:word-wrap;font-size:11px;}
-                        HorizontalLayout {
-                                height:max(540px,mesh-scroll.visible-height - 125px);
-                                spacing: root.page-spacing;
-                                WorkflowControlCard { min-width: 250px; preferred-width: 340px; max-width: 400px; horizontal-stretch: 1;
-                                Text {text:"FLUID MESH";color:UiTheme.accent;font-size:11px;font-weight:700;}
-
-                                    InspectorLabel {text:"FLUID DOMAIN";}
-                                    InspectorValue {text:root.wb-domain-status;}
-
-                                    Button {text:"USE SELECTED 2D FACE";enabled:!root.wb-busy;clicked=>{root.prepare-flow-domain(false);}}
-                                    Button {text:"PREPARE 2D MOVING-LID CAVITY";enabled:!root.wb-busy;clicked=>{root.prepare-cavity();}}
-                                    Button {text:root.mesh-domain-expanded ? "▾ CHANNEL / CYLINDER DOMAIN" : "▸ CHANNEL / CYLINDER DOMAIN";clicked=>{root.mesh-domain-expanded=!root.mesh-domain-expanded;}}
-                                    if root.mesh-domain-expanded : VerticalLayout {
-                                    InspectorLabel {text:"CIRCULAR SUBTRACTION · MODEL COORDINATES";}
-                                    HorizontalLayout {
-                                        LineEdit {text <=> root.wb-obstacle-x;placeholder-text:"Center X";}
-                                        LineEdit {text <=> root.wb-obstacle-y;placeholder-text:"Center Y";}
-                                        LineEdit {text <=> root.wb-obstacle-radius;placeholder-text:"Radius";}
-                                    }
-                                    Button {text:"SUBTRACT CIRCLE FROM FLUID FACE";enabled:!root.wb-busy;clicked=>{root.cut-flow-obstacle();}}
-                                    Button {text:"PREPARE CHANNEL BOUNDARIES";enabled:!root.wb-busy;clicked=>{root.prepare-flow-domain(true);}}
-
-                                    HorizontalLayout {
-                                        LineEdit {text <=> root.wb-channel-depth;placeholder-text:"Spanwise depth";}
-                                        Button {text:"EXTRUDE 3D FLUID";enabled:!root.wb-busy;clicked=>{root.extrude-flow-channel();}}
-                                    }
-                                    InspectorLabel {text:"3D: draw the channel and circular hole, then extrude the fluid. The hole becomes a cylinder wall; both spanwise caps are no-slip. Depth uses the same length unit as the sketch. All conditions remain editable in Setup.";wrap:word-wrap;}
-                                    InspectorLabel {text:"Draw a rectangle, then a circle inside it in XY: the circle cuts a fluid hole. Select the remaining face. Channel preparation creates editable inlet (+X, U=1), outlet (p=0), walls and obstacle groups. Geometry and mesh sizes use model coordinates; use consistent length/velocity/viscosity units.";wrap:word-wrap;}
-                                    }
-                                    InspectorLabel { text: "DIMENSION"; }
-                                    ComboBox {
-                                        enabled: !root.wb-busy;
-                                        model: ["2D planar face", "3D fluid body"];
-                                        current-index <=> root.mesh-dimension-index;
-                                    }
-                                    HorizontalLayout {
-                                        spacing: 6px;
-                                        VerticalLayout { InspectorLabel { text: "GLOBAL SIZE"; } LineEdit { text <=> root.wb-global-size; } }
-                                        VerticalLayout { InspectorLabel { text: "MIN SIZE"; } LineEdit { text <=> root.wb-min-size; } }
-                                        VerticalLayout { InspectorLabel { text: "MAX SIZE"; } LineEdit { text <=> root.wb-max-size; } }
-                                    }
-                                    HorizontalLayout {
-                                        Button {text:"COARSE";enabled:!root.wb-busy;clicked=>{root.mesh-size-preset(0);}}
-                                        Button {text:"MEDIUM";enabled:!root.wb-busy;clicked=>{root.mesh-size-preset(1);}}
-                                        Button {text:"FINE";enabled:!root.wb-busy;clicked=>{root.mesh-size-preset(2);}}
-                                    }
-                                    InspectorLabel {text:"Presets scale target size to the domain. Sizes are lengths, not cell counts.";wrap:word-wrap;}
-                                    InspectorLabel {text:"MESH READINESS";}
-                                    InspectorValue {text:root.wb-mesh-readiness;}
-                                    Button {text:"CHECK MESH INPUTS";enabled:!root.wb-busy;clicked=>{root.check-mesh-inputs();}}
-                                    InspectorLabel { text: "ELEMENT ORDER"; }
-                                    InspectorValue { text: "1st order (linear) — only order supported by the importer"; }
-                                    HorizontalLayout {
-                                        spacing: 6px;
-                                        Button { text: root.wb-busy ? "GENERATING…" : "GENERATE MESH"; enabled: !root.wb-busy; clicked => { root.generate-mesh-wb(); } }
-                                        Button { text: "CANCEL JOB"; enabled: root.wb-busy; clicked => { root.cancel-workbench-job(); } }
-                                    }
-                                    Button {text:root.mesh-advanced-expanded ? "▾ LOCAL REFINEMENT & LAYERS" : "▸ LOCAL REFINEMENT & LAYERS";clicked=>{root.mesh-advanced-expanded=!root.mesh-advanced-expanded;}}
-                                    if root.mesh-advanced-expanded : VerticalLayout {
-                                    InspectorLabel { text: "ADVANCED MESH RECIPE"; }
-                                    InspectorValue { text: root.wb-mesh-recipe-summary; font-family: "monospace"; }
-                                    InspectorLabel { text: "LOCAL SIZE · BOUNDARY GROUP"; }
-                                    ComboBox {model:root.patch-model;selected(value)=>{root.wb-local-target=value;}}
-                                    HorizontalLayout {
-                                        spacing: 6px;
-                                        LineEdit { text <=> root.wb-local-target; placeholder-text: "selection name"; }
-                                        LineEdit { text <=> root.wb-local-size; placeholder-text: "size"; }
-                                        Button { text: "ADD"; enabled: !root.wb-busy; clicked => { root.add-local-size-wb(); } }
-                                    }
-                                    InspectorLabel { text: "DISTANCE / THRESHOLD · SAME TARGET"; }
-                                    HorizontalLayout {
-                                        VerticalLayout {InspectorLabel {text:"NEAR SIZE";} LineEdit {text <=> root.wb-refine-min;}}
-                                        VerticalLayout {InspectorLabel {text:"FAR SIZE";} LineEdit {text <=> root.wb-refine-max;}}
-                                    }
-                                    HorizontalLayout {VerticalLayout {InspectorLabel {text:"REFINEMENT DISTANCE";} LineEdit {text <=> root.wb-refine-distance;}} Button {text:"ADD DISTANCE FIELD";enabled:!root.wb-busy;clicked=>{root.add-threshold-refinement-wb();}}}
-                                    InspectorLabel { text: "2D BOUNDARY LAYER · SAME TARGET"; }
-                                    if root.mesh-dimension-index==0 : VerticalLayout {
-                                        HorizontalLayout {
-                                            VerticalLayout {InspectorLabel {text:"FIRST HEIGHT";} LineEdit {text <=> root.wb-layer-first;}}
-                                            VerticalLayout {InspectorLabel {text:"GROWTH > 1";} LineEdit {text <=> root.wb-layer-growth;}}
-                                        }
-                                        HorizontalLayout {SpinBox {value <=> root.wb-layer-count;minimum:1;maximum:64;} Button {text:"ADD LAYERS";enabled:!root.wb-busy;clicked=>{root.add-boundary-layer-wb();}}}
-                                    }
-                                    if root.mesh-dimension-index!=0 : InspectorLabel {text:"Boundary-layer generation is currently supported in 2D only.";wrap:word-wrap;}
-                                    ComboBox {model:root.mesh-control-model;enabled:root.mesh-control-model.length>0;selected(value)=>{root.select-mesh-control(self.current-index);}}
-                                    HorizontalLayout { LineEdit { text <=> root.wb-recipe-control-id; placeholder-text: "Control ID"; } Button { text: "REMOVE CONTROL"; enabled: !root.wb-busy; clicked => { root.remove-mesh-control-wb(); } } }
-                                    }
-                                    Rectangle { height: 1px; background: UiTheme.border; }
-                                    HorizontalLayout {
-                                        spacing: 6px;
-                                        InspectorValue { text: root.wb-gmsh-status; vertical-stretch: 1; }
-                                        Button { text: "↻"; clicked => { root.refresh-gmsh-status(); } }
-                                    }
-                                    Rectangle { height: 1px; background: UiTheme.border; }
-                                    InspectorLabel { text: "MESH STATISTICS"; }
-                                    InspectorValue { text: root.wb-mesh-summary; font-family: "monospace"; }
-                            }
-                                Card { min-width: 350px; horizontal-stretch: 2; VerticalLayout { padding: root.compact-ui ? 14px : 18px; spacing: 10px;
-                                Text { text: "MESH INSPECTION"; color: UiTheme.accent; font-size: 11px; font-weight: 700; }
-                                HorizontalLayout { Text { text: "View"; color: UiTheme.text-muted; vertical-alignment: center; } Button { text: root.mesh-display-index == 0 ? "WIREFRAME ✓" : "WIREFRAME"; clicked => { root.mesh-display(0); } } Button { text: root.mesh-display-index == 1 ? "SURFACE ✓" : "SURFACE"; clicked => { root.mesh-display(1); } } Button { text: root.mesh-display-index == 2 ? "SURFACE + EDGES ✓" : "SURFACE + EDGES"; clicked => { root.mesh-display(2); } } }
-                                HorizontalLayout { Text { text: "Select"; color: UiTheme.text-muted; vertical-alignment: center; } Button { text: root.mesh-selection-index == 0 ? "FACE ✓" : "FACE"; clicked => { root.mesh-select-mode(0); } } Button { text: root.mesh-selection-index == 1 ? "CELL ✓" : "CELL"; clicked => { root.mesh-select-mode(1); } } }
-                                HorizontalLayout { Text { text: "Color"; color: UiTheme.text-muted; vertical-alignment: center; } Button { text: "NEUTRAL"; clicked => { root.mesh-color(0); } } Button { text: "PATCHES"; clicked => { root.mesh-color(1); } } Button { text: "QUALITY"; clicked => { root.mesh-color(2); } } }
-                                HorizontalLayout { Text { text: "Metric"; color: UiTheme.text-muted; vertical-alignment: center; } Button { text: "ASPECT"; clicked => { root.mesh-quality(0); } } Button { text: "SKEW"; clicked => { root.mesh-quality(1); } } Button { text: "NON-ORTH"; clicked => { root.mesh-quality(2); } } Button { text: "MEASURE"; clicked => { root.mesh-quality(3); } } }
-                                HorizontalLayout { Text { text: "Threshold"; color: UiTheme.text-muted; vertical-alignment: center; } LineEdit { text <=> root.mesh-quality-threshold; } Button { text: "APPLY"; clicked => { root.mesh-threshold(); } } }
-                                if root.bad-cell-model.length > 0 : VerticalLayout { spacing: 3px; Text { text: "CELLS ABOVE THRESHOLD (first " + root.bad-cell-model.length + ")"; color: UiTheme.text-muted; font-size: 10px; font-weight: 700; } ListView { min-height: 48px; max-height: 96px; for cell[index] in root.bad-cell-model : Button { text: cell; clicked => { root.select-bad-cell(index); } } } }
-                                Text { text: root.mesh-inspection; color: UiTheme.text-subtle; font-family: "monospace"; font-size: 11px; wrap: word-wrap; }
-                                InteractiveGeometryPreview { vertical-stretch: 1; preview-image: root.visualization-image; help-text:root.mesh-dimension-index==0 ? "CLICK: SELECT · DRAG: PAN · WHEEL: ZOOM · DOUBLE CLICK: FIT" : "CLICK: SELECT · 3D FIXED ISOMETRIC VIEW"; view-axis: root.geometry-view-axis; orbit(x, y, pressed-x, pressed-y) => { root.mesh-view-drag(x,y,pressed-x,pressed-y,self.width/1px,self.height/1px); } orbit-end => { root.mesh-view-end(); } zoom(delta) => { root.mesh-view-zoom(delta); } reset-view => { root.mesh-view-fit(); } pick-boundary(x, y, w, h) => { root.pick-boundary(x, y, w, h); } hover(x, y, w, h) => { root.mesh-hover(x, y, w, h); } }
-                                Text { text: root.visualization-title + " · " + root.animation-status; color: UiTheme.text-soft; font-size: 11px; }
-                                HorizontalLayout { Button { text: "SHOW GENERATED MESH"; clicked => { root.show-mesh(); } } Button {text:"CONTINUE TO SETUP →";clicked=>{root.select-step(2);}} }
-                            } }
-                        }
-                    }
-                    }
+                if !root.examples-open && root.current-step == 1 : MeshWorkspace {
+                    width:parent.width;height:parent.height;
+                    task <=> root.mesh-task;
+                    busy:root.wb-busy;
+                    dimension <=> root.mesh-dimension-index;
+                    entity-mode:root.mesh-entity-mode;
+                    geometry-view:root.mesh-show-geometry;
+                    selection:root.mesh-selection-summary;
+                    coverage:root.mesh-coverage;
+                    groups:root.mesh-group-model;group-index:root.mesh-group-index;
+                    group-names:root.patch-model;local-group-index <=> root.mesh-local-group-index;
+                    group-name <=> root.ns-edit-name;
+                    feedback:root.wb-flow-feedback;
+                    domain:root.wb-domain-status;
+                    readiness:root.wb-mesh-readiness;
+                    summary:root.wb-mesh-summary;
+                    gmsh:root.wb-gmsh-status;
+                    global-size <=> root.wb-global-size;min-size <=> root.wb-min-size;max-size <=> root.wb-max-size;
+                    local-target <=> root.wb-local-target;local-size <=> root.wb-local-size;
+                    refine-min <=> root.wb-refine-min;refine-max <=> root.wb-refine-max;refine-distance <=> root.wb-refine-distance;
+                    layer-first <=> root.wb-layer-first;layer-growth <=> root.wb-layer-growth;layer-count <=> root.wb-layer-count;
+                    controls:root.mesh-control-model;
+                    display-mode <=> root.mesh-display-index;color-mode <=> root.mesh-color-index;
+                    quality-mode <=> root.mesh-quality-index;quality-threshold <=> root.mesh-quality-threshold;
+                    inspection:root.mesh-inspection;bad-cells:root.bad-cell-model;
+                    preview:root.visualization-image;
+                    task-changed(index)=>{root.mesh-task-changed(index);}
+                    select-filter(index)=>{root.mesh-entity-filter(index);}
+                    show-geometry(value)=>{root.mesh-workspace-view(value);}
+                    pick(x,y,w,h,additive)=>{root.mesh-pick-geometry(x,y,w,h,additive);}
+                    pick-mesh(x,y,w,h)=>{root.pick-boundary(x,y,w,h);}
+                    select-group(index)=>{root.mesh-select-group(index);}
+                    edit-condition(index)=>{root.mesh-edit-condition(index);}
+                    group-action(action)=>{root.mesh-group-action(action);}
+                    use-face=>{root.select-fluid-domain();}
+                    check=>{root.check-mesh-inputs();}
+                    generate=>{root.generate-mesh-wb();}
+                    cancel=>{root.cancel-workbench-job();}
+                    preset(index)=>{root.mesh-size-preset(index);}
+                    add-local=>{root.add-local-size-wb();}
+                    add-refinement=>{root.add-threshold-refinement-wb();}
+                    add-layers=>{root.add-boundary-layer-wb();}
+                    remove-control(index)=>{root.select-mesh-control(index);root.remove-mesh-control-wb();}
+                    display(index)=>{root.mesh-display(index);}
+                    select-color(index)=>{root.mesh-color(index);}
+                    quality(index)=>{root.mesh-quality(index);}
+                    threshold=>{root.mesh-threshold();}
+                    select-bad(index)=>{root.select-bad-cell(index);}
+                    hover(x,y,w,h)=>{root.mesh-hover(x,y,w,h);}
+                    drag(x,y,px,py,w,h)=>{root.mesh-view-drag(x,y,px,py,w,h);}
+                    drag-end=>{root.mesh-view-end();}
+                    zoom(delta)=>{root.mesh-view-zoom(delta);}
+                    fit=>{root.mesh-view-fit();}
+                    continue=>{root.select-step(2);}
                 }
 
                 if !root.examples-open && root.current-step == 2 : Rectangle {
-                    width: parent.width; height: parent.height;
-                    setup-scroll := ScrollView {
-                        width: parent.width;
-                        height: parent.height;
-                        horizontal-scrollbar-policy: as-needed;
-
-                        VerticalLayout {
-                            min-height: setup-scroll.visible-height;
-                            padding: root.page-padding; spacing: root.page-spacing;
-                        SectionTitle { text: "03  Setup"; }
-                        SectionHint { text: "Select each named patch, inspect its highlighted boundary, and assign its physical condition."; }
-                        Text {text:root.wb-operation-feedback;color:UiTheme.text-soft;wrap:word-wrap;font-size:11px;}
+                    width:parent.width;height:parent.height;
+                    VerticalLayout {
+                        padding:12px;spacing:8px;
+                        SectionTitle {text:"03  Setup";}
+                        SectionHint {text:"Select a boundary zone, assign its physical condition, then set the fluid material.";}
                         HorizontalLayout {
-                                height:max(540px,setup-scroll.visible-height - 125px);
-                                spacing: root.page-spacing;
-                                WorkflowControlCard { min-width: 190px; preferred-width: 330px; max-width: 420px; horizontal-stretch: 1;
+                            spacing:10px;
+                            WorkflowControlCard {
+                                width:300px;
                                 Text {text:"BOUNDARY CONDITIONS";color:UiTheme.accent;font-size:11px;font-weight:700;}
                                 InspectorValue {text:root.wb-boundary-summary;}
-                                ListView {min-height:70px;max-height:150px;
-                                    for patch[index] in root.patch-status-model : Button {
+                                ListView {height:min(150px,max(68px,root.patch-status-model.length*34px));
+                                    for patch[index] in root.patch-status-model : Button {min-width:0px;
                                         text:(index==root.patch-index ? "● " : "○ ")+patch;
                                         enabled:!root.wb-busy;clicked=>{root.patch-index=index;root.select-patch-wb(index);}
                                     }
@@ -999,9 +971,9 @@ export component MainWindow inherits Window {
 
 
                                     InspectorLabel {text:"SELECTED PATCH";}
-                                    InspectorValue {text:root.patch-model.length>0 && root.patch-index>=0 && root.patch-index<root.patch-model.length ? root.patch-model[root.patch-index] : "Prepare boundary groups in Mesh first.";}
+                                    InspectorValue {text:root.patch-model.length>0 && root.patch-index>=0 && root.patch-index<root.patch-model.length ? root.patch-model[root.patch-index] : "Create named boundaries in Mesh first.";}
                                     InspectorLabel { text: "PHYSICAL CONDITION"; }
-                                    ComboBox {
+                                    ComboBox {min-width:0px;
                                         enabled: root.patch-model.length > 0 && !root.wb-busy;
                                         model: ["No-slip wall", "Moving wall", "Velocity inlet", "Pressure outlet"];
                                         current-index <=> root.bc-kind-index;
@@ -1011,167 +983,99 @@ export component MainWindow inherits Window {
                                         InspectorLabel {text:root.bc-kind-index==1 ? "WALL VELOCITY (Ux · Uy · Uz)" : "INLET VELOCITY (Ux · Uy · Uz)";}
                                         HorizontalLayout {
                                             spacing: 4px;
-                                            LineEdit { text <=> root.bc-value-x;placeholder-text:"Ux";enabled:!root.wb-busy; }
-                                            LineEdit { text <=> root.bc-value-y;placeholder-text:"Uy";enabled:!root.wb-busy; }
-                                            LineEdit { text <=> root.bc-value-z;placeholder-text:"Uz";enabled:!root.wb-busy; }
+                                            LineEdit {min-width:0px; text <=> root.bc-value-x;placeholder-text:"Ux";enabled:!root.wb-busy; }
+                                            LineEdit {min-width:0px; text <=> root.bc-value-y;placeholder-text:"Uy";enabled:!root.wb-busy; }
+                                            LineEdit {min-width:0px; text <=> root.bc-value-z;placeholder-text:"Uz";enabled:!root.wb-busy; }
                                         }
                                     }
                                     if root.bc-kind-index == 3 : VerticalLayout {
                                         spacing: 4px;
                                         InspectorLabel { text: "KINEMATIC GAUGE PRESSURE p/ρ"; }
-                                        LineEdit { text <=> root.bc-pressure; }
+                                        LineEdit {min-width:0px; text <=> root.bc-pressure; }
                                     }
-                                    InspectorLabel {text:root.bc-kind-index==0 ? "Stationary impermeable wall: U=(0,0,0)." : root.bc-kind-index==1 ? "Prescribed wall velocity; for the cavity lid use U=(1,0,0)." : root.bc-kind-index==2 ? "Prescribed fluid velocity at an inlet." : "Prescribed kinematic pressure at the outlet; p/rho is not pressure in pascals.";wrap:word-wrap;}
+                                    InspectorLabel {text:root.bc-kind-index<0 ? "Choose a physical condition for this boundary." : root.bc-kind-index==0 ? "Stationary impermeable wall: U=(0,0,0)." : root.bc-kind-index==1 ? "Prescribed tangential wall velocity in model coordinates." : root.bc-kind-index==2 ? "Prescribed fluid velocity at an inlet." : "Prescribed kinematic pressure at the outlet; p/rho is not pressure in pascals.";wrap:word-wrap;}
                                     HorizontalLayout {
                                         spacing: 6px;
-                                        Button { text: "APPLY TO SELECTED PATCH"; enabled: root.patch-model.length > 0 && !root.wb-busy; clicked => { root.apply-boundary-wb(); } }
-                                        Button { text: "CLEAR"; enabled: root.patch-model.length > 0 && !root.wb-busy; clicked => { root.unassign-boundary-wb(); } }
+                                        Button {min-width:0px; text: "APPLY CONDITION"; enabled: root.bc-kind-index >= 0 && root.patch-model.length > 0 && !root.wb-busy; clicked => { root.apply-boundary-wb(); } }
+                                        Button {min-width:0px; text: "CLEAR"; enabled: root.patch-model.length > 0 && !root.wb-busy; clicked => { root.unassign-boundary-wb(); } }
                                     }
                                     InspectorValue { text: root.bc-assigned; }
                                     InspectorLabel { text: "Solve stays disabled until every exterior patch is assigned. The backend re-validates the full case before starting."; wrap: word-wrap; color: rgb(126,153,170); font-size: 10px; }
-                            }
-                                Card {min-width:180px;preferred-width:240px;max-width:300px;VerticalLayout {padding:14px;spacing:8px;
+
+                                Rectangle {height:1px;background:UiTheme.border;}
+                                Button {min-width:0px;text:root.setup-material-expanded ? "▾ Fluid material" : "▸ Fluid material";clicked=>{root.setup-material-expanded=!root.setup-material-expanded;}}
+                                if root.setup-material-expanded : VerticalLayout {
+                                    spacing:8px;
                                     InspectorLabel {text:"FLUID MATERIAL";}
-                                    InspectorLabel {text:"DENSITY ρ";} LineEdit {text <=> root.material-density;enabled:!root.wb-busy;}
-                                    InspectorLabel {text:"KINEMATIC VISCOSITY ν";} LineEdit {text <=> root.material-viscosity;enabled:!root.wb-busy;}
-                                    InspectorLabel {text:"For a unit cavity: lid speed 1, side length 1, ν=0.01 gives Re=100. Use consistent units; there is no automatic geometry unit conversion.";wrap:word-wrap;}
-                                    Button {text:"APPLY MATERIAL & CONTROLS";enabled:!root.wb-busy;clicked=>{root.apply-solver-settings-wb();}}
-                                    InspectorLabel {text:"CLOSED CAVITY";} InspectorValue {text:"lid → Moving wall\nwalls → No-slip wall\nNo inlet or outlet required. Pressure uses an internal gauge.";}
-                                    Button {text:"CONTINUE TO SOLUTION →";clicked=>{root.select-step(3);}}
-                                } }
-                                Card { min-width: 250px; horizontal-stretch: 2; VerticalLayout { padding: root.compact-ui ? 14px : 18px; spacing: 10px;
-                                Text { text: "BOUNDARY & VOLUME VIEW"; color: UiTheme.accent; font-size: 11px; font-weight: 700; }
-                                InteractiveGeometryPreview { vertical-stretch: 1; preview-image: root.visualization-image; help-text:root.mesh-dimension-index==0 ? "CLICK: SELECT · DRAG: PAN · WHEEL: ZOOM · DOUBLE CLICK: FIT" : "CLICK: SELECT · 3D FIXED ISOMETRIC VIEW"; view-axis: root.geometry-view-axis; orbit(x, y, pressed-x, pressed-y) => { root.mesh-view-drag(x,y,pressed-x,pressed-y,self.width/1px,self.height/1px); } orbit-end => { root.mesh-view-end(); } zoom(delta) => { root.mesh-view-zoom(delta); } reset-view => { root.mesh-view-fit(); } pick-boundary(x, y, w, h) => { root.pick-boundary(x, y, w, h); } hover(x, y, w, h) => { root.mesh-hover(x, y, w, h); } }
-                                Text { text: "Select a patch on the left to highlight its mesh boundary."; color: UiTheme.text-soft; font-size: 11px; }
-                                HorizontalLayout {Button {text:"SHOW BOUNDARY MESH";clicked=>{root.show-mesh();root.mesh-color(1);}}}
-                            } }
-                        }
-                    }
-                    }
-                }
+                                    InspectorLabel {text:"DENSITY ρ";} LineEdit {min-width:0px;text <=> root.material-density;enabled:!root.wb-busy;}
+                                    InspectorLabel {text:"KINEMATIC VISCOSITY ν";} LineEdit {min-width:0px;text <=> root.material-viscosity;enabled:!root.wb-busy;}
+                                    InspectorLabel {text:"Use consistent length, velocity and viscosity units. Reynolds number: Re = U L / ν.";wrap:word-wrap;}
+                                    Button {min-width:0px;text:"APPLY MATERIAL";enabled:!root.wb-busy;clicked=>{root.apply-solver-settings-wb();}}
+                                    InspectorLabel {text:"PRESSURE REFERENCE";} InspectorValue {text:"Closed domains use an internal pressure gauge. Assign every boundary explicitly before solving.";}
 
-                if !root.examples-open && root.current-step == 3 : Rectangle {
-                    width: parent.width; height: parent.height;
-                    run-scroll := ScrollView {
-                        width: parent.width;
-                        height: parent.height;
-                        horizontal-scrollbar-policy: as-needed;
-
-                        VerticalLayout {
-                            min-height: run-scroll.visible-height;
-                            padding: root.page-padding; spacing: root.page-spacing;
-                        SectionTitle { text: "04  Solution"; }
-                        SectionHint { text: "Choose the numerical method, start the worker, and follow convergence without blocking the interface."; }
-                        Text {text:root.wb-operation-feedback;color:UiTheme.text-soft;wrap:word-wrap;font-size:11px;}
-                        HorizontalLayout {
-                                height:max(540px,run-scroll.visible-height - 125px);
-                                spacing: root.page-spacing;
-                                WorkflowControlCard { min-width: 260px; preferred-width: 360px; max-width: 420px; horizontal-stretch: 1;
-
-                                    InspectorLabel {text:"FLUID MATERIAL · FROM SETUP";}
-                                    InspectorValue {text:"ρ="+root.material-density+" · ν="+root.material-viscosity;}
-                                    Button {text:"EDIT MATERIAL IN SETUP";clicked=>{root.select-step(2);}}
-                                    InspectorLabel { text: "SIMPLE COUPLING"; }
-                                    HorizontalLayout {
-                                        spacing: 6px;
-                                        VerticalLayout { InspectorLabel { text: "MAX ITERATIONS"; } SpinBox { value <=> root.wb-max-iterations; minimum: 1; maximum: 1000000; } }
-                                    }
-                                    HorizontalLayout {
-                                        spacing: 6px;
-                                        VerticalLayout { InspectorLabel { text: "VELOCITY RELAX α"; } LineEdit { text <=> root.wb-velocity-relaxation; } }
-                                        VerticalLayout { InspectorLabel { text: "PRESSURE RELAX α"; } LineEdit { text <=> root.wb-pressure-relaxation; } }
-                                    }
-                                    InspectorLabel { text: "CONTINUITY TOLERANCE"; }
-                                    LineEdit { text <=> root.wb-continuity-tolerance; }
-                                    InspectorLabel {text:"MOMENTUM / VELOCITY RELATIVE TOLERANCE";}
-                                    LineEdit {text <=> root.wb-coupling-tolerance;}
-                                    InspectorLabel {text:"Steady convergence requires mass conservation, momentum residual reduction and a stable velocity field.";wrap:word-wrap;}
-                                    Button { text: "APPLY SETTINGS"; enabled:!root.wb-busy; clicked => { root.apply-solver-settings-wb(); } }
-                                    InspectorLabel { text: "Linear solvers keep their verified backend defaults; advanced controls are intentionally not exposed here."; wrap: word-wrap; color: rgb(126,153,170); font-size: 10px; }
-                                    Rectangle { height: 1px; background: UiTheme.border; }
-                                    InspectorLabel { text: "SOLUTION STATUS"; }
-                                    InspectorValue { text: root.wb-solution-summary; font-family: "monospace"; }
-                                InspectorLabel {text:"RUN READINESS";}
-                                InspectorValue {text:root.wb-run-readiness;}
-                                HorizontalLayout {
-                                    Button {text:"RUN WORKBENCH";enabled:root.can-run-workbench;clicked=>{root.run-workbench();}}
-                                    Button {text:"CANCEL";enabled:root.wb-busy;clicked=>{root.cancel-workbench-job();}}
                                 }
-                                Button {text:"VIEW RESULTS →";enabled:!root.wb-busy;clicked=>{root.select-step(4);root.show-field();}}
                             }
-                                Card { min-width: 350px; horizontal-stretch: 2; VerticalLayout { padding: root.compact-ui ? 14px : 18px; spacing: 10px;
-                                Text { text: "CONTINUITY · LAST 400 ITERATIONS"; color: UiTheme.accent; font-size: 11px; font-weight: 700; }
-                                Rectangle { vertical-stretch: 1; background: UiTheme.viewport; border-color: UiTheme.viewport-border; border-width: 1px; Image { source: root.residual-image; width: parent.width; height: parent.height; image-fit: contain; } }
-                                Text { text: "WORKBENCH SOLUTION"; color: UiTheme.text-dim; font-size: 10px; font-weight: 700; }
-                                Text { text: root.wb-solution-summary; color: UiTheme.text; font-family: "monospace"; font-size: 11px; }
-                                InspectorValue {text:root.wb-run-readiness;}
-                            } }
+                            Card {
+                                horizontal-stretch:1;
+                                VerticalLayout {
+                                    padding:10px;spacing:8px;
+                                    Text {text:"BOUNDARY ZONES";color:UiTheme.accent;font-size:11px;font-weight:700;}
+InteractiveGeometryPreview { vertical-stretch: 1; preview-image: root.visualization-image; help-text:root.mesh-dimension-index==0 ? "CLICK: SELECT · DRAG: PAN · WHEEL: ZOOM · DOUBLE CLICK: FIT" : "CLICK: SELECT · 3D FIXED ISOMETRIC VIEW"; view-axis: root.geometry-view-axis; orbit(x, y, pressed-x, pressed-y) => { root.mesh-view-drag(x,y,pressed-x,pressed-y,self.width/1px,self.height/1px); } orbit-end => { root.mesh-view-end(); } zoom(delta) => { root.mesh-view-zoom(delta); } reset-view => { root.mesh-view-fit(); } pick-boundary(x, y, w, h) => { root.pick-boundary(x, y, w, h); } hover(x, y, w, h) => { root.mesh-hover(x, y, w, h); } }
+                                    Text {text:root.wb-flow-feedback;color:UiTheme.text-soft;font-size:11px;wrap:word-wrap;}
+                                    HorizontalLayout {
+                                        Text {text:root.wb-boundary-summary;color:UiTheme.text-soft;font-size:11px;wrap:word-wrap;vertical-alignment:center;horizontal-stretch:1;}
+                                        Button {min-width:0px;text:"Solution →";clicked=>{root.select-step(3);}}
+                                    }
+                                }
+                            }
                         }
-                    }
                     }
                 }
 
-                if !root.examples-open && root.current-step == 4 : Rectangle {
-                    width: parent.width; height: parent.height;
-                    results-scroll := ScrollView {
-                        width: parent.width;
-                        height: parent.height;
-                        horizontal-scrollbar-policy: as-needed;
-
-                        VerticalLayout {
-                            min-height: results-scroll.visible-height;
-                            padding: root.page-padding; spacing: root.page-spacing;
-                        SectionTitle { text: "05  Results"; }
-                        SectionHint { text: "Inspect scalar fields with configurable palettes, isolines, and cell-centred velocity vectors from sampled solver snapshots."; }
-                        HorizontalLayout {
-                                spacing: root.page-spacing;
-                                Card { min-width: 350px; horizontal-stretch: 2; VerticalLayout { padding: root.compact-ui ? 14px : 18px; spacing: 10px;
-                                Text { text: root.visualization-title; color: UiTheme.accent; font-size: 11px; font-weight: 700; }
-                                Rectangle { vertical-stretch: 1; background: UiTheme.viewport; border-color: UiTheme.viewport-border; border-width: 1px;
-                                    Image { source: root.visualization-image; width: parent.width; height: parent.height; image-fit: contain; }
-                                    TouchArea {clicked=>{root.pick-boundary(self.mouse-x/1px,self.mouse-y/1px,self.width/1px,self.height/1px);}}
-                                }
-                                Text { text: root.animation-status; color: UiTheme.text-soft; font-size: 11px; wrap:word-wrap; }
-                                Text {text:root.result-probe-text;color:UiTheme.text-soft;font-size:11px;wrap:word-wrap;}
-                                HorizontalLayout { Button { text: "SPEED"; clicked => { root.select-result-field(0); } } Button { text: "PRESSURE"; clicked => { root.select-result-field(1); } } Button { text: "VORTICITY"; clicked => { root.select-result-field(2); } } Button { text: "TEMPERATURE"; clicked => { root.select-result-field(3); } } }
-                                HorizontalLayout { Button {text:"Ux";clicked=>{root.select-result-field(4);}} Button {text:"Uy";clicked=>{root.select-result-field(5);}} Button {text:"Uz";clicked=>{root.select-result-field(6);}} }
-                                Rectangle { height: 1px; background: UiTheme.border; }
-                                Button { text:"EXPORT CELL DATA · CSV"; enabled:!root.wb-busy; clicked=>{root.export-result-csv();} }
-                                HorizontalLayout {
-                                    ComboBox {model:["3D surface", "XY slice", "XZ slice", "YZ slice"];current-index <=> root.result-slice-axis;selected(value)=>{root.apply-result-style();}}
-                                    SpinBox {value <=> root.result-slice-percent;minimum:1;maximum:99;}
-                                    Button {text:"APPLY SLICE (%)";clicked=>{root.apply-result-style();}}
-                                }
-                                Text {text:"Interior slices show cell values without smoothing. Position is a percentage of the model extent; use Surface for vectors.";wrap:word-wrap;color:UiTheme.text-faint;font-size:10px;}
-                                Text { text: "POST-PROCESSING STYLE"; color: UiTheme.accent; font-size: 10px; font-weight: 700; }
-                                HorizontalLayout {
-                                    VerticalLayout { Text { text: "Plot"; color: UiTheme.text-muted; font-size: 10px; } ComboBox { model: ["Filled field", "Contours", "Contours + vectors", "Vectors only"]; current-index <=> root.result-plot-index; } }
-                                    VerticalLayout { Text { text: "Color map"; color: UiTheme.text-muted; font-size: 10px; } ComboBox { model: ["Turbo", "Viridis", "Plasma", "Blue–red"]; current-index <=> root.result-colormap-index; } }
-                                    VerticalLayout { Text { text: "Levels"; color: UiTheme.text-muted; font-size: 10px; } SpinBox { value <=> root.result-contour-levels; minimum: 3; maximum: 32; } }
-                                }
-                                HorizontalLayout { Text { text: "Range"; color: UiTheme.text-muted; vertical-alignment: center; } LineEdit { text <=> root.result-range-min; placeholder-text: "Auto min"; } LineEdit { text <=> root.result-range-max; placeholder-text: "Auto max"; } Button { text: "APPLY RANGE"; clicked => { root.apply-result-range(); } } Button { text: "AUTO"; clicked => { root.reset-result-range(); } } }
-                                HorizontalLayout { Text { text: "Vectors"; color: UiTheme.text-muted; vertical-alignment: center; } ComboBox { model: ["Low", "Medium", "High"]; current-index <=> root.result-vector-density; } LineEdit { text <=> root.result-vector-scale; placeholder-text: "Auto scale"; } }
-                                HorizontalLayout { Button { text: "APPLY STYLE"; clicked => { root.apply-result-style(); } } Button { text: "SEED STREAMLINE"; clicked => { root.seed-streamline(); } } Button { text: "CLEAR STREAMLINES"; clicked => { root.clear-streamlines(); } } }
-                                Text { text: "Vectors use cell-centred velocity; arrows are adaptively sampled. Seed Streamline then click a 2D result cell."; color: UiTheme.text-faint; font-size: 10px; wrap: word-wrap; }
-                                HorizontalLayout { Button { text: "FIELD"; clicked => { root.show-field(); } } Button { text: "MESH"; clicked => { root.show-mesh(); } } Button { text: "PLAY / PAUSE"; clicked => { root.animation-play-pause(); } } Button { text: "NEXT"; clicked => { root.animation-next(); } } }
-                            } }
-                                Card { min-width: 250px; preferred-width: 330px; max-width: 390px; horizontal-stretch: 1; VerticalLayout { padding: root.compact-ui ? 14px : 18px; spacing: 10px;
-                                Text { text: "RUN SUMMARY"; color: UiTheme.accent; font-size: 11px; font-weight: 700; }
-                                Text { text: root.residual-summary; color: UiTheme.text; font-family: "monospace"; font-size: 12px; }
-                                Text { text: root.force-summary; color: UiTheme.text; font-family: "monospace"; font-size: 12px; }
-                                Text { text: root.field-summary; color: UiTheme.text-muted; font-size: 11px; wrap: word-wrap; }
-                                Text { text: "SOLVER LOG"; color: UiTheme.accent; font-size: 11px; font-weight: 700; }
-                                TextEdit { text: root.log-text; read-only: true; vertical-stretch: 1; }
-                            } }
-                        }
-                    }
-                    }
+                if !root.examples-open && root.current-step == 3 : SolutionWorkspace {
+                    width:parent.width;height:parent.height;
+                    show-log <=> root.solution-show-log;chart-kind <=> root.wb-chart-kind;
+                    refresh-chart=>{root.post-refresh();}
+                    chart:root.residual-image;caption:root.continuity-chart-caption;
+                    convergence-summary:root.post-convergence-summary;balance:root.post-balance;monitor:root.wb-solve-monitor;summary:root.wb-solution-summary;readiness:root.wb-run-readiness;
+                    log:root.log-text;material:"ρ="+root.material-density+" · ν="+root.material-viscosity;
+                    busy:root.wb-busy;can-run:root.can-run-workbench;progress:root.wb-solve-progress;
+                    iterations <=> root.wb-max-iterations;velocity-relaxation <=> root.wb-velocity-relaxation;
+                    pressure-relaxation <=> root.wb-pressure-relaxation;continuity-tolerance <=> root.wb-continuity-tolerance;
+                    coupling-tolerance <=> root.wb-coupling-tolerance;
+                    apply=>{root.apply-solver-settings-wb();}run=>{root.run-workbench();}cancel=>{root.cancel-workbench-job();}
+                    results=>{root.select-step(4);root.show-field();}edit-material=>{root.setup-material-expanded=true;root.select-step(2);}
+                    export-history=>{root.post-export(3);}export-chart=>{root.post-export(6);}export-vector=>{root.post-export(11);}
+                }
+                if !root.examples-open && root.current-step == 4 : ResultsWorkspace {
+                    width:parent.width;height:parent.height;
+                    tab <=> root.post-tab;
+                    balance:root.post-balance;profile-image:root.post-profile-image;profile-caption:root.post-profile-caption;
+                    line-x0 <=> root.post-line-x0;line-y0 <=> root.post-line-y0;line-x1 <=> root.post-line-x1;line-y1 <=> root.post-line-y1;line-samples <=> root.post-line-samples;
+                    sample-line(preset)=>{root.post-profile(preset);}
+                    preview:root.visualization-image;title:root.visualization-title;summary:root.residual-summary;
+                    legend:root.post-legend;probe:root.result-probe-text;statistics:root.post-statistics;log:root.log-text;
+                    feedback:root.post-feedback;export-status:root.post-export-status;has-result:root.post-has-result;is-3d:root.post-is-3d;
+                    playing:root.post-playing;export-busy:root.post-export-busy;phase:root.post-phase;probe-count:root.post-probe-count;
+                    probes:root.post-probe-model;runs:root.post-run-model;run-index:root.post-run-index;field-index:root.result-field-index;
+                    plot <=> root.result-plot-index;palette <=> root.result-colormap-index;levels <=> root.result-contour-levels;
+                    range-min <=> root.result-range-min;range-max <=> root.result-range-max;
+                    vector-density <=> root.result-vector-density;vector-scale <=> root.result-vector-scale;edges <=> root.post-edges;
+                    slice-axis <=> root.result-slice-axis;slice-percent <=> root.result-slice-percent;
+                    animation-mode <=> root.post-animation-mode;animation-rate <=> root.post-animation-rate;
+                    select-run(index)=>{root.post-select-run(index);}select-field(index)=>{root.select-result-field(index);}
+                    style=>{root.apply-result-style();}apply-range=>{root.apply-result-range();}auto-range=>{root.reset-result-range();}
+                    action(index)=>{root.post-action(index);}export(index)=>{root.post-export(index);}export-cells=>{root.export-result-csv();}
+                    seek(value)=>{root.post-seek(value);}select-probe(index)=>{root.post-select-probe(index);}
+                    pick(x,y,w,h)=>{root.pick-boundary(x,y,w,h);}hover(x,y,w,h)=>{root.mesh-hover(x,y,w,h);}
+                    drag(x,y,px,py,w,h)=>{root.post-view-drag(x,y,px,py,w,h);}drag-end=>{root.mesh-view-end();}
+                    zoom(value)=>{root.post-view-zoom(value);}fit=>{root.post-view-fit();}
                 }
 
                 }
 
                 // ---- RIGHT PROPERTIES INSPECTOR ----
-                if root.current-step != 0 || root.inspector-mode != 0 : Rectangle {
+                if (root.current-step == 0 && root.inspector-mode != 0) || (root.current-step == 4 && root.inspector-mode == 6) : Rectangle {
                     min-width: root.compact-ui ? 236px : 264px;
                     preferred-width: root.compact-ui ? 260px : 292px;
                     max-width: root.compact-ui ? 288px : 320px;

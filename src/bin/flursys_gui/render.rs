@@ -249,12 +249,11 @@ pub(super) fn render_persisted_result(
     display_range: Option<(f64, f64)>,
     view: &ViewTransform,
     streamlines: &[StreamlinePath],
+    levels:usize,
+    edges:bool,
 ) -> Image {
     let (width, height) = (PREVIEW_WIDTH, PREVIEW_HEIGHT);
-    image_from_rgba(
-        width,
-        height,
-        render_persisted_pixels(
+    let mut pixels=render_persisted_pixels(
             width,
             height,
             cache,
@@ -266,8 +265,17 @@ pub(super) fn render_persisted_result(
             display_range,
             view,
             streamlines,
-        ),
-    )
+        );
+    if cache.mesh_cache().dimension()==MeshDimension::TwoD {
+        if matches!(plot,1|2) {draw_result_contours(&mut pixels,width,height,cache,field,view,display_range,levels);}
+        if edges {for edge in cache.mesh_cache().edges() {
+            let a=cache.mesh_cache().positions()[edge[0]];let b=cache.mesh_cache().positions()[edge[1]];
+            let a=view.world_to_screen((a.x,a.y));let b=view.world_to_screen((b.x,b.y));
+            draw_line(&mut pixels,width,height,(a.0 as i32,a.1 as i32),(b.0 as i32,b.1 as i32),[62,91,106,255]);
+        }}
+    }
+    draw_colormap_legend(&mut pixels,width,height,colormap);
+    image_from_rgba(width,height,pixels)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -416,6 +424,14 @@ fn draw_result_vectors(
             (end.0 as i32, end.1 as i32),
             [238, 246, 250, 255],
         );
+        let dx=end.0-start.0;let dy=end.1-start.1;let length=dx.hypot(dy);
+        if length>2.5 {
+            let angle=dy.atan2(dx);let head=(length*0.35).min(4.0);
+            for offset in [-0.5f64,0.5] {
+                let tip=(end.0-head*(angle+offset).cos(),end.1-head*(angle+offset).sin());
+                draw_line(pixels,width,height,(end.0 as i32,end.1 as i32),(tip.0 as i32,tip.1 as i32),[238,246,250,255]);
+            }
+        }
     }
 }
 
@@ -465,6 +481,14 @@ fn draw_result_vectors_3d(
             (end.0 as i32, end.1 as i32),
             [238, 246, 250, 255],
         );
+        let dx=end.0-start.0;let dy=end.1-start.1;let length=dx.hypot(dy);
+        if length>2.5 {
+            let angle=dy.atan2(dx);let head=(length*0.35).min(4.0);
+            for offset in [-0.5f64,0.5] {
+                let tip=(end.0-head*(angle+offset).cos(),end.1-head*(angle+offset).sin());
+                draw_line(pixels,width,height,(end.0 as i32,end.1 as i32),(tip.0 as i32,tip.1 as i32),[238,246,250,255]);
+            }
+        }
     }
 }
 
@@ -883,7 +907,7 @@ pub(super) fn render_canonical_geometry_3d(
     pitch: f32,
     zoom: f32,
     pick_mode: i32,
-    selected_target: Option<GeometrySelectionTarget>,
+    selected_targets: &[GeometrySelectionTarget],
     hovered_target: Option<GeometrySelectionTarget>,
 ) -> Image {
     let (width, height) = (PREVIEW_WIDTH, PREVIEW_HEIGHT);
@@ -920,10 +944,10 @@ pub(super) fn render_canonical_geometry_3d(
         if surface.body.is_none() && sketch_ids.contains(&surface.face) {
             continue;
         }
-        let selected = selected_target == Some(GeometrySelectionTarget::Face(surface.face))
+        let selected = selected_targets.contains(&GeometrySelectionTarget::Face(surface.face))
             || surface
                 .body
-                .is_some_and(|body| selected_target == Some(GeometrySelectionTarget::Body(body)));
+                .is_some_and(|body| selected_targets.contains(&GeometrySelectionTarget::Body(body)));
         let hovered = hovered_target == Some(GeometrySelectionTarget::Face(surface.face))
             || surface
                 .body
@@ -1034,7 +1058,7 @@ pub(super) fn render_canonical_geometry_3d(
     }
     // Sketches are wire overlays; filling their profiles would visually cap holes.
     for surface in sketch_surfaces {
-        let color = if selected_target == Some(GeometrySelectionTarget::Face(surface.face)) {
+        let color = if selected_targets.contains(&GeometrySelectionTarget::Face(surface.face)) {
             [255, 224, 140, 255]
         } else if hovered_target == Some(GeometrySelectionTarget::Face(surface.face)) {
             [142, 232, 176, 255]
@@ -1074,10 +1098,8 @@ pub(super) fn render_canonical_geometry_3d(
         }
     }
     // Entity picks use the same stable IDs and camera as the geometry tree.
-    for (target, color) in [
-        (hovered_target, [142, 232, 176, 255]),
-        (selected_target, [255, 226, 143, 255]),
-    ] {
+    for (target, color) in std::iter::once((hovered_target, [142, 232, 176, 255]))
+        .chain(selected_targets.iter().copied().map(|target|(Some(target),[255,226,143,255]))) {
         match target {
             Some(GeometrySelectionTarget::Vertex(id)) => {
                 if let Some(vertex) = topology.vertex(id) {
@@ -3535,9 +3557,11 @@ fn scalar_range(values: &[f64], symmetric: bool) -> (f64, f64) {
         let bound = min_value.abs().max(max_value.abs()).max(1.0e-12);
         min_value = -bound;
         max_value = bound;
-    } else if !min_value.is_finite() || max_value <= min_value {
-        min_value = 0.0;
-        max_value = 1.0;
+    } else if !min_value.is_finite() || !max_value.is_finite() {
+        min_value = 0.0; max_value = 1.0;
+    } else if max_value<=min_value {
+        let pad=(min_value.abs()*0.01).max(1e-12);
+        min_value-=pad;max_value+=pad;
     }
     (min_value, max_value)
 }
@@ -3720,7 +3744,32 @@ pub(super) fn render_workbench_continuity_chart(history: &VecDeque<ResidualSampl
     let (width,height)=(PREVIEW_WIDTH,PREVIEW_HEIGHT);
     let mut pixels=vec![0u8;(width*height*4) as usize];
     fill(&mut pixels,[11,18,24,255]);
-    if history.len()>1 {draw_series(&mut pixels,width,height,history,|s|s.continuity,[77,168,184,255]);}
+    let positive=history.iter().map(|s|s.continuity).filter(|v|v.is_finite() && *v>0.0).collect::<Vec<_>>();
+    if positive.is_empty(){
+        if history.iter().any(|s|s.continuity==0.0) {
+            for n in 0..=4 {let y=12+(height-25)*n/4;draw_line(&mut pixels,width,height,(12,y as i32),(width as i32-13,y as i32),[29,48,61,255]);}
+            draw_line(&mut pixels,width,height,(12,height as i32-13),(width as i32-13,height as i32-13),[77,168,184,255]);
+        }
+        return image_from_rgba(width,height,pixels);
+    }
+    let lo=positive.iter().copied().fold(f64::INFINITY,f64::min).log10().floor()-0.25;
+    let hi=positive.iter().copied().fold(0.0,f64::max).log10().ceil()+0.25;
+    let span=(hi-lo).max(1.0);
+    for n in 0..=4 {
+        let y=12+(height-25)*n/4;
+        draw_line(&mut pixels,width,height,(12,y as i32),(width as i32-13,y as i32),[29,48,61,255]);
+    }
+    let mut previous=None;
+    for (index,sample) in history.iter().enumerate() {
+        if !sample.continuity.is_finite() || sample.continuity<0.0 {previous=None;continue;}
+        let log=if sample.continuity>0.0 {sample.continuity.log10()} else {lo};
+        let x=12+(width-25) as usize*index/history.len().saturating_sub(1).max(1);
+        let y=12.0+(hi-log).clamp(0.0,span)/span*f64::from(height-25);
+        let point=(x as i32,y.round() as i32);
+        if let Some(old)=previous {draw_line(&mut pixels,width,height,old,point,[77,168,184,255]);}
+        else {draw_marker(&mut pixels,width,height,point,[77,168,184,255]);}
+        previous=Some(point);
+    }
     image_from_rgba(width,height,pixels)
 }
 
@@ -4246,4 +4295,39 @@ mod tests {
         assert_eq!(vector_scale_multiplier("nan"), 1.0);
         assert_eq!(vector_scale_multiplier("100"), 5.0);
     }
+}
+
+/// Display-only contour reconstruction; stored cell data is never modified.
+fn draw_result_contours(pixels:&mut[u8],width:u32,height:u32,cache:&ResultRenderCache,field:ResultFieldKind,view:&ViewTransform,range:Option<(f64,f64)>,levels:usize) {
+    let values=(0..cache.cell_count()).map(|c|cache.scalar_for_cell(field,c).unwrap_or(0.0)).collect::<Vec<_>>();
+    let (lo,hi)=range.unwrap_or_else(||scalar_range(&values,false));
+    if !(hi>lo) || values.iter().all(|v|*v==values[0]) {return;}
+    let mut nodes=std::collections::HashMap::<(u64,u64),(f64,usize)>::new();
+    for (i,v) in values.iter().enumerate() {if let Some(poly)=cache.mesh_cache().cell_polygon(i) {for &(x,y) in poly {let a=nodes.entry((x.to_bits(),y.to_bits())).or_default();a.0+=v;a.1+=1;}}}
+    for (i,&v) in values.iter().enumerate() {
+        let Some(poly)=cache.mesh_cache().cell_polygon(i) else {continue};
+        if poly.len()<3 {continue;}
+        let center=(poly.iter().map(|p|p.0).sum::<f64>()/poly.len() as f64,poly.iter().map(|p|p.1).sum::<f64>()/poly.len() as f64);
+        for j in 0..poly.len() {
+            let (a,b)=(poly[j],poly[(j+1)%poly.len()]);
+            let value=|p:(f64,f64)| {let n=nodes[&(p.0.to_bits(),p.1.to_bits())];n.0/n.1 as f64};
+            let triangle=[(center,v),(a,value(a)),(b,value(b))];
+            for level in 1..levels.clamp(3,32) {
+                let iso=lo+(hi-lo)*level as f64/levels as f64;
+                let mut intersections=Vec::with_capacity(2);
+                for k in 0..3 {
+                    let ((a,va),(b,vb))=(triangle[k],triangle[(k+1)%3]);
+                    if (va<iso && vb>=iso)||(vb<iso && va>=iso) {let t=(iso-va)/(vb-va);intersections.push(view.world_to_screen((a.0+(b.0-a.0)*t,a.1+(b.1-a.1)*t)));}
+                }
+                if intersections.len()==2 {let (a,b)=(intersections[0],intersections[1]);draw_line(pixels,width,height,(a.0 as i32,a.1 as i32),(b.0 as i32,b.1 as i32),[26,39,48,255]);}
+            }
+        }
+    }
+}
+
+pub(super) fn overlay_markers(image:Image,points:&[(f64,f64)],view:&ViewTransform)->Image {
+    let Some(buffer)=image.to_rgba8() else{return image};
+    let (w,h)=(buffer.width(),buffer.height());let mut pixels=buffer.as_bytes().to_vec();
+    for &point in points {let p=view.world_to_screen(point);draw_ellipse(&mut pixels,w,h,(p.0 as i32,p.1 as i32),3,3,[255,248,207,255]);}
+    image_from_rgba(w,h,pixels)
 }

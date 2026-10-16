@@ -23,6 +23,13 @@ use std::time::Duration;
 #[cfg(test)]
 use flursys::{ExtrudedMesh3D, StructuredMesh2D};
 
+#[path = "result_activation.rs"]
+mod result_activation;
+#[path = "result_analysis.rs"]
+mod result_analysis;
+#[path = "post_processing.rs"]
+mod post_processing;
+
 slint::include_modules!();
 #[path = "cad.rs"]
 mod cad;
@@ -206,6 +213,7 @@ struct AppState {
     last_update: Option<SolverUpdate>,
     residual_history: VecDeque<ResidualSample>,
     wb_residual_history: VecDeque<ResidualSample>,
+    post:post_processing::State,
     frames: VecDeque<FieldUpdate>,
     frame_index: usize,
     animation_playing: bool,
@@ -336,6 +344,7 @@ impl AppState {
             last_update: None,
             residual_history: VecDeque::new(),
             wb_residual_history: VecDeque::new(),
+            post:post_processing::State::default(),
             frames: VecDeque::new(),
             frame_index: 0,
             animation_playing: false,
@@ -442,6 +451,7 @@ impl AppState {
         self.workbench = session;
         self.workbench_project = template.project_template;
         self.workspace_path = None;
+        self.post.reset_result();
         self.active_result = None;
         self.result_render_cache = None;
         self.workbench_dirty = true;
@@ -475,6 +485,7 @@ impl AppState {
             .expect("a blank workbench project is always valid");
         self.workbench_project = project;
         self.workspace_path = None;
+        self.post.reset_result();
         self.active_result = None;
         self.result_render_cache = None;
         self.active_result_probe = None;
@@ -653,7 +664,7 @@ impl AppState {
                     changed = true;
                 }
                 WorkbenchJobEvent::SolveProgress(JobProgress::Started) => {
-                    self.wb_residual_history.clear();
+                    self.wb_residual_history.clear();self.post.start_solve();
                     self.log("Solve worker started.");
                     changed = true;
                 }
@@ -662,6 +673,7 @@ impl AppState {
                     max,
                     residual,
                 }) => {
+                    self.post.iteration=current;self.post.limit=max;
                     if let Some(value) = residual.filter(|v| v.is_finite()) {
                         push_bounded(&mut self.wb_residual_history, ResidualSample {continuity:value,momentum:0.0,pressure:0.0},400);
                     }
@@ -674,13 +686,19 @@ impl AppState {
                         changed = true;
                     }
                 }
+                WorkbenchJobEvent::SolveProgress(JobProgress::Metrics{iteration,values})=>{
+                    self.post.iteration=iteration;
+                    for (history,value) in self.post.metric_histories.iter_mut().zip(values[1..].iter()) {history.push(*value);}
+                    self.post.continuity_full.push(values[0]);
+                    changed=true;
+                }
                 WorkbenchJobEvent::SolveProgress(JobProgress::Cancelled) => {
                     self.solving = false;
                     self.log("Solve cancellation requested.");
                     changed = true;
                 }
                 WorkbenchJobEvent::SolveCompleted(outcome) => {
-                    self.solving = false;
+                    self.solving = false;self.post.finish_solve();
                     match &outcome {
                         Ok(solution) => self.log(format!(
                             "Workbench solve finished: converged={}, outer iterations={}, final continuity={:.3e}.",
@@ -697,6 +715,9 @@ impl AppState {
                         Err(error) => self.log(format!("Workbench solve failed: {error}")),
                     }
                     self.workbench.complete_solve(outcome);
+                    if self.workbench.solution().is_some() {
+                        if let Err(error)=self.activate_current_solution("current-solve") {self.log(format!("Cannot display completed solution: {error}"));}
+                    }
                     if let Err(error) = self.persist_completed_workbench_run() {
                         self.log(format!("Could not persist workbench run: {error}"));
                     }
@@ -773,6 +794,7 @@ impl AppState {
         self.face_sketch_host = None;
         self.face_sketch_start = None;
         self.face_sketch_cursor = None;
+        self.post.reset_result();
         self.active_result = None;
         self.result_render_cache = None;
         self.workbench_dirty = false;
@@ -817,6 +839,7 @@ impl AppState {
         self.face_sketch_host = None;
         self.face_sketch_start = None;
         self.face_sketch_cursor = None;
+        self.post.reset_result();
         self.active_result = None;
         self.result_render_cache = None;
         self.workbench_dirty = true;
@@ -851,7 +874,8 @@ impl AppState {
             &self.workbench,
         )
         .map_err(|error| error.to_string())?;
-        if finalized.is_some() {
+        if let Some(record)=finalized {
+            if record.solution_path.is_some() {self.activate_current_solution(&record.id)?;}
             self.workbench_dirty = false;
             self.workbench_autosave_needed = false;
             self.record_recent_workspace(&workspace)?;
@@ -936,6 +960,9 @@ impl AppState {
             .ok_or_else(|| "Load a persisted result before probing.".to_string())?
             .probe_cell(cell)
             .ok_or_else(|| format!("Result cell {cell} does not exist."))?;
+        if let Some(i)=self.post.probes.iter().position(|p|p.run_id==probe.run_id && p.cell_index==probe.cell_index){self.post.probes.remove(i);}
+        if self.post.probes.len()==32 {self.post.probes.remove(0);}
+        self.post.probes.push(probe.clone());
         self.active_result_probe = Some(probe);
         Ok(self
             .active_result_probe()
@@ -946,6 +973,7 @@ impl AppState {
     /// Clearing first prevents a failed selection from leaving fields from a
     /// different run visible in the Results view.
     fn activate_persisted_result(&mut self, run_id: &str) -> Result<(), String> {
+        self.post.reset_result();
         self.active_result = None;
         self.result_render_cache = None;
         self.active_result_probe = None;
@@ -954,13 +982,32 @@ impl AppState {
         self.result_manual_range = None;
         let workspace = self
             .workspace_path
-            .as_deref()
+            .clone()
             .ok_or_else(|| "Open a saved workspace before loading a persisted run.".to_string())?;
-        let dataset = flursys::load_workspace_result(workspace, &self.workbench_project, run_id)
+        let dataset = flursys::load_workspace_result(&workspace, &self.workbench_project, run_id)
             .map_err(|error| error.to_string())?;
-        let render_cache = ResultRenderCache::build(&dataset).map_err(|error| error.to_string())?;
-        self.active_result = Some(dataset);
-        self.result_render_cache = Some(render_cache);
+        self.install_result_dataset(dataset)?;
+        self.wb_residual_history.clear();
+        if let Some(record)=self.workbench_project.runs.iter().find(|r|r.id==run_id) {
+            if let Ok(text)=std::fs::read_to_string(workspace.join(&record.report_path)) {
+                if let Ok(report)=serde_json::from_str::<serde_json::Value>(&text) {
+                    if let Some(v)=report.get("boundary_flow_reports") {
+                        if let Ok(reports)=serde_json::from_value::<Vec<flursys::workbench::boundary_reports::BoundaryFlowReport>>(v.clone()) {
+                            self.post.boundary_summary=result_analysis::boundary_summary(&reports);
+                            self.post.boundary_reports=reports;
+                        }
+                    }
+                    if let Some(histories)=report.get("convergence_histories") {
+                        for (index,key) in ["momentum","velocity","pressure_linear"].iter().enumerate() {
+                            if let Some(values)=histories.get(*key).and_then(|v|v.as_array()) {self.post.metric_histories[index]=values.iter().filter_map(|v|v.as_f64()).filter(|v|v.is_finite()).collect();}
+                        }
+                    }
+                    if let Some(history)=report.get("continuity_history").and_then(|v|v.as_array()) {
+                        self.wb_residual_history=history.iter().rev().take(400).rev().filter_map(|v|v.as_f64()).filter(|v|v.is_finite()).map(|v|ResidualSample{continuity:v,momentum:0.0,pressure:0.0}).collect();
+                    }
+                }
+            }
+        }
         Ok(())
     }
 
@@ -1650,6 +1697,7 @@ pub fn run() -> Result<(), slint::PlatformError> {
             state.last_animation_tick = std::time::Instant::now();
             changed = true;
         }
+        changed |= post_processing::tick(&ui,&mut state);
         if changed {
             refresh_ui(&ui, &state);
         }
@@ -1717,6 +1765,7 @@ fn gallery_descriptors(templates: &[CaseTemplateManifest]) -> Vec<ExampleDescrip
 }
 
 fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
+    post_processing::bind(ui,state);
     // ---- Phase 9D stable geometry editor ----
     let weak_ui = ui.as_weak();
     let pick_state = state.clone();
@@ -3112,6 +3161,7 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
         state.show_mesh = false;
         state.show_geometry_3d = false;
         state.frame_index = state.frames.len().saturating_sub(1);
+        if let Err(error)=state.ensure_result_active() {state.log(error);}
         refresh_ui(&ui, &state);
     });
 
@@ -3341,7 +3391,7 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
             return;
         };
         let mut state = pick_boundary_state.borrow_mut();
-        let result_cell = state.result_render_cache().filter(|_| state.current_step == 4 && !state.show_mesh && !state.show_geometry_3d).and_then(|cache| {
+        let result_cell = state.result_render_cache().filter(|_| state.current_step == 4 && !state.show_geometry_3d).and_then(|cache| {
             let mesh_cache = cache.mesh_cache();
             match mesh_cache.dimension() {
                 MeshDimension::TwoD => {
@@ -3406,7 +3456,7 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
             refresh_ui(&ui, &state);
             return;
         }
-        if state.current_step == 4 && !state.show_mesh && !state.show_geometry_3d { return; }
+        if state.current_step == 4 && !state.show_geometry_3d { return; }
         if state.show_mesh {
             let point = geometry_editor_point(x, y, preview_width, preview_height);
             if let Some(cache) = state.workbench.mesh_render_cache() {
@@ -3424,7 +3474,28 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
                     }
                     (MeshDimension::ThreeD, MeshPickMode::Cell) => None,
                 };
+                let patch = selected.and_then(|selection| match selection.target() {
+                    MeshSelectionTarget::Face(face) => state.workbench.mesh().and_then(|generated|
+                        generated.mesh.boundary_patches().iter().position(|patch|patch.face_indices.contains(&face))),
+                    _=>None,
+                });
                 state.workbench.set_mesh_selection(selected);
+                if let Some(index)=patch {
+                    if let Some(name)=state.patch_names.get(index).cloned() {
+                        ui.set_patch_index(index as i32);
+                        push_boundary_fields(&ui,&state.workbench,&name);
+                        state.selected_tree=Some(TreeSelection{kind:TREE_KIND_PATCH,payload:index as i32});
+                        if state.current_step==1 {
+                            let group = state.workbench.named_selections().iter().enumerate()
+                                .find(|(_,g)|g.name==name).map(|(i,g)|(i,g.clone()));
+                            if let Some((group_index,group))=group {
+                                ui.set_mesh_group_index(group_index as i32);ui.set_ns_edit_name(name.into());
+                                state.wb_selected_targets=group.targets.clone();state.geometry_editor.selection=group.targets;
+                            }
+                        }
+                        rebuild_tree_rows(&mut state);
+                    }
+                }
                 refresh_ui(&ui, &state);
                 return;
             }
@@ -3505,7 +3576,7 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
         let Some(ui) = weak_ui.upgrade() else {
             return;
         };
-        ui.set_result_field_index(index.clamp(0, 6));
+        ui.set_result_field_index(index.clamp(0, 7));
         results_state.borrow_mut().result_manual_range = None;
         let mut state = results_state.borrow_mut();
         state.show_mesh = false;
@@ -3521,6 +3592,10 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
             return;
         };
         let mut state = results_state.borrow_mut();
+        let scale=ui.get_result_vector_scale();
+        if !scale.trim().is_empty() && scale.trim().parse::<f64>().ok().is_none_or(|v|!v.is_finite() || v<=0.0) {
+            ui.set_post_feedback("Vector scale must be a finite positive multiplier, or empty for Auto.".into());return;
+        }
         state.show_mesh = false;
         state.show_geometry_3d = false;
         state.animation_playing = false;
@@ -3748,7 +3823,13 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
                     payload: row.payload,
                 });
                 state.wb_selected_targets.clear();
-                if let Some(selection) = state.workbench.named_selections().get(&name) {
+                if let Some(selection) = state.workbench.named_selections().get(&name).cloned() {
+                    if state.current_step==1 {
+                        state.wb_selected_targets=selection.targets.clone();
+                        state.geometry_editor.selection=selection.targets.clone();
+                        state.show_geometry_3d=true;state.show_mesh=false;state.show_sketch_editor=false;
+                        ui.set_mesh_group_index(row.payload);
+                    }
                     ui.set_ns_edit_name(SharedString::from(selection.name.as_str()));
                     ui.set_ns_members(SharedString::from(describe_targets(&selection.targets)));
                 }
@@ -3777,8 +3858,8 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
                 // inspector open while showing the exact mesh faces it owns.
                 state.show_mesh = true;
                 state.show_geometry_3d = false;
-                ui.set_current_step(1);
-                state.current_step = 1;
+                ui.set_current_step(2);
+                state.current_step = 2;
                 ui.set_inspector_mode(3);
                 rebuild_tree_rows(&mut state);
                 refresh_ui(&ui, &state);
@@ -4070,6 +4151,7 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
             },
             Err(error) => state.log(format!("Cannot start meshing: {error}")),
         }
+        ui.set_wb_flow_feedback(state.logs.back().cloned().unwrap_or_default().into());
         rebuild_tree_rows(&mut state);
         refresh_ui(&ui, &state);
     });
@@ -4162,6 +4244,7 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
         let Some(ui) = weak_ui.upgrade() else {
             return;
         };
+        ui.set_wb_chart_kind(0);
         let mut state = run_state.borrow_mut();
         if state.meshing || state.solving {
             state.log("A job is already running; wait for it to finish.");
@@ -4431,9 +4514,9 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
                 point,
                 if state.current_step == 0 {
                     state.geometry_pick_mode
-                } else {
-                    0
-                },
+                } else if state.current_step == 1 {
+                    ui.get_mesh_entity_mode()
+                } else {0},
             );
             if state.geometry_editor.hover_target != hover {
                 state.geometry_editor.hover_target = hover;
@@ -4473,6 +4556,7 @@ fn select_tree_geometry_target(
 fn apply_workflow_step(ui: &MainWindow, state: &mut AppState, step: i32) {
     sync_project_from_ui(ui, &mut state.project);
     let step = step.clamp(0, 4);
+    if step!=4 {state.post.playing=false;}
     ui.set_current_step(step);
     state.current_step = step as usize;
     state.selected_tree = None;
@@ -4495,11 +4579,22 @@ fn apply_workflow_step(ui: &MainWindow, state: &mut AppState, step: i32) {
             state.animation_playing = false;
         }
         1 => {
-            state.show_geometry_3d = false;
-            state.show_mesh = true;
+            state.show_geometry_3d = true;
+            state.show_mesh = false;
+            state.show_sketch_editor = false;
             state.animation_playing = false;
+            ui.set_mesh_task(0);
+            ui.set_mesh_group_index(-1);
+            ui.set_ns_edit_name("".into());
+            ui.set_wb_flow_feedback("Select boundary entities, Shift-click to add, then create a named group. No boundary conditions are assigned automatically.".into());
+            ui.set_mesh_entity_mode(if state.workbench.mesh_dimension()==MeshDimension::TwoD {1} else {0});
+            if state.workbench.mesh_dimension()==MeshDimension::TwoD {
+                let (yaw,pitch)=geometry_view_angles(2);
+                state.geometry_yaw=yaw;state.geometry_pitch=pitch;state.geometry_zoom=1.0;
+            }
         }
         4 => {
+            if let Err(error)=state.ensure_result_active() {state.log(error);}
             state.show_geometry_3d = false;
             state.show_mesh = false;
             state.frame_index = state.frames.len().saturating_sub(1);
@@ -4582,7 +4677,7 @@ fn rebuild_tree_rows(state: &mut AppState) {
     let solved = matches!(
         state.workbench.status(),
         SolveStatus::Converged | SolveStatus::MaxIterations
-    );
+    ) || state.active_result.is_some() || state.workbench_project.runs.iter().any(|run|run.solution_path.is_some());
     state.tree_rows = build_project_tree_rows(
         &bodies,
         &faces,
@@ -5012,8 +5107,8 @@ fn push_workbench_defaults(ui: &MainWindow, session: &WorkbenchSession) {
 fn push_boundary_fields(ui: &MainWindow, session: &WorkbenchSession, patch: &str) {
     match session.boundary_assignment(patch).copied() {
         None => {
-            ui.set_bc_kind_index(2);
-            ui.set_bc_value_x(SharedString::from("0.1"));
+            ui.set_bc_kind_index(-1);
+            ui.set_bc_value_x(SharedString::from("0"));
             ui.set_bc_value_y(SharedString::from("0"));
             ui.set_bc_value_z(SharedString::from("0"));
             ui.set_bc_pressure(SharedString::from("0"));
@@ -5121,23 +5216,10 @@ fn solution_summary_text(session: &WorkbenchSession) -> String {
         },
         Some(solution) => {
             let report = &solution.report;
-            let history: Vec<String> = report
-                .continuity_history
-                .iter()
-                .rev()
-                .take(6)
-                .rev()
-                .enumerate()
-                .map(|(offset, value)| {
-                    format!(
-                        "  iter {:>5}  continuity {:.3e}",
-                        report.outer_iterations.saturating_sub(5) + offset + 1,
-                        value
-                    )
-                })
-                .collect();
+            let history: Vec<String> = report.continuity_history.iter().enumerate().rev().take(6).rev()
+                .map(|(iteration,value)|format!("  iter {iteration:>5}  continuity {value:.3e}")).collect();
             format!(
-                "status      {}\niterations  {}\ninitial ω   {:.3e}\nfinal ω     {:.3e}\nmomentum rel {:.3e}\nvelocity Δrel {:.3e}\ninflow      {:.5}\noutflow     {:.5}\nnet flux    {:+.3e}\n{}",
+                "status      {}\niterations  {}\ninitial mass RMS {:.3e}\nfinal mass RMS   {:.3e}\nmomentum rel {:.3e}\nvelocity Δrel {:.3e}\ninflow      {:.5}\noutflow     {:.5}\nnet flux    {:+.3e}\n{}",
                 status_label(session),
                 report.outer_iterations,
                 report.initial_continuity_rms,
@@ -5399,7 +5481,6 @@ fn recent_project_labels(state: &AppState) -> Vec<SharedString> {
 }
 
 fn refresh_ui(ui: &MainWindow, state: &AppState) {
-    flow_setup::refresh(ui, state);
     cad::refresh(ui, state);
     ui.set_project_loaded(state.project_loaded);
     let recent_labels = recent_project_labels(state);
@@ -5565,9 +5646,10 @@ fn refresh_ui(ui: &MainWindow, state: &AppState) {
     ui.set_log_text(SharedString::from(
         state.logs.iter().cloned().collect::<Vec<_>>().join("\n"),
     ));
+    result_activation::refresh(ui,state);
     ui.set_residual_image(if state.last_update.is_some() && state.workbench.geometry().vertices().next().is_none() {
         render_residual_chart(&state.residual_history)
-    } else { render::render_workbench_continuity_chart(&state.wb_residual_history) });
+    } else { render::render_workbench_continuity_chart(&post_processing::chart_history(state,ui.get_wb_chart_kind())) });
     ui.set_mesh_inspection(SharedString::from(mesh_inspection(&state.project)));
 
     // ---- Workbench pipeline ----
@@ -5590,6 +5672,7 @@ fn refresh_ui(ui: &MainWindow, state: &AppState) {
         );
     }
 
+    flow_setup::refresh(ui, state);
     let busy = state.meshing || state.solving;
     ui.set_wb_busy(busy);
     if state.meshing { ui.set_status("Meshing".into()); }
@@ -5640,11 +5723,20 @@ fn refresh_ui(ui: &MainWindow, state: &AppState) {
         MeshDisplayMode::Surface => 1,
         MeshDisplayMode::SurfaceEdges => 2,
     });
+    ui.set_mesh_color_index(match state.mesh_color_mode {
+        MeshColorMode::Neutral=>0,MeshColorMode::Patches=>1,MeshColorMode::Quality=>2,
+    });
+    ui.set_mesh_quality_index(match state.mesh_quality_metric {
+        MeshQualityMetric::AspectRatio=>0,MeshQualityMetric::Skewness=>1,
+        MeshQualityMetric::NonOrthogonality=>2,MeshQualityMetric::CellMeasure=>3,
+    });
     ui.set_mesh_selection_index(match state.mesh_pick_mode {
         MeshPickMode::Face => 0,
         MeshPickMode::Cell => 1,
     });
-    ui.set_wb_solution_summary(SharedString::from(solution_summary_text(&state.workbench)));
+    ui.set_wb_solution_summary(if (state.current_step==4 || state.workbench.solution().is_none()) && state.active_result().is_some() {
+        ui.get_residual_summary()
+    } else {SharedString::from(solution_summary_text(&state.workbench))});
     ui.set_can_run_workbench(!busy && state.workspace_path.is_some() && state.workbench.readiness().is_ok());
     ui.set_geometry_face_sketch_editing(state.face_sketch_host.is_some());
     ui.set_geometry_pick_mode(state.geometry_pick_mode);
@@ -5932,7 +6024,7 @@ fn refresh_ui(ui: &MainWindow, state: &AppState) {
             state.geometry_pitch,
             state.geometry_zoom,
             state.geometry_pick_mode,
-            selected_target,
+            &candidate.map(|p| p.selection.iter().copied().map(GeometrySelectionTarget::Body).collect::<Vec<_>>()).unwrap_or_else(||state.wb_selected_targets.clone()),
             hovered_target,
         ));
         if ui.get_cad_measure_active() && !state.cad_measure_points.is_empty() {
@@ -5948,6 +6040,10 @@ fn refresh_ui(ui: &MainWindow, state: &AppState) {
                 &points,
             ));
         }
+    } else if state.show_mesh && state.current_step==4 && state.active_result().is_some() {
+        let result=state.active_result().unwrap();let cache=state.result_render_cache().unwrap();
+        ui.set_visualization_title("RESULT MESH".into());
+        ui.set_visualization_image(render_workbench_mesh(result.mesh(),cache.mesh_cache(),&state.mesh_view,MeshDisplayMode::SurfaceEdges,MeshColorMode::Neutral,state.mesh_quality_metric,None,None,None));
     } else if state.show_mesh {
         if let Some(generated) = state.workbench.mesh() {
             if let Some(cache) = state.workbench.mesh_render_cache() {
@@ -5995,11 +6091,8 @@ fn refresh_ui(ui: &MainWindow, state: &AppState) {
             4 => ("VELOCITY X", ResultFieldKind::VelocityX, None),
             5 => ("VELOCITY Y", ResultFieldKind::VelocityY, None),
             6 => ("VELOCITY Z", ResultFieldKind::VelocityZ, None),
-            2 => (
-                "VORTICITY UNAVAILABLE",
-                ResultFieldKind::VelocityMagnitude,
-                Some("persisted runs currently provide pressure and velocity only"),
-            ),
+            2 => ("RECONSTRUCTED VORTICITY MAGNITUDE",ResultFieldKind::VorticityMagnitude,None),
+            7 => ("RECONSTRUCTED VELOCITY DIVERGENCE",ResultFieldKind::VelocityDivergence,None),
             3 => (
                 "TEMPERATURE UNAVAILABLE",
                 ResultFieldKind::VelocityMagnitude,
@@ -6046,6 +6139,8 @@ fn refresh_ui(ui: &MainWindow, state: &AppState) {
                 state.result_display_range(),
                 &state.mesh_view,
                 state.streamline_paths(),
+                ui.get_result_contour_levels().clamp(3,32) as usize,
+                ui.get_post_edges(),
             ),
         });
     } else if let Some(field) = state.frames.get(state.frame_index) {
@@ -6105,10 +6200,11 @@ fn refresh_ui(ui: &MainWindow, state: &AppState) {
         )));
         ui.set_visualization_image(image);
     } else {
-        ui.set_visualization_title(SharedString::from("SPEED FIELD"));
-        ui.set_animation_status(SharedString::from("Frame 0 / 0"));
+        ui.set_visualization_title(SharedString::from("NO ACTIVE RESULT"));
+        ui.set_animation_status(SharedString::from("No result loaded. Complete a solve or select a saved Run."));
         ui.set_visualization_image(render_empty_image());
     }
+    post_processing::decorate(ui,state);
 }
 
 const PREVIEW_WIDTH: u32 = 520;
@@ -7574,7 +7670,7 @@ mod tests {
                 "Edge 2",
                 "Edge 3",
                 "Edge 4",
-                "Named Selections",
+                "Boundary groups",
                 "inlet",
                 "Mesh",
                 "Setup",
