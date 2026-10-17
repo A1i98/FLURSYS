@@ -83,6 +83,39 @@ impl ResolvedVelocityBoundaryConditions {
         })
     }
 
+    pub(crate) fn set_face_velocity(&mut self, face: usize, velocity: Option<Vec3>) {
+        for (boundary, value) in [
+            (&mut self.x, velocity.map(|v| v.x)),
+            (&mut self.y, velocity.map(|v| v.y)),
+            (&mut self.z, velocity.map(|v| v.z)),
+        ] {
+            boundary.set_condition(
+                face,
+                value
+                    .map(ScalarBoundaryCondition::FixedValue)
+                    .unwrap_or(ScalarBoundaryCondition::ZeroGradient),
+            );
+        }
+    }
+
+    pub(crate) fn set_slip_face(&mut self, face: usize, normal: Vec3, owner_velocity: Vec3) {
+        let projected = owner_velocity - normal * owner_velocity.dot(normal);
+        for (boundary, n, u) in [
+            (&mut self.x, normal.x, projected.x),
+            (&mut self.y, normal.y, projected.y),
+            (&mut self.z, normal.z, projected.z),
+        ] {
+            boundary.set_condition(
+                face,
+                if n.abs() < 1e-14 {
+                    ScalarBoundaryCondition::ZeroGradient
+                } else {
+                    ScalarBoundaryCondition::FixedValue(u)
+                },
+            );
+        }
+    }
+
     pub fn component(&self, component: MomentumComponent) -> &ResolvedScalarBoundaryConditions {
         match component {
             MomentumComponent::X => &self.x,
@@ -463,11 +496,24 @@ pub fn solve_momentum_velocity(
     let mut x: Vec<f64> = velocity.values().iter().map(|value| value.x).collect();
     let mut y: Vec<f64> = velocity.values().iter().map(|value| value.y).collect();
     let mut z: Vec<f64> = velocity.values().iter().map(|value| value.z).collect();
-    let reports = [
-        bicgstab(systems[0].matrix(), systems[0].rhs(), &mut x, options)?,
-        bicgstab(systems[1].matrix(), systems[1].rhs(), &mut y, options)?,
-        bicgstab(systems[2].matrix(), systems[2].rhs(), &mut z, options)?,
-    ];
+    let reports = if rayon::current_thread_index().is_some() && rayon::current_num_threads() > 1 {
+        let (rx, (ry, rz)) = rayon::join(
+            || bicgstab(systems[0].matrix(), systems[0].rhs(), &mut x, options),
+            || {
+                rayon::join(
+                    || bicgstab(systems[1].matrix(), systems[1].rhs(), &mut y, options),
+                    || bicgstab(systems[2].matrix(), systems[2].rhs(), &mut z, options),
+                )
+            },
+        );
+        [rx?, ry?, rz?]
+    } else {
+        [
+            bicgstab(systems[0].matrix(), systems[0].rhs(), &mut x, options)?,
+            bicgstab(systems[1].matrix(), systems[1].rhs(), &mut y, options)?,
+            bicgstab(systems[2].matrix(), systems[2].rhs(), &mut z, options)?,
+        ]
+    };
     for (value, ((x, y), z)) in velocity
         .values_mut()
         .iter_mut()

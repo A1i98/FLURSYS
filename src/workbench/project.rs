@@ -60,6 +60,9 @@ impl RecentProjects {
 #[serde(rename_all = "kebab-case")]
 pub enum PhysicalBoundaryCondition {
     NoSlipWall,
+    Slip,
+    Symmetry,
+    FarField { velocity: Vec3, pressure: f64 },
     MovingWall { velocity: Vec3 },
     VelocityInlet { velocity: Vec3 },
     PressureOutlet { pressure: f64 },
@@ -73,6 +76,8 @@ pub struct BoundaryAssignment {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct WorkbenchMeshSettings {
+    #[serde(default = "default_cpu_threads")]
+    pub threads: usize,
     pub dimension: MeshDimension,
     pub global_size: f64,
     pub min_size: f64,
@@ -83,6 +88,7 @@ pub struct WorkbenchMeshSettings {
 impl Default for WorkbenchMeshSettings {
     fn default() -> Self {
         Self {
+            threads: 1,
             dimension: MeshDimension::TwoD,
             global_size: 0.1,
             min_size: 0.05,
@@ -161,6 +167,8 @@ impl Default for WorkbenchMaterial {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct WorkbenchSolverSettings {
+    #[serde(default = "default_cpu_threads")]
+    pub threads: usize,
     pub max_outer_iterations: usize,
     pub continuity_absolute_tolerance: f64,
     #[serde(default = "default_coupling_tolerance")]
@@ -172,6 +180,7 @@ pub struct WorkbenchSolverSettings {
 impl Default for WorkbenchSolverSettings {
     fn default() -> Self {
         Self {
+            threads: 1,
             max_outer_iterations: 1000,
             continuity_absolute_tolerance: 1.0e-10,
             coupling_relative_tolerance: default_coupling_tolerance(),
@@ -179,6 +188,10 @@ impl Default for WorkbenchSolverSettings {
             pressure_relaxation: 0.3,
         }
     }
+}
+
+fn default_cpu_threads() -> usize {
+    1
 }
 
 fn default_coupling_tolerance() -> f64 {
@@ -574,6 +587,7 @@ pub fn finalize_workspace_run(
         "mesh_settings": &project.mesh,
         "material": &project.material,
         "solver_settings": &project.solver,
+        "cpu_worker_threads": session.solution().map(|s| s.report.cpu_threads),
         "boundaries": &project.boundaries,
         "boundary_flow_reports": session.mesh().zip(session.solution()).map(|(mesh,solution)|super::boundary_reports::boundary_flow_reports(&mesh.mesh,solution,session.material().density)),
         "continuity_history": session.solution().map(|solution| &solution.report.continuity_history),
@@ -934,7 +948,12 @@ fn validate_mesh_control_targets(
 
 fn validate_boundary(condition: &PhysicalBoundaryCondition) -> Result<(), ProjectDocumentError> {
     let values: &[f64] = match condition {
-        PhysicalBoundaryCondition::NoSlipWall => &[],
+        PhysicalBoundaryCondition::NoSlipWall
+        | PhysicalBoundaryCondition::Slip
+        | PhysicalBoundaryCondition::Symmetry => &[],
+        PhysicalBoundaryCondition::FarField { velocity, pressure } => {
+            &[velocity.x, velocity.y, velocity.z, *pressure]
+        }
         PhysicalBoundaryCondition::MovingWall { velocity }
         | PhysicalBoundaryCondition::VelocityInlet { velocity } => {
             &[velocity.x, velocity.y, velocity.z]
@@ -989,6 +1008,63 @@ mod tests {
         StreamlineField, StreamlineOptions, Vec3, WorkbenchSession,
     };
     use tempfile::tempdir;
+
+    #[test]
+    fn workspace_round_trip_preserves_mixed_boundaries_and_cpu_workers() {
+        let directory = tempdir().unwrap();
+        let mut project = WorkbenchProject::blank("mixed boundaries");
+        let rectangle = project.geometry.add_rectangle(2.0, 1.0).unwrap();
+        for (name, edge, condition) in [
+            ("left", rectangle.left, PhysicalBoundaryCondition::Slip),
+            (
+                "right",
+                rectangle.right,
+                PhysicalBoundaryCondition::Symmetry,
+            ),
+            (
+                "top",
+                rectangle.top,
+                PhysicalBoundaryCondition::FarField {
+                    velocity: Vec3::new(1.0, 0.0, 0.0),
+                    pressure: 0.25,
+                },
+            ),
+            (
+                "bottom",
+                rectangle.bottom,
+                PhysicalBoundaryCondition::NoSlipWall,
+            ),
+        ] {
+            project.named_selections.push(NamedSelection {
+                name: name.into(),
+                targets: vec![GeometrySelectionTarget::Edge(edge)],
+            });
+            project.boundaries.push(BoundaryAssignment {
+                selection: name.into(),
+                condition,
+            });
+        }
+        project.solver.threads = 2;
+        project.mesh.threads = 3;
+        save_workspace(directory.path(), &project).unwrap();
+        let restored = load_workspace(directory.path()).unwrap();
+        assert_eq!(restored.boundaries, project.boundaries);
+        assert_eq!(restored.solver.threads, 2);
+        assert_eq!(restored.mesh.threads, 3);
+        let session = WorkbenchSession::from_project(&restored).unwrap();
+        let round_trip = session.to_project("restored");
+        assert_eq!(round_trip.boundaries.len(), project.boundaries.len());
+        for assignment in &project.boundaries {
+            assert!(round_trip.boundaries.contains(assignment));
+        }
+        assert_eq!(round_trip.solver.threads, 2);
+        assert_eq!(round_trip.mesh.threads, 3);
+        assert_eq!(session.mesh_cpu_threads(), 3);
+        let mut old_settings = serde_json::to_value(&project.solver).unwrap();
+        old_settings.as_object_mut().unwrap().remove("threads");
+        let old_settings: WorkbenchSolverSettings = serde_json::from_value(old_settings).unwrap();
+        assert_eq!(old_settings.threads, 1);
+    }
 
     #[test]
     fn workspace_round_trip_preserves_geometry_ids_and_allocator_state() {

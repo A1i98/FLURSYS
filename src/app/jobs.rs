@@ -25,6 +25,10 @@ impl CancellationToken {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum JobProgress {
+    Meshing {
+        fraction: f64,
+        stage: String,
+    },
     Metrics {
         iteration: usize,
         values: [f64; 4],
@@ -97,10 +101,18 @@ impl WorkbenchJobExecutor {
         self.start(|sender, cancellation| {
             std::thread::spawn(move || {
                 let _ = sender.send(WorkbenchJobEvent::MeshProgress(JobProgress::Started));
-                let result =
-                    GmshMesher::auto().generate_cancellable(&export.document, &options, || {
-                        cancellation.is_cancelled()
-                    });
+                let result = GmshMesher::auto().generate_with_progress(
+                    &export.document,
+                    &options,
+                    || cancellation.is_cancelled(),
+                    |fraction, stage| {
+                        let _ =
+                            sender.send(WorkbenchJobEvent::MeshProgress(JobProgress::Meshing {
+                                fraction,
+                                stage: stage.into(),
+                            }));
+                    },
+                );
                 let cancelled = cancellation.is_cancelled();
                 let _ = sender.send(WorkbenchJobEvent::MeshCompleted(result));
                 let _ = sender.send(WorkbenchJobEvent::MeshProgress(if cancelled {

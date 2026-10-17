@@ -14,9 +14,25 @@ use crate::{
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum IncompressibleBoundaryCondition {
     NoSlipWall,
-    MovingWall { velocity: Vec3 },
-    VelocityInlet { velocity: Vec3 },
-    PressureOutlet { pressure: f64 },
+    /// Impermeable, shear-free boundary with tangential velocity extrapolation.
+    Slip,
+    /// Symmetry plane: same velocity/pressure constraints as laminar slip.
+    Symmetry,
+    /// Incompressible free stream: prescribed velocity on inflow, kinematic
+    /// reference pressure on outflow. Faces switch using the latest mass flux.
+    FarField {
+        velocity: Vec3,
+        pressure: f64,
+    },
+    MovingWall {
+        velocity: Vec3,
+    },
+    VelocityInlet {
+        velocity: Vec3,
+    },
+    PressureOutlet {
+        pressure: f64,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -27,6 +43,9 @@ pub struct IncompressibleMaterial {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct IncompressibleSolverOptions {
+    /// Private worker-pool size; zero uses the CPUs available to this process.
+    /// Momentum components can run concurrently; pressure is currently serial.
+    pub threads: usize,
     pub max_outer_iterations: usize,
     pub continuity_absolute_tolerance: f64,
     pub coupling_relative_tolerance: f64,
@@ -39,6 +58,7 @@ pub struct IncompressibleSolverOptions {
 impl Default for IncompressibleSolverOptions {
     fn default() -> Self {
         Self {
+            threads: 1,
             max_outer_iterations: 1000,
             continuity_absolute_tolerance: 1.0e-10,
             coupling_relative_tolerance: 1.0e-6,
@@ -108,6 +128,14 @@ impl IncompressibleCase {
     pub fn resolve_boundaries(
         &self,
     ) -> Result<ResolvedIncompressibleBoundaries, IncompressibleCaseError> {
+        self.resolve_boundaries_at(None, None)
+    }
+
+    pub(crate) fn resolve_boundaries_at(
+        &self,
+        velocity: Option<&CellField<Vec3>>,
+        flux: Option<&FaceField<f64>>,
+    ) -> Result<ResolvedIncompressibleBoundaries, IncompressibleCaseError> {
         if !(self.material.density.is_finite() && self.material.density > 0.0) {
             return Err(IncompressibleCaseError::InvalidDensity {
                 value: self.material.density,
@@ -126,6 +154,35 @@ impl IncompressibleCase {
         let mut correction_assignments = Vec::with_capacity(self.boundaries.len());
         for (name, condition) in &self.boundaries {
             match *condition {
+                IncompressibleBoundaryCondition::Slip
+                | IncompressibleBoundaryCondition::Symmetry => {
+                    velocity_assignments
+                        .push((name.as_str(), VelocityBoundaryCondition::ZeroGradient));
+                    pressure_assignments
+                        .push((name.as_str(), ScalarBoundaryCondition::ZeroGradient));
+                    correction_assignments
+                        .push((name.as_str(), ScalarBoundaryCondition::ZeroGradient));
+                }
+                IncompressibleBoundaryCondition::FarField { velocity, pressure } => {
+                    if !finite_vector(velocity) {
+                        return Err(IncompressibleCaseError::InvalidVelocityBoundary {
+                            patch: name.clone(),
+                            velocity,
+                        });
+                    }
+                    if !pressure.is_finite() {
+                        return Err(IncompressibleCaseError::InvalidOutletPressure {
+                            patch: name.clone(),
+                            pressure,
+                        });
+                    }
+                    velocity_assignments
+                        .push((name.as_str(), VelocityBoundaryCondition::ZeroGradient));
+                    pressure_assignments
+                        .push((name.as_str(), ScalarBoundaryCondition::ZeroGradient));
+                    correction_assignments
+                        .push((name.as_str(), ScalarBoundaryCondition::ZeroGradient));
+                }
                 IncompressibleBoundaryCondition::NoSlipWall => {
                     velocity_assignments.push((
                         name.as_str(),
@@ -169,11 +226,11 @@ impl IncompressibleCase {
                 }
             }
         }
-        let velocity_boundary =
+        let mut velocity_boundary =
             ResolvedVelocityBoundaryConditions::strict(&self.mesh, &velocity_assignments)?;
-        let pressure_boundary =
+        let mut pressure_boundary =
             ResolvedScalarBoundaryConditions::strict(&self.mesh, &pressure_assignments)?;
-        let pressure_correction_boundary =
+        let mut pressure_correction_boundary =
             ResolvedScalarBoundaryConditions::strict(&self.mesh, &correction_assignments)?;
         let mut boundary_flux = FaceField::filled(&self.mesh, 0.0);
         for (name, condition) in &self.boundaries {
@@ -184,6 +241,9 @@ impl IncompressibleCase {
                 .find(|patch| patch.name == *name)
                 .expect("resolved boundary patch exists");
             let velocity = match *condition {
+                IncompressibleBoundaryCondition::Slip
+                | IncompressibleBoundaryCondition::Symmetry
+                | IncompressibleBoundaryCondition::FarField { .. } => None,
                 IncompressibleBoundaryCondition::NoSlipWall => Some(Vec3::ZERO),
                 IncompressibleBoundaryCondition::MovingWall { velocity }
                 | IncompressibleBoundaryCondition::VelocityInlet { velocity } => Some(velocity),
@@ -192,6 +252,50 @@ impl IncompressibleCase {
             if let Some(velocity) = velocity {
                 for &face in &patch.face_indices {
                     boundary_flux[face] = velocity.dot(self.mesh.faces()[face].area_vector);
+                }
+            }
+        }
+        for (name, condition) in &self.boundaries {
+            let patch = self
+                .mesh
+                .boundary_patches()
+                .iter()
+                .find(|p| p.name == *name)
+                .unwrap();
+            for &i in &patch.face_indices {
+                let face = &self.mesh.faces()[i];
+                match *condition {
+                    IncompressibleBoundaryCondition::Slip
+                    | IncompressibleBoundaryCondition::Symmetry => {
+                        let n = face.area_vector / face.area_vector.norm();
+                        let u = velocity.map(|v| v[face.owner]).unwrap_or(Vec3::ZERO);
+                        // Deferred cross-component coupling: converged U_b = (I - nnᵀ) U_P.
+                        velocity_boundary.set_slip_face(i, n, u);
+                        boundary_flux[i] = 0.0;
+                    }
+                    IncompressibleBoundaryCondition::FarField {
+                        velocity: ambient,
+                        pressure,
+                    } => {
+                        let reference_flux = ambient.dot(face.area_vector);
+                        let current = flux.map(|f| f[i]).unwrap_or(reference_flux);
+                        let incoming = if current.abs() > 1e-12 * (reference_flux.abs() + 1.0) {
+                            current < 0.0
+                        } else {
+                            reference_flux < 0.0
+                        };
+                        if incoming {
+                            velocity_boundary.set_face_velocity(i, Some(ambient));
+                            boundary_flux[i] = reference_flux;
+                        } else {
+                            velocity_boundary.set_face_velocity(i, None);
+                            pressure_boundary
+                                .set_condition(i, ScalarBoundaryCondition::FixedValue(pressure));
+                            pressure_correction_boundary
+                                .set_condition(i, ScalarBoundaryCondition::FixedValue(0.0));
+                        }
+                    }
+                    _ => {}
                 }
             }
         }
@@ -292,6 +396,7 @@ pub enum IncompressibleSolveStatus {
 
 #[derive(Clone, Debug)]
 pub struct IncompressibleSolveReport {
+    pub cpu_threads: usize,
     pub status: IncompressibleSolveStatus,
     pub initial_continuity_rms: f64,
     pub final_continuity_rms: f64,
@@ -374,6 +479,7 @@ pub enum IncompressibleSolveError {
     Cancelled,
     Case(IncompressibleCaseError),
     Simple(SimpleError),
+    ThreadPool(String),
     BackflowAtPressureOutlet {
         patch: String,
         face: usize,
@@ -421,6 +527,24 @@ pub fn solve_incompressible_with_control(
 }
 
 fn solve_incompressible_impl(
+    case: &IncompressibleCase,
+    control: Option<&SolveControl<'_>>,
+) -> Result<IncompressibleSolution, IncompressibleSolveError> {
+    let threads = if case.solver.threads == 0 {
+        std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1)
+    } else {
+        case.solver.threads
+    };
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(threads)
+        .build()
+        .map_err(|e| IncompressibleSolveError::ThreadPool(e.to_string()))?;
+    pool.install(|| solve_incompressible_on_pool(case, control))
+}
+
+fn solve_incompressible_on_pool(
     case: &IncompressibleCase,
     control: Option<&SolveControl<'_>>,
 ) -> Result<IncompressibleSolution, IncompressibleSolveError> {
@@ -496,6 +620,16 @@ fn solve_incompressible_impl(
     }) {
         options.pressure_boundary = Some(resolved.pressure_boundary());
         options.pressure_correction_boundary = Some(resolved.pressure_correction_boundary());
+    }
+    if case.boundaries.iter().any(|(_, b)| {
+        matches!(
+            b,
+            IncompressibleBoundaryCondition::Slip
+                | IncompressibleBoundaryCondition::Symmetry
+                | IncompressibleBoundaryCondition::FarField { .. }
+        )
+    }) {
+        options.boundary_case = Some(case);
     }
     options.max_outer_iterations = case.solver.max_outer_iterations;
     options.continuity_absolute_tolerance = case.solver.continuity_absolute_tolerance;
@@ -592,6 +726,7 @@ fn solve_incompressible_impl(
         pressure: state.pressure,
         face_flux: state.face_flux,
         report: IncompressibleSolveReport {
+            cpu_threads: rayon::current_num_threads(),
             status,
             initial_continuity_rms: simple.initial_continuity_rms,
             final_continuity_rms: simple.final_continuity_rms,

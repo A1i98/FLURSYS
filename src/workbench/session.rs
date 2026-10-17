@@ -102,6 +102,7 @@ pub struct WorkbenchSession {
     max_size: f64,
     element_order: u8,
     mesh_recipe: MeshRecipe,
+    mesh_threads: usize,
     mesher: GmshMesher,
     mesh: Option<GeneratedMesh>,
     mesh_render_cache: Option<MeshRenderCache>,
@@ -134,6 +135,7 @@ impl WorkbenchSession {
             max_size: 0.2,
             element_order: 1,
             mesh_recipe: MeshRecipe::default(),
+            mesh_threads: 1,
             mesher: GmshMesher::auto(),
             mesh: None,
             mesh_render_cache: None,
@@ -172,6 +174,8 @@ impl WorkbenchSession {
             project.mesh.element_order,
         )?;
         session.mesh_recipe = project.mesh_recipe.clone();
+        session.mesh_threads = project.mesh.threads;
+        session.set_cpu_threads(project.solver.threads);
         session.set_material(
             project.material.density,
             project.material.kinematic_viscosity,
@@ -217,6 +221,7 @@ impl WorkbenchSession {
         project.geometry = self.geometry.clone();
         project.fluid_face = self.fluid_face_selection;
         project.named_selections = self.named_selections.iter().cloned().collect();
+        project.mesh.threads = self.mesh_threads;
         project.mesh.dimension = self.mesh_dimension;
         project.mesh.global_size = self.global_size;
         project.mesh.min_size = self.min_size;
@@ -230,6 +235,7 @@ impl WorkbenchSession {
         project.solver.coupling_relative_tolerance = self.solver.coupling_relative_tolerance;
         project.solver.velocity_relaxation = self.solver.velocity_relaxation;
         project.solver.pressure_relaxation = self.solver.pressure_relaxation;
+        project.solver.threads = self.solver.threads;
         project.boundaries = self
             .boundaries
             .iter()
@@ -896,6 +902,15 @@ impl WorkbenchSession {
         self.status = SolveStatus::Idle;
     }
 
+    pub fn mesh_cpu_threads(&self) -> usize {
+        self.mesh_threads
+    }
+
+    /// Execution setting only: existing meshes stay valid when this changes.
+    pub fn set_mesh_cpu_threads(&mut self, threads: usize) {
+        self.mesh_threads = threads;
+    }
+
     /// Validates and stores mesh configuration without invoking Gmsh.
     pub fn set_mesh_configuration(
         &mut self,
@@ -906,6 +921,7 @@ impl WorkbenchSession {
         element_order: u8,
     ) -> Result<(), WorkbenchError> {
         let options = GmshMeshOptions {
+            threads: self.mesh_threads,
             dimension,
             characteristic_length: global_size,
             min_size: Some(min_size),
@@ -936,6 +952,7 @@ impl WorkbenchSession {
     ) -> Result<(GeometryGmshExport, GmshMeshOptions), WorkbenchError> {
         let export = self.apply_mesh_recipe(self.build_gmsh_export()?)?;
         let options = GmshMeshOptions {
+            threads: self.mesh_threads,
             dimension: self.mesh_dimension,
             characteristic_length: self.global_size,
             min_size: Some(self.min_size),
@@ -1128,6 +1145,11 @@ impl WorkbenchSession {
         Ok(())
     }
 
+    /// Zero selects all CPUs available to this process. The limit applies per solve.
+    pub fn set_cpu_threads(&mut self, threads: usize) {
+        self.solver.threads = threads;
+    }
+
     pub fn solver_options(&self) -> &IncompressibleSolverOptions {
         &self.solver
     }
@@ -1306,7 +1328,12 @@ fn join_tags(tags: &[usize]) -> String {
 
 fn condition_values(condition: IncompressibleBoundaryCondition) -> [f64; 4] {
     match condition {
-        IncompressibleBoundaryCondition::NoSlipWall => [0.0; 4],
+        IncompressibleBoundaryCondition::NoSlipWall
+        | IncompressibleBoundaryCondition::Slip
+        | IncompressibleBoundaryCondition::Symmetry => [0.0; 4],
+        IncompressibleBoundaryCondition::FarField { velocity, pressure } => {
+            [velocity.x, velocity.y, velocity.z, pressure]
+        }
         IncompressibleBoundaryCondition::MovingWall { velocity }
         | IncompressibleBoundaryCondition::VelocityInlet { velocity } => {
             [velocity.x, velocity.y, velocity.z, 0.0]
@@ -1319,6 +1346,11 @@ fn boundary_condition_to_document(
     condition: IncompressibleBoundaryCondition,
 ) -> PhysicalBoundaryCondition {
     match condition {
+        IncompressibleBoundaryCondition::Slip => PhysicalBoundaryCondition::Slip,
+        IncompressibleBoundaryCondition::Symmetry => PhysicalBoundaryCondition::Symmetry,
+        IncompressibleBoundaryCondition::FarField { velocity, pressure } => {
+            PhysicalBoundaryCondition::FarField { velocity, pressure }
+        }
         IncompressibleBoundaryCondition::NoSlipWall => PhysicalBoundaryCondition::NoSlipWall,
         IncompressibleBoundaryCondition::MovingWall { velocity } => {
             PhysicalBoundaryCondition::MovingWall { velocity }
@@ -1336,6 +1368,11 @@ fn boundary_condition_from_document(
     condition: &PhysicalBoundaryCondition,
 ) -> IncompressibleBoundaryCondition {
     match *condition {
+        PhysicalBoundaryCondition::Slip => IncompressibleBoundaryCondition::Slip,
+        PhysicalBoundaryCondition::Symmetry => IncompressibleBoundaryCondition::Symmetry,
+        PhysicalBoundaryCondition::FarField { velocity, pressure } => {
+            IncompressibleBoundaryCondition::FarField { velocity, pressure }
+        }
         PhysicalBoundaryCondition::NoSlipWall => IncompressibleBoundaryCondition::NoSlipWall,
         PhysicalBoundaryCondition::MovingWall { velocity } => {
             IncompressibleBoundaryCondition::MovingWall { velocity }

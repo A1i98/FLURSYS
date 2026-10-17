@@ -3,10 +3,32 @@
 use super::{GmshGeoDocument, MeshingError};
 use crate::{load_gmsh, MeshDimension, UnstructuredMesh};
 use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::thread;
 use std::time::{Duration, SystemTime};
+
+fn gmsh_phase(line: &str, dimension: MeshDimension) -> Option<(f64, &'static str)> {
+    let three_d = dimension == MeshDimension::ThreeD;
+    if line.contains("Done meshing 3D") {
+        Some((0.8, "Volume mesh complete"))
+    } else if line.contains("Meshing 3D") {
+        Some((0.45, "Meshing volumes"))
+    } else if line.contains("Done meshing 2D") {
+        Some((if three_d { 0.4 } else { 0.8 }, "Surface mesh complete"))
+    } else if line.contains("Meshing 2D") {
+        Some((if three_d { 0.25 } else { 0.35 }, "Meshing surfaces"))
+    } else if line.contains("Done meshing 1D") {
+        Some((if three_d { 0.2 } else { 0.3 }, "Edge mesh complete"))
+    } else if line.contains("Meshing 1D") {
+        Some((0.1, "Meshing edges"))
+    } else if line.contains("Writing '") {
+        Some((0.85, "Writing mesh file"))
+    } else {
+        None
+    }
+}
 
 const TEMP_PREFIX: &str = "flursys-gmsh-";
 const STALE_WORKSPACE_AGE: Duration = Duration::from_secs(24 * 60 * 60);
@@ -114,6 +136,8 @@ pub enum GmshExecutable {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct GmshMeshOptions {
+    /// Gmsh/OpenMP worker limit; zero uses available logical CPUs.
+    pub threads: usize,
     pub dimension: MeshDimension,
     pub characteristic_length: f64,
     pub min_size: Option<f64>,
@@ -132,6 +156,7 @@ impl GmshMeshOptions {
 
     pub fn new(dimension: MeshDimension, characteristic_length: f64) -> Result<Self, MeshingError> {
         let options = Self {
+            threads: 1,
             dimension,
             characteristic_length,
             min_size: Some(characteristic_length),
@@ -140,6 +165,16 @@ impl GmshMeshOptions {
         };
         options.validate()?;
         Ok(options)
+    }
+
+    pub fn effective_threads(&self) -> usize {
+        if self.threads == 0 {
+            std::thread::available_parallelism()
+                .map(|n| n.get())
+                .unwrap_or(1)
+        } else {
+            self.threads
+        }
     }
 
     pub fn validate(&self) -> Result<(), MeshingError> {
@@ -267,6 +302,17 @@ impl GmshMesher {
             maximum.to_string(),
             "-order".into(),
             options.element_order.to_string(),
+            "-nt".into(),
+            options.effective_threads().to_string(),
+            "-setnumber".into(),
+            "Mesh.MaxNumThreads1D".into(),
+            options.effective_threads().to_string(),
+            "-setnumber".into(),
+            "Mesh.MaxNumThreads2D".into(),
+            options.effective_threads().to_string(),
+            "-setnumber".into(),
+            "Mesh.MaxNumThreads3D".into(),
+            options.effective_threads().to_string(),
         ])
     }
 
@@ -275,7 +321,7 @@ impl GmshMesher {
         geometry: &GmshGeoDocument,
         options: &GmshMeshOptions,
     ) -> Result<GeneratedMesh, MeshingError> {
-        self.generate_with_cancellation(geometry, options, || false)
+        self.generate_with_progress(geometry, options, || false, |_, _| {})
     }
 
     /// Generates a mesh while allowing a caller to cooperatively terminate the
@@ -286,15 +332,18 @@ impl GmshMesher {
         options: &GmshMeshOptions,
         is_cancelled: impl Fn() -> bool,
     ) -> Result<GeneratedMesh, MeshingError> {
-        self.generate_with_cancellation(geometry, options, is_cancelled)
+        self.generate_with_progress(geometry, options, is_cancelled, |_, _| {})
     }
 
-    fn generate_with_cancellation(
+    /// Reports completed Gmsh stages, not an estimate of remaining runtime.
+    pub fn generate_with_progress(
         &self,
         geometry: &GmshGeoDocument,
         options: &GmshMeshOptions,
         is_cancelled: impl Fn() -> bool,
+        mut on_progress: impl FnMut(f64, &str),
     ) -> Result<GeneratedMesh, MeshingError> {
+        on_progress(0.0, "Preparing Gmsh");
         if geometry.dimension() != options.dimension {
             return Err(MeshingError::InvalidOptions {
                 message: "geometry and mesh option dimensions differ".into(),
@@ -326,6 +375,8 @@ impl GmshMesher {
         let process = self
             .command()
             .args(arguments)
+            .env("OMP_NUM_THREADS", options.effective_threads().to_string())
+            .env("OMP_THREAD_LIMIT", options.effective_threads().to_string())
             .stdout(Stdio::from(stdout_file))
             .stderr(Stdio::from(stderr_file))
             .spawn()
@@ -341,7 +392,32 @@ impl GmshMesher {
             workspace.path().join("gmsh.pid"),
             child.process.id().to_string(),
         );
+        let mut log_reader = fs::File::open(&stdout_path).map_err(|e| MeshingError::Io {
+            message: e.to_string(),
+        })?;
+        let mut pending = Vec::new();
+        let mut progress = 0.0_f64;
+        on_progress(0.05, "Gmsh started");
         let status = loop {
+            // Read incrementally: diagnostics may be large, and pipes must never block Gmsh.
+            let _ = log_reader.by_ref().take(65536).read_to_end(&mut pending);
+            let mut consumed = 0;
+            for (i, byte) in pending.iter().enumerate() {
+                if *byte == b'\n' || *byte == b'\r' {
+                    let line = String::from_utf8_lossy(&pending[consumed..i]);
+                    if let Some((value, stage)) = gmsh_phase(&line, options.dimension) {
+                        if value > progress {
+                            progress = value;
+                            on_progress(value, stage);
+                        }
+                    }
+                    consumed = i + 1;
+                }
+            }
+            pending.drain(..consumed);
+            if pending.len() > 65536 {
+                pending.clear();
+            }
             if is_cancelled() {
                 return Err(MeshingError::Cancelled);
             }
@@ -373,6 +449,7 @@ impl GmshMesher {
                 stderr,
             });
         }
+        on_progress(0.9, "Reading and validating generated mesh");
         let mesh_format = verify_ascii_msh4(&mesh_path)?;
         let mesh = load_gmsh(&mesh_path).map_err(|error| MeshingError::GmshImportError {
             message: error.to_string(),
@@ -387,6 +464,7 @@ impl GmshMesher {
             stdout,
             stderr,
         };
+        on_progress(1.0, "Mesh ready");
         Ok(GeneratedMesh { mesh, report })
     }
 

@@ -384,6 +384,12 @@ impl ResolvedScalarBoundaryConditions {
         }
     }
 
+    /// Replace an already validated boundary face condition, preserving mesh identity.
+    pub(crate) fn set_condition(&mut self, face: usize, condition: ScalarBoundaryCondition) {
+        assert!(self.conditions[face].is_some());
+        self.conditions[face] = Some(condition);
+    }
+
     pub fn condition(&self, face: usize) -> Option<ScalarBoundaryCondition> {
         self.conditions[face]
     }

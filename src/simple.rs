@@ -17,6 +17,7 @@ use crate::{
 #[derive(Clone, Debug, PartialEq)]
 pub enum SimpleError {
     Cancelled,
+    PhysicalBoundary(String),
     Field(FieldError),
     Numerics(NumericsError),
     Linear(LinearAlgebraError),
@@ -93,6 +94,8 @@ impl SimpleState {
 
 #[derive(Clone, Copy, Debug)]
 pub struct SimpleOptions<'a> {
+    /// Optional state-dependent slip/free-stream boundary update per outer step.
+    pub boundary_case: Option<&'a crate::IncompressibleCase>,
     pub viscosity: Diffusivity<'a>,
     pub velocity_boundary: &'a ResolvedVelocityBoundaryConditions,
     pub pressure_stencil: &'a LeastSquaresGradientStencil,
@@ -120,6 +123,7 @@ impl<'a> SimpleOptions<'a> {
         pressure_stencil: &'a LeastSquaresGradientStencil,
     ) -> Self {
         Self {
+            boundary_case: None,
             viscosity,
             velocity_boundary,
             pressure_stencil,
@@ -228,14 +232,82 @@ pub fn solve_simple_with_monitor(
 
     let mut last_momentum = None;
     let mut last_pressure = None;
-    let correction_stencil = options
+    let static_correction_stencil = options
         .pressure_correction_boundary
-        .map(|boundary| LeastSquaresGradientStencil::new(mesh, boundary))
+        .map(|b| LeastSquaresGradientStencil::new(mesh, b))
         .transpose()?;
+    // Slip changes velocity values, not pressure topology. Rebuild pressure
+    // stencils only when a far-field face actually changes inflow/outflow state.
+    let mut pressure_cache: Option<(
+        ResolvedScalarBoundaryConditions,
+        LeastSquaresGradientStencil,
+    )> = None;
+    let mut correction_cache: Option<(
+        ResolvedScalarBoundaryConditions,
+        LeastSquaresGradientStencil,
+    )> = None;
     for iteration in 1..=options.max_outer_iterations {
         if is_cancelled() {
             return Err(SimpleError::Cancelled);
         }
+        let dynamic = options
+            .boundary_case
+            .map(|case| case.resolve_boundaries_at(Some(&state.velocity), Some(&state.face_flux)))
+            .transpose()
+            .map_err(|e| SimpleError::PhysicalBoundary(e.to_string()))?;
+        let mut options = options;
+        if let Some(boundaries) = &dynamic {
+            options.velocity_boundary = boundaries.velocity_boundary();
+            let boundary = boundaries.pressure_boundary();
+            if pressure_cache
+                .as_ref()
+                .is_none_or(|(cached, _)| cached != boundary)
+            {
+                pressure_cache = Some((
+                    boundary.clone(),
+                    LeastSquaresGradientStencil::new(mesh, boundary)?,
+                ));
+            }
+            options.pressure_stencil = &pressure_cache.as_ref().unwrap().1;
+            options.pressure_boundary = Some(boundaries.pressure_boundary());
+            let has_reference = mesh.faces().iter().enumerate().any(|(i, f)| {
+                f.neighbour.is_none()
+                    && matches!(
+                        boundaries.pressure_correction_boundary().condition(i),
+                        Some(ScalarBoundaryCondition::FixedValue(_))
+                    )
+            });
+            options.pressure_correction_boundary =
+                has_reference.then_some(boundaries.pressure_correction_boundary());
+            if let Some(boundary) = options.pressure_correction_boundary {
+                if correction_cache
+                    .as_ref()
+                    .is_none_or(|(cached, _)| cached != boundary)
+                {
+                    correction_cache = Some((
+                        boundary.clone(),
+                        LeastSquaresGradientStencil::new(mesh, boundary)?,
+                    ));
+                }
+            } else {
+                correction_cache = None;
+            }
+            for (i, face) in mesh.faces().iter().enumerate() {
+                if face.neighbour.is_none()
+                    && matches!(
+                        boundaries.pressure_correction_boundary().condition(i),
+                        Some(ScalarBoundaryCondition::ZeroGradient)
+                    )
+                {
+                    state.face_flux[i] = boundaries.boundary_flux()[i];
+                }
+            }
+        }
+        let correction_stencil = if dynamic.is_some() {
+            correction_cache.as_ref().map(|(_, stencil)| stencil)
+        } else {
+            static_correction_stencil.as_ref()
+        };
         let pressure_source =
             pressure_gradient_source(mesh, &state.pressure, options.pressure_stencil, 1.0)?;
         let source_x = momentum_component_field(mesh, &pressure_source, MomentumComponent::X)?;
@@ -376,9 +448,7 @@ pub fn solve_simple_with_monitor(
         }
         let correction_gradient = least_squares_gradient(
             mesh,
-            correction_stencil
-                .as_ref()
-                .unwrap_or(options.pressure_stencil),
+            correction_stencil.unwrap_or(options.pressure_stencil),
             &correction,
         )?;
         state.velocity =
