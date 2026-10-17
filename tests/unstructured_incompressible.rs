@@ -957,3 +957,183 @@ fn high_level_three_dimensional_lid_driven_cavity_converges_with_impermeable_bou
         );
     }
 }
+
+#[test]
+fn slip_and_symmetry_channel_preserve_uniform_flow_with_serial_and_parallel_workers() {
+    for boundary in [
+        IncompressibleBoundaryCondition::Slip,
+        IncompressibleBoundaryCondition::Symmetry,
+    ] {
+        let mut solutions = Vec::new();
+        for threads in [1, 2] {
+            let case = IncompressibleCase::steady(
+                four_cell_mesh_with_named_patches(),
+                vec![
+                    (
+                        "left".into(),
+                        IncompressibleBoundaryCondition::VelocityInlet {
+                            velocity: Vec3::new(1.0, 0.0, 0.0),
+                        },
+                    ),
+                    (
+                        "right".into(),
+                        IncompressibleBoundaryCondition::PressureOutlet { pressure: 0.0 },
+                    ),
+                    ("bottom".into(), boundary),
+                    ("top".into(), boundary),
+                ],
+                IncompressibleMaterial {
+                    density: 1.0,
+                    kinematic_viscosity: 0.1,
+                },
+                IncompressibleSolverOptions {
+                    threads,
+                    max_outer_iterations: 500,
+                    ..Default::default()
+                },
+            );
+            let solution = solve_incompressible(&case).unwrap();
+            assert!(solution.report.converged(), "{:?}", solution.report);
+            assert_eq!(solution.report.cpu_threads, threads);
+            for u in solution.velocity.values() {
+                assert!((u.x - 1.0).abs() < 1e-5, "{u:?}");
+                assert!(u.y.abs() < 1e-5);
+            }
+            for name in ["top", "bottom"] {
+                assert_eq!(
+                    flursys::patch_flux(&case.mesh, &solution.face_flux, name).unwrap(),
+                    0.0
+                );
+            }
+            solutions.push(solution);
+        }
+        for (a, b) in solutions[0]
+            .velocity
+            .values()
+            .iter()
+            .zip(solutions[1].velocity.values())
+        {
+            assert!((*a - *b).norm() < 1e-12);
+        }
+    }
+}
+
+#[test]
+fn far_field_allows_both_flow_directions_without_outlet_backflow_rejection() {
+    for speed in [1.0, -1.0] {
+        let case = IncompressibleCase::steady(
+            four_cell_mesh_with_named_patches(),
+            ["left", "right", "bottom", "top"]
+                .into_iter()
+                .map(|name| {
+                    (
+                        name.into(),
+                        IncompressibleBoundaryCondition::FarField {
+                            velocity: Vec3::new(speed, 0.0, 0.0),
+                            pressure: 0.0,
+                        },
+                    )
+                })
+                .collect(),
+            IncompressibleMaterial {
+                density: 1.0,
+                kinematic_viscosity: 0.1,
+            },
+            IncompressibleSolverOptions {
+                threads: 1,
+                max_outer_iterations: 1000,
+                ..Default::default()
+            },
+        );
+        let solution = solve_incompressible(&case).unwrap();
+        assert!(solution.report.converged(), "{:?}", solution.report);
+        for u in solution.velocity.values() {
+            assert!((u.x - speed).abs() < 1e-5, "{u:?}");
+            assert!(u.y.abs() < 1e-5, "{u:?}");
+        }
+        assert!(solution.report.net_boundary_flux.abs() < 1e-9);
+    }
+}
+
+#[test]
+fn closed_symmetry_domain_keeps_a_pressure_gauge() {
+    let case = IncompressibleCase::steady(
+        four_cell_mesh_with_named_patches(),
+        ["left", "right", "bottom", "top"]
+            .into_iter()
+            .map(|name| (name.into(), IncompressibleBoundaryCondition::Symmetry))
+            .collect(),
+        IncompressibleMaterial {
+            density: 1.0,
+            kinematic_viscosity: 0.1,
+        },
+        IncompressibleSolverOptions::default(),
+    );
+    let solution = solve_incompressible(&case).unwrap();
+    assert!(solution.report.converged());
+    assert!(solution.velocity.values().iter().all(|u| u.norm() < 1e-14));
+}
+
+#[test]
+fn inclined_slip_boundary_preserves_tangential_flow() {
+    let base = four_cell_mesh_with_named_patches();
+    let (sin, cos) = (0.5_f64, 3.0_f64.sqrt() / 2.0);
+    let mesh = UnstructuredMesh::from_cells(
+        MeshDimension::TwoD,
+        base.points()
+            .iter()
+            .map(|p| {
+                Point::new(
+                    cos * p.position.x - sin * p.position.y,
+                    sin * p.position.x + cos * p.position.y,
+                    0.0,
+                )
+            })
+            .collect(),
+        vec![
+            CellDefinition::polygon(vec![0, 1, 4, 3]),
+            CellDefinition::polygon(vec![1, 2, 5, 4]),
+            CellDefinition::polygon(vec![3, 4, 7, 6]),
+            CellDefinition::polygon(vec![4, 5, 8, 7]),
+        ],
+    )
+    .unwrap()
+    .with_boundary_patches(base.boundary_patches().to_vec())
+    .unwrap();
+    let case = IncompressibleCase::steady(
+        mesh,
+        vec![
+            (
+                "left".into(),
+                IncompressibleBoundaryCondition::VelocityInlet {
+                    velocity: Vec3::new(cos, sin, 0.0),
+                },
+            ),
+            (
+                "right".into(),
+                IncompressibleBoundaryCondition::PressureOutlet { pressure: 0.0 },
+            ),
+            ("top".into(), IncompressibleBoundaryCondition::Slip),
+            ("bottom".into(), IncompressibleBoundaryCondition::Symmetry),
+        ],
+        IncompressibleMaterial {
+            density: 1.0,
+            kinematic_viscosity: 0.1,
+        },
+        IncompressibleSolverOptions {
+            max_outer_iterations: 1500,
+            ..Default::default()
+        },
+    );
+    let solution = solve_incompressible(&case).unwrap();
+    assert!(solution.report.converged(), "{:?}", solution.report);
+    for u in solution.velocity.values() {
+        assert!((*u - Vec3::new(cos, sin, 0.0)).norm() < 1e-5, "{u:?}");
+    }
+    for name in ["top", "bottom"] {
+        assert_eq!(
+            flursys::patch_flux(&case.mesh, &solution.face_flux, name).unwrap(),
+            0.0
+        );
+    }
+}

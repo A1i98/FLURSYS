@@ -87,6 +87,17 @@ fn mesh_options_validate_sizes_and_build_dimension_specific_msh4_commands() {
             "0.25",
             "-order",
             "1",
+            "-nt",
+            "1",
+            "-setnumber",
+            "Mesh.MaxNumThreads1D",
+            "1",
+            "-setnumber",
+            "Mesh.MaxNumThreads2D",
+            "1",
+            "-setnumber",
+            "Mesh.MaxNumThreads3D",
+            "1",
         ],
     );
 
@@ -392,4 +403,100 @@ fn assert_generated_mesh(
     for name in names {
         assert!(patches.contains(name));
     }
+}
+
+#[test]
+fn meshing_thread_selection_reaches_each_gmsh_dimension_limit() {
+    let mut options = GmshMeshOptions::two_d(0.1).unwrap();
+    for threads in [2, 0] {
+        options.threads = threads;
+        let arguments = GmshMesher::auto()
+            .command_arguments("case.geo", "case.msh", &options)
+            .unwrap();
+        let expected = if threads == 0 {
+            std::thread::available_parallelism()
+                .map(|n| n.get())
+                .unwrap_or(1)
+        } else {
+            threads
+        }
+        .to_string();
+        assert!(arguments
+            .windows(2)
+            .any(|a| a[0] == "-nt" && a[1] == expected));
+        for dimension in ["1D", "2D", "3D"] {
+            assert!(arguments.windows(3).any(|a| a[0] == "-setnumber"
+                && a[1] == format!("Mesh.MaxNumThreads{dimension}")
+                && a[2] == expected));
+        }
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn meshing_thread_limit_is_passed_to_the_child_openmp_environment() {
+    use std::os::unix::fs::PermissionsExt;
+    let directory = tempfile::tempdir().unwrap();
+    let executable = directory.path().join("gmsh-env");
+    std::fs::write(&executable, "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo 4.15.2; exit 0; fi\nprintf 'workers=%s limit=%s' \"$OMP_NUM_THREADS\" \"$OMP_THREAD_LIMIT\" >&2\nexit 1\n").unwrap();
+    std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let geometry =
+        GmshGeoDocument::rectangle(1.0, 1.0, [("walls", vec![1, 2, 3, 4])], "fluid").unwrap();
+    let mut options = GmshMeshOptions::two_d(0.25).unwrap();
+    options.threads = 2;
+    assert!(
+        matches!(GmshMesher::from_executable(&executable).generate(&geometry,&options),
+        Err(MeshingError::GmshProcessFailed {stderr,..}) if stderr.contains("workers=2 limit=2"))
+    );
+}
+
+#[test]
+#[ignore = "requires a real gmsh executable on PATH"]
+fn real_gmsh_multithreaded_generation_reports_monotonic_stages() {
+    let geometry =
+        GmshGeoDocument::rectangle(1.0, 1.0, [("walls", vec![1, 2, 3, 4])], "fluid").unwrap();
+    let mut options = GmshMeshOptions::two_d(0.1).unwrap();
+    options.threads = 2;
+    let mut progress = Vec::new();
+    let generated = GmshMesher::auto()
+        .generate_with_progress(
+            &geometry,
+            &options,
+            || false,
+            |fraction, stage| progress.push((fraction, stage.to_owned())),
+        )
+        .unwrap();
+    assert!(generated.mesh.cell_count() > 0);
+    assert_eq!(progress.first().unwrap().0, 0.0);
+    assert_eq!(progress.last().unwrap().0, 1.0);
+    assert!(progress.windows(2).all(|p| p[0].0 <= p[1].0));
+    assert!(progress
+        .iter()
+        .any(|(_, stage)| stage.contains("validating")));
+}
+
+#[cfg(unix)]
+#[test]
+fn streamed_progress_handles_partial_lines_and_does_not_complete_a_failed_mesh() {
+    use std::os::unix::fs::PermissionsExt;
+    let directory = tempfile::tempdir().unwrap();
+    let executable = directory.path().join("gmsh-progress");
+    std::fs::write(&executable,"#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo 4.15.2; exit 0; fi\nprintf 'Info : Meshing 1'\nsleep 0.05\nprintf 'D\\n'\nsleep 0.05\nprintf 'Info : Done meshing 1D\\nInfo : Meshing 2D\\n'\nsleep 0.05\nexit 1\n").unwrap();
+    std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let geometry =
+        GmshGeoDocument::rectangle(1.0, 1.0, [("walls", vec![1, 2, 3, 4])], "fluid").unwrap();
+    let mut events = Vec::new();
+    let result = GmshMesher::from_executable(&executable).generate_with_progress(
+        &geometry,
+        &GmshMeshOptions::two_d(0.25).unwrap(),
+        || false,
+        |fraction, stage| events.push((fraction, stage.to_owned())),
+    );
+    assert!(matches!(
+        result,
+        Err(MeshingError::GmshProcessFailed { .. })
+    ));
+    assert!(events.iter().any(|(_, s)| s == "Meshing edges"));
+    assert!(events.iter().any(|(_, s)| s == "Meshing surfaces"));
+    assert!(events.iter().all(|(f, _)| *f < 1.0));
 }
