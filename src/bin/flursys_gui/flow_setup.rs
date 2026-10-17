@@ -31,6 +31,12 @@ pub(super) fn boundary_condition(
         3 => Ok(IncompressibleBoundaryCondition::PressureOutlet {
             pressure: number(ui.get_bc_pressure().as_str(), "Outlet pressure")?,
         }),
+        4 => Ok(IncompressibleBoundaryCondition::Slip),
+        5 => Ok(IncompressibleBoundaryCondition::Symmetry),
+        6 => Ok(IncompressibleBoundaryCondition::FarField {
+            velocity: velocity()?,
+            pressure: number(ui.get_bc_pressure().as_str(), "Far-field pressure")?,
+        }),
         _ => Err("Select a supported boundary condition".into()),
     }
 }

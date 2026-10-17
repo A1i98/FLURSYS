@@ -394,6 +394,12 @@ export component MainWindow inherits Window {
     in-out property <string> material-density: "1.0";
     in-out property <string> material-viscosity: "0.01";
     in-out property <int> wb-max-iterations: 1000;
+    in-out property <int> wb-cpu-threads: 1;
+    in-out property <int> wb-mesh-threads: 1;
+    in-out property <bool> wb-meshing: false;
+    in-out property <float> wb-mesh-progress: 0;
+    in-out property <string> wb-mesh-stage;
+    in-out property <int> wb-cpu-limit: 1;
     in-out property <string> wb-velocity-relaxation: "0.7";
     in-out property <string> wb-pressure-relaxation: "0.3";
     in-out property <string> wb-continuity-tolerance: "1e-10";
@@ -911,6 +917,8 @@ export component MainWindow inherits Window {
                     readiness:root.wb-mesh-readiness;
                     summary:root.wb-mesh-summary;
                     gmsh:root.wb-gmsh-status;
+                    meshing:root.wb-meshing;progress:root.wb-mesh-progress;stage:root.wb-mesh-stage;
+                    cpu-threads <=> root.wb-mesh-threads;cpu-limit:root.wb-cpu-limit;
                     global-size <=> root.wb-global-size;min-size <=> root.wb-min-size;max-size <=> root.wb-max-size;
                     local-target <=> root.wb-local-target;local-size <=> root.wb-local-size;
                     refine-min <=> root.wb-refine-min;refine-max <=> root.wb-refine-max;refine-distance <=> root.wb-refine-distance;
@@ -975,12 +983,12 @@ export component MainWindow inherits Window {
                                     InspectorLabel { text: "PHYSICAL CONDITION"; }
                                     ComboBox {min-width:0px;
                                         enabled: root.patch-model.length > 0 && !root.wb-busy;
-                                        model: ["No-slip wall", "Moving wall", "Velocity inlet", "Pressure outlet"];
+                                        model: ["No-slip wall", "Moving wall", "Velocity inlet", "Pressure outlet", "Slip", "Symmetry", "Far-field"];
                                         current-index <=> root.bc-kind-index;
                                     }
-                                    if root.bc-kind-index == 1 || root.bc-kind-index == 2 : VerticalLayout {
+                                    if root.bc-kind-index == 1 || root.bc-kind-index == 2 || root.bc-kind-index == 6 : VerticalLayout {
                                         spacing: 4px;
-                                        InspectorLabel {text:root.bc-kind-index==1 ? "WALL VELOCITY (Ux · Uy · Uz)" : "INLET VELOCITY (Ux · Uy · Uz)";}
+                                        InspectorLabel {text:root.bc-kind-index==1 ? "WALL VELOCITY (Ux · Uy · Uz)" : root.bc-kind-index==6 ? "FREE-STREAM VELOCITY (Ux · Uy · Uz)" : "INLET VELOCITY (Ux · Uy · Uz)";}
                                         HorizontalLayout {
                                             spacing: 4px;
                                             LineEdit {min-width:0px; text <=> root.bc-value-x;placeholder-text:"Ux";enabled:!root.wb-busy; }
@@ -988,12 +996,12 @@ export component MainWindow inherits Window {
                                             LineEdit {min-width:0px; text <=> root.bc-value-z;placeholder-text:"Uz";enabled:!root.wb-busy; }
                                         }
                                     }
-                                    if root.bc-kind-index == 3 : VerticalLayout {
+                                    if root.bc-kind-index == 3 || root.bc-kind-index == 6 : VerticalLayout {
                                         spacing: 4px;
                                         InspectorLabel { text: "KINEMATIC GAUGE PRESSURE p/ρ"; }
                                         LineEdit {min-width:0px; text <=> root.bc-pressure; }
                                     }
-                                    InspectorLabel {text:root.bc-kind-index<0 ? "Choose a physical condition for this boundary." : root.bc-kind-index==0 ? "Stationary impermeable wall: U=(0,0,0)." : root.bc-kind-index==1 ? "Prescribed tangential wall velocity in model coordinates." : root.bc-kind-index==2 ? "Prescribed fluid velocity at an inlet." : "Prescribed kinematic pressure at the outlet; p/rho is not pressure in pascals.";wrap:word-wrap;}
+                                    InspectorLabel {text:root.bc-kind-index<0 ? "Choose a physical condition for this boundary." : root.bc-kind-index==0 ? "Stationary impermeable wall: U=(0,0,0)." : root.bc-kind-index==1 ? "Prescribed tangential wall velocity in model coordinates." : root.bc-kind-index==2 ? "Prescribed fluid velocity at an inlet." : root.bc-kind-index==4 || root.bc-kind-index==5 ? "Zero normal velocity and zero normal gradient of tangential velocity and pressure." : root.bc-kind-index==6 ? "Free-stream velocity on incoming flow; reference pressure on outgoing flow. Pressure is p/rho." : "Prescribed kinematic pressure at the outlet; p/rho is not pressure in pascals.";wrap:word-wrap;}
                                     HorizontalLayout {
                                         spacing: 6px;
                                         Button {min-width:0px; text: "APPLY CONDITION"; enabled: root.bc-kind-index >= 0 && root.patch-model.length > 0 && !root.wb-busy; clicked => { root.apply-boundary-wb(); } }
@@ -1040,7 +1048,7 @@ InteractiveGeometryPreview { vertical-stretch: 1; preview-image: root.visualizat
                     convergence-summary:root.post-convergence-summary;balance:root.post-balance;monitor:root.wb-solve-monitor;summary:root.wb-solution-summary;readiness:root.wb-run-readiness;
                     log:root.log-text;material:"ρ="+root.material-density+" · ν="+root.material-viscosity;
                     busy:root.wb-busy;can-run:root.can-run-workbench;progress:root.wb-solve-progress;
-                    iterations <=> root.wb-max-iterations;velocity-relaxation <=> root.wb-velocity-relaxation;
+                    cpu-limit:root.wb-cpu-limit;cpu-threads <=> root.wb-cpu-threads;iterations <=> root.wb-max-iterations;velocity-relaxation <=> root.wb-velocity-relaxation;
                     pressure-relaxation <=> root.wb-pressure-relaxation;continuity-tolerance <=> root.wb-continuity-tolerance;
                     coupling-tolerance <=> root.wb-coupling-tolerance;
                     apply=>{root.apply-solver-settings-wb();}run=>{root.run-workbench();}cancel=>{root.cancel-workbench-job();}
@@ -1217,7 +1225,7 @@ InteractiveGeometryPreview { vertical-stretch: 1; preview-image: root.visualizat
             compact-ui: root.compact-ui;
             project-loaded: root.project-loaded;
             current-step: root.current-step;
-            threads: root.threads;
+            threads: root.wb-cpu-threads;
             status: root.status;
             status-cells: root.status-cells;
             status-iteration: root.status-iteration;

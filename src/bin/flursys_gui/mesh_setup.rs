@@ -1,6 +1,20 @@
 //! Workbench mesh preparation and boundary readiness presentation.
 use super::*;
 
+pub(super) fn mesh_threads(ui: &MainWindow, session: &mut WorkbenchSession) -> Result<(), String> {
+    let threads = ui.get_wb_mesh_threads().max(0) as usize;
+    let limit = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1);
+    if threads > limit {
+        return Err(format!(
+            "Choose 0 (automatic) or at most {limit} meshing CPU threads"
+        ));
+    }
+    session.set_mesh_cpu_threads(threads);
+    Ok(())
+}
+
 fn mesh_configuration(ui: &MainWindow, session: &mut WorkbenchSession) -> Result<(), String> {
     let number = |value: SharedString, label: &str| {
         value
@@ -10,6 +24,7 @@ fn mesh_configuration(ui: &MainWindow, session: &mut WorkbenchSession) -> Result
             .filter(|v| v.is_finite())
             .ok_or_else(|| format!("{label} must be a finite number"))
     };
+    mesh_threads(ui, session)?;
     session
         .set_mesh_configuration(
             if ui.get_mesh_dimension_index() == 0 {
@@ -511,6 +526,9 @@ pub(super) fn refresh(ui: &MainWindow, state: &AppState) {
                 .map(|bc| {
                     assigned += 1;
                     match bc {
+                        IncompressibleBoundaryCondition::Slip => "Slip".to_string(),
+                        IncompressibleBoundaryCondition::Symmetry => "Symmetry".to_string(),
+                        IncompressibleBoundaryCondition::FarField { .. } => "Far-field".to_string(),
                         IncompressibleBoundaryCondition::NoSlipWall => "No-slip wall".to_string(),
                         IncompressibleBoundaryCondition::MovingWall { .. } => {
                             "Moving wall".to_string()

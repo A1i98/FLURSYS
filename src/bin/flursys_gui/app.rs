@@ -274,6 +274,8 @@ struct AppState {
     wb_selected_targets: Vec<GeometrySelectionTarget>,
     patch_names: Vec<String>,
     meshing: bool,
+    mesh_progress: f64,
+    mesh_stage: String,
     solving: bool,
     workbench_jobs: WorkbenchJobExecutor,
     cad_job: Option<cad::CadJob>,
@@ -419,6 +421,8 @@ impl AppState {
             wb_selected_targets: Vec::new(),
             patch_names: Vec::new(),
             meshing: false,
+            mesh_progress: 0.0,
+            mesh_stage: String::new(),
             solving: false,
             workbench_jobs: WorkbenchJobExecutor::new(),
             cad_job: None,
@@ -620,17 +624,25 @@ impl AppState {
         }
         for event in self.workbench_jobs.drain() {
             match event {
+                WorkbenchJobEvent::MeshProgress(JobProgress::Meshing { fraction, stage }) => {
+                    self.mesh_progress = fraction;
+                    self.mesh_stage = stage;
+                    changed = true;
+                }
                 WorkbenchJobEvent::MeshProgress(JobProgress::Started) => {
                     self.log("Gmsh worker started.");
                     changed = true;
                 }
                 WorkbenchJobEvent::MeshProgress(JobProgress::Cancelled) => {
                     self.meshing = false;
+                    self.mesh_stage = "Meshing cancelled".into();
                     self.log("Gmsh generation cancelled.");
                     changed = true;
                 }
                 WorkbenchJobEvent::MeshCompleted(Ok(generated)) => {
                     self.meshing = false;
+                    self.mesh_progress = 1.0;
+                    self.mesh_stage = "Mesh ready".into();
                     let report = format!(
                         "Gmsh mesh installed: {} nodes, {} cells, {} patches.",
                         generated.report.node_count,
@@ -655,7 +667,9 @@ impl AppState {
                 }
                 WorkbenchJobEvent::MeshCompleted(Err(error)) => {
                     self.meshing = false;
+                    self.mesh_stage = format!("Meshing failed: {error}");
                     if matches!(error, flursys::MeshingError::Cancelled) {
+                        self.mesh_stage = "Meshing cancelled".into();
                         self.log("Gmsh generation cancelled.");
                     } else {
                         self.log(format!("Mesh generation failed: {error}"));
@@ -4238,25 +4252,39 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
         let max_size = parse_number(ui.get_wb_max_size().as_str(), 0.0);
         let inputs = (|| -> Result<_, String> {
             let mut draft = WorkbenchSession::from_project(&state.workbench.to_project("Mesh generation")).map_err(|e|e.to_string())?;
+            mesh_setup::mesh_threads(&ui, &mut draft)?;
             draft.set_mesh_configuration(dimension, global_size, min_size, max_size, 1).map_err(|e|e.to_string())?;
             draft.mesh_generation_inputs().map_err(|e|e.to_string())
         })();
         match inputs {
-            Ok((export, options)) => match state.workbench_jobs.start_mesh(export, options) {
-                Ok(()) => {
-                    // These values were validated on the complete draft above.
-                    if let Err(error) = state.workbench.set_mesh_configuration(dimension, global_size, min_size, max_size, 1) {
-                        state.workbench_jobs.cancel();
-                        state.log(format!("Cannot apply mesh settings: {error}"));
-                    } else {
-                        state.mark_workbench_dirty();
-                        state.meshing = true;
-                        state.mesh_pan_anchor = None;
-                        state.log(format!("Gmsh generation started ({dimension:?}, global size {global_size})."));
+            Ok((export, options)) => {
+                let threads = options.threads;
+                let effective_threads = options.effective_threads();
+                match state.workbench_jobs.start_mesh(export, options) {
+                    Ok(()) => {
+                        // These values were validated on the complete draft above.
+                        if let Err(error) = state.workbench.set_mesh_configuration(
+                            dimension,
+                            global_size,
+                            min_size,
+                            max_size,
+                            1,
+                        ) {
+                            state.workbench_jobs.cancel();
+                            state.log(format!("Cannot apply mesh settings: {error}"));
+                        } else {
+                            state.workbench.set_mesh_cpu_threads(threads);
+                            state.mark_workbench_dirty();
+                            state.meshing = true;
+                            state.mesh_progress = 0.0;
+                            state.mesh_stage = "Starting Gmsh".into();
+                            state.mesh_pan_anchor = None;
+                            state.log(format!("Gmsh generation started ({dimension:?}, global size {global_size}, up to {effective_threads} CPU threads)."));
+                        }
                     }
+                    Err(error) => state.log(format!("Cannot start meshing: {error}")),
                 }
-                Err(error) => state.log(format!("Cannot start meshing: {error}")),
-            },
+            }
             Err(error) => state.log(format!("Cannot start meshing: {error}")),
         }
         ui.set_wb_flow_feedback(state.logs.back().cloned().unwrap_or_default().into());
@@ -4388,12 +4416,15 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
             }
         };
         let cells = case.mesh.cell_count();
+        let cpu_workers = if case.solver.threads == 0 {
+            std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1)
+        } else { case.solver.threads };
         state.workbench.mark_solving();
         match state.workbench_jobs.start_solve(case) {
             Ok(()) => {
                 state.solving = true;
                 state.log(format!(
-                    "Unstructured incompressible solve started on {cells} cells."
+                    "Unstructured incompressible solve started on {cells} cells with {cpu_workers} CPU worker thread(s)."
                 ));
             }
             Err(error) => {
@@ -5244,6 +5275,9 @@ fn status_label(session: &WorkbenchSession) -> String {
 
 fn bc_kind_label(condition: IncompressibleBoundaryCondition) -> &'static str {
     match condition {
+        IncompressibleBoundaryCondition::Slip => "Slip",
+        IncompressibleBoundaryCondition::Symmetry => "Symmetry",
+        IncompressibleBoundaryCondition::FarField { .. } => "Far-field",
         IncompressibleBoundaryCondition::NoSlipWall => "No-slip wall",
         IncompressibleBoundaryCondition::MovingWall { .. } => "Moving wall",
         IncompressibleBoundaryCondition::VelocityInlet { .. } => "Velocity inlet",
@@ -5272,6 +5306,13 @@ fn push_workbench_defaults(ui: &MainWindow, session: &WorkbenchSession) {
         "{:e}",
         solver.coupling_relative_tolerance
     )));
+    ui.set_wb_cpu_limit(
+        std::thread::available_parallelism()
+            .map(|n| n.get() as i32)
+            .unwrap_or(1),
+    );
+    ui.set_wb_cpu_threads(solver.threads as i32);
+    ui.set_wb_mesh_threads(session.mesh_cpu_threads() as i32);
     ui.set_wb_max_iterations(solver.max_outer_iterations as i32);
     ui.set_wb_velocity_relaxation(SharedString::from(format!(
         "{}",
@@ -5296,6 +5337,20 @@ fn push_boundary_fields(ui: &MainWindow, session: &WorkbenchSession, patch: &str
             ui.set_bc_value_z(SharedString::from("0"));
             ui.set_bc_pressure(SharedString::from("0"));
             ui.set_bc_assigned(SharedString::from("Unassigned"));
+        }
+        Some(IncompressibleBoundaryCondition::Slip) => {
+            ui.set_bc_kind_index(4);
+            ui.set_bc_assigned("Assigned: slip".into());
+        }
+        Some(IncompressibleBoundaryCondition::Symmetry) => {
+            ui.set_bc_kind_index(5);
+            ui.set_bc_assigned("Assigned: symmetry".into());
+        }
+        Some(IncompressibleBoundaryCondition::FarField { velocity, pressure }) => {
+            ui.set_bc_kind_index(6);
+            set_velocity_fields(ui, velocity);
+            ui.set_bc_pressure(pressure.to_string().into());
+            ui.set_bc_assigned("Assigned: far-field".into());
         }
         Some(IncompressibleBoundaryCondition::NoSlipWall) => {
             ui.set_bc_kind_index(0);
@@ -5330,6 +5385,15 @@ fn sync_solver_panel(ui: &MainWindow, session: &mut WorkbenchSession) -> Result<
     let tolerance = parse_number(ui.get_wb_coupling_tolerance().as_str(), f64::NAN);
     let density = parse_number(ui.get_material_density().as_str(), f64::NAN);
     let viscosity = parse_number(ui.get_material_viscosity().as_str(), f64::NAN);
+    let available = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1);
+    let threads = ui.get_wb_cpu_threads().max(0) as usize;
+    if threads > available {
+        return Err(format!(
+            "Choose 0 (automatic) or at most {available} CPU threads"
+        ));
+    }
     let iterations = ui.get_wb_max_iterations().max(1) as usize;
     let velocity = parse_number(ui.get_wb_velocity_relaxation().as_str(), f64::NAN);
     let pressure = parse_number(ui.get_wb_pressure_relaxation().as_str(), f64::NAN);
@@ -5346,6 +5410,7 @@ fn sync_solver_panel(ui: &MainWindow, session: &mut WorkbenchSession) -> Result<
     draft
         .set_solver_controls(iterations, velocity, pressure, continuity)
         .map_err(|e| e.to_string())?;
+    session.set_cpu_threads(threads);
     session
         .set_material(density, viscosity)
         .map_err(|e| e.to_string())?;
@@ -5422,8 +5487,9 @@ fn solution_summary_text(session: &WorkbenchSession) -> String {
                 .map(|(iteration, value)| format!("  iter {iteration:>5}  continuity {value:.3e}"))
                 .collect();
             format!(
-                "status      {}\niterations  {}\ninitial mass RMS {:.3e}\nfinal mass RMS   {:.3e}\nmomentum rel {:.3e}\nvelocity Δrel {:.3e}\ninflow      {:.5}\noutflow     {:.5}\nnet flux    {:+.3e}\n{}",
+                "status      {}\nCPU workers {}\niterations  {}\ninitial mass RMS {:.3e}\nfinal mass RMS   {:.3e}\nmomentum rel {:.3e}\nvelocity Δrel {:.3e}\ninflow      {:.5}\noutflow     {:.5}\nnet flux    {:+.3e}\n{}",
                 status_label(session),
+                report.cpu_threads,
                 report.outer_iterations,
                 report.initial_continuity_rms,
                 report.final_continuity_rms,
@@ -5885,6 +5951,9 @@ fn refresh_ui(ui: &MainWindow, state: &AppState) {
     flow_setup::refresh(ui, state);
     let busy = state.meshing || state.solving;
     ui.set_wb_busy(busy);
+    ui.set_wb_meshing(state.meshing);
+    ui.set_wb_mesh_progress(state.mesh_progress as f32);
+    ui.set_wb_mesh_stage(state.mesh_stage.as_str().into());
     if state.meshing {
         ui.set_status("Meshing".into());
     } else if state.solving {

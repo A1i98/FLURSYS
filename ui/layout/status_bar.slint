@@ -31,6 +31,6 @@ export component StatusBar inherits Rectangle {
         Rectangle { horizontal-stretch: 1; }
         if !root.compact-ui : Text { text: root.project-loaded ? root.project-path : "No active project"; color: UiTheme.text-muted; font-size: 10px; max-width: 260px; overflow: elide; vertical-alignment: center; }
         if !root.compact-ui : Rectangle { width: 1px; background: UiTheme.border; }
-        Text { text: root.threads == 0 ? "CPU AUTO" : "CPU MANUAL"; color: UiTheme.text-muted; font-size: 10px; vertical-alignment: center; }
+        Text { text: root.threads == 0 ? "CPU AUTO" : "CPU: "+root.threads+" threads"; color: UiTheme.text-muted; font-size: 10px; vertical-alignment: center; }
     }
 }

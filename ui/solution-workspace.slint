@@ -18,6 +18,8 @@ export component SolutionWorkspace inherits Rectangle {
     in property <bool> can-run;
     in property <float> progress;
     in-out property <int> iterations;
+    in-out property <int> cpu-threads;
+    in property <int> cpu-limit:1;
     in-out property <string> velocity-relaxation;
     in-out property <string> pressure-relaxation;
     in-out property <string> continuity-tolerance;
@@ -30,6 +32,7 @@ export component SolutionWorkspace inherits Rectangle {
         HorizontalLayout {height:34px;spacing:8px;
             Text {text:"04  Solution";color:UiTheme.text;font-size:20px;font-weight:700;vertical-alignment:center;}
             Rectangle {horizontal-stretch:1;}
+            Tool {text:root.busy ? "Solving…" : "▶ Run solver";enabled:root.can-run && !root.busy;clicked=>{root.run();}}
             Tool {text:"Results →";enabled:!root.busy;clicked=>{root.results();}}
         }
         Text {text:root.monitor;color:UiTheme.text;font-size:12px;wrap:word-wrap;}
@@ -40,6 +43,9 @@ export component SolutionWorkspace inherits Rectangle {
                         Label {text:"STEADY INCOMPRESSIBLE · SIMPLE";color:UiTheme.accent;font-weight:700;}
                         Label {text:root.material;}
                         Tool {text:"Edit fluid material";enabled:!root.busy;clicked=>{root.edit-material();}}
+                        Label {text:"CPU worker threads (0 = automatic)";}
+                        SpinBox {value <=> root.cpu-threads;minimum:0;maximum:root.cpu-limit;enabled:!root.busy;}
+                        Label {text:"Available logical CPUs: "+root.cpu-limit+". Parallel work currently covers the velocity components.";}
                         Label {text:"Maximum outer iterations";}
                         SpinBox {value <=> root.iterations;minimum:1;maximum:1000000;enabled:!root.busy;}
                         Label {text:"Velocity relaxation αu";}
@@ -50,7 +56,8 @@ export component SolutionWorkspace inherits Rectangle {
                         LineEdit {text <=> root.continuity-tolerance;min-width:0px;enabled:!root.busy;}
                         Label {text:"Relative momentum / velocity tolerance";}
                         LineEdit {text <=> root.coupling-tolerance;min-width:0px;enabled:!root.busy;}
-                        Tool {text:"Apply solver settings";enabled:!root.busy;clicked=>{root.apply();}}
+                        Tool {text:"Apply settings only";enabled:!root.busy;clicked=>{root.apply();}}
+                        Label {text:root.can-run ? "Settings applied? Use Run solver above to start." : root.readiness;color:root.can-run ? UiTheme.text-muted : UiTheme.accent;}
                         Label {text:"Convergence requires continuity, momentum reduction and a stable velocity field. A smaller continuity residual alone does not establish steady convergence.";}
                         Rectangle {height:1px;background:UiTheme.border;}
                         Text {text:root.convergence-summary;color:UiTheme.text;font-size:11px;wrap:word-wrap;}
@@ -78,8 +85,7 @@ export component SolutionWorkspace inherits Rectangle {
                 Label {text:"Iteration budget used; this is not an estimate of convergence completion.";}
                 Label {text:root.readiness;}
                 HorizontalLayout {height:36px;spacing:8px;
-                    Tool {text:root.busy ? "Solving…" : "▶ Run solver";enabled:root.can-run && !root.busy;clicked=>{root.run();}}
-                    Tool {text:"■ Cancel";enabled:root.busy;clicked=>{root.cancel();}}
+                    Tool {text:"■ Cancel solve";enabled:root.busy;clicked=>{root.cancel();}}
                     Rectangle {horizontal-stretch:1;}
                     Tool {text:"View results →";enabled:!root.busy;clicked=>{root.results();}}
                 }

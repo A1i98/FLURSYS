@@ -1,4 +1,4 @@
-import { Button, ComboBox, LineEdit, SpinBox, ScrollView, ListView } from "std-widgets.slint";
+import { Button, ComboBox, LineEdit, SpinBox, ScrollView, ListView, ProgressIndicator } from "std-widgets.slint";
 import { UiTheme, InteractiveGeometryPreview } from "components.slint";
 
 component ToolButton inherits Button {
@@ -18,6 +18,11 @@ component Field inherits VerticalLayout {
 // Geometry grouping and mesh controls share one viewport, with a bounded task pane.
 export component MeshWorkspace inherits Rectangle {
     in property <bool> busy;
+    in property <bool> meshing;
+    in property <float> progress;
+    in property <string> stage;
+    in-out property <int> cpu-threads;
+    in property <int> cpu-limit:1;
     in-out property <int> task;
     in-out property <int> dimension;
     in property <int> entity-mode;
@@ -133,6 +138,9 @@ export component MeshWorkspace inherits Rectangle {
                         }
                         if root.task==1 : VerticalLayout {
                             spacing:9px;
+                            Label {text:"Gmsh CPU threads (0 = automatic)";}
+                            SpinBox {value <=> root.cpu-threads;minimum:0;maximum:root.cpu-limit;enabled:!root.busy;}
+                            Label {text:"Up to "+root.cpu-limit+" logical CPUs. Parallelism depends on the algorithm; meshing a single 2D surface can remain mostly serial.";}
                             Text {text:"GLOBAL SIZING";color:UiTheme.accent;font-size:12px;font-weight:700;}
                             ComboBox {model:["2D planar domain","3D fluid volume"];current-index <=> root.dimension;enabled:!root.busy;selected(value)=>{root.select-filter(root.dimension==0 ? 1 : 0);}}
                             Label {text:root.domain;}
@@ -218,11 +226,17 @@ export component MeshWorkspace inherits Rectangle {
                 }
                 Text {text:root.feedback;color:UiTheme.text-soft;font-size:11px;wrap:word-wrap;max-height:48px;overflow:elide;}
                 Label {text:root.readiness;}
+                if root.meshing : VerticalLayout {
+                    spacing:4px;
+                    Label {text:root.stage;}
+                    ProgressIndicator {progress:root.progress;}
+                    Label {text:"Stage progress; not an estimate of time remaining.";}
+                }
                 HorizontalLayout {
                     height:36px;spacing:8px;
                     ToolButton {text:"Check mesh";enabled:!root.busy;clicked=>{root.check();}}
-                    ToolButton {text:root.busy ? "Generating…" : "Generate mesh";enabled:!root.busy;clicked=>{root.generate();}}
-                    if root.busy : ToolButton {text:"Cancel";clicked=>{root.cancel();}}
+                    ToolButton {text:root.meshing ? "Generating…" : "Generate mesh";enabled:!root.busy;clicked=>{root.generate();}}
+                    if root.meshing : ToolButton {text:"Cancel";clicked=>{root.cancel();}}
                     Rectangle {horizontal-stretch:1;}
                     ToolButton {text:"Setup →";enabled:!root.busy;clicked=>{root.continue();}}
                 }
