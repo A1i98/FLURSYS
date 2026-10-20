@@ -11,8 +11,12 @@ use crate::{
     ResolvedScalarBoundaryConditions, ScalarBoundaryCondition, UnstructuredMesh, Vec3,
 };
 
+mod convection;
+pub use convection::MomentumConvection;
+
 #[derive(Clone, Copy, Debug)]
 pub struct MomentumOptions<'a> {
+    pub convection: MomentumConvection,
     pub viscosity: Diffusivity<'a>,
     pub boundary: &'a ResolvedScalarBoundaryConditions,
     pub flux: &'a FaceField<f64>,
@@ -132,6 +136,7 @@ impl<'a> MomentumOptions<'a> {
         flux: &'a FaceField<f64>,
     ) -> Self {
         Self {
+            convection: MomentumConvection::Upwind,
             viscosity,
             boundary,
             flux,
@@ -338,6 +343,7 @@ pub fn assemble_momentum_component(
         }
     }
     add_explicit_nonorthogonal_rhs(mesh, options, &mut rhs)?;
+    convection::correct(mesh, options, &mut rhs)?;
     let mut builder = CsrBuilder::new(mesh.cell_count(), mesh.cell_count());
     for (row, column, value) in entries {
         builder.add(row, column, value)?;

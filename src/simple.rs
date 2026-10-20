@@ -105,6 +105,9 @@ pub struct SimpleOptions<'a> {
     /// `ZeroGradient` preserves prescribed velocity-boundary flux; `FixedValue`
     /// supplies a pressure-correction Dirichlet face and allows its flux to move.
     pub pressure_correction_boundary: Option<&'a ResolvedScalarBoundaryConditions>,
+    /// Deferred non-orthogonal diffusion correction for the momentum equations.
+    pub momentum_diffusion: DiffusionOptions,
+    pub convection: crate::momentum::MomentumConvection,
     pub reference_cell: usize,
     pub max_outer_iterations: usize,
     pub continuity_absolute_tolerance: f64,
@@ -130,6 +133,11 @@ impl<'a> SimpleOptions<'a> {
             pressure_stencil,
             pressure_boundary: None,
             pressure_correction_boundary: None,
+            convection: crate::momentum::MomentumConvection::Upwind,
+            momentum_diffusion: DiffusionOptions {
+                non_orthogonal_correction: crate::NonOrthogonalCorrection::Explicit,
+                ..DiffusionOptions::default()
+            },
             reference_cell: 0,
             max_outer_iterations: 1000,
             continuity_absolute_tolerance: 1.0e-10,
@@ -336,6 +344,7 @@ pub fn solve_simple_with_observer(
             assemble_momentum_component(
                 mesh,
                 MomentumOptions {
+                    convection: options.convection,
                     viscosity: options.viscosity,
                     boundary: options.velocity_boundary.component(component),
                     flux: &state.face_flux,
@@ -343,10 +352,10 @@ pub fn solve_simple_with_observer(
                     time_step: None,
                     source: Some(source),
                     relaxation_field: relaxed.then_some(current),
-                    correction_field: None,
+                    correction_field: Some(current),
                     least_squares_stencil: None,
                     under_relaxation: options.velocity_relaxation,
-                    diffusion: DiffusionOptions::default(),
+                    diffusion: options.momentum_diffusion,
                     allow_iterative_outlet_backflow: options.pressure_correction_boundary.is_some(),
                 },
             )
