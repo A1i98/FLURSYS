@@ -916,7 +916,7 @@ pub fn solve_pressure_correction(
         }
         .into());
     }
-    let preconditioner = crate::JacobiPreconditioner::new(&system.matrix)?;
+    let preconditioner = crate::IncompleteCholeskyPreconditioner::new(&system.matrix)?;
     Ok(crate::pcg(
         &system.matrix,
         &system.rhs,
