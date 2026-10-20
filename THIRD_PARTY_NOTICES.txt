@@ -1,0 +1,23 @@
+FLURSYS includes SolidCraft geometry and sketch crates.
+Copyright (c) 2026 SolidCraft contributors.
+Source: https://github.com/tangency-labs/solidcraft at 8a562f2719ebe362399f5512296dea2cccb1a14e
+Licensed under MIT OR Apache-2.0; complete texts are in vendor/cad-workbench/LICENSE-MIT and LICENSE-APACHE.
+The sketch text implementation embeds Liberation Sans; its unmodified font and SIL OFL 1.1 notice are in vendor/cad-workbench/assets/fonts/liberation-sans/.
+BIZ UDP Gothic test font data retains its accompanying OFL notice.
+
+CAD viewport artwork is supplied by the submodule assets; attribution is retained in vendor/cad-workbench/ATTRIBUTION.md.
+Exact B-rep freeform edge adapter derives from SolidCraft crates/kernel/src/freeform.rs and build.rs under the same license.
+
+The FLURSYS adapters in src/sketching/{corners,freeform,modify,support}.rs adapt SolidCraft engine/cmd sketch modification algorithms under the same MIT OR Apache-2.0 terms.
+
+Additional unmodified SolidCraft command artwork (same MIT OR Apache-2.0 terms):
+CAD toolbar panel ordering and CAD dark palette adapt SolidCraft ui-egui/toolbar.rs, workspace.rs and assets/styles/ui/palettes.rs.
+
+vendor/cad-workbench/crates/render/src/camera.rs is adapted from SolidCraft's render crate and is used by the shared CAD, mesh, setup, and results viewport for projection, orbit, zoom, and picking rays (MIT OR Apache-2.0; see vendor/cad-workbench/LICENSE-MIT and LICENSE-APACHE).
+
+Complete CAD workbench integration:
+The upstream browser, dialogs, command engine, document model, geometry kernel,
+render and GPU crates and accompanying assets are vendored in vendor/cad-workbench.
+Their original copyright, MIT/Apache-2.0 texts, NOTICE, ATTRIBUTION.md and
+THIRD-PARTY-LICENSES.txt are retained there. Local host adaptations omit the
+upstream application bar and expose exact B-rep transfer to the CFD model.

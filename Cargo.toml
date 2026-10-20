@@ -1,3 +1,111 @@
+[workspace]
+resolver = "2"
+members = [".", "vendor/cad-workbench/crates/*"]
+default-members = ["."]
+exclude = ["vendor/cad-workbench/vendor"]
+
+[workspace.package]
+version = "0.16.2"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+rust-version = "1.95"
+authors = ["SolidCraft contributors"]
+repository = "https://github.com/bherbruck/solidcraft"
+
+[workspace.dependencies]
+encoding_rs = "0.8"
+chardetng = "0.1"
+# internal
+solidcraft-geom = { path = "vendor/cad-workbench/crates/geom" }
+solidcraft-sketch = { path = "vendor/cad-workbench/crates/sketch" }
+solidcraft-kernel = { path = "vendor/cad-workbench/crates/kernel" }
+solidcraft-render = { path = "vendor/cad-workbench/crates/render" }
+solidcraft-gpu = { path = "vendor/cad-workbench/crates/gpu" }
+solidcraft-doc = { path = "vendor/cad-workbench/crates/doc" }
+solidcraft-io = { path = "vendor/cad-workbench/crates/io" }
+solidcraft-engine = { path = "vendor/cad-workbench/crates/engine" }
+solidcraft-ui-egui = { path = "vendor/cad-workbench/crates/ui-egui" }
+solidcraft-space-mouse = { path = "vendor/cad-workbench/crates/space-mouse" }
+solidcraft-mcp = { path = "vendor/cad-workbench/crates/mcp" }
+solidcraft-derive = { path = "vendor/cad-workbench/crates/derive" }
+solidcraft-3dx-client = { path = "vendor/cad-workbench/crates/threedx-client" }
+
+# foundation
+thiserror = "2"
+serde = { version = "1", features = ["derive", "rc"] }
+# derive macros (crates/derive); already in the tree through serde_derive
+proc-macro2 = "1"
+quote = "1"
+syn = { version = "2", features = ["full"] }
+serde_json = { version = "1", features = ["float_roundtrip"] }
+log = "0.4"
+sha2 = "0.10"
+moxcms = { version = "0.8.1", default-features = false, features = ["extended_range"] }
+semver = "1"
+
+# geometry kernel (Apache-2.0; see plan/adr/0001-geometry-kernel.md). Only crates/kernel uses it.
+truck-modeling = "0.6"
+truck-shapeops = { version = "0.4", default-features = false }
+truck-meshalgo = { version = "0.4", default-features = false, features = ["tessellation", "analyzers"] }
+truck-stepio = { version = "0.3", default-features = false }
+truck-topology = "0.6"
+# constrained Delaunay + Ruppert refinement for trimmed faces (MIT OR Apache-2.0); already in the
+# tree through truck-meshalgo.
+spade = { version = "2.15", default-features = false, features = ["std"] }
+rayon = "1.12"
+
+# packages (3MF)
+zip = { version = "9", default-features = false, features = ["deflate"] }
+quick-xml = "0.41"
+# glTF 2.0 import (MIT OR Apache-2.0): the document model and GLB container only; buffers are
+# read by crates/io itself, so no image decoding or file access comes with it.
+gltf = { version = "1.4", default-features = false, features = ["names"] }
+
+# FreeCAD and Rhino import (Apache-2.0, pure Rust apart from zstd; native builds only).
+# Pinned: its IR and codec APIs change between minor versions. Open formats only: no default
+# features, so cadmpeg's codecs for commercial formats (f3d, sldprt, inventor, catia, creo, nx)
+# and its ShapeManager/ACIS `sat` codec are not compiled in. `step` is the writer we restate through.
+cadmpeg-core = "=0.6.1"
+cadmpeg-ir = "=0.6.1"
+cadmpeg-registry = { version = "=0.6.1", default-features = false, features = ["fcstd", "rhino", "step"] }
+
+# fonts (sketch text outlines; MIT OR Apache-2.0, pure Rust)
+ttf-parser = { version = "0.25", default-features = false, features = ["std"] }
+
+# images
+image = { version = "0.25", default-features = false, features = ["png", "hdr"] }
+png = "0.18.1"
+# LZW for GIF animations (MIT OR Apache-2.0, pure Rust; already in the tree through image's tiff).
+weezl = "0.1.12"
+# rasterises the UI icon SVGs (BSD-3-Clause, pure Rust, builds for wasm)
+tiny-skia = { version = "0.12", default-features = false, features = ["std", "simd"] }
+# build scripts: reads the icon palette (MIT OR Apache-2.0)
+toml = "1"
+
+# ui
+egui = "0.36"
+eframe = { version = "0.36", default-features = false, features = ["persistence"] }
+# Instant/SystemTime that also work in the browser (std panics on wasm32-unknown-unknown).
+web-time = "1"
+egui-wgpu = "0.36"
+# the wgpu egui-wgpu uses, for compute (crates/gpu); backends come from the apps' features
+wgpu = { version = "30", default-features = false, features = ["std", "wgsl"] }
+naga = { version = "30", default-features = false }
+pollster = "0.4"
+rfd = "0.17"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+dbg_macro = "warn"
+todo = "warn"
+too_many_arguments = "allow"
+type_complexity = "allow"
+# `!(x > tol)` is our idiom for "not a usable number" (NaN-safe).
+neg_cmp_op_on_partial_ord = "allow"
+
+
 [package]
 name = "flursys"
 version = "0.11.0-beta.1"
@@ -32,7 +140,7 @@ required-features = ["gui"]
 
 [features]
 default = ["gui"]
-gui = ["dep:rfd", "dep:slint", "dep:png", "dep:gif"]
+gui = ["dep:rfd", "dep:slint", "dep:png", "dep:gif", "dep:cad-workbench", "dep:cad-engine", "dep:cad-kernel", "dep:cad-render", "dep:egui", "dep:egui-wgpu", "dep:pollster", "dep:arboard"]
 gui-live-preview = ["gui", "slint/live-preview"]
 
 # Slint and its rendering dependencies make full debug info and incremental
@@ -52,6 +160,17 @@ codegen-units = 1
 panic = "unwind"
 
 [dependencies]
+arboard = { version = "3.6", default-features = false, optional = true }
+cad-workbench = { package = "solidcraft-ui-egui", path = "vendor/cad-workbench/crates/ui-egui", features = ["host-integration"], optional = true }
+cad-engine = { package = "solidcraft-engine", path = "vendor/cad-workbench/crates/engine", optional = true }
+cad-render = { package = "solidcraft-render", path = "vendor/cad-workbench/crates/render", optional = true }
+cad-kernel = { package = "solidcraft-kernel", path = "vendor/cad-workbench/crates/kernel", optional = true }
+egui = { version = "0.36", optional = true }
+egui-wgpu = { version = "0.36", optional = true }
+pollster = { version = "0.4", optional = true }
+
+cad-sketch = { package = "solidcraft-sketch", path = "vendor/cad-workbench/crates/sketch" }
+cad-geom = { package = "solidcraft-geom", path = "vendor/cad-workbench/crates/geom" }
 png = { version = "0.18", optional = true }
 gif = { version = "0.14", optional = true }
 rayon = "1"
@@ -67,3 +186,11 @@ truck-stepio = "0.3"
 
 [build-dependencies]
 slint-build = "1.17"
+
+[patch.crates-io]
+truck-geometry = { path = "vendor/cad-workbench/vendor/truck-geometry" }
+truck-shapeops = { path = "vendor/cad-workbench/vendor/truck-shapeops" }
+truck-stepio = { path = "vendor/cad-workbench/vendor/truck-stepio" }
+truck-meshalgo = { path = "vendor/cad-workbench/vendor/truck-meshalgo" }
+matext4cgmath = { path = "vendor/cad-workbench/vendor/matext4cgmath" }
+egui-wgpu = { path = "vendor/cad-workbench/vendor/egui-wgpu" }
