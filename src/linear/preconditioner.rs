@@ -256,10 +256,13 @@ impl IncompleteCholeskyPreconditioner {
             for &(_, coefficient) in &lower {
                 pivot -= coefficient * coefficient;
             }
-            let scale = matrix.get(row, row).unwrap_or(1.0).abs().max(1.0);
-            if !pivot.is_finite() || pivot <= f64::EPSILON * scale {
-                return Err(LinearAlgebraError::Breakdown {
-                    reason: "non-positive incomplete Cholesky pivot",
+            // Pivot acceptance must be invariant under a positive rescaling of A.
+            let scale = matrix.get(row, row).unwrap_or(0.0).abs();
+            if !pivot.is_finite() || pivot <= 0.0 || pivot <= f64::EPSILON * scale {
+                return Err(LinearAlgebraError::IncompleteCholeskyPivot {
+                    row,
+                    pivot,
+                    diagonal: scale,
                 });
             }
             diagonal[row] = pivot.sqrt();
@@ -737,4 +740,35 @@ fn dense_cholesky_solve(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod ic_scaling_tests {
+    use super::*;
+    #[test]
+    fn ic_acceptance_is_invariant_under_positive_matrix_scaling() {
+        for scale in [1e-24, 1.0, 1e24] {
+            let mut b = super::super::CsrBuilder::new(2, 2);
+            for (i, j, v) in [(0, 0, 2.0), (0, 1, -1.0), (1, 0, -1.0), (1, 1, 2.0)] {
+                b.add(i, j, v * scale).unwrap();
+            }
+            let a = b.finalize().unwrap();
+            let p = IncompleteCholeskyPreconditioner::new(&a).unwrap();
+            let mut x = [0.0; 2];
+            p.apply_into(&[scale, scale], &mut x).unwrap();
+            assert!((x[0] - 1.0).abs() < 1e-12);
+            assert!((x[1] - 1.0).abs() < 1e-12);
+        }
+    }
+    #[test]
+    fn ic_still_rejects_a_genuinely_negative_pivot() {
+        let mut b = super::super::CsrBuilder::new(2, 2);
+        for (i, j, v) in [(0, 0, 1.0), (0, 1, 2.0), (1, 0, 2.0), (1, 1, 1.0)] {
+            b.add(i, j, v).unwrap();
+        }
+        assert!(matches!(
+            IncompleteCholeskyPreconditioner::new(&b.finalize().unwrap()),
+            Err(LinearAlgebraError::IncompleteCholeskyPivot { row: 1, .. })
+        ));
+    }
 }

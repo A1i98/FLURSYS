@@ -30,13 +30,35 @@ pub use vector::{axpy, copy_into, dot, norm_inf, norm_l2, residual, residual_int
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum LinearAlgebraError {
-    DimensionMismatch { expected: usize, actual: usize },
-    InvalidCsr { message: String },
-    IndexOutOfBounds { row: usize, column: usize },
-    NonFiniteValue { context: &'static str, index: usize },
-    MissingDiagonal { row: usize },
-    ZeroDiagonal { row: usize },
-    Breakdown { reason: &'static str },
+    DimensionMismatch {
+        expected: usize,
+        actual: usize,
+    },
+    InvalidCsr {
+        message: String,
+    },
+    IndexOutOfBounds {
+        row: usize,
+        column: usize,
+    },
+    NonFiniteValue {
+        context: &'static str,
+        index: usize,
+    },
+    MissingDiagonal {
+        row: usize,
+    },
+    ZeroDiagonal {
+        row: usize,
+    },
+    Breakdown {
+        reason: &'static str,
+    },
+    IncompleteCholeskyPivot {
+        row: usize,
+        pivot: f64,
+        diagonal: f64,
+    },
 }
 
 impl std::fmt::Display for LinearAlgebraError {
@@ -59,6 +81,14 @@ impl std::fmt::Display for LinearAlgebraError {
                 write!(formatter, "missing diagonal entry in row {row}")
             }
             Self::ZeroDiagonal { row } => write!(formatter, "zero diagonal entry in row {row}"),
+            Self::IncompleteCholeskyPivot {
+                row,
+                pivot,
+                diagonal,
+            } => write!(
+                formatter,
+                "IC(0) failed at row {row}: pivot={pivot:.6e}, diagonal={diagonal:.6e}"
+            ),
             Self::Breakdown { reason } => write!(formatter, "iterative solver breakdown: {reason}"),
         }
     }

@@ -684,7 +684,18 @@ pub enum IncompressibleSolveError {
 
 impl std::fmt::Display for IncompressibleSolveError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(formatter, "{self:?}")
+        let guidance = match self {
+            Self::Cancelled => "Solve cancelled by the user.",
+            Self::Simple(SimpleError::Linear(crate::LinearAlgebraError::IncompleteCholeskyPivot {..})) => "Pressure IC(0) factorization failed. The failing row, pivot and diagonal are included below. Inspect pressure-system scaling and definiteness, plus preceding velocity/momentum growth; a small continuity residual alone does not establish a stable solution.",
+            Self::Simple(SimpleError::MomentumLinearDidNotConverge) => "Momentum linear solver did not reach tolerance. Check mesh non-orthogonality and size transitions, inlet speed and viscosity; try lower velocity relaxation and first-order upwind. This does not identify a unique cause.",
+            Self::Simple(SimpleError::PressureLinearDidNotConverge) => "Pressure linear solver did not reach tolerance. Check domain connectivity, pressure reference, mesh quality and incompatible flow boundary conditions.",
+            Self::Simple(SimpleError::InvalidMomentumDiagonal { .. }) => "Momentum diagonal is invalid. Check cell measures, material properties and assembled coefficients.",
+            Self::BackflowAtPressureOutlet { .. } => "Flow enters a strict pressure outlet. Extend the outlet beyond recirculation, or choose a pressure outlet with an explicit backflow velocity when physically appropriate.",
+            Self::Case(IncompressibleCaseError::Numerics(crate::NumericsError::SingularLeastSquaresStencil { .. })) | Self::Simple(SimpleError::Numerics(crate::NumericsError::SingularLeastSquaresStencil { .. })) => "Gradient stencil is rank-deficient at the reported cell. Check degenerate cells, collapsed dimensions and disconnected or insufficiently independent neighbour directions; adding iterations will not fix this geometric failure.",
+            Self::Case(_) => "Case preparation failed. Check boundary coverage, boundary compatibility and numerical stencils.",
+            _ => "Solve failed; inspect the detailed error and mesh preflight report.",
+        };
+        write!(formatter, "{guidance} Details: {self:?}")
     }
 }
 
@@ -830,6 +841,10 @@ fn solve_incompressible_on_pool(
     }) {
         options.boundary_case = Some(case);
     }
+    if case.mesh.dimension() == crate::MeshDimension::ThreeD {
+        options.momentum_diffusion.non_orthogonal_correction =
+            crate::NonOrthogonalCorrection::Limited;
+    }
     options.convection = case.solver.convection;
     options.max_outer_iterations = case.solver.max_outer_iterations;
     options.continuity_absolute_tolerance = case.solver.continuity_absolute_tolerance;
@@ -945,4 +960,107 @@ fn solve_incompressible_on_pool(
             simple,
         },
     })
+}
+
+#[cfg(test)]
+mod tetra_cavity_stability_tests {
+    use super::*;
+    use crate::{BoundaryPatch, BoundaryType, CellDefinition, MeshDimension, Point};
+    #[test]
+    fn thin_three_dimensional_tetrahedral_cavity_remains_bounded_and_converges() {
+        let (nx, ny, nz) = (4usize, 4usize, 2usize);
+        let index = |i: usize, j: usize, k: usize| k * (nx + 1) * (ny + 1) + j * (nx + 1) + i;
+        let mut points = Vec::new();
+        for k in 0..=nz {
+            for j in 0..=ny {
+                for i in 0..=nx {
+                    points.push(Point::new(
+                        i as f64 * 0.1 / nx as f64,
+                        j as f64 * 0.1 / ny as f64,
+                        k as f64 * 0.01 / nz as f64,
+                    ));
+                }
+            }
+        }
+        let mut cells = Vec::new();
+        for k in 0..nz {
+            for j in 0..ny {
+                for i in 0..nx {
+                    let v = [
+                        index(i, j, k),
+                        index(i + 1, j, k),
+                        index(i + 1, j + 1, k),
+                        index(i, j + 1, k),
+                        index(i, j, k + 1),
+                        index(i + 1, j, k + 1),
+                        index(i + 1, j + 1, k + 1),
+                        index(i, j + 1, k + 1),
+                    ];
+                    for t in [
+                        [0, 1, 2, 6],
+                        [0, 2, 3, 6],
+                        [0, 3, 7, 6],
+                        [0, 7, 4, 6],
+                        [0, 4, 5, 6],
+                        [0, 5, 1, 6],
+                    ] {
+                        cells.push(CellDefinition::tetrahedron(t.map(|i| v[i])));
+                    }
+                }
+            }
+        }
+        let mesh = UnstructuredMesh::from_cells(MeshDimension::ThreeD, points, cells).unwrap();
+        let mut wall = vec![];
+        let mut lid = vec![];
+        for (i, f) in mesh
+            .faces()
+            .iter()
+            .enumerate()
+            .filter(|(_, f)| f.neighbour.is_none())
+        {
+            if (f.center.y - 0.1).abs() < 1e-10 {
+                lid.push(i);
+            } else {
+                wall.push(i);
+            }
+        }
+        let mesh = mesh
+            .with_boundary_patches(vec![
+                BoundaryPatch {
+                    name: "wall".into(),
+                    face_indices: wall,
+                    boundary_type: BoundaryType::Wall,
+                },
+                BoundaryPatch {
+                    name: "lid".into(),
+                    face_indices: lid,
+                    boundary_type: BoundaryType::Wall,
+                },
+            ])
+            .unwrap();
+        let mut options = IncompressibleSolverOptions::default();
+        options.max_outer_iterations = 1000;
+        options.velocity_relaxation = 0.3;
+        options.pressure_relaxation = 0.1;
+        let case = IncompressibleCase::steady(
+            mesh,
+            vec![
+                ("wall".into(), IncompressibleBoundaryCondition::NoSlipWall),
+                (
+                    "lid".into(),
+                    IncompressibleBoundaryCondition::MovingWall {
+                        velocity: Vec3::new(2., 0., 0.),
+                    },
+                ),
+            ],
+            IncompressibleMaterial {
+                density: 1.,
+                kinematic_viscosity: 0.01,
+            },
+            options,
+        );
+        let solution = solve_incompressible(&case).unwrap();
+        assert!(solution.report.converged(), "{:?}", solution.report);
+        assert!(solution.velocity.values().iter().all(|u| u.norm() < 2.5));
+    }
 }

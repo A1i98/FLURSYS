@@ -11,6 +11,8 @@ pub enum ScalarBoundaryValue {
 pub enum NonOrthogonalCorrection {
     None,
     Explicit,
+    /// Conservative deferred correction bounded by the two-point flux magnitude.
+    Limited,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GradientScheme {
@@ -284,26 +286,53 @@ fn inverse_normal_matrix(
             ])
         }
         crate::MeshDimension::ThreeD => {
-            let determinant = normal[0] * (normal[4] * normal[8] - normal[5] * normal[7])
-                - normal[1] * (normal[3] * normal[8] - normal[5] * normal[6])
-                + normal[2] * (normal[3] * normal[7] - normal[4] * normal[6]);
-            let scale = normal
-                .iter()
-                .fold(1.0_f64, |scale, value| scale.max(value.abs()));
-            if determinant.abs() <= f64::EPSILON * scale * scale * scale {
+            // The normal matrix is a sum of positive semidefinite outer products.
+            // A cofactor determinant can appear nonzero for a rank-two stencil
+            // through cancellation. Cholesky detects the deficient direction
+            // before forming an inverse, allowing the boundary closure to run.
+            let scale = normal[0].abs().max(normal[4].abs()).max(normal[8].abs());
+            if !scale.is_finite() || scale <= 0.0 {
                 return singular();
             }
-            Ok([
-                (normal[4] * normal[8] - normal[5] * normal[7]) / determinant,
-                (normal[2] * normal[7] - normal[1] * normal[8]) / determinant,
-                (normal[1] * normal[5] - normal[2] * normal[4]) / determinant,
-                (normal[5] * normal[6] - normal[3] * normal[8]) / determinant,
-                (normal[0] * normal[8] - normal[2] * normal[6]) / determinant,
-                (normal[2] * normal[3] - normal[0] * normal[5]) / determinant,
-                (normal[3] * normal[7] - normal[4] * normal[6]) / determinant,
-                (normal[1] * normal[6] - normal[0] * normal[7]) / determinant,
-                (normal[0] * normal[4] - normal[1] * normal[3]) / determinant,
-            ])
+            let mut lower = [0.0; 9];
+            for i in 0..3 {
+                for j in 0..=i {
+                    let mut value = normal[i * 3 + j];
+                    for k in 0..j {
+                        value -= lower[i * 3 + k] * lower[j * 3 + k];
+                    }
+                    if i == j {
+                        if !value.is_finite() || value <= 64.0 * f64::EPSILON * scale {
+                            return singular();
+                        }
+                        lower[i * 3 + j] = value.sqrt();
+                    } else {
+                        lower[i * 3 + j] = value / lower[j * 3 + j];
+                    }
+                }
+            }
+            let mut inverse = [0.0; 9];
+            for column in 0..3 {
+                let mut x = [0.0; 3];
+                for i in 0..3 {
+                    let mut value = if i == column { 1.0 } else { 0.0 };
+                    for k in 0..i {
+                        value -= lower[i * 3 + k] * x[k];
+                    }
+                    x[i] = value / lower[i * 3 + i];
+                }
+                for i in (0..3).rev() {
+                    let mut value = x[i];
+                    for k in i + 1..3 {
+                        value -= lower[k * 3 + i] * x[k];
+                    }
+                    x[i] = value / lower[i * 3 + i];
+                }
+                for i in 0..3 {
+                    inverse[i * 3 + column] = x[i];
+                }
+            }
+            Ok(inverse)
         }
     }
 }
@@ -786,7 +815,7 @@ pub fn integrated_diffusion_with_stencil_into(
             },
         };
     }
-    let gradients = if options.non_orthogonal_correction == NonOrthogonalCorrection::Explicit {
+    let gradients = if options.non_orthogonal_correction != NonOrthogonalCorrection::None {
         match options.gradient_scheme {
             GradientScheme::Gauss => Some(gauss_gradient_from_faces(mesh, &face_values)?),
             GradientScheme::LeastSquares => Some(least_squares_gradient(
@@ -812,8 +841,18 @@ pub fn integrated_diffusion_with_stencil_into(
                 let lambda = weight(mesh, index)?;
                 let gradient =
                     gradients[face.owner] * (1.0 - lambda) + gradients[neighbour] * lambda;
-                contribution =
+                let corrected =
                     corrected_internal_diffusion_flux(mesh, index, gamma[index], values, gradient)?;
+                contribution = if options.non_orthogonal_correction
+                    == NonOrthogonalCorrection::Limited
+                {
+                    // Bound the explicit part, retaining the owner/neighbour
+                    // pair update below. The correction cannot reverse diffusion.
+                    contribution
+                        + (corrected - contribution).clamp(-contribution.abs(), contribution.abs())
+                } else {
+                    corrected
+                };
             }
             output[face.owner] += contribution;
             output[neighbour] -= contribution;
@@ -1007,6 +1046,36 @@ mod tests {
             ],
         )
         .unwrap()
+    }
+
+    #[test]
+    fn three_dimensional_normal_inverse_rejects_roundoff_rank_deficiency() {
+        let mesh = tetra();
+        let normal = [
+            1.1402791724321462,
+            -0.34278303613562605,
+            -0.28394860658817955,
+            -0.34278303613562605,
+            1.1757627580460137,
+            0.8964346729226567,
+            -0.28394860658817955,
+            0.8964346729226567,
+            0.6839580695218399,
+        ];
+        assert!(matches!(
+            inverse_normal_matrix(&mesh, normal, 0),
+            Err(NumericsError::SingularLeastSquaresStencil { cell: 0 })
+        ));
+        let normal = [2.0, 0.3, 0.2, 0.3, 3.0, 0.4, 0.2, 0.4, 4.0];
+        let inverse = inverse_normal_matrix(&mesh, normal, 0).unwrap();
+        for i in 0..3 {
+            for j in 0..3 {
+                let value = (0..3)
+                    .map(|k| normal[3 * i + k] * inverse[3 * k + j])
+                    .sum::<f64>();
+                assert!((value - if i == j { 1.0 } else { 0.0 }).abs() < 1e-12);
+            }
+        }
     }
 
     fn tetra() -> UnstructuredMesh {

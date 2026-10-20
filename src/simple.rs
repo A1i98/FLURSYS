@@ -6,12 +6,12 @@
 
 use crate::{
     assemble_momentum_component, interpolate_vector_into, least_squares_gradient,
-    momentum_component_field, pressure_gradient_source, solve_momentum_velocity, CellField,
-    CsrBuilder, CsrMatrix, DiffusionOptions, Diffusivity, FaceField, FieldError,
-    LeastSquaresGradientStencil, LinearAlgebraError, LinearSolveReport, LinearSolverOptions,
-    MomentumComponent, MomentumError, MomentumOptions, NumericsError,
-    ResolvedScalarBoundaryConditions, ResolvedVelocityBoundaryConditions, ScalarBoundaryCondition,
-    ScalarBoundaryValue, UnstructuredMesh, Vec3,
+    momentum_component_field, solve_momentum_velocity, CellField, CsrBuilder, CsrMatrix,
+    DiffusionOptions, Diffusivity, FaceField, FieldError, LeastSquaresGradientStencil,
+    LinearAlgebraError, LinearSolveReport, LinearSolverOptions, MomentumComponent, MomentumError,
+    MomentumOptions, NumericsError, ResolvedScalarBoundaryConditions,
+    ResolvedVelocityBoundaryConditions, ScalarBoundaryCondition, ScalarBoundaryValue,
+    UnstructuredMesh, Vec3,
 };
 
 #[derive(Clone, Debug, PartialEq)]
@@ -331,8 +331,13 @@ pub fn solve_simple_with_observer(
         } else {
             static_correction_stencil.as_ref()
         };
-        let pressure_source =
-            pressure_gradient_source(mesh, &state.pressure, options.pressure_stencil, 1.0)?;
+        let current_pressure_gradient = pressure_coupling_gradient(
+            mesh,
+            &state.pressure,
+            options.pressure_stencil,
+            options.pressure_boundary,
+        )?;
+        let pressure_source = current_pressure_gradient.map(|g| -*g);
         let source_x = momentum_component_field(mesh, &pressure_source, MomentumComponent::X)?;
         let source_y = momentum_component_field(mesh, &pressure_source, MomentumComponent::Y)?;
         let source_z = momentum_component_field(mesh, &pressure_source, MomentumComponent::Z)?;
@@ -419,6 +424,7 @@ pub fn solve_simple_with_observer(
             options.pressure_stencil,
             &state.face_flux,
             &coefficients,
+            Some(&current_pressure_gradient),
         )?;
         if let Some(correction_boundary) = options.pressure_correction_boundary {
             correction_boundary.ensure_mesh(mesh)?;
@@ -470,10 +476,11 @@ pub fn solve_simple_with_observer(
         {
             *pressure += options.pressure_relaxation * correction;
         }
-        let correction_gradient = least_squares_gradient(
+        let correction_gradient = pressure_coupling_gradient(
             mesh,
-            correction_stencil.unwrap_or(options.pressure_stencil),
             &correction,
+            correction_stencil.unwrap_or(options.pressure_stencil),
+            options.pressure_correction_boundary,
         )?;
         state.velocity =
             correct_cell_velocity_from_gradient(mesh, &predictor, &r_au, &correction_gradient)?;
@@ -1003,6 +1010,34 @@ pub fn initial_face_flux(
     Ok(flux)
 }
 
+/// Use a bounded face-pressure Gauss gradient consistently throughout the 3D
+/// coupling. A one-sided tetrahedral LSQ reconstruction can amplify pressure
+/// noise in directions poorly resolved by neighbouring cell centres.
+fn pressure_coupling_gradient(
+    mesh: &UnstructuredMesh,
+    pressure: &CellField<f64>,
+    stencil: &LeastSquaresGradientStencil,
+    boundary: Option<&ResolvedScalarBoundaryConditions>,
+) -> Result<CellField<Vec3>, SimpleError> {
+    if mesh.dimension() != crate::MeshDimension::ThreeD {
+        return Ok(least_squares_gradient(mesh, stencil, pressure)?);
+    }
+    let mut faces = FaceField::filled(mesh, 0.0);
+    for (i, f) in mesh.faces().iter().enumerate() {
+        faces[i] = if let Some(n) = f.neighbour {
+            let a = (f.center - mesh.cells()[f.owner].center).norm();
+            let b = (f.center - mesh.cells()[n].center).norm();
+            (b * pressure[f.owner] + a * pressure[n]) / (a + b)
+        } else {
+            match boundary.and_then(|bc| bc.condition(i)) {
+                Some(ScalarBoundaryCondition::FixedValue(p)) => p,
+                _ => pressure[f.owner],
+            }
+        };
+    }
+    Ok(crate::gauss_gradient_from_faces(mesh, &faces)?)
+}
+
 /// Constructs the pressure-aware Rhie--Chow predictor flux for internal faces.
 /// Given cell predictor values `U* = H/A - rAU grad(p)`, the face formula is
 /// `Phi* = interpolate(U*) . S + interpolate(rAU grad(p)) . S
@@ -1030,6 +1065,7 @@ pub fn rhie_chow_predicted_flux(
         pressure_stencil,
         wall_flux,
         &coefficients,
+        None,
     )
 }
 
@@ -1041,6 +1077,7 @@ fn rhie_chow_flux_with_coefficients(
     pressure_stencil: &LeastSquaresGradientStencil,
     wall_flux: &FaceField<f64>,
     coefficients: &FaceField<f64>,
+    coupling_gradient: Option<&CellField<Vec3>>,
 ) -> Result<FaceField<f64>, SimpleError> {
     predictor_velocity.ensure_mesh(mesh)?;
     pressure.ensure_mesh(mesh)?;
@@ -1048,7 +1085,14 @@ fn rhie_chow_flux_with_coefficients(
     pressure_stencil.ensure_mesh(mesh)?;
     wall_flux.ensure_mesh(mesh)?;
 
-    let pressure_gradient = least_squares_gradient(mesh, pressure_stencil, pressure)?;
+    let reconstructed;
+    let pressure_gradient = if let Some(g) = coupling_gradient {
+        g.ensure_mesh(mesh)?;
+        g
+    } else {
+        reconstructed = least_squares_gradient(mesh, pressure_stencil, pressure)?;
+        &reconstructed
+    };
     let mut flux = wall_flux.clone();
     for (face_index, face) in mesh.faces().iter().enumerate() {
         let Some(neighbour) = face.neighbour else {
@@ -1061,11 +1105,17 @@ fn rhie_chow_flux_with_coefficients(
             + predictor_velocity[neighbour] * (1.0 - weight);
         let gradient =
             pressure_gradient[face.owner] * weight + pressure_gradient[neighbour] * (1.0 - weight);
+        let weighted_response_gradient = pressure_gradient[face.owner]
+            * (weight * r_au[face.owner])
+            + pressure_gradient[neighbour] * ((1.0 - weight) * r_au[neighbour]);
+        let response = weight * r_au[face.owner] + (1.0 - weight) * r_au[neighbour];
+        let response_covariance = weighted_response_gradient - gradient * response;
         let d = mesh.cells()[neighbour].center - mesh.cells()[face.owner].center;
         // Use the same orthogonal pressure operator for the interpolated and
         // direct pressure differences. Their non-orthogonal terms cancel, so
         // a linear pressure field introduces no artificial Rhie--Chow flux.
         flux[face_index] = velocity.dot(face.area_vector)
+            + response_covariance.dot(face.area_vector)
             + coefficients[face_index]
                 * (gradient.dot(d) - (pressure[neighbour] - pressure[face.owner]));
         if !flux[face_index].is_finite() {
@@ -1087,6 +1137,88 @@ mod tests {
         ResolvedVelocityBoundaryConditions, ScalarBoundaryCondition, UnstructuredMesh, Vec3,
         VelocityBoundaryCondition,
     };
+
+    #[test]
+    fn three_dimensional_coupling_gradient_preserves_fixed_linear_pressure_and_neumann_constant() {
+        let mesh = hexahedral_grid(2, 2, 2);
+        let patches = mesh
+            .faces()
+            .iter()
+            .enumerate()
+            .filter(|(_, f)| f.neighbour.is_none())
+            .map(|(i, _)| BoundaryPatch {
+                name: format!("face-{i}"),
+                face_indices: vec![i],
+                boundary_type: BoundaryType::Wall,
+            })
+            .collect();
+        let mesh = mesh.with_boundary_patches(patches).unwrap();
+        let expected = Vec3::new(2., -3., 4.);
+        let values = CellField::from_cells(&mesh, |_, c| expected.dot(c.center) + 5.0);
+        let assignments = mesh
+            .boundary_patches()
+            .iter()
+            .map(|p| {
+                (
+                    p.name.as_str(),
+                    ScalarBoundaryCondition::FixedValue(
+                        expected.dot(mesh.faces()[p.face_indices[0]].center) + 5.0,
+                    ),
+                )
+            })
+            .collect::<Vec<_>>();
+        let bc = ResolvedScalarBoundaryConditions::strict(&mesh, &assignments).unwrap();
+        let stencil = LeastSquaresGradientStencil::new(&mesh, &bc).unwrap();
+        let gradient = pressure_coupling_gradient(&mesh, &values, &stencil, Some(&bc)).unwrap();
+        assert!(gradient
+            .values()
+            .iter()
+            .all(|g| (*g - expected).norm() < 1e-11));
+        let constant = CellField::filled(&mesh, 2.5);
+        let gradient = pressure_coupling_gradient(&mesh, &constant, &stencil, None).unwrap();
+        assert!(gradient.values().iter().all(|g| g.norm() < 1e-11));
+    }
+
+    #[test]
+    fn rhie_chow_cancels_nonuniform_cell_pressure_response_before_face_interpolation() {
+        let mesh = two_cells();
+        let bc = ResolvedScalarBoundaryConditions::strict(
+            &mesh,
+            &[("wall", ScalarBoundaryCondition::FixedValue(0.0))],
+        )
+        .unwrap();
+        let stencil = LeastSquaresGradientStencil::new(&mesh, &bc).unwrap();
+        let pressure = CellField::from_values(&mesh, vec![1.0, 3.0]).unwrap();
+        let response = CellField::from_values(&mesh, vec![1.0, 4.0]).unwrap();
+        let gradient = CellField::from_values(
+            &mesh,
+            vec![Vec3::new(2.0, 0.0, 0.0), Vec3::new(5.0, 0.0, 0.0)],
+        )
+        .unwrap();
+        let predictor = CellField::from_values(
+            &mesh,
+            vec![Vec3::new(-2.0, 0.0, 0.0), Vec3::new(-20.0, 0.0, 0.0)],
+        )
+        .unwrap();
+        let coefficients = pressure_face_coefficients(&mesh, &response).unwrap();
+        let flux = rhie_chow_flux_with_coefficients(
+            &mesh,
+            &predictor,
+            &pressure,
+            &response,
+            &stencil,
+            &FaceField::filled(&mesh, 0.0),
+            &coefficients,
+            Some(&gradient),
+        )
+        .unwrap();
+        let face = mesh
+            .faces()
+            .iter()
+            .position(|f| f.neighbour.is_some())
+            .unwrap();
+        assert!((flux[face] + 5.0).abs() < 1e-12);
+    }
 
     fn two_cells() -> UnstructuredMesh {
         let mesh = UnstructuredMesh::from_cells(
@@ -1398,7 +1530,11 @@ mod tests {
         )
         .unwrap();
         assert!(report.converged());
-        assert_eq!(correction.values(), &[0.0, 1.5]);
+        assert!(correction
+            .values()
+            .iter()
+            .zip([0.0, 1.5])
+            .all(|(a, b)| (*a - b).abs() < 1e-12));
         let corrected = correct_face_flux(&mesh, &predicted, &coefficients, &correction).unwrap();
         let imbalance = crate::integrated_divergence(&mesh, &corrected).unwrap();
         assert!(imbalance.values().iter().all(|value| value.abs() < 1.0e-12));

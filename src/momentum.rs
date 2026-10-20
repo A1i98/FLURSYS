@@ -388,7 +388,7 @@ fn add_explicit_nonorthogonal_rhs(
     options: MomentumOptions<'_>,
     rhs: &mut [f64],
 ) -> Result<(), MomentumError> {
-    if options.diffusion.non_orthogonal_correction != NonOrthogonalCorrection::Explicit {
+    if options.diffusion.non_orthogonal_correction == NonOrthogonalCorrection::None {
         return Ok(());
     }
     let field = options
