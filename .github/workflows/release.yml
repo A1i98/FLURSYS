@@ -39,7 +39,27 @@ jobs:
         if: matrix.archive == 'tar.gz'
         run: |
           mkdir -p dist
-          tar -C target/release -czf "dist/flursys-${{ github.ref_name }}-${{ matrix.target }}.tar.gz" flursys flursys-gui
+          stage="${RUNNER_TEMP}/flursys-package"
+          mkdir -p "$stage"
+          cp target/release/flursys target/release/flursys-gui "$stage/"
+          if [ "${{ runner.os }}" = "Linux" ]; then
+            mkdir -p "$stage/share/applications" "$stage/share/icons/hicolor/512x512/apps" "$stage/share/icons/hicolor/scalable/apps"
+            cp packaging/linux/flursys.desktop "$stage/share/applications/"
+            cp ui/assets/flursys-icon.png "$stage/share/icons/hicolor/512x512/apps/flursys.png"
+            cp ui/assets/flursys-logo.svg "$stage/share/icons/hicolor/scalable/apps/flursys.svg"
+          else
+            app="$stage/FLURSYS.app/Contents"
+            mkdir -p "$app/MacOS" "$app/Resources" "${RUNNER_TEMP}/flursys.iconset"
+            cp target/release/flursys-gui "$app/MacOS/"
+            sed "s/@VERSION@/${GITHUB_REF_NAME#v}/g" packaging/macos/Info.plist > "$app/Info.plist"
+            for size in 16 32 128 256 512; do
+              sips -z "$size" "$size" ui/assets/flursys-logo.png --out "${RUNNER_TEMP}/flursys.iconset/icon_${size}x${size}.png" >/dev/null
+              double=$((size * 2))
+              sips -z "$double" "$double" ui/assets/flursys-logo.png --out "${RUNNER_TEMP}/flursys.iconset/icon_${size}x${size}@2x.png" >/dev/null
+            done
+            iconutil -c icns "${RUNNER_TEMP}/flursys.iconset" -o "$app/Resources/flursys.icns"
+          fi
+          tar -C "$stage" -czf "dist/flursys-${{ github.ref_name }}-${{ matrix.target }}.tar.gz" .
           sha256sum dist/* > "dist/flursys-${{ matrix.target }}-checksums.txt"
       - name: Package Windows binaries
         if: matrix.archive == 'zip'

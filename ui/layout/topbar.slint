@@ -43,6 +43,7 @@ export component TopBar inherits Rectangle {
         spacing:0px;
         HorizontalLayout {
             height:36px;spacing:3px;padding-left:8px;padding-right:8px;
+            Image {source:@image-url("../assets/flursys-logo.svg");width:32px;height:32px;image-fit:contain;}
             Text {text:"FLURSYS";color:UiTheme.text-title;font-size:20px;font-weight:800;vertical-alignment:center;}
             Rectangle {width:1px;height:22px;background:UiTheme.border;}
             Text {text:"CFD WORKBENCH";color:UiTheme.text-label;font-size:10px;vertical-alignment:center;}

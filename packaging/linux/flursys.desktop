@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=FLURSYS
+Comment=CFD modelling, meshing and flow analysis
+Exec=flursys-gui
+Icon=flursys
+Terminal=false
+Categories=Science;Engineering;
+StartupNotify=true
+StartupWMClass=flursys
