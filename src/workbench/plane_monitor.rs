@@ -3,6 +3,42 @@ use crate::{MeshDimension, UnstructuredMesh, Vec3};
 use serde::{Deserialize, Serialize};
 use std::fmt::Write as _;
 use std::{io::Write, path::Path};
+/// Presentation settings do not change the recorded physical fields.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PlaneDisplay {
+    /// 0 speed, 1 kinematic pressure, 2..4 global velocity, 5 normal velocity.
+    pub field: usize,
+    pub vectors: bool,
+    pub edges: bool,
+    pub normalized_vectors: bool,
+    pub normal_markers: bool,
+    pub range: Option<[f64; 2]>,
+}
+impl Default for PlaneDisplay {
+    fn default() -> Self {
+        Self {
+            field: 0,
+            vectors: true,
+            edges: false,
+            normalized_vectors: true,
+            normal_markers: false,
+            range: None,
+        }
+    }
+}
+impl PlaneDisplay {
+    pub fn validate(&self) -> Result<(), String> {
+        if self.field > 5
+            || self
+                .range
+                .is_some_and(|[a, b]| !a.is_finite() || !b.is_finite() || b <= a)
+        {
+            return Err("Select a supported field and a finite increasing range".into());
+        }
+        Ok(())
+    }
+}
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct FlowPlaneMonitor {
     pub id: String,
@@ -12,9 +48,12 @@ pub struct FlowPlaneMonitor {
     pub v: Vec3,
     pub enabled: bool,
     pub every: usize,
+    #[serde(default)]
+    pub display: PlaneDisplay,
 }
 impl FlowPlaneMonitor {
     pub fn validate(&self) -> Result<(), String> {
+        self.display.validate()?;
         if self.id.is_empty() || self.every == 0 || self.every > 1_000_000 {
             return Err("Plane needs an ID and a sampling interval between 1 and 1000000".into());
         }
@@ -33,19 +72,19 @@ impl FlowPlaneMonitor {
         self.u.cross(self.v)
     }
 }
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PlaneCell {
     pub cell: usize,
     pub point: Vec3,
     pub polygon: Vec<Vec3>,
 }
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PlaneSample {
     pub geometry: PlaneCell,
     pub velocity: Vec3,
     pub pressure: f64,
 }
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PlaneSnapshot {
     pub plane: FlowPlaneMonitor,
     pub iteration: usize,
@@ -192,6 +231,11 @@ pub fn write_csv(snapshot: &PlaneSnapshot, folder: &Path) -> Result<std::path::P
         .map_err(|e| e.to_string())?;
     file.flush().map_err(|e| e.to_string())?;
     file.persist(&path).map_err(|e| e.to_string())?;
+    let mut archive = tempfile::NamedTempFile::new_in(&folder).map_err(|e| e.to_string())?;
+    serde_json::to_writer(&mut archive, snapshot).map_err(|e| e.to_string())?;
+    archive
+        .persist(path.with_extension("json"))
+        .map_err(|e| e.to_string())?;
     let image = path.with_extension("svg");
     let mut vector = tempfile::NamedTempFile::new_in(&folder).map_err(|e| e.to_string())?;
     vector
@@ -208,45 +252,108 @@ fn escaped(s: &str) -> String {
         .replace('>', "&gt;")
 }
 pub fn vector_svg(snapshot: &PlaneSnapshot) -> String {
-    let (w, h) = (1000., 600.);
-    let (left, right, top, bottom) = (85., 960., 92., 535.);
+    section_svg(snapshot, &snapshot.plane.display)
+}
+
+/// Filled cell sections: no smoothing or invented point interpolation.
+pub fn section_svg(snapshot: &PlaneSnapshot, style: &PlaneDisplay) -> String {
     let p = &snapshot.plane;
-    let project = |point: Vec3| {
-        let d = point - p.origin;
+    let field = style.field.min(5);
+    let (label, unit) = match field {
+        1 => ("Kinematic gauge pressure p/rho", "m2/s2"),
+        2 => ("Velocity X", "m/s"),
+        3 => ("Velocity Y", "m/s"),
+        4 => ("Velocity Z", "m/s"),
+        5 => ("Normal velocity", "m/s"),
+        _ => ("Speed |U|", "m/s"),
+    };
+    let scalar = |s: &PlaneSample| match field {
+        1 => s.pressure,
+        2 => s.velocity.x,
+        3 => s.velocity.y,
+        4 => s.velocity.z,
+        5 => s.velocity.dot(p.normal()),
+        _ => s.velocity.norm(),
+    };
+    let project = |q: Vec3| {
+        let d = q - p.origin;
         (d.dot(p.u), d.dot(p.v))
     };
     let mut lo = (f64::INFINITY, f64::INFINITY);
     let mut hi = (f64::NEG_INFINITY, f64::NEG_INFINITY);
-    let mut vmax = 0_f64;
+    let (mut vmin, mut vmax, mut speed) = (f64::INFINITY, f64::NEG_INFINITY, 0_f64);
     for s in &snapshot.samples {
-        for point in &s.geometry.polygon {
-            let q = project(*point);
-            lo.0 = lo.0.min(q.0);
-            lo.1 = lo.1.min(q.1);
-            hi.0 = hi.0.max(q.0);
-            hi.1 = hi.1.max(q.1);
+        let v = scalar(s);
+        vmin = vmin.min(v);
+        vmax = vmax.max(v);
+        speed = speed.max(s.velocity.norm());
+        for q in &s.geometry.polygon {
+            let (a, b) = project(*q);
+            lo.0 = lo.0.min(a);
+            lo.1 = lo.1.min(b);
+            hi.0 = hi.0.max(a);
+            hi.1 = hi.1.max(b);
         }
-        vmax = vmax.max(s.velocity.norm());
     }
-    if !lo.0.is_finite() {
-        lo = (0., 0.);
-        hi = (1., 1.);
+    if snapshot.samples.is_empty() {
+        return r##"<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="650"><rect width="100%" height="100%" fill="#20242c"/><text x="40" y="60" fill="white">No intersected cells on this plane.</text></svg>"##.into();
     }
-    let span = ((hi.0 - lo.0).max(1e-14), (hi.1 - lo.1).max(1e-14));
-    let scale = ((right - left) / span.0).min((bottom - top) / span.1) * 0.94;
-    let cx = (left + right) / 2.;
-    let cy = (top + bottom) / 2.;
-    let middle = ((lo.0 + hi.0) / 2., (lo.1 + hi.1) / 2.);
-    let screen = |point: Vec3| {
-        let q = project(point);
-        (cx + (q.0 - middle.0) * scale, cy - (q.1 - middle.1) * scale)
+    let data_range = (vmin, vmax);
+    if let Some([a, b]) = style
+        .range
+        .filter(|[a, b]| a.is_finite() && b.is_finite() && b > a)
+    {
+        vmin = a;
+        vmax = b;
+    }
+    let color = |v: f64| {
+        let t = if vmax > vmin {
+            ((v - vmin) / (vmax - vmin)).clamp(0., 1.)
+        } else {
+            0.5
+        };
+        // Perceptually ordered Viridis anchors, linearly interpolated.
+        let palette = [
+            [68., 1., 84.],
+            [59., 82., 139.],
+            [33., 145., 140.],
+            [94., 201., 98.],
+            [253., 231., 37.],
+        ];
+        let x = t * 4.;
+        let i = (x.floor() as usize).min(3);
+        let f = x - i as f64;
+        format!(
+            "#{:02x}{:02x}{:02x}",
+            (palette[i][0] * (1. - f) + palette[i + 1][0] * f) as u8,
+            (palette[i][1] * (1. - f) + palette[i + 1][1] * f) as u8,
+            (palette[i][2] * (1. - f) + palette[i + 1][2] * f) as u8
+        )
+    };
+    let (left, right, top, bottom) = (85., 805., 115., 555.);
+    let scale = ((right - left) / (hi.0 - lo.0).max(1e-15))
+        .min((bottom - top) / (hi.1 - lo.1).max(1e-15))
+        * 0.96;
+    let (cx, cy) = ((left + right) / 2., (top + bottom) / 2.);
+    let mid = ((lo.0 + hi.0) / 2., (lo.1 + hi.1) / 2.);
+    let screen = |q: Vec3| {
+        let (a, b) = project(q);
+        (cx + (a - mid.0) * scale, cy - (b - mid.1) * scale)
     };
     let mut svg = format!(
-        r##"<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{h}"><rect width="100%" height="100%" fill="#20242c"/><g font-family="DejaVu Sans,sans-serif" fill="#d4dce8" font-size="13"><text x="{left}" y="26" font-size="17">{} · iteration {}</text><text x="{left}" y="49">Cell-centred U · arrows: in-plane velocity · dot/cross: positive/negative normal flow</text><text x="{left}" y="70">{} intersected cells · speed range 0 … {:.3e} m/s · SIMPLE iteration, not physical time</text>"##,
+        r##"<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="650"><rect width="100%" height="100%" fill="#20242c"/><g font-family="DejaVu Sans,sans-serif" fill="#d4dce8" font-size="12"><text x="{left}" y="28" font-size="18">{} · iteration {}</text><text x="{left}" y="51">{} ({unit}) · cell-centred section</text><text x="{left}" y="73">{} cells · data min {:.4e} · max {:.4e}</text><text x="{left}" y="94">Origin ({:.4e}, {:.4e}, {:.4e}) m · normal ({:.3}, {:.3}, {:.3})</text>"##,
         escaped(&p.name),
         snapshot.iteration,
+        label,
         snapshot.samples.len(),
-        vmax
+        data_range.0,
+        data_range.1,
+        p.origin.x,
+        p.origin.y,
+        p.origin.z,
+        p.normal().x,
+        p.normal().y,
+        p.normal().z
     );
     for s in &snapshot.samples {
         let points = s
@@ -259,86 +366,94 @@ pub fn vector_svg(snapshot: &PlaneSnapshot) -> String {
             })
             .collect::<Vec<_>>()
             .join(" ");
+        let c = color(scalar(s));
+        let edge = if style.edges { "#18212a" } else { c.as_str() };
         let _ = write!(
             svg,
-            r##"<polygon points="{points}" fill="#283441" stroke="#3c4a5b" stroke-width="0.65"/>"##
+            r##"<polygon points="{points}" fill="{c}" stroke="{edge}" stroke-width="0.5"/>"##
         );
     }
-    let stride = (snapshot.samples.len() / 600).max(1);
-    let length = 22_f64
-        .min(((right - left) * (bottom - top) / snapshot.samples.len().max(1) as f64).sqrt() * 0.65)
-        .max(5.);
-    for s in snapshot.samples.iter().step_by(stride) {
-        let (x, y) = screen(s.geometry.point);
-        let v = s.velocity;
-        let a = v.dot(p.u);
-        let b = v.dot(p.v);
-        let n = v.dot(p.normal());
-        let t = if vmax > 0. {
-            (v.norm() / vmax).clamp(0., 1.)
-        } else {
-            0.
-        };
-        let color = format!(
-            "#{:02x}{:02x}{:02x}",
-            (65. + 180. * t) as u8,
-            (190. - 35. * t) as u8,
-            (245. - 170. * t) as u8
-        );
-        let denom = vmax.max(1e-30);
-        let dx = a / denom * length;
-        let dy = -b / denom * length;
-        let m = dx.hypot(dy);
-        if m > 0.4 {
-            let (ex, ey) = (x + dx, y + dy);
-            let (ux, uy) = (dx / m, dy / m);
-            let head = 3.5_f64.min(m * 0.5);
-            let _ = write!(
-                svg,
-                r##"<path d="M{x:.2} {y:.2} L{ex:.2} {ey:.2} M{:.2} {:.2} L{ex:.2} {ey:.2} L{:.2} {:.2}" fill="none" stroke="{color}" stroke-width="1.4"/>"##,
-                ex - head * ux + head * 0.5 * uy,
-                ey - head * uy - head * 0.5 * ux,
-                ex - head * ux - head * 0.5 * uy,
-                ey - head * uy + head * 0.5 * ux
-            );
-        }
-        if n.abs() > denom * 0.03 {
-            let _ = write!(
-                svg,
-                r##"<circle cx="{x:.2}" cy="{y:.2}" r="3" fill="none" stroke="{color}"/>"##
-            );
-            if n > 0. {
-                let _ = write!(
-                    svg,
-                    r##"<circle cx="{x:.2}" cy="{y:.2}" r="1" fill="{color}"/>"##
-                );
+    if style.vectors {
+        let stride = snapshot.samples.len().div_ceil(600).max(1);
+        let length = 24_f64
+            .min(
+                ((right - left) * (bottom - top) / snapshot.samples.len().max(1) as f64).sqrt()
+                    * 0.8,
+            )
+            .max(6.);
+        for s in snapshot.samples.iter().step_by(stride) {
+            let (x, y) = screen(s.geometry.point);
+            let v = s.velocity;
+            let in_plane = v.dot(p.u).hypot(v.dot(p.v));
+            let denom = if style.normalized_vectors {
+                in_plane.max(speed * 1e-8).max(1e-30)
             } else {
+                speed.max(1e-30)
+            };
+            let (dx, dy) = (v.dot(p.u) / denom * length, -v.dot(p.v) / denom * length);
+            let mag = dx.hypot(dy);
+            if mag > 0.35 {
+                let (ex, ey) = (x + dx, y + dy);
+                let (ux, uy) = (dx / mag, dy / mag);
+                let h = 3.5_f64.min(mag * 0.5);
                 let _ = write!(
                     svg,
-                    r##"<path d="M{} {} l4 4 m-4 0 l4 -4" stroke="{color}"/>"##,
-                    x - 2.,
-                    y - 2.
+                    r##"<path d="M{x:.2} {y:.2} L{ex:.2} {ey:.2} M{:.2} {:.2} L{ex:.2} {ey:.2} L{:.2} {:.2}" fill="none" stroke="#f4f7ff" stroke-width="1.2"/>"##,
+                    ex - h * ux + h * 0.5 * uy,
+                    ey - h * uy - h * 0.5 * ux,
+                    ex - h * ux - h * 0.5 * uy,
+                    ey - h * uy + h * 0.5 * ux
                 );
             }
+            let n = v.dot(p.normal());
+            if style.normal_markers && n.abs() > speed.max(1e-30) * 0.03 {
+                if n > 0. {
+                    let _ = write!(
+                        svg,
+                        r##"<circle cx="{x:.2}" cy="{y:.2}" r="1.8" fill="#fff"/>"##
+                    );
+                } else {
+                    let _ = write!(
+                        svg,
+                        r##"<path d="M{} {} l4 4 m-4 0 l4 -4" stroke="#fff"/>"##,
+                        x - 2.,
+                        y - 2.
+                    );
+                }
+            }
         }
+    }
+    for i in 0..100 {
+        let t = i as f64 / 99.;
+        let y = top + (1. - t) * (bottom - top);
+        let c = color(vmin + t * (vmax - vmin));
+        let _ = write!(
+            svg,
+            r##"<rect x="850" y="{y:.2}" width="20" height="5" fill="{c}"/>"##
+        );
     }
     for i in 0..=4 {
         let t = i as f64 / 4.;
         let x = left + (right - left) * t;
         let y = bottom - (bottom - top) * t;
-        let a = middle.0 + (x - cx) / scale;
-        let b = middle.1 + (cy - y) / scale;
+        let a = mid.0 + (x - cx) / scale;
+        let b = mid.1 + (cy - y) / scale;
+        let v = vmin + t * (vmax - vmin);
         let _ = write!(
             svg,
-            r##"<text x="{x}" y="{}" text-anchor="middle">{a:.2e}</text><text x="{}" y="{}" text-anchor="end">{b:.2e}</text>"##,
-            bottom + 23.,
-            left - 10.,
+            r##"<text x="{x}" y="580" text-anchor="middle">{a:.3e}</text><text x="75" y="{}" text-anchor="end">{b:.3e}</text><text x="880" y="{}">{v:.3e}</text>"##,
+            y + 4.,
             y + 4.
         );
     }
+    let vector_label = if style.normalized_vectors {
+        "normalized in-plane directions (length is not speed)"
+    } else {
+        "in-plane velocity; length scaled to maximum speed"
+    };
     let _ = write!(
         svg,
-        r##"<path d="M{left} {top} V{bottom} H{right}" fill="none" stroke="#9aabbf"/><text x="{cx}" y="580" text-anchor="middle">Plane u (m)</text><text transform="translate(18 {cy}) rotate(-90)" text-anchor="middle">Plane v (m)</text></g></svg>"##
+        r##"<path d="M{left} {top} V{bottom} H{right}" fill="none" stroke="#9aabbf"/><text x="{cx}" y="607" text-anchor="middle">Plane u (m)</text><text transform="translate(18 {cy}) rotate(-90)" text-anchor="middle">Plane v (m)</text><text x="845" y="109">{unit}</text><text x="{left}" y="635">Steady iteration, not physical time · vectors: {vector_label}</text></g></svg>"##
     );
     svg
 }
@@ -352,4 +467,58 @@ pub fn csv_text(snapshot: &PlaneSnapshot) -> String {
         let _=writeln!(csv,"{},{},{:.16e},{:.16e},{:.16e},{:.16e},{:.16e},{:.16e},{:.16e},{:.16e},{:.16e},{:.16e},{:.16e}",snapshot.iteration,s.geometry.cell,p.x,p.y,p.z,v.x,v.y,v.z,v.dot(snapshot.plane.u),v.dot(snapshot.plane.v),v.dot(snapshot.plane.normal()),v.norm(),s.pressure);
     }
     csv
+}
+
+#[cfg(test)]
+mod recording_tests {
+    use super::*;
+
+    #[test]
+    fn recorded_frame_retains_geometry_and_all_fields_for_replay() {
+        let plane = FlowPlaneMonitor {
+            id: "mid-plane".into(),
+            name: "Mid plane".into(),
+            origin: Vec3::new(0.0, 0.0, 0.005),
+            u: Vec3::new(1.0, 0.0, 0.0),
+            v: Vec3::new(0.0, 1.0, 0.0),
+            enabled: true,
+            every: 10,
+            display: PlaneDisplay::default(),
+        };
+        let snapshot = PlaneSnapshot {
+            plane,
+            iteration: 20,
+            path: None,
+            samples: vec![PlaneSample {
+                geometry: PlaneCell {
+                    cell: 7,
+                    point: Vec3::new(0.01, 0.01, 0.005),
+                    polygon: vec![
+                        Vec3::new(0.0, 0.0, 0.005),
+                        Vec3::new(0.02, 0.0, 0.005),
+                        Vec3::new(0.0, 0.02, 0.005),
+                    ],
+                },
+                velocity: Vec3::new(1.25, -0.5, 0.125),
+                pressure: -2.75,
+            }],
+        };
+        let folder = tempfile::tempdir().unwrap();
+        let path = write_csv(&snapshot, folder.path()).unwrap();
+        let restored: PlaneSnapshot =
+            serde_json::from_slice(&std::fs::read(path.with_extension("json")).unwrap()).unwrap();
+        assert_eq!(csv_text(&snapshot), csv_text(&restored));
+        assert_eq!(
+            restored.samples[0].geometry.polygon,
+            snapshot.samples[0].geometry.polygon
+        );
+        assert_eq!(restored.plane, snapshot.plane);
+        let mut pressure_style = restored.plane.display.clone();
+        pressure_style.field = 1;
+        assert_ne!(
+            section_svg(&restored, &pressure_style),
+            section_svg(&restored, &restored.plane.display)
+        );
+        assert!(path.with_extension("svg").is_file());
+    }
 }

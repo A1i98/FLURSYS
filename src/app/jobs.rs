@@ -9,6 +9,13 @@ use std::sync::{
     Arc,
 };
 
+fn wait_for_resume(paused: &AtomicBool, cancellation: &CancellationToken) -> bool {
+    while paused.load(Ordering::Acquire) && !cancellation.is_cancelled() {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    cancellation.is_cancelled()
+}
+
 /// Thread-safe cooperative cancellation shared by an application job and its worker.
 #[derive(Clone, Debug, Default)]
 pub struct CancellationToken(Arc<AtomicBool>);
@@ -69,6 +76,17 @@ pub struct WorkbenchJobExecutor {
     receiver: Option<Receiver<WorkbenchJobEvent>>,
     cancellation: Option<CancellationToken>,
     lifecycle: JobLifecycle,
+    paused: Arc<AtomicBool>,
+    restart: Option<std::path::PathBuf>,
+    checkpoint_every: usize,
+}
+
+impl Drop for WorkbenchJobExecutor {
+    fn drop(&mut self) {
+        if let Some(token) = &self.cancellation {
+            token.cancel();
+        }
+    }
 }
 
 impl Default for WorkbenchJobExecutor {
@@ -83,9 +101,24 @@ impl WorkbenchJobExecutor {
             receiver: None,
             cancellation: None,
             lifecycle: JobLifecycle::Idle,
+            paused: Arc::new(AtomicBool::new(false)),
+            restart: None,
+            checkpoint_every: 100,
         }
     }
 
+    pub fn set_checkpoint_interval(&mut self, every: usize) {
+        self.checkpoint_every = every.min(1_000_000);
+    }
+    pub fn set_restart(&mut self, path: Option<std::path::PathBuf>) {
+        self.restart = path;
+    }
+    pub fn set_paused(&self, paused: bool) {
+        self.paused.store(paused, Ordering::Release);
+    }
+    pub fn is_paused(&self) -> bool {
+        self.paused.load(Ordering::Acquire)
+    }
     pub fn lifecycle(&self) -> JobLifecycle {
         self.lifecycle
     }
@@ -130,10 +163,27 @@ impl WorkbenchJobExecutor {
     }
     pub fn start_solve_with_planes(
         &mut self,
-        case: IncompressibleCase,
+        mut case: IncompressibleCase,
         planes: Vec<crate::workbench::plane_monitor::FlowPlaneMonitor>,
         folder: std::path::PathBuf,
     ) -> Result<(), &'static str> {
+        if self.is_running() {
+            return Err("a workbench job is already running");
+        }
+        if let Some(path) = self.restart.as_ref() {
+            case.initial_conditions = crate::workbench::checkpoint::load(path, &case.mesh)
+                .map_err(|_| {
+                    "checkpoint cannot be loaded for this mesh; choose it again or Initialize"
+                })?
+                .1;
+            self.restart = None;
+        }
+        let checkpoint_every = if folder.as_os_str().is_empty() {
+            0
+        } else {
+            self.checkpoint_every
+        };
+        let paused = self.paused.clone();
         self.start(|sender, cancellation| {
             std::thread::spawn(move || {
                 let _ = sender.send(WorkbenchJobEvent::SolveProgress(JobProgress::Started));
@@ -141,7 +191,7 @@ impl WorkbenchJobExecutor {
                 let control_cancellation = cancellation.clone();
                 let metrics_sender = sender.clone();
                 let control = SolveControl::new(
-                    move || control_cancellation.is_cancelled(),
+                    move || wait_for_resume(&paused, &control_cancellation),
                     move |iteration, max, residual| {
                         let _ = progress_sender.send(WorkbenchJobEvent::SolveProgress(
                             JobProgress::Iteration {
@@ -186,7 +236,36 @@ impl WorkbenchJobExecutor {
                 let plans = Arc::new(plans);
                 let observer_plans = plans.clone();
                 let recording_folder = folder.clone();
+                let checkpoint_mesh = (checkpoint_every > 0).then(|| {
+                    Arc::new(crate::workbench::checkpoint::MeshSignature::new(&case.mesh))
+                });
+                let checkpoint_path = folder.join("checkpoint.json");
+                let checkpoint_context = format!(
+                    "material={:?}; solver={:?}; boundaries={:?}",
+                    case.material, case.solver, case.boundaries
+                );
+                let final_checkpoint_mesh = checkpoint_mesh.clone();
+                let final_checkpoint_path = checkpoint_path.clone();
+                let final_checkpoint_context = checkpoint_context.clone();
+                let checkpoint_sender = sender.clone();
                 let control = control.with_fields(move |iteration, velocity, pressure| {
+                    if let Some(checkpoint_mesh) = checkpoint_mesh
+                        .as_ref()
+                        .filter(|_| iteration == 1 || iteration % checkpoint_every == 0)
+                    {
+                        if let Err(error) = crate::workbench::checkpoint::write(
+                            &checkpoint_path,
+                            &checkpoint_mesh,
+                            iteration,
+                            velocity.values(),
+                            pressure.values(),
+                            &checkpoint_context,
+                        ) {
+                            let _ = checkpoint_sender.send(WorkbenchJobEvent::SolveProgress(
+                                JobProgress::Message(format!("Checkpoint failed: {error}")),
+                            ));
+                        }
+                    }
                     for (plane, cells) in observer_plans.iter() {
                         if iteration % plane.every != 0 {
                             continue;
@@ -208,6 +287,20 @@ impl WorkbenchJobExecutor {
                 });
                 let result = solve_incompressible_with_control(&case, &control);
                 if let Ok(solution) = &result {
+                    if let Some(final_checkpoint_mesh) = final_checkpoint_mesh.as_ref() {
+                        if let Err(error) = crate::workbench::checkpoint::write(
+                            &final_checkpoint_path,
+                            final_checkpoint_mesh,
+                            solution.report.outer_iterations,
+                            solution.velocity.values(),
+                            solution.pressure.values(),
+                            &final_checkpoint_context,
+                        ) {
+                            let _ = sender.send(WorkbenchJobEvent::SolveProgress(
+                                JobProgress::Message(format!("Final checkpoint failed: {error}")),
+                            ));
+                        }
+                    }
                     let iteration = solution.report.outer_iterations;
                     for (plane, cells) in plans.iter().filter(|(p, _)| iteration % p.every != 0) {
                         let saved = crate::workbench::plane_monitor::sample(
@@ -308,6 +401,7 @@ impl WorkbenchJobExecutor {
         if self.is_running() {
             return Err("a workbench job is already running");
         }
+        self.paused.store(false, Ordering::Release);
         let (sender, receiver) = mpsc::channel();
         let cancellation = CancellationToken::default();
         self.receiver = Some(receiver);
@@ -321,6 +415,34 @@ impl WorkbenchJobExecutor {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn paused_worker_resumes_and_cancels_without_losing_state() {
+        for cancel in [false, true] {
+            let paused = Arc::new(AtomicBool::new(true));
+            let token = CancellationToken::default();
+            let (tx, rx) = mpsc::channel();
+            let worker_pause = paused.clone();
+            let worker_token = token.clone();
+            let worker = std::thread::spawn(move || {
+                let retained_fields = vec![1.0, 2.0, 3.0];
+                let cancelled = wait_for_resume(&worker_pause, &worker_token);
+                tx.send((cancelled, retained_fields)).unwrap();
+            });
+            assert!(rx
+                .recv_timeout(std::time::Duration::from_millis(100))
+                .is_err());
+            if cancel {
+                token.cancel();
+            } else {
+                paused.store(false, Ordering::Release);
+            }
+            let (cancelled, fields) = rx.recv_timeout(std::time::Duration::from_secs(2)).unwrap();
+            assert_eq!(cancelled, cancel);
+            assert_eq!(fields, vec![1.0, 2.0, 3.0]);
+            worker.join().unwrap();
+        }
+    }
 
     #[test]
     fn cancellation_token_is_shared() {
@@ -337,6 +459,9 @@ mod tests {
             receiver: Some(receiver),
             cancellation: Some(CancellationToken::default()),
             lifecycle: JobLifecycle::Running,
+            paused: Arc::new(AtomicBool::new(false)),
+            restart: None,
+            checkpoint_every: 100,
         };
         sender
             .send(WorkbenchJobEvent::MeshCompleted(Err(

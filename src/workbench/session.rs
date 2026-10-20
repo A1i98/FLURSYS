@@ -625,12 +625,27 @@ impl WorkbenchSession {
         mut export: GeometryGmshExport,
     ) -> Result<GeometryGmshExport, WorkbenchError> {
         let mut source = String::from("\n// FLURSYS persisted advanced mesh recipe.\n");
-        if self
-            .geometry
-            .edges()
-            .any(|e| matches!(e.geometry, crate::EdgeGeometry::CircularArc { .. }))
-        {
-            source.push_str("Mesh.MinimumCirclePoints = 64;\nMesh.MeshSizeFromCurvature = 32;\n");
+        let t = &self.mesh_recipe.tuning;
+        t.validate().map_err(|message| WorkbenchError::InvalidGrouping { message })?;
+        source.push_str(&format!(
+            "Mesh.Algorithm = {};\nMesh.Algorithm3D = {};\nMesh.MeshSizeFromCurvature = {};\nMesh.Smoothing = {};\nMesh.Optimize = {};\nMesh.OptimizeNetgen = {};\nMesh.OptimizeThreshold = {};\nMesh.MeshSizeExtendFromBoundary = {};\nMesh.MeshSizeFromPoints = 1;\nMeshSize {{ PointsOf{{ Surface{{:}}; }} }} = {};\n",
+            t.algorithm_2d, t.algorithm_3d, t.curvature_points, t.smoothing_steps,
+            u8::from(t.optimize), u8::from(t.optimize_netgen), t.optimize_threshold,
+            u8::from(t.extend_boundary_sizes), self.global_size));
+        // Reject silent clamping of explicit controls by global size bounds.
+        for control in self.mesh_recipe.local_sizes.iter().filter(|c| c.enabled) {
+            if control.size < self.min_size || control.size > self.max_size {
+                return Err(WorkbenchError::InvalidGrouping { message: format!(
+                    "Local size '{}' ({}) is outside global bounds [{}, {}]. Adjust the bounds or this control.",
+                    control.name, control.size, self.min_size, self.max_size) });
+            }
+        }
+        for control in self.mesh_recipe.refinements.iter().filter(|c| c.enabled) {
+            if control.size_min < self.min_size || control.size_max > self.max_size {
+                return Err(WorkbenchError::InvalidGrouping { message: format!(
+                    "Distance refinement '{}' sizes must lie inside global bounds [{}, {}]",
+                    control.name, self.min_size, self.max_size) });
+            }
         }
         let entity_kind = match self.mesh_dimension {
             MeshDimension::TwoD => "Curve",
@@ -1214,6 +1229,10 @@ impl WorkbenchSession {
         let Some(generated) = &self.mesh else {
             return Err("generate a mesh first (Mesh stage)".to_string());
         };
+        let quality=generated.mesh.quality();
+        if !quality.min_cell_volume.is_finite() || quality.min_cell_volume<=0.0 || !quality.max_non_orthogonality_degrees.is_finite() || quality.max_non_orthogonality_degrees>=90.0 {
+            return Err("Invalid mesh geometry: check positive cell measures and owner-to-neighbour face orientation before solving.".into());
+        }
         let mut uncovered = 0_usize;
         let mut covered = std::collections::BTreeSet::new();
         for patch in generated.mesh.boundary_patches() {
@@ -1261,6 +1280,8 @@ impl WorkbenchSession {
             return Err(WorkbenchError::InvalidGrouping { message: reason });
         }
         let generated = self.mesh.as_ref().expect("readiness verified the mesh");
+        let preflight=super::diagnostics::mesh_preflight(&generated.mesh);
+        if preflight.blocked() {return Err(WorkbenchError::InvalidGrouping {message:preflight.summary()});}
         let boundaries = generated
             .mesh
             .boundary_patches()
@@ -1282,6 +1303,12 @@ impl WorkbenchSession {
     // ---------------------------------------------------------------
     // Solution lifecycle
     // ---------------------------------------------------------------
+
+    /// Clear the current solution while retaining geometry, mesh and boundary setup.
+    pub fn initialize_solution(&mut self) {
+        self.solution = None;
+        self.status = SolveStatus::Idle;
+    }
 
     pub fn mark_solving(&mut self) {
         self.status = SolveStatus::Solving;

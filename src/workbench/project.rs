@@ -126,9 +126,45 @@ impl Default for WorkbenchMeshSettings {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct MeshRecipe {
+    pub tuning: MeshTuning,
     pub local_sizes: Vec<LocalMeshSize>,
     pub refinements: Vec<ThresholdRefinement>,
     pub boundary_layers: Vec<BoundaryLayerControl>,
+}
+
+/// Explicit Gmsh controls shared by the UI, persistence and geometry export.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MeshTuning {
+    pub algorithm_2d: u8,
+    pub algorithm_3d: u8,
+    pub curvature_points: u32,
+    pub smoothing_steps: u32,
+    pub optimize: bool,
+    pub optimize_netgen: bool,
+    pub optimize_threshold: f64,
+    pub extend_boundary_sizes: bool,
+}
+impl Default for MeshTuning {
+    fn default() -> Self {
+        Self { algorithm_2d: 6, algorithm_3d: 1, curvature_points: 32,
+            smoothing_steps: 10, optimize: true, optimize_netgen: false,
+            optimize_threshold: 0.3, extend_boundary_sizes: true }
+    }
+}
+impl MeshTuning {
+    pub fn validate(&self) -> Result<(), String> {
+        if ![1,5,6].contains(&self.algorithm_2d) || ![1,4,10].contains(&self.algorithm_3d) {
+            return Err("Unsupported triangle/tetrahedron meshing algorithm".into());
+        }
+        if self.curvature_points > 1000 || self.smoothing_steps > 100 {
+            return Err("Curvature sampling must be 0–1000; smoothing steps 0–100".into());
+        }
+        if !self.optimize_threshold.is_finite() || !(0.0..=1.0).contains(&self.optimize_threshold) {
+            return Err("Gmsh optimization quality threshold must be between 0 and 1".into());
+        }
+        Ok(())
+    }
 }
 
 /// Stable project targets; backend Gmsh entity tags are resolved only while a
@@ -371,6 +407,7 @@ impl WorkbenchProject {
                 "invalid SIMPLE settings".into(),
             ));
         }
+        self.mesh_recipe.tuning.validate().map_err(ProjectDocumentError::Invalid)?;
         let mut names = BTreeSet::new();
         for selection in &self.named_selections {
             if selection.name.trim().is_empty()
@@ -627,12 +664,18 @@ pub fn finalize_workspace_run(
         )));
     }
     let report = serde_json::json!({
+        "report_format": 2,
+        "solver_version": env!("CARGO_PKG_VERSION"),
         "run": &record,
         "mesh_settings": &project.mesh,
+        "mesh_recipe": &project.mesh_recipe,
         "material": &project.material,
         "solver_settings": &project.solver,
         "cpu_worker_threads": session.solution().map(|s| s.report.cpu_threads),
         "boundaries": &project.boundaries,
+        "spatial_methods": session.mesh().map(|m| if m.mesh.dimension()==MeshDimension::ThreeD {serde_json::json!({"pressure_gradient":"Gauss with bounded face-pressure interpolation","momentum_nonorthogonal":"limited correction: abs(explicit flux) <= abs(two-point flux)","rhie_chow":"interpolated cell pressure response; response-gradient covariance retained"})}else{serde_json::json!({"pressure_gradient":"least squares","momentum_nonorthogonal":"explicit Gauss correction","rhie_chow":"interpolated cell pressure response; response-gradient covariance retained"})}),
+        "mesh_preflight": session.mesh().map(|m|super::diagnostics::mesh_preflight(&m.mesh)),
+        "conservation": session.mesh().zip(session.solution()).map(|(m,s)|super::boundary_reports::conservation_report(&m.mesh,s,session.material().density)),
         "boundary_flow_reports": session.mesh().zip(session.solution()).map(|(mesh,solution)|super::boundary_reports::boundary_flow_reports(&mesh.mesh,solution,session.material().density)),
         "continuity_history": session.solution().map(|solution| &solution.report.continuity_history),
         "convergence_histories": session.solution().map(|s|serde_json::json!({"momentum":s.report.simple.momentum_relative_history,"velocity":s.report.simple.velocity_change_history,"pressure_linear":s.report.simple.pressure_linear_history})),

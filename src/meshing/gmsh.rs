@@ -192,6 +192,12 @@ impl GmshMeshOptions {
                 });
             }
         }
+        if self.min_size.is_some_and(|v| self.characteristic_length < v)
+            || self.max_size.is_some_and(|v| self.characteristic_length > v) {
+            return Err(MeshingError::InvalidOptions {
+                message: "target element size must lie between minimum and maximum mesh size".into(),
+            });
+        }
         if self.element_order != 1 {
             return Err(MeshingError::InvalidOptions {
                 message: "only first-order Gmsh elements are supported by the current importer"
