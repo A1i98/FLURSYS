@@ -20,6 +20,7 @@ mod primitives;
 mod regenerate;
 mod regions;
 mod sketch;
+mod drawing;
 mod subelements;
 mod subtractive;
 pub use subelements::{CadEdge, CadVertex};
@@ -395,6 +396,9 @@ impl GeometryTopology {
         Ok(id)
     }
     fn cad_profile(&self, id: FaceId) -> Result<truck_modeling::Face, GeometryError> {
+        if let Some(record) = self.sketches().find(|s| s.profile_face == Some(id) && s.drawing_region.is_some()) {
+            return drawing::exact_face(record.frame, record.drawing_region.as_ref().ok_or_else(|| error("Missing drawing region"))?);
+        }
         let face = self
             .face(id)
             .ok_or_else(|| error("Select a closed planar profile"))?;

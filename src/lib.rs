@@ -9,6 +9,7 @@ pub mod cases;
 pub mod field;
 pub mod fields;
 pub mod geometry;
+pub mod sketching;
 pub mod grid;
 pub mod io;
 pub mod linear;

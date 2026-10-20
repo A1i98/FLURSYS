@@ -188,7 +188,7 @@ impl GeometryTopology {
         Ok(rebuilt)
     }
 
-    fn regenerate_from(
+    pub(super) fn regenerate_from(
         &mut self,
         mut dirty_profiles: BTreeSet<FaceId>,
         mut affected: BTreeSet<BodyId>,

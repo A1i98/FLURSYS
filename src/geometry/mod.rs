@@ -94,6 +94,16 @@ pub struct CadSketch {
     /// Additional regions share their owner's support and local frame.
     #[serde(default)]
     pub region_owner: Option<CadSketchId>,
+    /// Original parametric sketch, including constraints, links and patterns.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub drawing: Option<cad_sketch::Sketch>,
+    /// Exact profile segments; display topology may sample freeform curves.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub drawing_region: Option<cad_geom::Region2>,
+    #[serde(default)]
+    pub drawing_boundary: Vec<Vec<String>>,
+    #[serde(default)]
+    pub drawing_dof: Option<usize>,
 }
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct CadSketchConstraints {
@@ -687,6 +697,10 @@ impl GeometryTopology {
             locked_profile: None,
             constraints: CadSketchConstraints::default(),
             region_owner: None,
+            drawing: None,
+            drawing_region: None,
+            drawing_boundary: Vec::new(),
+            drawing_dof: None,
         };
         self.sketches.insert(id, sketch.clone());
         self.bump_revision();
@@ -1768,6 +1782,7 @@ impl GeometryTopology {
                     });
                 }
             }
+            if let Some(drawing)=&sketch.drawing { crate::sketching::validate(drawing).map_err(|message|GeometryError::InvalidPrimitive{message})?; }
             self.cad_validate_sketch_constraints(id)?;
             validate_plane_frame(sketch.frame)?;
             match (sketch.plane, sketch.host_face) {
