@@ -21,6 +21,35 @@ pub(super) fn boundary_condition(
         ))
     };
     match ui.get_bc_kind_index() {
+        10 => {
+            let half_width = number(
+                ui.get_bc_profile_half_width().as_str(),
+                "Profile half-width",
+            )?;
+            if half_width <= 0.0 {
+                return Err("Profile half-width must be positive".into());
+            }
+            Ok(IncompressibleBoundaryCondition::ParabolicInlet {
+                velocity: velocity()?,
+                axis: ui.get_bc_profile_axis().clamp(0, 2) as usize,
+                center: number(ui.get_bc_profile_center().as_str(), "Profile centre")?,
+                half_width,
+            })
+        }
+        7 | 8 => {
+            let rate = number(ui.get_bc_value_x().as_str(), "Flow rate")?;
+            if rate < 0.0 {
+                return Err("Inlet flow rate must be nonnegative".into());
+            }
+            Ok(IncompressibleBoundaryCondition::FlowRateInlet {
+                rate,
+                mass: ui.get_bc_kind_index() == 8,
+            })
+        }
+        9 => Ok(IncompressibleBoundaryCondition::PressureOutletBackflow {
+            pressure: number(ui.get_bc_pressure().as_str(), "Outlet pressure")?,
+            velocity: velocity()?,
+        }),
         0 => Ok(IncompressibleBoundaryCondition::NoSlipWall),
         1 => Ok(IncompressibleBoundaryCondition::MovingWall {
             velocity: velocity()?,

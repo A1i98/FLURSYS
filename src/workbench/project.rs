@@ -59,13 +59,36 @@ impl RecentProjects {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum PhysicalBoundaryCondition {
+    ParabolicInlet {
+        velocity: Vec3,
+        axis: usize,
+        center: f64,
+        half_width: f64,
+    },
+    FlowRateInlet {
+        rate: f64,
+        mass: bool,
+    },
+    PressureOutletBackflow {
+        pressure: f64,
+        velocity: Vec3,
+    },
     NoSlipWall,
     Slip,
     Symmetry,
-    FarField { velocity: Vec3, pressure: f64 },
-    MovingWall { velocity: Vec3 },
-    VelocityInlet { velocity: Vec3 },
-    PressureOutlet { pressure: f64 },
+    FarField {
+        velocity: Vec3,
+        pressure: f64,
+    },
+    MovingWall {
+        velocity: Vec3,
+    },
+    VelocityInlet {
+        velocity: Vec3,
+    },
+    PressureOutlet {
+        pressure: f64,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -167,6 +190,8 @@ impl Default for WorkbenchMaterial {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct WorkbenchSolverSettings {
+    #[serde(default)]
+    pub convection: crate::momentum::MomentumConvection,
     #[serde(default = "default_cpu_threads")]
     pub threads: usize,
     pub max_outer_iterations: usize,
@@ -180,6 +205,7 @@ pub struct WorkbenchSolverSettings {
 impl Default for WorkbenchSolverSettings {
     fn default() -> Self {
         Self {
+            convection: crate::momentum::MomentumConvection::Upwind,
             threads: 1,
             max_outer_iterations: 1000,
             continuity_absolute_tolerance: 1.0e-10,
@@ -277,10 +303,14 @@ impl WorkbenchProject {
     }
 
     pub fn validate(&self) -> Result<(), ProjectDocumentError> {
-        let mut plane_ids=BTreeSet::new();
+        let mut plane_ids = BTreeSet::new();
         for plane in &self.plane_monitors {
             plane.validate().map_err(ProjectDocumentError::Invalid)?;
-            if !plane_ids.insert(&plane.id){return Err(ProjectDocumentError::Invalid("Duplicate flow monitor plane ID".into()));}
+            if !plane_ids.insert(&plane.id) {
+                return Err(ProjectDocumentError::Invalid(
+                    "Duplicate flow monitor plane ID".into(),
+                ));
+            }
         }
         if self.format_version != WORKBENCH_PROJECT_FORMAT_VERSION {
             return Err(ProjectDocumentError::UnsupportedVersion {
@@ -962,10 +992,33 @@ fn validate_mesh_control_targets(
 
 fn validate_boundary(condition: &PhysicalBoundaryCondition) -> Result<(), ProjectDocumentError> {
     let values: &[f64] = match condition {
+        PhysicalBoundaryCondition::ParabolicInlet {
+            velocity,
+            axis,
+            center,
+            half_width,
+        } => {
+            if *axis > 2 || !half_width.is_finite() || *half_width <= 0.0 {
+                return Err(ProjectDocumentError::Invalid(
+                    "Profile axis must be X/Y/Z and half-width positive".into(),
+                ));
+            }
+            &[velocity.x, velocity.y, velocity.z, *center, *half_width]
+        }
+
         PhysicalBoundaryCondition::NoSlipWall
         | PhysicalBoundaryCondition::Slip
         | PhysicalBoundaryCondition::Symmetry => &[],
-        PhysicalBoundaryCondition::FarField { velocity, pressure } => {
+        PhysicalBoundaryCondition::FlowRateInlet { rate, .. } => {
+            if !rate.is_finite() || *rate < 0.0 {
+                return Err(ProjectDocumentError::Invalid(
+                    "Flow rate must be finite and nonnegative".into(),
+                ));
+            }
+            std::slice::from_ref(rate)
+        }
+        PhysicalBoundaryCondition::PressureOutletBackflow { velocity, pressure }
+        | PhysicalBoundaryCondition::FarField { velocity, pressure } => {
             &[velocity.x, velocity.y, velocity.z, *pressure]
         }
         PhysicalBoundaryCondition::MovingWall { velocity }

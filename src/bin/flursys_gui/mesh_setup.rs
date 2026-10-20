@@ -539,6 +539,9 @@ pub(super) fn refresh(ui: &MainWindow, state: &AppState) {
                 .map(|bc| {
                     assigned += 1;
                     match bc {
+                        IncompressibleBoundaryCondition::ParabolicInlet {..} => "Parabolic inlet".into(),
+                        IncompressibleBoundaryCondition::FlowRateInlet {mass,..} => (if *mass {"Mass-flow inlet"}else{"Volume-flow inlet"}).into(),
+                        IncompressibleBoundaryCondition::PressureOutletBackflow {..} => "Pressure outlet / backflow".into(),
                         IncompressibleBoundaryCondition::Slip => "Slip".to_string(),
                         IncompressibleBoundaryCondition::Symmetry => "Symmetry".to_string(),
                         IncompressibleBoundaryCondition::FarField { .. } => "Far-field".to_string(),

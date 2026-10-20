@@ -5238,6 +5238,9 @@ fn bc_kind_label(condition: IncompressibleBoundaryCondition) -> &'static str {
     match condition {
         IncompressibleBoundaryCondition::Slip => "Slip",
         IncompressibleBoundaryCondition::Symmetry => "Symmetry",
+        IncompressibleBoundaryCondition::ParabolicInlet {..} => "Parabolic inlet",
+        IncompressibleBoundaryCondition::FlowRateInlet {mass,..} => if mass {"Mass-flow inlet"}else{"Volume-flow inlet"},
+        IncompressibleBoundaryCondition::PressureOutletBackflow {..} => "Pressure outlet / backflow",
         IncompressibleBoundaryCondition::FarField { .. } => "Far-field",
         IncompressibleBoundaryCondition::NoSlipWall => "No-slip wall",
         IncompressibleBoundaryCondition::MovingWall { .. } => "Moving wall",
@@ -5279,6 +5282,7 @@ fn push_workbench_defaults(ui: &MainWindow, session: &WorkbenchSession) {
         "{}",
         solver.velocity_relaxation
     )));
+    ui.set_wb_convection_index(if solver.convection==flursys::momentum::MomentumConvection::LimitedLinear {1}else{0});
     ui.set_wb_pressure_relaxation(SharedString::from(format!(
         "{}",
         solver.pressure_relaxation
@@ -5298,6 +5302,15 @@ fn push_boundary_fields(ui: &MainWindow, session: &WorkbenchSession, patch: &str
             ui.set_bc_value_z(SharedString::from("0"));
             ui.set_bc_pressure(SharedString::from("0"));
             ui.set_bc_assigned(SharedString::from("Unassigned"));
+        }
+        Some(IncompressibleBoundaryCondition::ParabolicInlet {velocity,axis,center,half_width}) => {
+            ui.set_bc_kind_index(10);set_velocity_fields(ui,velocity);ui.set_bc_profile_axis(axis as i32);ui.set_bc_profile_center(center.to_string().into());ui.set_bc_profile_half_width(half_width.to_string().into());ui.set_bc_assigned("Assigned: parabolic inlet (peak velocity)".into());
+        }
+        Some(IncompressibleBoundaryCondition::FlowRateInlet {rate,mass}) => {
+            ui.set_bc_kind_index(if mass {8}else{7});ui.set_bc_value_x(rate.to_string().into());ui.set_bc_assigned("Assigned: flow-rate inlet".into());
+        }
+        Some(IncompressibleBoundaryCondition::PressureOutletBackflow {pressure,velocity}) => {
+            ui.set_bc_kind_index(9);set_velocity_fields(ui,velocity);ui.set_bc_pressure(pressure.to_string().into());ui.set_bc_assigned("Assigned: pressure outlet with backflow".into());
         }
         Some(IncompressibleBoundaryCondition::Slip) => {
             ui.set_bc_kind_index(4);
@@ -5371,6 +5384,7 @@ fn sync_solver_panel(ui: &MainWindow, session: &mut WorkbenchSession) -> Result<
     draft
         .set_solver_controls(iterations, velocity, pressure, continuity)
         .map_err(|e| e.to_string())?;
+    session.set_convection(if ui.get_wb_convection_index()==1 {flursys::momentum::MomentumConvection::LimitedLinear}else{flursys::momentum::MomentumConvection::Upwind});
     session.set_cpu_threads(threads);
     session
         .set_material(density, viscosity)

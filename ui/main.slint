@@ -478,6 +478,9 @@ export component MainWindow inherits Window {
     in-out property <string> bc-value-x: "0.1";
     in-out property <string> bc-value-y: "0";
     in-out property <string> bc-value-z: "0";
+    in-out property <int> bc-profile-axis:1;
+    in-out property <string> bc-profile-center:"0";
+    in-out property <string> bc-profile-half-width:"0.5";
     in-out property <string> bc-pressure: "0";
     in-out property <string> bc-assigned: "Unassigned";
     in-out property <string> material-density: "1.0";
@@ -490,6 +493,7 @@ export component MainWindow inherits Window {
     in-out property <string> wb-mesh-stage;
     in-out property <int> wb-cpu-limit: 1;
     in-out property <string> wb-velocity-relaxation: "0.7";
+    in-out property <int> wb-convection-index:0;
     in-out property <string> wb-pressure-relaxation: "0.3";
     in-out property <string> wb-continuity-tolerance: "1e-10";
     in-out property <string> wb-coupling-tolerance:"1e-6";
@@ -764,12 +768,12 @@ HorizontalLayout {height:32px;spacing:5px;
                                     InspectorLabel { text: "PHYSICAL CONDITION"; }
                                     ComboBox {min-width:0px;
                                         enabled: root.patch-model.length > 0 && !root.wb-busy;
-                                        model: ["No-slip wall", "Moving wall", "Velocity inlet", "Pressure outlet", "Slip", "Symmetry", "Far-field"];
+                                        model: ["No-slip wall", "Moving wall", "Velocity inlet", "Pressure outlet", "Slip", "Symmetry", "Far-field", "Volume-flow inlet", "Mass-flow inlet", "Pressure outlet / backflow", "Parabolic inlet"];
                                         current-index <=> root.bc-kind-index;
                                     }
-                                    if root.bc-kind-index == 1 || root.bc-kind-index == 2 || root.bc-kind-index == 6 : VerticalLayout {
+                                    if root.bc-kind-index == 1 || root.bc-kind-index == 2 || root.bc-kind-index == 6 || root.bc-kind-index == 9 || root.bc-kind-index == 10 : VerticalLayout {
                                         spacing: 4px;
-                                        InspectorLabel {text:root.bc-kind-index==1 ? "WALL VELOCITY (Ux · Uy · Uz)" : root.bc-kind-index==6 ? "FREE-STREAM VELOCITY (Ux · Uy · Uz)" : "INLET VELOCITY (Ux · Uy · Uz)";}
+                                        InspectorLabel {text:root.bc-kind-index==10 ? "PEAK VELOCITY (Ux · Uy · Uz)" : root.bc-kind-index==9 ? "BACKFLOW VELOCITY (Ux · Uy · Uz)" : root.bc-kind-index==1 ? "WALL VELOCITY (Ux · Uy · Uz)" : root.bc-kind-index==6 ? "FREE-STREAM VELOCITY (Ux · Uy · Uz)" : "INLET VELOCITY (Ux · Uy · Uz)";}
                                         HorizontalLayout {
                                             spacing: 4px;
                                             LineEdit {min-width:0px; text <=> root.bc-value-x;placeholder-text:"Ux";enabled:!root.wb-busy; }
@@ -777,12 +781,24 @@ HorizontalLayout {height:32px;spacing:5px;
                                             LineEdit {min-width:0px; text <=> root.bc-value-z;placeholder-text:"Uz";enabled:!root.wb-busy; }
                                         }
                                     }
-                                    if root.bc-kind-index == 3 || root.bc-kind-index == 6 : VerticalLayout {
+                                    if root.bc-kind-index==10 : VerticalLayout {
+                                        InspectorLabel {text:"TRANSVERSE PROFILE AXIS";}
+                                        ComboBox {model:["X","Y","Z"];current-index <=> root.bc-profile-axis;enabled:!root.wb-busy;max-height:32px;min-width:0px;}
+                                        InspectorLabel {text:"CENTRE COORDINATE / HALF-WIDTH (m)";}
+                                        HorizontalLayout {LineEdit {min-width:0px;text <=> root.bc-profile-center;} LineEdit {min-width:0px;text <=> root.bc-profile-half-width;}}
+                                        InspectorLabel {text:"U = Upeak × max(0, 1 − ((coordinate − centre)/half-width)²). Velocity is peak, not mean.";wrap:word-wrap;}
+                                    }
+                                    if root.bc-kind-index==7 || root.bc-kind-index==8 : VerticalLayout {
+                                        InspectorLabel {text:root.bc-kind-index==8 ? "TOTAL INWARD MASS FLOW (kg/s)" : "TOTAL INWARD VOLUME FLOW (m³/s)";}
+                                        LineEdit {min-width:0px;text <=> root.bc-value-x;enabled:!root.wb-busy;}
+                                        InspectorLabel {text:"Positive inward; normal inflow distributed by patch area. In 2D, flow is per unit depth.";wrap:word-wrap;}
+                                    }
+                                    if root.bc-kind-index == 3 || root.bc-kind-index == 6 || root.bc-kind-index == 9 : VerticalLayout {
                                         spacing: 4px;
                                         InspectorLabel { text: "KINEMATIC GAUGE PRESSURE p/ρ"; }
                                         LineEdit {min-width:0px; text <=> root.bc-pressure; }
                                     }
-                                    InspectorLabel {text:root.bc-kind-index<0 ? "Choose a physical condition for this boundary." : root.bc-kind-index==0 ? "Stationary impermeable wall: U=(0,0,0)." : root.bc-kind-index==1 ? "Prescribed tangential wall velocity in model coordinates." : root.bc-kind-index==2 ? "Prescribed fluid velocity at an inlet." : root.bc-kind-index==4 || root.bc-kind-index==5 ? "Zero normal velocity and zero normal gradient of tangential velocity and pressure." : root.bc-kind-index==6 ? "Free-stream velocity on incoming flow; reference pressure on outgoing flow. Pressure is p/rho." : "Prescribed kinematic pressure at the outlet; p/rho is not pressure in pascals.";wrap:word-wrap;}
+                                    InspectorLabel {text:root.bc-kind-index==9 ? "Fixed p/rho; incoming velocity on reversed faces, zero-gradient velocity on outgoing faces." : root.bc-kind-index==7 || root.bc-kind-index==8 ? "Prescribed total inward flow; density converts mass to volume flow." : root.bc-kind-index<0 ? "Choose a physical condition for this boundary." : root.bc-kind-index==0 ? "Stationary impermeable wall: U=(0,0,0)." : root.bc-kind-index==1 ? "Prescribed tangential wall velocity in model coordinates." : root.bc-kind-index==2 ? "Prescribed fluid velocity at an inlet." : root.bc-kind-index==4 || root.bc-kind-index==5 ? "Zero normal velocity and zero normal gradient of tangential velocity and pressure." : root.bc-kind-index==6 ? "Free-stream velocity on incoming flow; reference pressure on outgoing flow. Pressure is p/rho." : "Prescribed kinematic pressure at the outlet; p/rho is not pressure in pascals.";wrap:word-wrap;}
                                     HorizontalLayout {
                                         spacing: 6px;
                                         Button {min-width:0px; text: "APPLY CONDITION"; enabled: root.bc-kind-index >= 0 && root.patch-model.length > 0 && !root.wb-busy; clicked => { root.apply-boundary-wb(); } }
@@ -820,6 +836,7 @@ HorizontalLayout {height:32px;spacing:5px;
                     log:root.log-text;material:"ρ="+root.material-density+" · ν="+root.material-viscosity;
                     busy:root.wb-busy;can-run:root.can-run-workbench;progress:root.wb-solve-progress;
                     cpu-limit:root.wb-cpu-limit;cpu-threads <=> root.wb-cpu-threads;iterations <=> root.wb-max-iterations;velocity-relaxation <=> root.wb-velocity-relaxation;
+                    convection-index <=> root.wb-convection-index;
                     pressure-relaxation <=> root.wb-pressure-relaxation;continuity-tolerance <=> root.wb-continuity-tolerance;
                     coupling-tolerance <=> root.wb-coupling-tolerance;
                     apply=>{root.apply-solver-settings-wb();}run=>{root.run-workbench();}cancel=>{root.cancel-workbench-job();}

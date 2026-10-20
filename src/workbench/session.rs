@@ -176,6 +176,8 @@ impl WorkbenchSession {
         session.mesh_recipe = project.mesh_recipe.clone();
         session.mesh_threads = project.mesh.threads;
         session.set_cpu_threads(project.solver.threads);
+        session.set_convection(project.solver.convection);
+        session.set_coupling_tolerance(project.solver.coupling_relative_tolerance)?;
         session.set_material(
             project.material.density,
             project.material.kinematic_viscosity,
@@ -236,6 +238,7 @@ impl WorkbenchSession {
         project.solver.velocity_relaxation = self.solver.velocity_relaxation;
         project.solver.pressure_relaxation = self.solver.pressure_relaxation;
         project.solver.threads = self.solver.threads;
+        project.solver.convection = self.solver.convection;
         project.boundaries = self
             .boundaries
             .iter()
@@ -1150,6 +1153,14 @@ impl WorkbenchSession {
         self.solver.threads = threads;
     }
 
+    pub fn set_convection(&mut self, convection: crate::momentum::MomentumConvection) {
+        if self.solver.convection != convection {
+            self.solution = None;
+            self.status = SolveStatus::Idle;
+        }
+        self.solver.convection = convection;
+    }
+
     pub fn solver_options(&self) -> &IncompressibleSolverOptions {
         &self.solver
     }
@@ -1326,12 +1337,31 @@ fn join_tags(tags: &[usize]) -> String {
         .join(", ")
 }
 
-fn condition_values(condition: IncompressibleBoundaryCondition) -> [f64; 4] {
-    match condition {
+fn condition_values(condition: IncompressibleBoundaryCondition) -> Vec<f64> {
+    let values = match condition {
+        IncompressibleBoundaryCondition::ParabolicInlet {
+            velocity,
+            axis,
+            center,
+            half_width,
+        } => {
+            return vec![
+                velocity.x,
+                velocity.y,
+                velocity.z,
+                axis as f64,
+                center,
+                half_width,
+            ]
+        }
         IncompressibleBoundaryCondition::NoSlipWall
         | IncompressibleBoundaryCondition::Slip
         | IncompressibleBoundaryCondition::Symmetry => [0.0; 4],
-        IncompressibleBoundaryCondition::FarField { velocity, pressure } => {
+        IncompressibleBoundaryCondition::FlowRateInlet { rate, mass } => {
+            [rate, if mass { 1.0 } else { 0.0 }, 0.0, 0.0]
+        }
+        IncompressibleBoundaryCondition::PressureOutletBackflow { velocity, pressure }
+        | IncompressibleBoundaryCondition::FarField { velocity, pressure } => {
             [velocity.x, velocity.y, velocity.z, pressure]
         }
         IncompressibleBoundaryCondition::MovingWall { velocity }
@@ -1339,13 +1369,31 @@ fn condition_values(condition: IncompressibleBoundaryCondition) -> [f64; 4] {
             [velocity.x, velocity.y, velocity.z, 0.0]
         }
         IncompressibleBoundaryCondition::PressureOutlet { pressure } => [pressure, 0.0, 0.0, 0.0],
-    }
+    };
+    values.to_vec()
 }
 
 fn boundary_condition_to_document(
     condition: IncompressibleBoundaryCondition,
 ) -> PhysicalBoundaryCondition {
     match condition {
+        IncompressibleBoundaryCondition::ParabolicInlet {
+            velocity,
+            axis,
+            center,
+            half_width,
+        } => PhysicalBoundaryCondition::ParabolicInlet {
+            velocity,
+            axis,
+            center,
+            half_width,
+        },
+        IncompressibleBoundaryCondition::FlowRateInlet { rate, mass } => {
+            PhysicalBoundaryCondition::FlowRateInlet { rate, mass }
+        }
+        IncompressibleBoundaryCondition::PressureOutletBackflow { pressure, velocity } => {
+            PhysicalBoundaryCondition::PressureOutletBackflow { pressure, velocity }
+        }
         IncompressibleBoundaryCondition::Slip => PhysicalBoundaryCondition::Slip,
         IncompressibleBoundaryCondition::Symmetry => PhysicalBoundaryCondition::Symmetry,
         IncompressibleBoundaryCondition::FarField { velocity, pressure } => {
@@ -1368,6 +1416,23 @@ fn boundary_condition_from_document(
     condition: &PhysicalBoundaryCondition,
 ) -> IncompressibleBoundaryCondition {
     match *condition {
+        PhysicalBoundaryCondition::ParabolicInlet {
+            velocity,
+            axis,
+            center,
+            half_width,
+        } => IncompressibleBoundaryCondition::ParabolicInlet {
+            velocity,
+            axis,
+            center,
+            half_width,
+        },
+        PhysicalBoundaryCondition::FlowRateInlet { rate, mass } => {
+            IncompressibleBoundaryCondition::FlowRateInlet { rate, mass }
+        }
+        PhysicalBoundaryCondition::PressureOutletBackflow { pressure, velocity } => {
+            IncompressibleBoundaryCondition::PressureOutletBackflow { pressure, velocity }
+        }
         PhysicalBoundaryCondition::Slip => IncompressibleBoundaryCondition::Slip,
         PhysicalBoundaryCondition::Symmetry => IncompressibleBoundaryCondition::Symmetry,
         PhysicalBoundaryCondition::FarField { velocity, pressure } => {

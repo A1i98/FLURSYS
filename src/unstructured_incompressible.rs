@@ -13,6 +13,23 @@ use crate::{
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum IncompressibleBoundaryCondition {
+    /// Truncated planar parabola. Velocity is the peak; axis is transverse (0=X,1=Y,2=Z).
+    ParabolicInlet {
+        velocity: Vec3,
+        axis: usize,
+        center: f64,
+        half_width: f64,
+    },
+    /// Positive total inflow: m3/s (per unit depth in 2D), or kg/s when mass=true.
+    FlowRateInlet {
+        rate: f64,
+        mass: bool,
+    },
+    /// Fixed kinematic pressure; specified incoming velocity, extrapolated outflow.
+    PressureOutletBackflow {
+        pressure: f64,
+        velocity: Vec3,
+    },
     NoSlipWall,
     /// Impermeable, shear-free boundary with tangential velocity extrapolation.
     Slip,
@@ -43,6 +60,7 @@ pub struct IncompressibleMaterial {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct IncompressibleSolverOptions {
+    pub convection: crate::momentum::MomentumConvection,
     /// Private worker-pool size; zero uses the CPUs available to this process.
     /// Momentum components can run concurrently; pressure is currently serial.
     pub threads: usize,
@@ -58,6 +76,7 @@ pub struct IncompressibleSolverOptions {
 impl Default for IncompressibleSolverOptions {
     fn default() -> Self {
         Self {
+            convection: crate::momentum::MomentumConvection::Upwind,
             threads: 1,
             max_outer_iterations: 1000,
             continuity_absolute_tolerance: 1.0e-10,
@@ -154,6 +173,67 @@ impl IncompressibleCase {
         let mut correction_assignments = Vec::with_capacity(self.boundaries.len());
         for (name, condition) in &self.boundaries {
             match *condition {
+                IncompressibleBoundaryCondition::ParabolicInlet {
+                    velocity,
+                    axis,
+                    center,
+                    half_width,
+                } => {
+                    if !finite_vector(velocity)
+                        || axis > 2
+                        || !center.is_finite()
+                        || !half_width.is_finite()
+                        || half_width <= 0.0
+                    {
+                        return Err(IncompressibleCaseError::InvalidInletProfile {
+                            patch: name.clone(),
+                        });
+                    }
+                    velocity_assignments.push((
+                        name.as_str(),
+                        VelocityBoundaryCondition::FixedVelocity(Vec3::ZERO),
+                    ));
+                    pressure_assignments
+                        .push((name.as_str(), ScalarBoundaryCondition::ZeroGradient));
+                    correction_assignments
+                        .push((name.as_str(), ScalarBoundaryCondition::ZeroGradient));
+                }
+                IncompressibleBoundaryCondition::FlowRateInlet { rate, .. } => {
+                    if !rate.is_finite() || rate < 0.0 {
+                        return Err(IncompressibleCaseError::InvalidFlowRate {
+                            patch: name.clone(),
+                            rate,
+                        });
+                    }
+                    velocity_assignments.push((
+                        name.as_str(),
+                        VelocityBoundaryCondition::FixedVelocity(Vec3::ZERO),
+                    ));
+                    pressure_assignments
+                        .push((name.as_str(), ScalarBoundaryCondition::ZeroGradient));
+                    correction_assignments
+                        .push((name.as_str(), ScalarBoundaryCondition::ZeroGradient));
+                }
+                IncompressibleBoundaryCondition::PressureOutletBackflow { pressure, velocity } => {
+                    if !finite_vector(velocity) {
+                        return Err(IncompressibleCaseError::InvalidVelocityBoundary {
+                            patch: name.clone(),
+                            velocity,
+                        });
+                    }
+                    if !pressure.is_finite() {
+                        return Err(IncompressibleCaseError::InvalidOutletPressure {
+                            patch: name.clone(),
+                            pressure,
+                        });
+                    }
+                    velocity_assignments
+                        .push((name.as_str(), VelocityBoundaryCondition::ZeroGradient));
+                    pressure_assignments
+                        .push((name.as_str(), ScalarBoundaryCondition::FixedValue(pressure)));
+                    correction_assignments
+                        .push((name.as_str(), ScalarBoundaryCondition::FixedValue(0.0)));
+                }
                 IncompressibleBoundaryCondition::Slip
                 | IncompressibleBoundaryCondition::Symmetry => {
                     velocity_assignments
@@ -247,7 +327,10 @@ impl IncompressibleCase {
                 IncompressibleBoundaryCondition::NoSlipWall => Some(Vec3::ZERO),
                 IncompressibleBoundaryCondition::MovingWall { velocity }
                 | IncompressibleBoundaryCondition::VelocityInlet { velocity } => Some(velocity),
-                IncompressibleBoundaryCondition::PressureOutlet { .. } => None,
+                IncompressibleBoundaryCondition::PressureOutlet { .. }
+                | IncompressibleBoundaryCondition::PressureOutletBackflow { .. }
+                | IncompressibleBoundaryCondition::FlowRateInlet { .. }
+                | IncompressibleBoundaryCondition::ParabolicInlet { .. } => None,
             };
             if let Some(velocity) = velocity {
                 for &face in &patch.face_indices {
@@ -262,9 +345,64 @@ impl IncompressibleCase {
                 .iter()
                 .find(|p| p.name == *name)
                 .unwrap();
+            let flow_speed =
+                if let IncompressibleBoundaryCondition::FlowRateInlet { rate, mass } = *condition {
+                    let area = patch
+                        .face_indices
+                        .iter()
+                        .map(|f| self.mesh.faces()[*f].area_vector.norm())
+                        .sum::<f64>();
+                    let q = if mass {
+                        rate / self.material.density
+                    } else {
+                        rate
+                    };
+                    let speed = q / area;
+                    if area <= 0.0 || !area.is_finite() || !speed.is_finite() {
+                        return Err(IncompressibleCaseError::InvalidFlowRate {
+                            patch: name.clone(),
+                            rate,
+                        });
+                    }
+                    speed
+                } else {
+                    0.0
+                };
             for &i in &patch.face_indices {
                 let face = &self.mesh.faces()[i];
                 match *condition {
+                    IncompressibleBoundaryCondition::ParabolicInlet {
+                        velocity,
+                        axis,
+                        center,
+                        half_width,
+                    } => {
+                        let c = match axis {
+                            0 => face.center.x,
+                            1 => face.center.y,
+                            _ => face.center.z,
+                        };
+                        let r = (c - center) / half_width;
+                        let value = velocity * (1.0 - r * r).max(0.0);
+                        velocity_boundary.set_face_velocity(i, Some(value));
+                        boundary_flux[i] = value.dot(face.area_vector);
+                    }
+                    IncompressibleBoundaryCondition::FlowRateInlet { .. } => {
+                        let value = face.area_vector * (-flow_speed / face.area_vector.norm());
+                        velocity_boundary.set_face_velocity(i, Some(value));
+                        boundary_flux[i] = -flow_speed * face.area_vector.norm();
+                    }
+                    IncompressibleBoundaryCondition::PressureOutletBackflow {
+                        velocity: incoming,
+                        ..
+                    } => {
+                        let current = flux.map(|f| f[i]).unwrap_or_else(|| {
+                            velocity
+                                .map(|v| v[face.owner].dot(face.area_vector))
+                                .unwrap_or(0.0)
+                        });
+                        velocity_boundary.set_face_velocity(i, (current < 0.0).then_some(incoming));
+                    }
                     IncompressibleBoundaryCondition::Slip
                     | IncompressibleBoundaryCondition::Symmetry => {
                         let n = face.area_vector / face.area_vector.norm();
@@ -374,11 +512,13 @@ pub enum IncompressibleCaseError {
     Field(FieldError),
     Numerics(crate::NumericsError),
     UnknownBoundaryPatch { patch: String },
+    InvalidInletProfile { patch: String },
     InvalidInitialConditions,
     InvalidDensity { value: f64 },
     InvalidKinematicViscosity { value: f64 },
     InvalidVelocityBoundary { patch: String, velocity: Vec3 },
     InvalidOutletPressure { patch: String, pressure: f64 },
+    InvalidFlowRate { patch: String, rate: f64 },
 }
 
 impl std::fmt::Display for IncompressibleCaseError {
@@ -671,6 +811,7 @@ fn solve_incompressible_on_pool(
         matches!(
             condition,
             IncompressibleBoundaryCondition::PressureOutlet { .. }
+                | IncompressibleBoundaryCondition::PressureOutletBackflow { .. }
         )
     }) {
         options.pressure_boundary = Some(resolved.pressure_boundary());
@@ -682,10 +823,14 @@ fn solve_incompressible_on_pool(
             IncompressibleBoundaryCondition::Slip
                 | IncompressibleBoundaryCondition::Symmetry
                 | IncompressibleBoundaryCondition::FarField { .. }
+                | IncompressibleBoundaryCondition::PressureOutletBackflow { .. }
+                | IncompressibleBoundaryCondition::FlowRateInlet { .. }
+                | IncompressibleBoundaryCondition::ParabolicInlet { .. }
         )
     }) {
         options.boundary_case = Some(case);
     }
+    options.convection = case.solver.convection;
     options.max_outer_iterations = case.solver.max_outer_iterations;
     options.continuity_absolute_tolerance = case.solver.continuity_absolute_tolerance;
     options.coupling_relative_tolerance = case.solver.coupling_relative_tolerance;
