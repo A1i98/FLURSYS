@@ -1,0 +1,4 @@
+[submodule "vendor/cad-workbench"]
+	path = vendor/cad-workbench
+	url = https://github.com/A1i98/solidcraft.git
+	branch = flursys-integration
