@@ -4,7 +4,7 @@ impl IncompressibleSolver {
     pub(super) fn append_histories(&self, diag: Diagnostics) -> Result<(), String> {
         let history = self.cfg.output_dir.join("history.csv");
         let row = format!(
-            "{},{:.12},{:.12e},{},{:.12e},{:.12e},{},{:.12e},{:.12e},{:.12e},{:.12e},{:.12e},{:.12e},{:.12e},{:.12e},{:.12e},{:.12e},{:.12e}",
+            "{},{:.12},{:.12e},{},{:.12e},{:.12e},{},{:.12e},{:.12e},{:.12e},{:.12e},{:.12e},{:.12e},{:.12e},{:.12e},{:.12e},{:.12e},{:.12e},{},{},{},{}",
             self.step,
             self.time,
             diag.pressure_residual,
@@ -24,11 +24,15 @@ impl IncompressibleSolver {
             diag.cd_pressure,
             diag.cd_viscous,
             diag.cl_pressure,
-            diag.cl_viscous
+            diag.cl_viscous,
+            diag.control_volume_force.map(|x| format!("{:.12e}", x.0)).unwrap_or_default(),
+            diag.control_volume_force.map(|x| format!("{:.12e}", x.1)).unwrap_or_default(),
+            diag.control_volume_outer_force.map(|x| format!("{:.12e}", x.0)).unwrap_or_default(),
+            diag.control_volume_outer_force.map(|x| format!("{:.12e}", x.1)).unwrap_or_default()
         );
         output::append_history(
             &history,
-            "step,time,pressure_residual,pressure_iterations,max_divergence,velocity_change,momentum_equation_residual,max_speed,cd,cl,reattachment_x_over_h,momentum_cfl,viscous_diffusion_number,time_step,cd_pressure,cd_viscous,cl_pressure,cl_viscous",
+            "step,time,pressure_residual,pressure_iterations,max_divergence,velocity_change,momentum_equation_residual,max_speed,cd,cl,reattachment_x_over_h,momentum_cfl,viscous_diffusion_number,time_step,cd_pressure,cd_viscous,cl_pressure,cl_viscous,control_volume_cd,control_volume_cl,control_volume_outer_cd,control_volume_outer_cl",
             &row,
         )
     }
@@ -294,6 +298,10 @@ impl IncompressibleSolver {
             .map_err(|e| e.to_string())?;
         }
         if self.cfg.coupling == PressureVelocityCoupling::Pimple {
+            writeln!(w, "time_scheme: {:?}", self.cfg.pimple.time_scheme)
+                .map_err(|e| e.to_string())?;
+            writeln!(w, "outer_correctors: {}", self.cfg.pimple.outer_correctors)
+                .map_err(|e| e.to_string())?;
             writeln!(
                 w,
                 "pressure_correctors: {}",

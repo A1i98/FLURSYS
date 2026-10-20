@@ -5,7 +5,7 @@ use flursys::{
     Case, ConvectionScheme, IncompressibleSolver, LidDrivenCavity3DConfig, LidDrivenCavity3DSolver,
     MultigridCoarseSolver, MultigridOptions, MultigridResidualNorm, MultigridSmoother,
     PimpleControls, PressureSolverKind, PressureVelocityCoupling, SimulationConfig,
-    SolverBoundaryOverrides, TimeStepSettings,
+    SolverBoundaryOverrides, TimeStepSettings, TransientTimeScheme,
 };
 use std::collections::HashMap;
 use std::env;
@@ -423,6 +423,16 @@ fn common_config(
         convection,
         coupling,
         pimple: PimpleControls {
+            time_scheme: match options
+                .get("time-scheme")
+                .map(String::as_str)
+                .unwrap_or("euler")
+            {
+                "euler" => TransientTimeScheme::Euler,
+                "backward" | "bdf2" => TransientTimeScheme::Backward,
+                other => return Err(format!("Unknown time scheme '{other}'")),
+            },
+            outer_correctors: value(options, "outer-correctors", 1_usize)?,
             pressure_correctors: value(options, "pressure-correctors", 2_usize)?,
             momentum_tolerance: value(options, "momentum-tol", 1.0e-5_f64)?,
             first_pressure_relative_tolerance: value(options, "pressure-rel-tol", 0.01_f64)?,
@@ -514,6 +524,7 @@ fn print_case_help(case: &str) {
     );
     println!("  --pressure-iters N --pressure-tol EPS --pressure-omega W");
     println!("  --pressure-correctors N --momentum-tol EPS --pressure-rel-tol R (pimple)");
+    println!("  --time-scheme euler|backward --outer-correctors N (backward requires N>=2)");
     println!("  --mg-sweeps N (symmetric multigrid sweeps, 1..8, default 1)");
     println!("  GAMG: --mg-smoother dic-gs|gs|sym-gs --mg-norm l1|l2");
     println!("  --mg-pre-sweeps N --mg-post-sweeps N --mg-finest-sweeps N");

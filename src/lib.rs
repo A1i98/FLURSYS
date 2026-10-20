@@ -108,7 +108,7 @@ pub use simple::{
 pub use solver::{
     ConvectionScheme, FieldUpdate, IncompressibleSolver, LidDrivenCavity3DConfig,
     LidDrivenCavity3DSolver, PimpleControls, PressureSolverKind, PressureVelocityCoupling,
-    RunSummary, RunSummary3D, SimulationConfig, SolverStep, TimeStepSettings,
+    RunSummary, RunSummary3D, SimulationConfig, SolverStep, TimeStepSettings, TransientTimeScheme,
 };
 pub use unstructured_incompressible::{
     patch_flux, solve_incompressible, solve_incompressible_with_control,

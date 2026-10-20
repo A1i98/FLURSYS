@@ -244,6 +244,55 @@ struct MomentumStencil<'a> {
     grid: &'a UniformGrid2D,
 }
 
+#[cfg(test)]
+mod wall_location_tests {
+    use super::*;
+
+    #[test]
+    fn normal_wall_face_preserves_an_affine_velocity_laplacian() {
+        let grid = UniformGrid2D::new(8, 8, 1.0, 1.0).unwrap();
+        let mut solid = Mask2D::new(8, 8, false);
+        for j in 0..8 {
+            for i in 4..8 {
+                solid[(i, j)] = true;
+            }
+        }
+        let case = Case::LidDrivenCavity(crate::cases::CavityCase::default());
+        let boundaries = SolverBoundaryOverrides::default();
+        let stencil = MomentumStencil {
+            solid: &solid,
+            case: &case,
+            boundaries: &boundaries,
+            grid: &grid,
+        };
+        let u = vec![0.0; 9 * 8];
+        let centre = grid.dx;
+        let east = stencil.u_neighbor(&u, 3, 3, 1, 0, centre);
+        assert_eq!(east, 0.0);
+        assert_eq!((2.0 * centre - 2.0 * centre + east) / grid.dx.powi(2), 0.0);
+        // Tangential v still uses reflection at a half-cell wall.
+        assert_eq!(
+            stencil.v_neighbor(&vec![0.0; 8 * 9], 3, 3, 1, 0, centre),
+            -centre
+        );
+        for j in 0..8 {
+            for i in 0..8 {
+                solid[(i, j)] = j >= 4;
+            }
+        }
+        let stencil = MomentumStencil {
+            solid: &solid,
+            case: &case,
+            boundaries: &boundaries,
+            grid: &grid,
+        };
+        assert_eq!(
+            stencil.v_neighbor(&vec![0.0; 8 * 9], 3, 3, 0, 1, grid.dy),
+            0.0
+        );
+    }
+}
+
 impl MomentumStencil<'_> {
     fn u_neighbor(&self, u: &[f64], i: usize, j: usize, di: isize, dj: isize, center: f64) -> f64 {
         let ii = i as isize + di;
@@ -253,6 +302,9 @@ impl MomentumStencil<'_> {
             let ju = jj as usize;
             return if u_face_open(self.solid, self.grid.nx, iu, ju) {
                 u[iu + (self.grid.nx + 1) * ju]
+            } else if di != 0 {
+                // Normal u is stored on the wall face itself.
+                0.0
             } else {
                 -center
             };
@@ -287,6 +339,9 @@ impl MomentumStencil<'_> {
             let ju = jj as usize;
             return if v_face_open(self.solid, self.grid.ny, iu, ju) {
                 v[iu + self.grid.nx * ju]
+            } else if dj != 0 {
+                // Normal v is stored on the wall face itself.
+                0.0
             } else {
                 -center
             };

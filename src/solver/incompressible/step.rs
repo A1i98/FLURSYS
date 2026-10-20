@@ -175,7 +175,15 @@ impl IncompressibleSolver {
         let velocity_change =
             max_field_difference(&self.u, &old_u).max(max_field_difference(&self.v, &old_v));
         let forces = self.cylinder_force_coefficients();
+        let control_volume_force = self.control_volume_cylinder_force(step_dt, &old_u, &old_v);
+        let control_volume_outer_force =
+            self.control_volume_cylinder_force_with_extent(step_dt, &old_u, &old_v, 1.5);
         let reattachment = self.reattachment_length_ratio();
+        if self.cfg.coupling == PressureVelocityCoupling::Pimple
+            && self.cfg.pimple.time_scheme == TransientTimeScheme::Backward
+        {
+            self.previous_time_velocity = Some((old_u, old_v, step_dt));
+        }
 
         Ok(Diagnostics {
             time_step: step_dt,
@@ -193,6 +201,8 @@ impl IncompressibleSolver {
             cd_viscous: forces.cd_viscous,
             cl_pressure: forces.cl_pressure,
             cl_viscous: forces.cl_viscous,
+            control_volume_force,
+            control_volume_outer_force,
             reattachment,
         })
     }

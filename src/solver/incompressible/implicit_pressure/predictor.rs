@@ -1,9 +1,9 @@
 use super::*;
 
 impl IncompressibleSolver {
-    /// Jacobi momentum reconstruction at fixed coefficients before the next
-    /// pressure correction. Unlike a repeated divergence projection, this
-    /// includes the off-diagonal momentum response to the corrected velocity.
+    /// Pressure-free H/A reconstruction at fixed momentum coefficients.
+    /// Applied before each absolute-pressure solve, including the first one.
+    /// This includes the neighbour response of the current velocity iterate.
     pub(super) fn rebuild_transient_pressure_predictor(
         &mut self,
         workspace: &mut ImplicitAssemblyWorkspace,
@@ -13,7 +13,6 @@ impl IncompressibleSolver {
         let _profile = ProfileScope::new(ProfileStage::PressurePredictor);
         let nx = self.grid.nx;
         let ny = self.grid.ny;
-        let rho = self.cfg.case.density();
         workspace
             .u_matrix
             .spmv_into(self.u_star.as_slice(), &mut workspace.u_product)
@@ -26,9 +25,7 @@ impl IncompressibleSolver {
             for i in 1..nx {
                 if u_face_open(&self.solid, nx, i, j) {
                     let face = i + (nx + 1) * j;
-                    let pressure_force = (self.p[(i, j)] - self.p[(i - 1, j)]) * self.grid.dy / rho;
                     self.u_star.as_mut_slice()[face] += (workspace.u_pressure_free_rhs[face]
-                        - pressure_force
                         - workspace.u_product[face])
                         / u_diagonal[face];
                 }
@@ -38,9 +35,7 @@ impl IncompressibleSolver {
             for i in 0..nx {
                 if v_face_open(&self.solid, ny, i, j) {
                     let face = i + nx * j;
-                    let pressure_force = (self.p[(i, j)] - self.p[(i, j - 1)]) * self.grid.dx / rho;
                     self.v_star.as_mut_slice()[face] += (workspace.v_pressure_free_rhs[face]
-                        - pressure_force
                         - workspace.v_product[face])
                         / v_diagonal[face];
                 }

@@ -36,7 +36,8 @@ impl IncompressibleSolver {
                 let vc = self.v_cell[(i, j)];
 
                 if i + 1 < self.grid.nx && self.solid[(i + 1, j)] {
-                    forces.cd_pressure += p * self.grid.dy;
+                    let away = (i > 0 && !self.solid[(i - 1, j)]).then(|| self.p[(i - 1, j)]);
+                    forces.cd_pressure += wall_pressure(p, away) * self.grid.dy;
                     // The no-slip wall lies half a cell from the reconstructed
                     // velocity. At a vertical wall, the deviatoric normal
                     // traction contributes (4/3) mu du/dn to drag.
@@ -45,19 +46,24 @@ impl IncompressibleSolver {
                     forces.cl_viscous += mu * vc / (0.5 * self.grid.dx) * self.grid.dy;
                 }
                 if i > 0 && self.solid[(i - 1, j)] {
-                    forces.cd_pressure -= p * self.grid.dy;
+                    let away = (i + 1 < self.grid.nx && !self.solid[(i + 1, j)])
+                        .then(|| self.p[(i + 1, j)]);
+                    forces.cd_pressure -= wall_pressure(p, away) * self.grid.dy;
                     forces.cd_viscous +=
                         (4.0 / 3.0) * mu * uc / (0.5 * self.grid.dx) * self.grid.dy;
                     forces.cl_viscous += mu * vc / (0.5 * self.grid.dx) * self.grid.dy;
                 }
                 if j + 1 < self.grid.ny && self.solid[(i, j + 1)] {
-                    forces.cl_pressure += p * self.grid.dx;
+                    let away = (j > 0 && !self.solid[(i, j - 1)]).then(|| self.p[(i, j - 1)]);
+                    forces.cl_pressure += wall_pressure(p, away) * self.grid.dx;
                     forces.cd_viscous += mu * uc / (0.5 * self.grid.dy) * self.grid.dx;
                     forces.cl_viscous +=
                         (4.0 / 3.0) * mu * vc / (0.5 * self.grid.dy) * self.grid.dx;
                 }
                 if j > 0 && self.solid[(i, j - 1)] {
-                    forces.cl_pressure -= p * self.grid.dx;
+                    let away = (j + 1 < self.grid.ny && !self.solid[(i, j + 1)])
+                        .then(|| self.p[(i, j + 1)]);
+                    forces.cl_pressure -= wall_pressure(p, away) * self.grid.dx;
                     forces.cd_viscous += mu * uc / (0.5 * self.grid.dy) * self.grid.dx;
                     forces.cl_viscous +=
                         (4.0 / 3.0) * mu * vc / (0.5 * self.grid.dy) * self.grid.dx;
@@ -141,6 +147,28 @@ impl IncompressibleSolver {
             }
         }
         Ok(())
+    }
+}
+
+/// Pressure is stored at a fluid cell centre, half a cell from the wall.
+/// Linear one-sided reconstruction is exact for affine pressure and preserves
+/// a constant pressure gauge. Fall back to first order without a fluid sample.
+fn wall_pressure(owner: f64, away: Option<f64>) -> f64 {
+    away.map_or(owner, |away| owner + 0.5 * (owner - away))
+}
+
+#[cfg(test)]
+mod force_tests {
+    use super::wall_pressure;
+
+    #[test]
+    fn wall_pressure_reconstructs_affine_field_and_preserves_gauge() {
+        let p = |x: f64| 7.0 + 3.0 * x;
+        assert_eq!(wall_pressure(p(0.5), Some(p(1.5))), p(0.0));
+        assert_eq!(wall_pressure(12.0, Some(12.0)), 12.0);
+        assert_eq!(wall_pressure(2.0, None), 2.0);
+        let before = wall_pressure(2.0, Some(3.0));
+        assert_eq!(wall_pressure(102.0, Some(103.0)) - before, 100.0);
     }
 }
 

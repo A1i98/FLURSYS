@@ -14,6 +14,9 @@ pub(super) struct ImplicitAssemblyWorkspace {
     pub(super) v_pressure_free_rhs: Vec<f64>,
     pub(super) u_product: Vec<f64>,
     pub(super) v_product: Vec<f64>,
+    cell_divergence: Vec<f64>,
+    u_rhs: Vec<f64>,
+    v_rhs: Vec<f64>,
 }
 
 impl ImplicitAssemblyWorkspace {
@@ -42,6 +45,9 @@ impl ImplicitAssemblyWorkspace {
             v_pressure_free_rhs: vec![0.0; n_v],
             u_product: vec![0.0; n_u],
             v_product: vec![0.0; n_v],
+            cell_divergence: vec![0.0; n_pressure],
+            u_rhs: vec![0.0; n_u],
+            v_rhs: vec![0.0; n_v],
         })
     }
 }
@@ -64,19 +70,44 @@ impl IncompressibleSolver {
         old_u: &Field2D,
         old_v: &Field2D,
     ) -> Result<(f64, usize, f64), String> {
-        self.advance_implicit_coefficient_based(
-            step_dt,
-            false,
-            Some((old_u.as_slice(), old_v.as_slice())),
-            self.cfg.pimple.pressure_correctors,
-        )
+        // Freeze the physical time history across all nonlinear outer sweeps.
+        // Repeatedly advancing from the last outer iterate would change dt.
+        let history = self.previous_time_velocity.take();
+        let weights = self
+            .cfg
+            .pimple
+            .time_scheme
+            .coefficients(step_dt, history.as_ref().map(|(_, _, dt)| *dt));
+        let result = (|| {
+            let reference = TransientMomentum {
+                old: (old_u.as_slice(), old_v.as_slice()),
+                older: history
+                    .as_ref()
+                    .map(|(u, v, _)| (u.as_slice(), v.as_slice())),
+                weights: weights?,
+            };
+            let mut total_iterations = 0;
+            let mut last = (0.0, 0, 0.0);
+            for _ in 0..self.cfg.pimple.outer_correctors {
+                last = self.advance_implicit_coefficient_based(
+                    step_dt,
+                    false,
+                    Some(reference),
+                    self.cfg.pimple.pressure_correctors,
+                )?;
+                total_iterations += last.1;
+            }
+            Ok((last.0, total_iterations, last.2))
+        })();
+        self.previous_time_velocity = history;
+        result
     }
 
     pub(super) fn advance_implicit_coefficient_based(
         &mut self,
         step_dt: f64,
         consistent: bool,
-        transient_reference: Option<(&[f64], &[f64])>,
+        transient_reference: Option<TransientMomentum<'_>>,
         pressure_correctors: usize,
     ) -> Result<(f64, usize, f64), String> {
         let mut workspace = match self.implicit_assembly_workspace.take() {
@@ -98,7 +129,7 @@ impl IncompressibleSolver {
         &mut self,
         step_dt: f64,
         consistent: bool,
-        transient_reference: Option<(&[f64], &[f64])>,
+        transient_reference: Option<TransientMomentum<'_>>,
         pressure_correctors: usize,
         workspace: &mut ImplicitAssemblyWorkspace,
     ) -> Result<(f64, usize, f64), String> {
@@ -122,13 +153,13 @@ impl IncompressibleSolver {
         let u_before = self.u.as_slice();
         let v_before = self.v.as_slice();
         let transient_coefficient = if transient_reference.is_some() {
-            self.grid.dx * self.grid.dy / step_dt
+            self.grid.dx * self.grid.dy * transient_reference.unwrap().weights[0] / step_dt
         } else {
             0.0
         };
         // Include the laminar deviatoric-stress grad(div(U)) contribution
         // explicitly from the current staggered velocity iterate.
-        let mut cell_divergence = vec![0.0; nx * ny];
+        let cell_divergence = &mut workspace.cell_divergence;
         for j in 0..ny {
             for i in 0..nx {
                 cell_divergence[i + nx * j] =
@@ -137,8 +168,6 @@ impl IncompressibleSolver {
             }
         }
         let p = self.p.as_slice();
-        let n_u = (nx + 1) * ny;
-        let n_v = nx * (ny + 1);
         let solver_options = LinearSolverOptions {
             absolute_tolerance: 1.0e-12,
             relative_tolerance: self.cfg.pressure_tolerance,
@@ -158,22 +187,19 @@ impl IncompressibleSolver {
             solver_options
         };
         let u_sample = |i: isize, j: isize| {
-            (i >= 0 && i <= nx as isize && j >= 0 && j < ny as isize)
-                .then_some((i as usize, j as usize))
-                .filter(|&(i, j)| u_face_open(&self.solid, nx, i, j))
-                .map(|(i, j)| u_before[i + (nx + 1) * j])
+            staggered_stencil_sample(u_before, &self.solid, nx, ny, i, j, true)
         };
         let v_sample = |i: isize, j: isize| {
-            (i >= 0 && i < nx as isize && j >= 0 && j <= ny as isize)
-                .then_some((i as usize, j as usize))
-                .filter(|&(i, j)| v_face_open(&self.solid, ny, i, j))
-                .map(|(i, j)| v_before[i + nx * j])
+            staggered_stencil_sample(v_before, &self.solid, nx, ny, i, j, false)
         };
 
         let u_assembly_profile = ProfileScope::new(ProfileStage::UAssembly);
         workspace.u_builder.clear();
         let u_builder = &mut workspace.u_builder;
-        let mut u_rhs = vec![0.0; n_u];
+        let u_rhs = &mut workspace.u_rhs;
+        // Constraint rows (including the pressure outlet) may leave their RHS
+        // untouched. Reset these entries before reusing the allocation.
+        u_rhs.fill(0.0);
         for j in 0..ny {
             for i in 0..=nx {
                 let row = i + (nx + 1) * j;
@@ -235,9 +261,9 @@ impl IncompressibleSolver {
                         u_builder
                             .add(row, neighbor, -coeff)
                             .map_err(|e| e.to_string())?;
-                    } else {
-                        ap += coeff;
                     }
+                    // A closed normal-velocity face is a zero-valued DOF at
+                    // one full dx, not a ghost beyond a half-cell wall.
                 }
                 for (inside, neighbor, coeff, side) in [
                     (j + 1 < ny, row + nx + 1, an, Side::Top),
@@ -335,7 +361,7 @@ impl IncompressibleSolver {
                     + boundary_source
                     - convection_correction
                     + transient_coefficient
-                        * transient_reference.map_or(0.0, |(old_u, _)| old_u[row])
+                        * transient_reference.map_or(0.0, |history| history.u_source(row))
                     + ((1.0 - alpha_u) / alpha_u) * ap * up;
             }
         }
@@ -390,7 +416,8 @@ impl IncompressibleSolver {
         let v_assembly_profile = ProfileScope::new(ProfileStage::VAssembly);
         workspace.v_builder.clear();
         let v_builder = &mut workspace.v_builder;
-        let mut v_rhs = vec![0.0; n_v];
+        let v_rhs = &mut workspace.v_rhs;
+        v_rhs.fill(0.0);
         for j in 0..=ny {
             for i in 0..nx {
                 let row = i + nx * j;
@@ -469,9 +496,8 @@ impl IncompressibleSolver {
                         v_builder
                             .add(row, neighbor, -coeff)
                             .map_err(|e| e.to_string())?;
-                    } else {
-                        ap += coeff;
                     }
+                    // Normal v is prescribed at the neighbouring face (dy).
                 }
                 v_builder
                     .add(row, row, ap / alpha_u)
@@ -530,7 +556,7 @@ impl IncompressibleSolver {
                     + boundary_source
                     - convection_correction
                     + transient_coefficient
-                        * transient_reference.map_or(0.0, |(_, old_v)| old_v[row])
+                        * transient_reference.map_or(0.0, |history| history.v_source(row))
                     + ((1.0 - alpha_u) / alpha_u) * ap * vp;
             }
         }
@@ -678,6 +704,43 @@ pub(super) fn normalized_linear_residual(initial_residual: f64, rhs: &[f64]) -> 
     }
 }
 
+/// A normal velocity on a solid/fluid interface is a known zero boundary
+/// value, not a missing sample. Faces strictly inside the solid remain absent.
+/// This distinction preserves linear reconstruction one node from a wall.
+fn staggered_stencil_sample(
+    values: &[f64],
+    solid: &Mask2D,
+    nx: usize,
+    ny: usize,
+    i: isize,
+    j: isize,
+    u_component: bool,
+) -> Option<f64> {
+    let (width, height) = if u_component {
+        (nx + 1, ny)
+    } else {
+        (nx, ny + 1)
+    };
+    if i < 0 || j < 0 || i >= width as isize || j >= height as isize {
+        return None;
+    }
+    let (i, j) = (i as usize, j as usize);
+    let open = if u_component {
+        u_face_open(solid, nx, i, j)
+    } else {
+        v_face_open(solid, ny, i, j)
+    };
+    if open {
+        return Some(values[i + width * j]);
+    }
+    let touches_fluid = if u_component {
+        (i > 0 && !solid[(i - 1, j)]) || (i < nx && !solid[(i, j)])
+    } else {
+        (j > 0 && !solid[(i, j - 1)]) || (j < ny && !solid[(i, j)])
+    };
+    touches_fluid.then_some(0.0)
+}
+
 pub(super) fn limited_face_correction(
     flux: f64,
     left: f64,
@@ -713,4 +776,55 @@ pub(super) fn limited_face_correction(
         -0.5 * limiter * jump
     };
     flux * face_correction
+}
+
+#[cfg(test)]
+mod wall_reconstruction_tests {
+    use super::*;
+
+    #[test]
+    fn van_leer_keeps_affine_normal_wall_samples_and_rejects_solid_interior() {
+        for u_component in [true, false] {
+            let (nx, ny) = (8, 8);
+            let mut solid = Mask2D::new(nx, ny, false);
+            for j in 0..ny {
+                for i in 0..nx {
+                    solid[(i, j)] = if u_component { i < 2 } else { j < 2 };
+                }
+            }
+            let width = if u_component { nx + 1 } else { nx };
+            let height = if u_component { ny } else { ny + 1 };
+            let mut values = vec![123.0; width * height];
+            for j in 0..height {
+                for i in 0..width {
+                    let coordinate = if u_component { i } else { j };
+                    if coordinate >= 2 {
+                        values[i + width * j] = (coordinate - 2) as f64;
+                    }
+                }
+            }
+            let sample = |distance| {
+                let (i, j) = if u_component {
+                    (distance, 4)
+                } else {
+                    (4, distance)
+                };
+                staggered_stencil_sample(&values, &solid, nx, ny, i, j, u_component)
+            };
+            assert_eq!(sample(1), None);
+            assert_eq!(sample(2), Some(0.0));
+            assert_eq!(sample(3), Some(1.0));
+            assert_eq!(sample(-1), None);
+            // Upwind 1 becomes the exact linear face value 1.5.
+            assert_eq!(
+                1.0 + limited_face_correction(1.0, 1.0, 2.0, sample(2), sample(5)),
+                1.5
+            );
+            // Reversing flow chooses the same physical face value.
+            assert_eq!(
+                2.0 - limited_face_correction(-1.0, 1.0, 2.0, sample(2), sample(5)),
+                1.5
+            );
+        }
+    }
 }

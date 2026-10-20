@@ -1416,6 +1416,13 @@ impl SolverBoundaryOverrides {
         self.set(side, Some(SolverBoundaryOverride::Velocity { u, v }));
     }
 
+    pub fn set_pressure_outlet(&mut self, side: Side, pressure: f64) {
+        self.set(
+            side,
+            Some(SolverBoundaryOverride::PressureOutlet { pressure }),
+        );
+    }
+
     fn get(&self, side: Side) -> Option<SolverBoundaryOverride> {
         match side {
             Side::Left => self.left,

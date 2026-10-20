@@ -17,10 +17,18 @@ impl IncompressibleSolver {
         let nx = self.grid.nx;
         let ny = self.grid.ny;
         let rho = self.cfg.case.density();
+        let outlet_pressure = match self
+            .cfg
+            .boundary_overrides
+            .kind(&self.cfg.case, Side::Right)
+        {
+            BoundaryKind::PressureOutlet { pressure } => pressure,
+            _ => 0.0,
+        };
         let mut final_pressure_residual = 0.0;
         let mut total_pressure_iterations = 0;
         for corrector in 0..pressure_correctors {
-            if transient && corrector > 0 {
+            if transient {
                 self.rebuild_transient_pressure_predictor(
                     workspace,
                     u_pressure_diagonal,
@@ -57,10 +65,22 @@ impl IncompressibleSolver {
                             - self.v_star.as_slice()[i + nx * j])
                             / self.grid.dy;
                     workspace.pressure_rhs[i + nx * j] = -divergence;
+                    if transient_pressure_outlet && i + 1 == nx {
+                        workspace.pressure_rhs[i + nx * j] += 2.0 * self.grid.dy * outlet_pressure
+                            / (rho * self.grid.dx * u_pressure_diagonal[nx + (nx + 1) * j]);
+                    }
                 }
             }
             drop(rhs_profile);
-            workspace.pressure_correction.fill(0.0);
+            if transient {
+                // In PIMPLE this vector stores absolute pressure. Starting
+                // from the preceding iterate avoids solving from zero again.
+                workspace
+                    .pressure_correction
+                    .copy_from_slice(self.p.as_slice());
+            } else {
+                workspace.pressure_correction.fill(0.0);
+            }
             let pressure_solve_profile = ProfileScope::new(ProfileStage::PressureSolve);
             let pressure_report = match linear_solver {
                 ImplicitPressureSolver::Gamg(solver) => solver.solve(
@@ -96,9 +116,11 @@ impl IncompressibleSolver {
                     let face = i + (nx + 1) * j;
                     if i == nx {
                         if transient_pressure_outlet && u_face_open(&self.solid, nx, i, j) {
-                            self.u_star.as_mut_slice()[face] +=
-                                2.0 * self.grid.dy * workspace.pressure_correction[nx - 1 + nx * j]
-                                    / (rho * u_pressure_diagonal[face]);
+                            self.u_star.as_mut_slice()[face] += 2.0
+                                * self.grid.dy
+                                * (workspace.pressure_correction[nx - 1 + nx * j]
+                                    - outlet_pressure)
+                                / (rho * u_pressure_diagonal[face]);
                         }
                         continue;
                     }
@@ -127,7 +149,11 @@ impl IncompressibleSolver {
                 .iter_mut()
                 .zip(workspace.pressure_correction.iter().copied())
             {
-                *pressure += alpha_p * dp;
+                if transient {
+                    *pressure = dp;
+                } else {
+                    *pressure += alpha_p * dp;
+                }
             }
             drop(pressure_correction_profile);
             self.u

@@ -20,9 +20,13 @@ use std::time::{Duration, Instant};
 mod boundary;
 use self::boundary::*;
 mod diagnostics;
+mod force_balance;
 use self::diagnostics::*;
 mod implicit;
 use self::implicit::*;
+mod time_integration;
+use self::time_integration::TransientMomentum;
+pub use self::time_integration::TransientTimeScheme;
 mod implicit_pressure;
 mod implicit_residual;
 mod momentum;
@@ -88,6 +92,9 @@ impl PressureVelocityCoupling {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PimpleControls {
+    pub time_scheme: TransientTimeScheme,
+    /// Reassemble convection and deferred corrections at the current time level.
+    pub outer_correctors: usize,
     pub pressure_correctors: usize,
     pub momentum_tolerance: f64,
     pub first_pressure_relative_tolerance: f64,
@@ -96,6 +103,8 @@ pub struct PimpleControls {
 impl Default for PimpleControls {
     fn default() -> Self {
         Self {
+            time_scheme: TransientTimeScheme::Euler,
+            outer_correctors: 1,
             pressure_correctors: 2,
             momentum_tolerance: 1.0e-5,
             first_pressure_relative_tolerance: 0.01,
@@ -176,12 +185,20 @@ impl SimulationConfig {
             return Err("t_end must be positive for transient coupling".to_string());
         }
         if self.pimple.pressure_correctors == 0
+            || self.pimple.outer_correctors == 0
             || !self.pimple.momentum_tolerance.is_finite()
             || self.pimple.momentum_tolerance <= 0.0
             || !self.pimple.first_pressure_relative_tolerance.is_finite()
             || self.pimple.first_pressure_relative_tolerance < 0.0
         {
             return Err("invalid transient pressure-velocity solver controls".to_string());
+        }
+        if self.pimple.time_scheme == TransientTimeScheme::Backward
+            && (self.coupling != PressureVelocityCoupling::Pimple
+                || self.physics.thermal.model != EnergyModel::Off
+                || self.pimple.outer_correctors < 2)
+        {
+            return Err("BDF2 requires PIMPLE coupling, flow-only physics, and at least two outer correctors".into());
         }
         if self.convection == ConvectionScheme::VanLeerTvd && !self.coupling.is_coefficient_based()
         {
@@ -359,6 +376,8 @@ struct Diagnostics {
     cd_viscous: f64,
     cl_pressure: f64,
     cl_viscous: f64,
+    control_volume_force: Option<(f64, f64)>,
+    control_volume_outer_force: Option<(f64, f64)>,
     reattachment: f64,
 }
 
@@ -391,6 +410,7 @@ pub struct IncompressibleSolver {
     step: usize,
     time: f64,
     current_dt: f64,
+    previous_time_velocity: Option<(Field2D, Field2D, f64)>,
     frame_index: usize,
     outputs_prepared: bool,
     pcg_workspace: PcgWorkspace,
@@ -447,6 +467,7 @@ impl IncompressibleSolver {
             step: 0,
             time: 0.0,
             current_dt,
+            previous_time_velocity: None,
             frame_index: 0,
             outputs_prepared: false,
             pcg_workspace: PcgWorkspace::default(),
@@ -579,7 +600,9 @@ impl IncompressibleSolver {
         match self.cfg.coupling {
             PressureVelocityCoupling::Projection => println!("Coupling: transient projection"),
             PressureVelocityCoupling::Pimple => println!(
-                "Coupling: transient PIMPLE-like, implicit Euler momentum + {} pressure corrections",
+                "Coupling: transient PIMPLE-like, implicit {:?} momentum, {} outer correctors + {} pressure corrections",
+                self.cfg.pimple.time_scheme,
+                self.cfg.pimple.outer_correctors,
                 self.cfg.pimple.pressure_correctors
             ),
             PressureVelocityCoupling::Simple => println!(
@@ -858,6 +881,230 @@ mod tests {
             physics: Default::default(),
             output_dir: PathBuf::from(output_dir),
         }
+    }
+
+    #[test]
+    fn control_volume_force_obeys_affine_stress_and_bdf2_momentum_balance() {
+        let mut cfg = test_config(PressureVelocityCoupling::Pimple, "unused-cv-force-test");
+        cfg.case = Case::CylinderRe100(crate::cases::CylinderCase {
+            length: 1.0,
+            height: 1.0,
+            diameter: 0.2,
+            xc: 0.5,
+            yc: 0.5,
+            ..crate::cases::CylinderCase::default()
+        });
+        cfg.nx = 40;
+        cfg.ny = 40;
+        cfg.pimple.time_scheme = TransientTimeScheme::Backward;
+        cfg.pimple.outer_correctors = 3;
+        let mut solver = IncompressibleSolver::new(cfg).unwrap();
+        solver.u.fill(0.0);
+        solver.v.fill(0.0);
+        let old_u = solver.u.clone();
+        let old_v = solver.v.clone();
+        solver.compute_cell_fields();
+        for j in 0..40 {
+            for i in 0..40 {
+                solver.p[(i, j)] = 17.0 + 3.0 * solver.grid.cell_x(i) - 2.0 * solver.grid.cell_y(j);
+            }
+        }
+        let (cd, cl) = solver
+            .control_volume_cylinder_force(0.1, &old_u, &old_v)
+            .unwrap();
+        assert!((cd + 7.5).abs() < 1e-10, "{cd}");
+        assert!((cl - 5.0).abs() < 1e-10, "{cl}");
+        // Empty fluid CV: uniform U=(t^2,-t^2/2), p=-2tx+ty+C.
+        // Accumulation and stress exactly cancel; convection cancels pairwise.
+        solver.solid = Mask2D::new(40, 40, false);
+        solver.u.fill(1.0);
+        solver.v.fill(-0.5);
+        let (mut old_u, mut old_v) = (solver.u.clone(), solver.v.clone());
+        old_u.fill(0.81);
+        old_v.fill(-0.405);
+        let (mut older_u, mut older_v) = (solver.u.clone(), solver.v.clone());
+        older_u.fill(0.64);
+        older_v.fill(-0.32);
+        solver.previous_time_velocity = Some((older_u, older_v, 0.1));
+        solver.compute_cell_fields();
+        for offset in [0.0, 1000.0] {
+            for j in 0..40 {
+                for i in 0..40 {
+                    solver.p[(i, j)] = offset - 2.0 * solver.grid.cell_x(i) + solver.grid.cell_y(j);
+                }
+            }
+            let (cd, cl) = solver
+                .control_volume_cylinder_force(0.1, &old_u, &old_v)
+                .unwrap();
+            assert!(cd.abs() < 1e-10 && cl.abs() < 1e-10, "{cd}, {cl}");
+            let (cd, cl) = solver
+                .control_volume_cylinder_force_with_extent(0.1, &old_u, &old_v, 1.5)
+                .unwrap();
+            assert!(cd.abs() < 1e-10 && cl.abs() < 1e-10, "outer {cd}, {cl}");
+        }
+    }
+
+    #[test]
+    fn closed_cylinder_pressure_force_preserves_gauge_and_affine_balance() {
+        for (nx, ny) in [(44, 20), (88, 40)] {
+            let mut cfg = test_config(PressureVelocityCoupling::Pimple, "unused-force-audit");
+            cfg.case = Case::CylinderRe100(crate::cases::CylinderCase {
+                length: 2.2,
+                height: 1.0,
+                diameter: 0.4,
+                xc: 0.8,
+                yc: 0.5,
+                rho: 2.0,
+                u_inf: 1.5,
+                ..crate::cases::CylinderCase::default()
+            });
+            cfg.nx = nx;
+            cfg.ny = ny;
+            let mut solver = IncompressibleSolver::new(cfg).unwrap();
+            solver.u_cell.as_mut_slice().fill(0.0);
+            solver.v_cell.as_mut_slice().fill(0.0);
+            let area = solver.solid.as_slice().iter().filter(|&&s| s).count() as f64
+                * solver.grid.dx
+                * solver.grid.dy;
+            let q = 0.5 * 2.0 * 1.5_f64.powi(2) * 0.4;
+            for offset in [0.0, 7.0, 1000.0] {
+                for j in 0..ny {
+                    for i in 0..nx {
+                        solver.p[(i, j)] =
+                            offset + 3.0 * solver.grid.cell_x(i) - 2.0 * solver.grid.cell_y(j);
+                    }
+                }
+                let force = solver.cylinder_force_coefficients();
+                assert!((force.cd_pressure + 3.0 * area / q).abs() < 1e-11);
+                assert!((force.cl_pressure - 2.0 * area / q).abs() < 1e-11);
+                assert_eq!(force.cd_viscous, 0.0);
+                assert_eq!(force.cl_viscous, 0.0);
+            }
+            solver.p.as_mut_slice().fill(17.0);
+            let force = solver.cylinder_force_coefficients();
+            assert!(force.cd().abs() < 1e-12);
+            assert!(force.cl().abs() < 1e-12);
+        }
+    }
+
+    #[test]
+    fn backward_cavity_time_refinement_matches_fine_time_reference() {
+        fn integrate(scheme: TransientTimeScheme, dt: f64) -> Vec<f64> {
+            let mut cfg = test_config(PressureVelocityCoupling::Pimple, "unused-time-refinement");
+            cfg.case = Case::LidDrivenCavity(CavityCase {
+                reynolds: 10.0,
+                nu: 0.1,
+                ..CavityCase::default()
+            });
+            cfg.dt = dt;
+            cfg.t_end = 0.05;
+            cfg.max_steps = 1000;
+            cfg.pimple.time_scheme = scheme;
+            cfg.pimple.outer_correctors = 4;
+            cfg.pimple.pressure_correctors = 4;
+            cfg.pimple.momentum_tolerance = 1e-12;
+            cfg.pimple.first_pressure_relative_tolerance = 0.0;
+            cfg.pressure_tolerance = 1e-12;
+            cfg.pressure_max_iters = 1000;
+            let mut s = IncompressibleSolver::new(cfg).unwrap();
+            while !s.reached_end_time() {
+                s.advance_one_step().unwrap();
+            }
+            assert!((s.time - 0.05).abs() < 1e-14);
+            let mut values = s.u.as_slice().to_vec();
+            values.extend_from_slice(s.v.as_slice());
+            values
+        }
+        let reference = integrate(TransientTimeScheme::Backward, 0.000125);
+        let error = |scheme, dt| {
+            integrate(scheme, dt)
+                .iter()
+                .zip(&reference)
+                .map(|(a, b)| (a - b).powi(2))
+                .sum::<f64>()
+                .sqrt()
+        };
+        let (b0, b1) = (
+            error(TransientTimeScheme::Backward, 0.002),
+            error(TransientTimeScheme::Backward, 0.001),
+        );
+        let (e0, e1) = (
+            error(TransientTimeScheme::Euler, 0.002),
+            error(TransientTimeScheme::Euler, 0.001),
+        );
+        eprintln!("time refinement: BDF2={b0:e},{b1:e}; Euler={e0:e},{e1:e}");
+        assert!((2.8..5.0).contains(&(b0 / b1)), "BDF2 ratio {}", b0 / b1);
+        assert!((1.7..2.3).contains(&(e0 / e1)), "Euler ratio {}", e0 / e1);
+        assert!(b1 < 0.4 * e1, "BDF2={b1:e}, Euler={e1:e}");
+    }
+
+    #[test]
+    fn backward_requires_nonlinear_reassembly_and_preserves_time_history() {
+        let mut cfg = test_config(PressureVelocityCoupling::Pimple, "unused-backward-history");
+        cfg.pimple.time_scheme = TransientTimeScheme::Backward;
+        assert!(cfg.validate().is_err());
+        cfg.pimple.outer_correctors = 3;
+        cfg.pressure_max_iters = 1000;
+        let mut solver = IncompressibleSolver::new(cfg).unwrap();
+        let initial_u = solver.u.clone();
+        solver.advance_one_step().unwrap();
+        assert_eq!(
+            solver.previous_time_velocity.as_ref().unwrap().0.as_slice(),
+            initial_u.as_slice()
+        );
+        let step_one_u = solver.u.clone();
+        solver.advance_one_step().unwrap();
+        assert_eq!(
+            solver.previous_time_velocity.as_ref().unwrap().0.as_slice(),
+            step_one_u.as_slice()
+        );
+        assert!((solver.time - 2e-3).abs() < 1e-15);
+    }
+
+    #[test]
+    fn transient_pressure_outlet_anchors_absolute_pressure() {
+        fn solve(initial_pressure: f64, outlet: f64) -> IncompressibleSolver {
+            let mut cfg = test_config(
+                PressureVelocityCoupling::Pimple,
+                "unused-pressure-gauge-test",
+            );
+            cfg.case = Case::Channel(crate::cases::ChannelCase {
+                length: 2.0,
+                ..Default::default()
+            });
+            cfg.pressure_tolerance = 1e-12;
+            cfg.pressure_max_iters = 1000;
+            cfg.pimple.momentum_tolerance = 1e-12;
+            cfg.pimple.first_pressure_relative_tolerance = 0.0;
+            cfg.pimple.outer_correctors = 2;
+            cfg.pimple.pressure_correctors = 4;
+            cfg.boundary_overrides
+                .set_pressure_outlet(Side::Right, outlet);
+            let mut s = IncompressibleSolver::new(cfg).unwrap();
+            s.p.fill(initial_pressure);
+            s.advance_one_step().unwrap();
+            s
+        }
+        let zero = solve(0.0, 0.0);
+        let initial_shift = solve(7.0, 0.0);
+        let outlet_shift = solve(0.0, 5.0);
+        let drift = max_field_difference(&zero.p, &initial_shift.p);
+        eprintln!("pressure initial-gauge drift={drift:e}");
+        assert!(
+            drift < 1e-8,
+            "fixed pressure outlet retained arbitrary initial offset: {drift}"
+        );
+        assert!(max_field_difference(&zero.u, &initial_shift.u) < 1e-8);
+        assert!(max_field_difference(&zero.v, &initial_shift.v) < 1e-8);
+        assert!(max_field_difference(&zero.u, &outlet_shift.u) < 1e-8);
+        assert!(max_field_difference(&zero.v, &outlet_shift.v) < 1e-8);
+        for (a, b) in zero.p.as_slice().iter().zip(outlet_shift.p.as_slice()) {
+            assert!(
+                (b - a - 5.0).abs() < 1e-8,
+                "outlet pressure offset not applied: {b} vs {a}"
+            );
+        }
+        assert!(zero.max_divergence() < 1e-8);
     }
 
     #[test]
@@ -1247,6 +1494,91 @@ mod tests {
         let error = IncompressibleSolver::new(cfg).err().unwrap();
         assert!(error.contains("requires the constant-property energy equation"));
     }
+    #[test]
+    fn implicit_normal_wall_uses_full_spacing_diffusion() {
+        let directory = tempfile::tempdir().unwrap();
+        let cfg = test_config(
+            PressureVelocityCoupling::Pimple,
+            directory.path().to_str().unwrap(),
+        );
+        let nu = cfg.case.kinematic_viscosity();
+        let dt = cfg.dt;
+        let mut solver = IncompressibleSolver::new(cfg).unwrap();
+        for j in 0..8 {
+            for i in 4..8 {
+                solver.solid[(i, j)] = true;
+            }
+        }
+        solver.advance().unwrap();
+        let row = 3 + 9 * 3;
+        let expected = solver.grid.dx * solver.grid.dy / dt
+            + 2.0 * nu * (solver.grid.dy / solver.grid.dx + solver.grid.dx / solver.grid.dy);
+        let matrix = &solver
+            .implicit_assembly_workspace
+            .as_ref()
+            .unwrap()
+            .u_matrix;
+        assert!((matrix.get(row, row).unwrap() - expected).abs() < 1e-12);
+    }
+
+    #[test]
+    fn cylinder_pressure_force_integrates_affine_pressure_on_mask_boundary() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut cfg = test_config(
+            PressureVelocityCoupling::Pimple,
+            directory.path().to_str().unwrap(),
+        );
+        cfg.case = Case::CylinderRe100(crate::cases::CylinderCase {
+            length: 1.0,
+            height: 1.0,
+            xc: 0.5,
+            yc: 0.5,
+            diameter: 0.3,
+            mu: 0.003,
+            nu: 0.003,
+            ..Default::default()
+        });
+        cfg.nx = 32;
+        cfg.ny = 32;
+        let mut solver = IncompressibleSolver::new(cfg).unwrap();
+        solver.u_cell.as_mut_slice().fill(0.0);
+        solver.v_cell.as_mut_slice().fill(0.0);
+        let mut area = 0.0;
+        for j in 0..32 {
+            for i in 0..32 {
+                solver.p[(i, j)] = 17.0 + 2.0 * solver.grid.cell_x(i) - 3.0 * solver.grid.cell_y(j);
+                if solver.solid[(i, j)] {
+                    area += solver.grid.dx * solver.grid.dy;
+                }
+            }
+        }
+        let forces = solver.cylinder_force_coefficients();
+        let q = 0.5 * 0.3;
+        assert!((forces.cd_pressure + 2.0 * area / q).abs() < 1e-12);
+        assert!((forces.cl_pressure - 3.0 * area / q).abs() < 1e-12);
+    }
+
+    #[test]
+    fn reused_assembly_matches_fresh_workspace_on_every_step() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut cfg = test_config(
+            PressureVelocityCoupling::Pimple,
+            directory.path().to_str().unwrap(),
+        );
+        cfg.max_steps = 4;
+        cfg.t_end = 4.0 * cfg.dt;
+        let mut cached = IncompressibleSolver::new(cfg.clone()).unwrap();
+        let mut fresh = IncompressibleSolver::new(cfg).unwrap();
+        for _ in 0..4 {
+            fresh.implicit_assembly_workspace = None;
+            cached.advance().unwrap();
+            fresh.advance().unwrap();
+            assert_eq!(cached.u.as_slice(), fresh.u.as_slice());
+            assert_eq!(cached.v.as_slice(), fresh.v.as_slice());
+            assert_eq!(cached.p.as_slice(), fresh.p.as_slice());
+        }
+    }
+
     #[test]
     fn pressure_correctors_agree_across_preconditioners_and_snapshot_output_is_optional() {
         let directory = tempfile::tempdir().unwrap();
