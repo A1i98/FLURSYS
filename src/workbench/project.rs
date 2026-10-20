@@ -230,6 +230,12 @@ pub struct WorkbenchProject {
     pub project_id: String,
     pub name: String,
     pub geometry: GeometryTopology,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cad_document: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cad_geometry_hash: Option<String>,
+    #[serde(default)]
+    pub plane_monitors: Vec<super::plane_monitor::FlowPlaneMonitor>,
     #[serde(default)]
     pub fluid_face: Option<crate::FaceId>,
     pub named_selections: Vec<NamedSelection>,
@@ -256,6 +262,9 @@ impl WorkbenchProject {
             project_id: unique_id("project"),
             name: name.into(),
             geometry: GeometryTopology::new(),
+            cad_document: None,
+            cad_geometry_hash: None,
+            plane_monitors: Vec::new(),
             fluid_face: None,
             named_selections: Vec::new(),
             mesh: WorkbenchMeshSettings::default(),
@@ -268,6 +277,11 @@ impl WorkbenchProject {
     }
 
     pub fn validate(&self) -> Result<(), ProjectDocumentError> {
+        let mut plane_ids=BTreeSet::new();
+        for plane in &self.plane_monitors {
+            plane.validate().map_err(ProjectDocumentError::Invalid)?;
+            if !plane_ids.insert(&plane.id){return Err(ProjectDocumentError::Invalid("Duplicate flow monitor plane ID".into()));}
+        }
         if self.format_version != WORKBENCH_PROJECT_FORMAT_VERSION {
             return Err(ProjectDocumentError::UnsupportedVersion {
                 found: self.format_version,

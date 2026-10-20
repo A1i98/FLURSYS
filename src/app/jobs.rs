@@ -59,6 +59,7 @@ pub enum WorkbenchJobEvent {
     MeshCompleted(Result<GeneratedMesh, MeshingError>),
     SolveProgress(JobProgress),
     SolveCompleted(Result<IncompressibleSolution, IncompressibleSolveError>),
+    PlaneSample(crate::workbench::plane_monitor::PlaneSnapshot),
 }
 
 /// Owns worker channels and lifecycle state for the canonical workbench jobs.
@@ -125,6 +126,14 @@ impl WorkbenchJobExecutor {
     }
 
     pub fn start_solve(&mut self, case: IncompressibleCase) -> Result<(), &'static str> {
+        self.start_solve_with_planes(case, Vec::new(), std::path::PathBuf::new())
+    }
+    pub fn start_solve_with_planes(
+        &mut self,
+        case: IncompressibleCase,
+        planes: Vec<crate::workbench::plane_monitor::FlowPlaneMonitor>,
+        folder: std::path::PathBuf,
+    ) -> Result<(), &'static str> {
         self.start(|sender, cancellation| {
             std::thread::spawn(move || {
                 let _ = sender.send(WorkbenchJobEvent::SolveProgress(JobProgress::Started));
@@ -148,7 +157,86 @@ impl WorkbenchJobExecutor {
                         JobProgress::Metrics { iteration, values },
                     ));
                 });
+                let plans = planes
+                    .into_iter()
+                    .filter(|p| p.enabled)
+                    .map(|p| {
+                        let cells = crate::workbench::plane_monitor::intersect(&case.mesh, &p)?;
+                        if cells.is_empty() {
+                            return Err(format!(
+                                "Monitor plane '{}' does not intersect the fluid volume",
+                                p.name
+                            ));
+                        }
+                        Ok((p, cells))
+                    })
+                    .collect::<Result<Vec<_>, String>>();
+                let plans = match plans {
+                    Ok(p) => p,
+                    Err(e) => {
+                        let _ = sender.send(WorkbenchJobEvent::SolveCompleted(Err(
+                            IncompressibleSolveError::Simple(crate::simple::SimpleError::Monitor(
+                                e,
+                            )),
+                        )));
+                        return;
+                    }
+                };
+                let plane_sender = sender.clone();
+                let plans = Arc::new(plans);
+                let observer_plans = plans.clone();
+                let recording_folder = folder.clone();
+                let control = control.with_fields(move |iteration, velocity, pressure| {
+                    for (plane, cells) in observer_plans.iter() {
+                        if iteration % plane.every != 0 {
+                            continue;
+                        }
+                        let mut snapshot = crate::workbench::plane_monitor::sample(
+                            plane,
+                            cells,
+                            iteration,
+                            velocity.values(),
+                            pressure.values(),
+                        )?;
+                        snapshot.path = Some(crate::workbench::plane_monitor::write_csv(
+                            &snapshot,
+                            &recording_folder,
+                        )?);
+                        let _ = plane_sender.send(WorkbenchJobEvent::PlaneSample(snapshot));
+                    }
+                    Ok(())
+                });
                 let result = solve_incompressible_with_control(&case, &control);
+                if let Ok(solution) = &result {
+                    let iteration = solution.report.outer_iterations;
+                    for (plane, cells) in plans.iter().filter(|(p, _)| iteration % p.every != 0) {
+                        let saved = crate::workbench::plane_monitor::sample(
+                            plane,
+                            cells,
+                            iteration,
+                            solution.velocity.values(),
+                            solution.pressure.values(),
+                        )
+                        .and_then(|mut snapshot| {
+                            snapshot.path = Some(crate::workbench::plane_monitor::write_csv(
+                                &snapshot, &folder,
+                            )?);
+                            Ok(snapshot)
+                        });
+                        match saved {
+                            Ok(snapshot) => {
+                                let _ = sender.send(WorkbenchJobEvent::PlaneSample(snapshot));
+                            }
+                            Err(error) => {
+                                let _ = sender.send(WorkbenchJobEvent::SolveProgress(
+                                    JobProgress::Message(format!(
+                                        "Final plane snapshot failed: {error}"
+                                    )),
+                                ));
+                            }
+                        }
+                    }
+                }
                 let cancelled = cancellation.is_cancelled();
                 let _ = sender.send(WorkbenchJobEvent::SolveCompleted(result));
                 let _ = sender.send(WorkbenchJobEvent::SolveProgress(if cancelled {

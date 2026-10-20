@@ -279,11 +279,10 @@ impl IncompressibleCase {
                     } => {
                         let reference_flux = ambient.dot(face.area_vector);
                         let current = flux.map(|f| f[i]).unwrap_or(reference_flux);
-                        let incoming = if current.abs() > 1e-12 * (reference_flux.abs() + 1.0) {
-                            current < 0.0
-                        } else {
-                            reference_flux < 0.0
-                        };
+                        let owner_flux = velocity
+                            .map(|v| v[face.owner].dot(face.area_vector))
+                            .unwrap_or(reference_flux);
+                        let incoming = far_field_incoming(current, reference_flux, owner_flux);
                         if incoming {
                             velocity_boundary.set_face_velocity(i, Some(ambient));
                             boundary_flux[i] = reference_flux;
@@ -305,6 +304,42 @@ impl IncompressibleCase {
             pressure_correction_boundary,
             boundary_flux,
         })
+    }
+}
+
+// An imposed tangential ambient velocity sets incoming flux to zero. Using
+// that zero to select outflow at the next iteration creates an artificial
+// inlet/outlet two-cycle. At grazing incidence retain the local flow direction
+// from the adjacent cell until it actually reverses.
+fn far_field_incoming(current: f64, ambient: f64, owner: f64) -> bool {
+    let threshold = 1e-12 * (ambient.abs() + 1.0);
+    if current.abs() > threshold {
+        current < 0.0
+    } else if ambient.abs() > threshold {
+        ambient < 0.0
+    } else {
+        owner < -threshold
+    }
+}
+
+#[cfg(test)]
+mod far_field_tests {
+    use super::far_field_incoming;
+
+    #[test]
+    fn grazing_inflow_is_not_reset_by_its_prescribed_zero_flux() {
+        assert!(far_field_incoming(-0.1, 0.0, -0.1));
+        assert!(far_field_incoming(0.0, 0.0, -0.1));
+        assert!(!far_field_incoming(0.0, 0.0, 0.1));
+        assert!(!far_field_incoming(0.0, 0.0, 0.0));
+    }
+
+    #[test]
+    fn resolved_flux_and_non_grazing_ambient_keep_precedence() {
+        assert!(far_field_incoming(-0.1, 0.2, 0.2));
+        assert!(!far_field_incoming(0.1, -0.2, -0.2));
+        assert!(far_field_incoming(0.0, -0.2, 0.2));
+        assert!(!far_field_incoming(0.0, 0.2, -0.2));
     }
 }
 
@@ -437,6 +472,14 @@ pub struct SolveControl<'a> {
     is_cancelled: Box<dyn Fn() -> bool + Send + Sync + 'a>,
     on_iteration: Box<dyn Fn(usize, usize, f64) + Send + Sync + 'a>,
     on_metrics: Option<Box<dyn Fn(usize, [f64; 4]) + Send + Sync + 'a>>,
+    on_fields: Option<
+        Box<
+            dyn Fn(usize, &CellField<Vec3>, &CellField<f64>) -> Result<(), String>
+                + Send
+                + Sync
+                + 'a,
+        >,
+    >,
 }
 
 impl<'a> SolveControl<'a> {
@@ -448,12 +491,24 @@ impl<'a> SolveControl<'a> {
             is_cancelled: Box::new(is_cancelled),
             on_iteration: Box::new(on_iteration),
             on_metrics: None,
+            on_fields: None,
         }
     }
 
     /// Optional detailed progress, without changing legacy iteration callbacks.
     pub fn with_metrics(mut self, callback: impl Fn(usize, [f64; 4]) + Send + Sync + 'a) -> Self {
         self.on_metrics = Some(Box::new(callback));
+        self
+    }
+
+    pub fn with_fields(
+        mut self,
+        callback: impl Fn(usize, &CellField<Vec3>, &CellField<f64>) -> Result<(), String>
+            + Send
+            + Sync
+            + 'a,
+    ) -> Self {
+        self.on_fields = Some(Box::new(callback));
         self
     }
 
@@ -638,7 +693,7 @@ fn solve_incompressible_on_pool(
     options.pressure_relaxation = case.solver.pressure_relaxation;
     options.momentum_solver = case.solver.momentum_solver;
     options.pressure_solver = case.solver.pressure_solver;
-    let simple = crate::simple::solve_simple_with_monitor(
+    let simple = crate::simple::solve_simple_with_observer(
         &case.mesh,
         &mut state,
         options,
@@ -650,6 +705,13 @@ fn solve_incompressible_on_pool(
                     callback(iteration, metrics);
                 }
             }
+        },
+        |iteration, state| {
+            if let Some(callback) = control.and_then(|c| c.on_fields.as_ref()) {
+                callback(iteration, &state.velocity, &state.pressure)
+                    .map_err(SimpleError::Monitor)?;
+            }
+            Ok(())
         },
     )
     .map_err(|error| match error {

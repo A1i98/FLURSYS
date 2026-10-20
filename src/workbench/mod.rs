@@ -11,6 +11,7 @@ pub mod legacy_import;
 pub mod mesh_viewport;
 pub mod picking;
 pub mod project;
+pub mod plane_monitor;
 mod result_slice;
 pub mod results;
 pub mod selection;

@@ -30,6 +30,7 @@ pub enum SimpleError {
     InvalidCouplingTolerance { value: f64 },
     InvalidOuterIterations { value: usize },
     MomentumLinearDidNotConverge,
+    Monitor(String),
     PressureLinearDidNotConverge,
 }
 
@@ -189,8 +190,22 @@ pub fn solve_simple_with_monitor(
     mesh: &UnstructuredMesh,
     state: &mut SimpleState,
     options: SimpleOptions<'_>,
+    is_cancelled: impl FnMut() -> bool,
+    on_iteration: impl FnMut(usize, [f64; 4]),
+) -> Result<SimpleReport, SimpleError> {
+    solve_simple_with_observer(mesh, state, options, is_cancelled, on_iteration, |_, _| {
+        Ok(())
+    })
+}
+
+/// Field observer runs after the conservative correction of each completed iteration.
+pub fn solve_simple_with_observer(
+    mesh: &UnstructuredMesh,
+    state: &mut SimpleState,
+    options: SimpleOptions<'_>,
     mut is_cancelled: impl FnMut() -> bool,
     mut on_iteration: impl FnMut(usize, [f64; 4]),
+    mut on_state: impl FnMut(usize, &SimpleState) -> Result<(), SimpleError>,
 ) -> Result<SimpleReport, SimpleError> {
     state.velocity.ensure_mesh(mesh)?;
     state.pressure.ensure_mesh(mesh)?;
@@ -485,6 +500,7 @@ pub fn solve_simple_with_monitor(
                 pressure_report.final_residual,
             ],
         );
+        on_state(iteration, state)?;
         last_momentum = Some(momentum_reports);
         last_pressure = Some(pressure_report);
         if continuity <= options.continuity_absolute_tolerance
