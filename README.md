@@ -6,10 +6,22 @@ FLURSYS is a Rust-based scientific simulation project. It currently contains a f
 for incompressible fluid flow, with a few standard test cases and multi-core CPU support.
 
 The project is still under development. It includes structured and unstructured workflows,
-an initial three-dimensional cavity solver, and an optional graphical interface; broader CAD,
-physics, and result-visualization capabilities remain future work.
+a structured three-dimensional cavity solver, and an optional graphical workbench with
+CAD, Gmsh meshing, steady unstructured flow, and result inspection. Physics and time-integration
+support differ between backends; see the implementation-backed documentation below.
+
+## Documentation
+
+- [Numerical methods and current limitations](docs/NUMERICAL_METHODS.md)
+- [CAD/mesh workbench, project storage and result artifacts](docs/WORKBENCH.md)
 
 ## Build
+
+The CAD workbench is a pinned Git submodule. After cloning, initialize it before building:
+
+```bash
+git submodule update --init --recursive
+```
 
 ```bash
 cargo build --release
