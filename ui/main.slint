@@ -16,6 +16,7 @@ import { LegacyImportDialog, RecoveryDialog, UnsavedChangesDialog, FluidMaterial
 export component MainWindow inherits Window {
     init => { Palette.color-scheme = ColorScheme.dark; UiTheme.cad-active=true; }
     title: root.project-loaded ? "FLURSYS — " + root.project-name : "FLURSYS — CFD Workbench";
+    icon: @image-url("assets/flursys-logo.svg");
     preferred-width: 1440px;
     preferred-height: 900px;
     min-width: 1100px;
@@ -274,6 +275,23 @@ export component MainWindow inherits Window {
     in-out property <float> wb-solve-progress:0;
     in-out property <string> wb-solve-monitor;
     in-out property <int> wb-chart-kind:4;
+    in-out property <int> flow-plane-field:0;
+    in-out property <bool> flow-plane-vectors:true;
+    in-out property <bool> flow-plane-edges:false;
+    in-out property <bool> flow-plane-normalize:true;
+    in-out property <bool> flow-plane-normal-marks:false;
+    in-out property <string> flow-plane-min;
+    in-out property <string> flow-plane-max;
+    in-out property <string> flow-plane-error;
+    callback flow-plane-style();
+    in-out property <bool> flow-plane-playing:false;
+    in-out property <int> flow-plane-frame:0;
+    in-out property <int> flow-plane-count:0;
+    in-out property <int> flow-plane-fps:10;
+    callback flow-plane-playback(int);
+    in-out property <bool> solver-paused:false;
+    in-out property <int> wb-checkpoint-every:100;
+    callback solver-control(int);
     in-out property <[string]> flow-plane-names;
     in-out property <int> flow-plane-index:0;
     in-out property <int> flow-plane-every:10;
@@ -487,6 +505,17 @@ export component MainWindow inherits Window {
     in-out property <string> material-viscosity: "0.01";
     in-out property <int> wb-max-iterations: 1000;
     in-out property <int> wb-cpu-threads: 1;
+    in-out property <int> mesh-algorithm2d:0;
+    in-out property <int> mesh-algorithm3d:0;
+    in-out property <int> mesh-curvature:32;
+    in-out property <int> mesh-smoothing:10;
+    in-out property <bool> mesh-optimize:true;
+    in-out property <bool> mesh-netgen:false;
+    in-out property <bool> mesh-extend:true;
+    in-out property <string> mesh-optimize-threshold:"0.3";
+    in-out property <string> mesh-refine-start:"0";
+    in-out property <int> mesh-refine-sampling:64;
+    callback mesh-apply-settings();
     in-out property <int> wb-mesh-threads: 1;
     in-out property <bool> wb-meshing: false;
     in-out property <float> wb-mesh-progress: 0;
@@ -654,10 +683,13 @@ export component MainWindow inherits Window {
                 }
 
                     if root.cad-flow-plane-selected : Rectangle {
-                        x:max(8px,parent.width - self.width - 12px);y:110px;width:292px;height:min(parent.height - 125px,470px);
+                        x:max(8px,parent.width - self.width - 12px);y:110px;width:292px;height:min(parent.height - 125px,650px);
                         background:UiTheme.sidebar;border-color:UiTheme.border;border-width:1px;border-radius:4px;
                         ScrollView {width:parent.width;height:parent.height;horizontal-scrollbar-policy:always-off;
-                            PlaneMonitorPanel {width:parent.visible-width;names:root.flow-plane-names;index <=> root.flow-plane-index;every <=> root.flow-plane-every;record <=> root.flow-plane-enabled;
+                            PlaneMonitorPanel {width:parent.visible-width;
+                                field <=> root.flow-plane-field;vectors <=> root.flow-plane-vectors;edges <=> root.flow-plane-edges;normalize <=> root.flow-plane-normalize;normal-marks <=> root.flow-plane-normal-marks;range-min <=> root.flow-plane-min;range-max <=> root.flow-plane-max;
+                                style=>{root.flow-plane-style();}export(i)=>{root.flow-plane-export(i);}
+                                names:root.flow-plane-names;index <=> root.flow-plane-index;every <=> root.flow-plane-every;record <=> root.flow-plane-enabled;
                                 busy:root.wb-busy;details:root.flow-plane-details;status:root.flow-plane-status;
                                 select(i)=>{root.flow-plane-select(i);}apply=>{root.flow-plane-apply();}view=>{root.flow-plane-view();}
                             }
@@ -683,6 +715,12 @@ export component MainWindow inherits Window {
                     summary:root.wb-mesh-summary;
                     gmsh:root.wb-gmsh-status;
                     meshing:root.wb-meshing;progress:root.wb-mesh-progress;stage:root.wb-mesh-stage;
+                    algorithm2d <=> root.mesh-algorithm2d;algorithm3d <=> root.mesh-algorithm3d;
+                    curvature <=> root.mesh-curvature;smoothing <=> root.mesh-smoothing;
+                    optimize <=> root.mesh-optimize;netgen <=> root.mesh-netgen;extend <=> root.mesh-extend;
+                    optimize-threshold <=> root.mesh-optimize-threshold;
+                    refine-start <=> root.mesh-refine-start;refine-sampling <=> root.mesh-refine-sampling;
+                    apply-settings()=>{root.mesh-apply-settings();}
                     cpu-threads <=> root.wb-mesh-threads;cpu-limit:root.wb-cpu-limit;
                     global-size <=> root.wb-global-size;min-size <=> root.wb-min-size;max-size <=> root.wb-max-size;
                     local-target <=> root.wb-local-target;local-size <=> root.wb-local-size;
@@ -820,6 +858,7 @@ HorizontalLayout {height:32px;spacing:5px;
                 if !root.examples-open && root.current-step == 3 : SolutionWorkspace {
                     width:parent.width;height:parent.height;
                     show-log <=> root.solution-show-log;chart-kind <=> root.wb-chart-kind;
+                    plane-field <=> root.flow-plane-field;plane-vectors <=> root.flow-plane-vectors;plane-edges <=> root.flow-plane-edges;plane-normalize <=> root.flow-plane-normalize;plane-normal-marks <=> root.flow-plane-normal-marks;plane-min <=> root.flow-plane-min;plane-max <=> root.flow-plane-max;style-plane=>{root.flow-plane-style();}
                     show-plane <=> root.solution-show-plane;plane-image:root.flow-plane-image;
                     plane-names:root.flow-plane-names;plane-index <=> root.flow-plane-index;plane-every <=> root.flow-plane-every;plane-enabled <=> root.flow-plane-enabled;
                     plane-details:root.flow-plane-details;plane-status:root.flow-plane-status;
@@ -834,6 +873,9 @@ HorizontalLayout {height:32px;spacing:5px;
                     chart:root.residual-image;caption:root.continuity-chart-caption;
                     convergence-summary:root.post-convergence-summary;balance:root.post-balance;monitor:root.wb-solve-monitor;summary:root.wb-solution-summary;readiness:root.wb-run-readiness;
                     log:root.log-text;material:"ρ="+root.material-density+" · ν="+root.material-viscosity;
+                    checkpoint-every <=> root.wb-checkpoint-every;
+                    three-d:root.mesh-dimension-index==1;
+                    paused:root.solver-paused;control(i)=>{root.solver-control(i);}
                     busy:root.wb-busy;can-run:root.can-run-workbench;progress:root.wb-solve-progress;
                     cpu-limit:root.wb-cpu-limit;cpu-threads <=> root.wb-cpu-threads;iterations <=> root.wb-max-iterations;velocity-relaxation <=> root.wb-velocity-relaxation;
                     convection-index <=> root.wb-convection-index;
@@ -845,6 +887,11 @@ HorizontalLayout {height:32px;spacing:5px;
                 }
                 if !root.examples-open && root.current-step == 4 : ResultsWorkspace {
                     width:parent.width;height:parent.height;
+                    plane-frame:root.flow-plane-frame;plane-count:root.flow-plane-count;plane-fps <=> root.flow-plane-fps;plane-playing:root.flow-plane-playing;playback(i)=>{root.flow-plane-playback(i);}
+                    plane-image:root.flow-plane-image;plane-names:root.flow-plane-names;plane-index <=> root.flow-plane-index;plane-every <=> root.flow-plane-every;plane-enabled <=> root.flow-plane-enabled;
+                    busy:root.wb-busy;plane-details:root.flow-plane-details;plane-status:root.flow-plane-status;
+                    plane-field <=> root.flow-plane-field;plane-vectors <=> root.flow-plane-vectors;plane-edges <=> root.flow-plane-edges;plane-normalize <=> root.flow-plane-normalize;plane-normal-marks <=> root.flow-plane-normal-marks;plane-min <=> root.flow-plane-min;plane-max <=> root.flow-plane-max;
+                    style-plane=>{root.flow-plane-style();}select-plane(i)=>{root.flow-plane-select(i);}apply-plane=>{root.flow-plane-apply();}view-plane=>{root.flow-plane-view();}export-plane(i)=>{root.flow-plane-export(i);}
                     tab <=> root.post-tab;
                     balance:root.post-balance;profile-image:root.post-profile-image;profile-caption:root.post-profile-caption;
                     line-x0 <=> root.post-line-x0;line-y0 <=> root.post-line-y0;line-x1 <=> root.post-line-x1;line-y1 <=> root.post-line-y1;line-samples <=> root.post-line-samples;

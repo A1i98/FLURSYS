@@ -1,5 +1,5 @@
 import { EntitySelectionBar } from "entity-selection.slint";
-import { Button, ComboBox, LineEdit, SpinBox, ScrollView, ListView, ProgressIndicator } from "std-widgets.slint";
+import { Button, ComboBox, LineEdit, SpinBox, ScrollView, ListView, ProgressIndicator, CheckBox } from "std-widgets.slint";
 import { UiTheme, InteractiveGeometryPreview } from "components.slint";
 
 component ToolButton inherits Button {
@@ -41,6 +41,14 @@ export component MeshWorkspace inherits Rectangle {
     in property <string> readiness;
     in property <string> summary;
     in property <string> gmsh;
+    in-out property <int> algorithm2d;
+    in-out property <int> algorithm3d;
+    in-out property <int> curvature;
+    in-out property <int> smoothing;
+    in-out property <bool> optimize;
+    in-out property <bool> netgen;
+    in-out property <bool> extend;
+    in-out property <string> optimize-threshold;
     in-out property <string> global-size;
     in-out property <string> min-size;
     in-out property <string> max-size;
@@ -49,6 +57,8 @@ export component MeshWorkspace inherits Rectangle {
     in-out property <string> refine-min;
     in-out property <string> refine-max;
     in-out property <string> refine-distance;
+    in-out property <string> refine-start;
+    in-out property <int> refine-sampling;
     in-out property <string> layer-first;
     in-out property <string> layer-growth;
     in-out property <int> layer-count;
@@ -60,10 +70,12 @@ export component MeshWorkspace inherits Rectangle {
     in property <string> inspection;
     in property <[string]> bad-cells;
     in property <image> preview;
+    private property <bool> quality-open:false;
     private property <bool> local-open:false;
     private property <bool> advanced:false;
     private property <bool> layers:false;
     private property <int> control-index:0;
+    callback apply-settings();
     callback task-changed(int);
     callback select-filter(int);
     callback show-geometry(bool);
@@ -204,20 +216,57 @@ export component MeshWorkspace inherits Rectangle {
                                 ToolButton {text:"Medium";enabled:!root.busy;clicked=>{root.preset(1);}}
                                 ToolButton {text:"Fine";enabled:!root.busy;clicked=>{root.preset(2);}}
                             }
-                            Label {text:"Mesh sizes are in metres. Presets scale with the domain.";}
+                            Label {text:"Required: minimum ≤ target ≤ maximum. Local sizes and distance fields must also fit these bounds. Presets are optional and replace only size inputs.";}
+                            ToolButton {text:"Uniform size: min = max = target";enabled:!root.busy;clicked=>{root.min-size=root.global-size;root.max-size=root.global-size;}}
+                            Rectangle {height:1px;background:UiTheme.border;}
+                            ToolButton {text:root.quality-open ? "▾ Algorithm & quality" : "▸ Algorithm & quality";clicked=>{root.quality-open=!root.quality-open;}}
+                            if root.quality-open : VerticalLayout {vertical-stretch:0;spacing:8px;
+                            if root.dimension==0 : VerticalLayout {vertical-stretch:0;spacing:4px;
+                                Label {text:"Triangle algorithm";}
+                                ComboBox {min-height:32px;max-height:32px;model:["Frontal-Delaunay","Delaunay","MeshAdapt"];current-index <=> root.algorithm2d;enabled:!root.busy;}
+                            }
+                            if root.dimension==1 : VerticalLayout {vertical-stretch:0;spacing:4px;
+                                Label {text:"Tetrahedron algorithm";}
+                                ComboBox {min-height:32px;max-height:32px;model:["Delaunay","Frontal","HXT"];current-index <=> root.algorithm3d;enabled:!root.busy;}
+                                Label {text:"HXT supports parallel meshing when available in your Gmsh build.";}
+                            }
+                            HorizontalLayout {vertical-stretch:0;
+                                Label {text:"Elements per full circle · 0 = off";horizontal-stretch:1;}
+                                SpinBox {min-height:32px;max-height:32px;minimum:0;maximum:1000;value <=> root.curvature;enabled:!root.busy;}
+                            }
+                            HorizontalLayout {vertical-stretch:0;
+                                Label {text:"Smoothing steps";horizontal-stretch:1;}
+                                SpinBox {min-height:32px;max-height:32px;minimum:0;maximum:100;value <=> root.smoothing;enabled:!root.busy;}
+                            }
+                            CheckBox {text:"Extend boundary sizes into domain";checked <=> root.extend;enabled:!root.busy;}
+                            if root.dimension==1 : VerticalLayout {vertical-stretch:0;spacing:6px;
+                                CheckBox {text:"Optimize tetrahedron quality";checked <=> root.optimize;enabled:!root.busy;}
+                                CheckBox {text:"Additional Netgen optimization";checked <=> root.netgen;enabled:!root.busy;}
+                                Field {label:"Optimization threshold · 0–1";value <=> root.optimize-threshold;}
+                                Label {text:"Gmsh quality threshold; this is not the solver non-orthogonality angle. Optimization does not guarantee a good CFD mesh.";}
+                            }
+                            }
+                            ToolButton {text:"Apply mesh settings";enabled:!root.busy;clicked=>{root.apply-settings();}}
+
                             Rectangle {height:1px;background:UiTheme.border;}
                             ToolButton {text:root.local-open ? "▾ Local sizing & refinement" : "▸ Local sizing & refinement";clicked=>{root.local-open=!root.local-open;}}
                             if root.local-open : VerticalLayout {vertical-stretch:0;spacing:8px;
                             Label {text:"Boundary group";}
                             ComboBox {min-height:32px;max-height:32px;vertical-stretch:0;model:root.group-names;current-index <=> root.local-group-index;enabled:!root.busy && root.group-names.length>0;selected(value)=>{root.local-target=value;}}
                             Field {label:"Local element size";value <=> root.local-size;}
-                            ToolButton {text:"Add local size";enabled:!root.busy && root.group-names.length>0;clicked=>{root.add-local();}}
+                            ToolButton {text:"Set / replace local size";enabled:!root.busy && root.group-names.length>0;clicked=>{root.add-local();}}
                             ToolButton {text:root.advanced ? "▾ Distance refinement" : "▸ Distance refinement";clicked=>{root.advanced=!root.advanced;}}
                             if root.advanced : VerticalLayout {vertical-stretch:0;
                                 spacing:7px;
                                 HorizontalLayout {vertical-stretch:0;Field {label:"Near size";value <=> root.refine-min;} Field {label:"Far size";value <=> root.refine-max;}}
-                                Field {label:"Influence distance";value <=> root.refine-distance;}
-                                ToolButton {text:"Add distance field";enabled:!root.busy;clicked=>{root.add-refinement();}}
+                                Field {label:"Fine region distance (m)";value <=> root.refine-start;}
+                                Field {label:"Transition end distance (m)";value <=> root.refine-distance;}
+                                Label {text:"Size varies from Near to Far across this distance interval. Use a wider interval for a gentler transition.";}
+                                HorizontalLayout {vertical-stretch:0;
+                                    Label {text:"Distance sampling";horizontal-stretch:1;}
+                                    SpinBox {min-height:32px;max-height:32px;minimum:10;maximum:1000;value <=> root.refine-sampling;}
+                                }
+                                ToolButton {text:"Set / replace distance field";enabled:!root.busy;clicked=>{root.add-refinement();}}
                             }
                             ToolButton {text:root.layers ? "▾ Boundary layers" : "▸ Boundary layers";enabled:root.dimension==0;clicked=>{root.layers=!root.layers;}}
                             if root.layers && root.dimension==0 : VerticalLayout {vertical-stretch:0;

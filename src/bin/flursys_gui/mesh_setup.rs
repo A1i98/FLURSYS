@@ -15,6 +15,22 @@ pub(super) fn mesh_threads(ui: &MainWindow, session: &mut WorkbenchSession) -> R
     Ok(())
 }
 
+pub(super) fn mesh_tuning(ui: &MainWindow, session: &mut WorkbenchSession) -> Result<(), String> {
+    let mut recipe = session.mesh_recipe().clone();
+    let t = &mut recipe.tuning;
+    t.algorithm_2d = match ui.get_mesh_algorithm2d() { 0=>6, 1=>5, _=>1 };
+    t.algorithm_3d = match ui.get_mesh_algorithm3d() { 0=>1, 1=>4, _=>10 };
+    t.curvature_points = ui.get_mesh_curvature().max(0) as u32;
+    t.smoothing_steps = ui.get_mesh_smoothing().max(0) as u32;
+    t.optimize = ui.get_mesh_optimize();
+    t.optimize_netgen = ui.get_mesh_netgen();
+    t.extend_boundary_sizes = ui.get_mesh_extend();
+    t.optimize_threshold = ui.get_mesh_optimize_threshold().trim().parse().map_err(|_| "Optimization threshold must be a number")?;
+    t.validate()?;
+    session.set_mesh_recipe(recipe);
+    Ok(())
+}
+
 fn mesh_configuration(ui: &MainWindow, session: &mut WorkbenchSession) -> Result<(), String> {
     let number = |value: SharedString, label: &str| {
         value
@@ -25,6 +41,7 @@ fn mesh_configuration(ui: &MainWindow, session: &mut WorkbenchSession) -> Result
             .ok_or_else(|| format!("{label} must be a finite number"))
     };
     mesh_threads(ui, session)?;
+    mesh_tuning(ui, session)?;
     session
         .set_mesh_configuration(
             if ui.get_mesh_dimension_index() == 0 {
@@ -59,6 +76,36 @@ fn group_name(state: &AppState, index: i32) -> Option<String> {
 }
 
 fn bind_grouping(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
+    let weak_apply = ui.as_weak();
+    let apply_state = state.clone();
+    ui.on_mesh_apply_settings(move || {
+        let Some(ui) = weak_apply.upgrade() else { return };
+        let mut state = apply_state.borrow_mut();
+        if state.meshing || state.solving { return; }
+        let result = (|| -> Result<_, String> {
+            let mut draft = WorkbenchSession::from_project(&state.workbench.to_project("Mesh settings")).map_err(|e|e.to_string())?;
+            mesh_configuration(&ui, &mut draft)?;
+            draft.mesh_generation_inputs().map_err(|e|e.to_string())?;
+            Ok(draft)
+        })();
+        match result {
+            Ok(draft) => {
+                let (a,b,c) = draft.mesh_sizes();
+                if let Err(e) = state.workbench.set_mesh_configuration(draft.mesh_dimension(),a,b,c,1) {
+                    state.log(e.to_string());
+                } else {
+                    state.workbench.set_mesh_cpu_threads(ui.get_wb_mesh_threads().max(0) as usize);
+                    state.workbench.set_mesh_recipe(draft.mesh_recipe().clone());
+                    state.mark_workbench_dirty();
+                    state.log("Applied meshing controls; regenerate the mesh to use them.");
+                }
+            }
+            Err(e) => state.log(format!("Mesh settings not applied: {e}")),
+        }
+        ui.set_wb_flow_feedback(state.logs.back().cloned().unwrap_or_default().into());
+        refresh_ui(&ui,&state);
+    });
+
     let weak = ui.as_weak();
     let shared = state.clone();
     ui.on_mesh_edit_condition(move |index| {
@@ -428,11 +475,15 @@ pub(super) fn bind(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
         if !length.is_finite() || length<=0.0 {
             ui.set_wb_flow_feedback("Draw a fluid domain before choosing a mesh preset".into());return;
         }
-        let size=length/match level {0=>20.0,1=>40.0,_=>80.0};
+        let mut size=length/match level {0=>20.0,1=>40.0,_=>80.0};
+        if ui.get_mesh_dimension_index()==1 {
+            let thickness=[extent.x,extent.y,extent.z].into_iter().filter(|v|*v>length*1e-10).fold(f64::INFINITY,f64::min);
+            size=size.min(thickness/3.0);
+        }
         ui.set_wb_global_size(format!("{size:.8e}").into());
         ui.set_wb_min_size(format!("{:.8e}",size*0.25).into());
         ui.set_wb_max_size(format!("{size:.8e}").into());
-        let message=format!("Mesh size draft: h={size:.4e}, min=h/4, max=h. Check inputs, then generate to apply. Preset uses the model bounding extent.");
+        let message=format!("Mesh size draft: h={size:.4e}, min=h/4, max=h. Check inputs, then generate to apply. Preset uses the model extent; 3D target is capped at one third of its smallest positive extent.");
         ui.set_wb_flow_feedback(message.clone().into());state.log(message);
         refresh_ui(&ui,&state);
     });
@@ -518,7 +569,7 @@ pub(super) fn refresh(ui: &MainWindow, state: &AppState) {
         .chain(
             r.refinements
                 .iter()
-                .map(|c| SharedString::from(format!("{} · Distance {}", c.id, c.name))),
+                .map(|c| SharedString::from(format!("{} · {} · h={:.2e}→{:.2e}, d={:.2e}→{:.2e}", c.id, c.name, c.size_min,c.size_max,c.distance_min,c.distance_max))),
         )
         .chain(r.boundary_layers.iter().map(|c| {
             SharedString::from(format!(

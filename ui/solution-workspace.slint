@@ -4,6 +4,15 @@ import {UiTheme} from "components.slint";
 component Tool inherits Button {min-width:0px;min-height:30px;max-height:34px;}
 component Label inherits Text {vertical-stretch:0;font-size:11px;color:UiTheme.text-muted;wrap:word-wrap;}
 export component SolutionWorkspace inherits Rectangle {
+    in-out property <int> plane-field;
+    in-out property <bool> plane-vectors;
+    in-out property <bool> plane-edges;
+    in-out property <bool> plane-normalize;
+    in-out property <bool> plane-normal-marks;
+    in-out property <string> plane-min;
+    in-out property <string> plane-max;
+    callback style-plane();
+
     in-out property <int> chart-kind;
     callback refresh-chart();
     in-out property <bool> continuity:true;
@@ -36,10 +45,14 @@ export component SolutionWorkspace inherits Rectangle {
     in property <string> readiness;
     in property <string> log;
     in property <string> material;
+    in property <bool> paused;
+    in property <bool> three-d;
+    callback control(int);
     in property <bool> busy;
     in property <bool> can-run;
     in property <float> progress;
     in-out property <int> iterations;
+    in-out property <int> checkpoint-every:100;
     in-out property <int> cpu-threads;
     in property <int> cpu-limit:1;
     in-out property <string> velocity-relaxation;
@@ -57,15 +70,18 @@ export component SolutionWorkspace inherits Rectangle {
         HorizontalLayout {height:34px;spacing:8px;
             Text {text:"Solution";color:UiTheme.text;font-size:20px;font-weight:700;vertical-alignment:center;}
             Rectangle {horizontal-stretch:1;}
-            if root.busy : Tool {text:"■ Cancel";clicked=>{root.cancel();}}
+            Tool {text:"Load restart…";enabled:root.can-run && !root.busy;clicked=>{root.control(2);}}
+            Tool {text:"Initialize · U=0, p=0";enabled:root.can-run && !root.busy;clicked=>{root.control(0);}}
+            Tool {text:root.paused ? "▶ Resume" : "Ⅱ Pause";enabled:root.busy;clicked=>{root.control(1);}}
+            Tool {text:"■ Stop";enabled:root.busy;clicked=>{root.cancel();}}
             Tool {text:root.busy ? "Solving…" : "▶ Run solver";enabled:root.can-run && !root.busy;clicked=>{root.run();}}
         }
-        Text {text:root.monitor;color:UiTheme.text;font-size:12px;max-height:28px;overflow:elide;vertical-stretch:0;}
+        Text {text:root.paused ? "PAUSED · solver state retained · use Resume to continue" : root.monitor;color:UiTheme.text;font-size:12px;max-height:28px;overflow:elide;vertical-stretch:0;}
         HorizontalLayout {spacing:10px;
             VerticalLayout {spacing:8px;
                 HorizontalLayout {height:30px;spacing:6px;
                     Tool {text:!root.show-log && !root.show-plane ? "● Convergence" : "Convergence";clicked=>{root.show-log=false;root.show-plane=false;}}
-                    Tool {text:root.show-plane ? "● Plane vectors" : "Plane vectors";clicked=>{root.show-log=false;root.show-plane=true;}}
+                    Tool {text:root.show-plane ? "● Plane fields" : "Plane fields";clicked=>{root.show-log=false;root.show-plane=true;}}
                     Tool {text:root.show-log ? "● Solver log" : "Solver log";clicked=>{root.show-log=true;root.show-plane=false;}}
                     Rectangle {horizontal-stretch:1;}
                     ComboBox {model:root.show-plane ? ["Plane CSV","Plane PNG","Plane SVG"] : ["History CSV","Chart PNG","Chart SVG"];current-index <=> root.export-format;min-width:0px;preferred-width:125px;max-height:30px;}
@@ -100,9 +116,10 @@ export component SolutionWorkspace inherits Rectangle {
                         }
                     }
                     if root.show-plane : Image {source:root.plane-image;width:parent.width;height:parent.height;image-fit:contain;}
-                    if root.show-plane : Text {text:root.plane-status;x:12px;y:8px;width:parent.width - 24px;max-height:70px;color:UiTheme.text;wrap:word-wrap;}
+
                     if root.show-log : TextEdit {text:root.log;read-only:true;width:parent.width;height:parent.height;}
                 }
+                if root.show-plane : Label {text:root.plane-status;max-height:38px;overflow:elide;}
                 if !root.show-log && !root.show-plane : Label {text:root.readout;max-height:32px;overflow:elide;color:UiTheme.text;font-size:10px;}
                 if !root.show-log && !root.show-plane : Label {text:root.caption;max-height:38px;overflow:elide;font-size:10px;}
                 HorizontalLayout {height:16px;spacing:8px;
@@ -115,7 +132,9 @@ export component SolutionWorkspace inherits Rectangle {
             Rectangle {width:300px;background:UiTheme.sidebar;border-color:UiTheme.border;border-width:1px;border-radius:4px;
                 panel:=ScrollView {width:parent.width;height:parent.height;horizontal-scrollbar-policy:always-off;
                     VerticalLayout {width:panel.visible-width;padding:12px;spacing:9px;height:self.preferred-height;x:0px;y:0px;
-                        PlaneMonitorPanel {names:root.plane-names;index <=> root.plane-index;every <=> root.plane-every;record <=> root.plane-enabled;
+                        if root.show-plane : PlaneMonitorPanel {names:root.plane-names;index <=> root.plane-index;every <=> root.plane-every;record <=> root.plane-enabled;
+                            field <=> root.plane-field;vectors <=> root.plane-vectors;edges <=> root.plane-edges;normalize <=> root.plane-normalize;normal-marks <=> root.plane-normal-marks;range-min <=> root.plane-min;range-max <=> root.plane-max;
+                            style=>{root.style-plane();}export(i)=>{root.export-plane(i);}
                             busy:root.busy;details:root.plane-details;status:root.plane-status;
                             select(i)=>{root.select-plane(i);}apply=>{root.apply-plane();}view=>{root.view-plane();}
                         }
@@ -129,11 +148,14 @@ export component SolutionWorkspace inherits Rectangle {
                         Label {text:"CPU worker threads (0 = automatic)";}
                         SpinBox {max-height:32px;value <=> root.cpu-threads;minimum:0;maximum:root.cpu-limit;enabled:!root.busy;}
                         Label {text:"Available logical CPUs: "+root.cpu-limit+". Parallel work currently covers the velocity components.";}
+                        Label {text:"Save restart fields every N iterations (0 = off)";}
+                        SpinBox {max-height:32px;value <=> root.checkpoint-every;minimum:0;maximum:1000000;enabled:!root.busy;}
                         Label {text:"Maximum outer iterations";}
                         SpinBox {max-height:32px;value <=> root.iterations;minimum:1;maximum:1000000;enabled:!root.busy;}
                         Label {text:"Momentum convection";}
                         ComboBox {model:["First-order upwind","Limited linear upwind"];current-index <=> root.convection-index;enabled:!root.busy;max-height:32px;min-width:0px;}
                         Label {text:"Pressure: PCG + incomplete Cholesky (IC0)";}
+                        if root.three-d : Label {text:"3D: Gauss pressure gradient · limited non-orthogonal diffusion";}
                         Label {text:"Velocity relaxation αu";}
                         LineEdit {max-height:32px;text <=> root.velocity-relaxation;min-width:0px;enabled:!root.busy;}
                         Label {text:"Pressure relaxation αp";}

@@ -247,6 +247,8 @@ struct AppState {
     /// panels; new workspace save/load routes through this document only.
     workbench_project: WorkbenchProject,
     workspace_path: Option<PathBuf>,
+    cad_reload_generation: u64,
+    active_plane_recording_folder: Option<PathBuf>,
     workbench_dirty: bool,
     workbench_autosave_needed: bool,
     pending_recovery_workspace: Option<PathBuf>,
@@ -376,6 +378,8 @@ impl AppState {
             workbench: WorkbenchSession::new(),
             workbench_project: WorkbenchProject::blank("Untitled Project"),
             workspace_path: None,
+            cad_reload_generation: 0,
+            active_plane_recording_folder: None,
             workbench_dirty: true,
             workbench_autosave_needed: false,
             pending_recovery_workspace: None,
@@ -836,8 +840,13 @@ impl AppState {
             WorkbenchSession::from_project(&document).map_err(|error| error.to_string())?;
         let recovery_available =
             flursys::workbench::recovery_is_newer(&workspace).map_err(|error| error.to_string())?;
+        self.cad_reload_generation = self.cad_reload_generation.wrapping_add(1);
+        self.current_step=0;
+        self.show_mesh=false;
         self.workbench_project = document;
         self.workbench = session;
+        self.workbench_jobs.set_restart(None);
+        self.active_plane_recording_folder=None;
         self.workspace_path = Some(workspace.clone());
         self.face_sketch_host = None;
         self.face_sketch_start = None;
@@ -881,8 +890,13 @@ impl AppState {
             .map_err(|error| error.to_string())?;
         let session =
             WorkbenchSession::from_project(&document).map_err(|error| error.to_string())?;
+        self.cad_reload_generation = self.cad_reload_generation.wrapping_add(1);
+        self.current_step=0;
+        self.show_mesh=false;
         self.workbench_project = document;
         self.workbench = session;
+        self.workbench_jobs.set_restart(None);
+        self.active_plane_recording_folder=None;
         self.workspace_path = Some(workspace);
         self.face_sketch_host = None;
         self.face_sketch_start = None;
@@ -923,6 +937,12 @@ impl AppState {
         )
         .map_err(|error| error.to_string())?;
         if let Some(record) = finalized {
+            if let Some(folder)=self.active_plane_recording_folder.take().and_then(|p|p.strip_prefix(&workspace).ok().map(Path::to_path_buf)) {
+                let path=workspace.join(&record.report_path);
+                let mut report:serde_json::Value=serde_json::from_slice(&std::fs::read(&path).map_err(|e|e.to_string())?).map_err(|e|e.to_string())?;
+                report["plane_recording_folder"]=serde_json::to_value(folder).map_err(|e|e.to_string())?;
+                result_analysis::atomic_text(&path,&serde_json::to_string_pretty(&report).map_err(|e|e.to_string())?)?;
+            }
             if record.solution_path.is_some() {
                 self.activate_current_solution(&record.id)?;
             }
@@ -1057,6 +1077,9 @@ impl AppState {
                         {
                             self.post.boundary_summary =
                                 result_analysis::boundary_summary(&reports);
+                            if let Some(balance)=report.get("conservation").and_then(|v|serde_json::from_value::<flursys::workbench::boundary_reports::ConservationReport>(v.clone()).ok()) {
+                                self.post.boundary_summary=balance.summary()+"\n\n"+&self.post.boundary_summary;
+                            }
                             self.post.boundary_reports = reports;
                         }
                     }
@@ -1720,6 +1743,7 @@ fn apply_axis_constraint(state: &mut AppState, axis: SketchAxis) {
 /// the top-level event loop.
 pub fn run() -> Result<(), slint::PlatformError> {
     let ui = MainWindow::new()?;
+    slint::set_xdg_app_id("flursys")?;
     let state = Rc::new(RefCell::new(AppState::new()));
     write_project_to_ui(&ui, &state.borrow().project);
     {
@@ -2916,28 +2940,26 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
         let Some(ui) = weak_ui.upgrade() else {
             return;
         };
-        let legacy_file = rfd::FileDialog::new()
-            .add_filter("Legacy FLURSYS Project", &["json"])
-            .set_title("Import Legacy FLURSYS Project (Cancel to open workspace)")
+        let selected = rfd::FileDialog::new()
+            .add_filter("FLURSYS project", &["json"])
+            .set_title("Open FLURSYS project.json (Cancel to choose a folder)")
             .pick_file();
-        if let Some(path) = legacy_file {
-            if !flursys::is_legacy_project_path(&path) {
+        let workspace = if let Some(path) = selected {
+            if flursys::is_legacy_project_path(&path) {
+                let mut state = open_native_state.borrow_mut();
+                if let Err(error) = state.queue_legacy_import(path) { state.log(error); }
+                refresh_ui(&ui, &state);
                 return;
             }
-            let mut state = open_native_state.borrow_mut();
-            match state.queue_legacy_import(path) {
-                Ok(()) => {
-                    refresh_ui(&ui, &state);
-                }
+            match workspace_from_project_file(&path) {
+                Ok(folder) => folder,
                 Err(error) => {
-                    state.log(error);
-                    refresh_ui(&ui, &state);
+                    let mut state=open_native_state.borrow_mut();state.log(error);refresh_ui(&ui,&state);return;
                 }
             }
-            return;
-        }
-        let Some(workspace) = choose_workspace_folder("Open FLURSYS Workspace") else {
-            return;
+        } else {
+            let Some(folder)=choose_workspace_folder("Open FLURSYS Workspace") else{return;};
+            folder
         };
         let replacement = PendingProjectReplacement::OpenWorkspace(workspace);
         let mut state = open_native_state.borrow_mut();
@@ -4096,6 +4118,7 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
                 .max()
                 .unwrap_or(0)
                 + 1;
+            recipe.local_sizes.retain(|c| c.targets != vec![MeshControlTarget::NamedSelection(target.clone())]);
             recipe.local_sizes.push(LocalMeshSize {
                 id,
                 name: format!("local-{target}"),
@@ -4121,12 +4144,15 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
         let min = parse_number(ui.get_wb_refine_min().as_str(), 0.0);
         let max = parse_number(ui.get_wb_refine_max().as_str(), 0.0);
         let distance = parse_number(ui.get_wb_refine_distance().as_str(), 0.0);
-        if target.is_empty() || state.workbench.named_selections().get(&target).is_none() || !(min > 0.0 && min <= max && distance > 0.0) {
-            state.log("Threshold refinement requires an existing Named Selection, 0 < min ≤ max, and positive distance.");
+        let start = parse_number(ui.get_mesh_refine_start().as_str(), -1.0);
+        let sampling = ui.get_mesh_refine_sampling().clamp(10,1000) as u32;
+        if target.is_empty() || state.workbench.named_selections().get(&target).is_none() || !(min.is_finite() && max.is_finite() && distance.is_finite() && start.is_finite() && min > 0.0 && min <= max && start >= 0.0 && distance > start) {
+            state.log("Threshold refinement requires an existing Named Selection, 0 < min ≤ max, and 0 ≤ fine-region distance < transition-end distance.");
         } else {
             let mut recipe = state.workbench.mesh_recipe().clone();
             let id = recipe.local_sizes.iter().map(|c| c.id).chain(recipe.refinements.iter().map(|c| c.id)).chain(recipe.boundary_layers.iter().map(|c| c.id)).max().unwrap_or(0) + 1;
-            recipe.refinements.push(ThresholdRefinement { id, name: format!("threshold-{target}"), targets: vec![MeshControlTarget::NamedSelection(target)], sampling: 64, size_min: min, size_max: max, distance_min: 0.0, distance_max: distance, enabled: true });
+            recipe.refinements.retain(|c| c.targets != vec![MeshControlTarget::NamedSelection(target.clone())]);
+            recipe.refinements.push(ThresholdRefinement { id, name: format!("threshold-{target}"), targets: vec![MeshControlTarget::NamedSelection(target)], sampling, size_min: min, size_max: max, distance_min: start, distance_max: distance, enabled: true });
             state.workbench.set_mesh_recipe(recipe);
             state.mark_workbench_dirty();
             state.log("Added persisted Distance/Threshold refinement; current mesh is outdated.");
@@ -4210,11 +4236,13 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
         let inputs = (|| -> Result<_, String> {
             let mut draft = WorkbenchSession::from_project(&state.workbench.to_project("Mesh generation")).map_err(|e|e.to_string())?;
             mesh_setup::mesh_threads(&ui, &mut draft)?;
+            mesh_setup::mesh_tuning(&ui, &mut draft)?;
             draft.set_mesh_configuration(dimension, global_size, min_size, max_size, 1).map_err(|e|e.to_string())?;
-            draft.mesh_generation_inputs().map_err(|e|e.to_string())
+            let (export,options) = draft.mesh_generation_inputs().map_err(|e|e.to_string())?;
+            Ok((export,options,draft.mesh_recipe().clone()))
         })();
         match inputs {
-            Ok((export, options)) => {
+            Ok((export, options, recipe)) => {
                 let threads = options.threads;
                 let effective_threads = options.effective_threads();
                 match state.workbench_jobs.start_mesh(export, options) {
@@ -4231,12 +4259,14 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
                             state.log(format!("Cannot apply mesh settings: {error}"));
                         } else {
                             state.workbench.set_mesh_cpu_threads(threads);
+                            let tuning = recipe.tuning.clone();
+                            state.workbench.set_mesh_recipe(recipe);
                             state.mark_workbench_dirty();
                             state.meshing = true;
                             state.mesh_progress = 0.0;
                             state.mesh_stage = "Starting Gmsh".into();
                             state.mesh_pan_anchor = None;
-                            state.log(format!("Gmsh generation started ({dimension:?}, global size {global_size}, up to {effective_threads} CPU threads)."));
+                            state.log(format!("Gmsh generation started ({dimension:?}, target {global_size}, bounds [{min_size}, {max_size}], algorithms {}/{}, curvature {}, smoothing {}, optimize {}/{}, up to {effective_threads} CPU threads).", tuning.algorithm_2d, tuning.algorithm_3d, tuning.curvature_points, tuning.smoothing_steps, tuning.optimize, tuning.optimize_netgen));
                         }
                     }
                     Err(error) => state.log(format!("Cannot start meshing: {error}")),
@@ -4372,6 +4402,7 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
                 return;
             }
         };
+        state.log(flursys::workbench::diagnostics::mesh_preflight(&case.mesh).summary());
         let cells = case.mesh.cell_count();
         let cpu_workers = if case.solver.threads == 0 {
             std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1)
@@ -4381,8 +4412,13 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
         let stamp=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos();
         let folder=state.workspace_path.as_ref().unwrap().join("monitors").join(format!("solve-{stamp}"));
         if planes.iter().any(|p|p.enabled) {state.log(format!("Plane vectors will be recorded under {} (SIMPLE iterations, not physical time).",folder.display()));}
+        state.workbench_jobs.set_checkpoint_interval(ui.get_wb_checkpoint_every().max(0) as usize);
+        if ui.get_wb_checkpoint_every()>0 {state.log(format!("Field restart checkpoint: {} (periodic overwrite and final save).",folder.join("checkpoint.json").display()));} else {state.log("Automatic field checkpoints disabled.");}
+        let recording_folder=folder.clone();
+        state.active_plane_recording_folder=None;
         match state.workbench_jobs.start_solve_with_planes(case,planes,folder) {
             Ok(()) => {
+                state.active_plane_recording_folder=Some(recording_folder);
                 state.solving = true;
                 state.log(format!(
                     "Unstructured incompressible solve started on {cells} cells with {cpu_workers} CPU worker thread(s)."
@@ -5251,14 +5287,24 @@ fn bc_kind_label(condition: IncompressibleBoundaryCondition) -> &'static str {
 
 fn push_workbench_defaults(ui: &MainWindow, session: &WorkbenchSession) {
     let (global_size, min_size, max_size) = session.mesh_sizes();
+    let t = &session.mesh_recipe().tuning;
+    ui.set_mesh_algorithm2d(match t.algorithm_2d { 6=>0, 5=>1, _=>2 });
+    ui.set_mesh_algorithm3d(match t.algorithm_3d { 1=>0, 4=>1, _=>2 });
+    ui.set_mesh_curvature(t.curvature_points as i32);
+    ui.set_mesh_smoothing(t.smoothing_steps as i32);
+    ui.set_mesh_optimize(t.optimize);
+    ui.set_mesh_netgen(t.optimize_netgen);
+    ui.set_mesh_extend(t.extend_boundary_sizes);
+    ui.set_mesh_optimize_threshold(t.optimize_threshold.to_string().into());
+
     ui.set_mesh_dimension_index(if matches!(session.mesh_dimension(), MeshDimension::TwoD) {
         0
     } else {
         1
     });
-    ui.set_wb_global_size(SharedString::from(format!("{global_size:.4}")));
-    ui.set_wb_min_size(SharedString::from(format!("{min_size:.4}")));
-    ui.set_wb_max_size(SharedString::from(format!("{max_size:.4}")));
+    ui.set_wb_global_size(SharedString::from(format!("{global_size}")));
+    ui.set_wb_min_size(SharedString::from(format!("{min_size}")));
+    ui.set_wb_max_size(SharedString::from(format!("{max_size}")));
     let material = session.material();
     ui.set_material_density(SharedString::from(format!("{}", material.density)));
     ui.set_material_viscosity(SharedString::from(format!(
@@ -5398,6 +5444,13 @@ fn sync_solver_panel(ui: &MainWindow, session: &mut WorkbenchSession) -> Result<
     Ok(())
 }
 
+fn workspace_from_project_file(path: &Path) -> Result<PathBuf,String> {
+    if path.file_name().is_none_or(|name|name != flursys::workbench::PROJECT_DOCUMENT_FILE) {
+        return Err("Select the workspace project.json file, or cancel and choose the workspace folder. This file is not a recognized legacy project.".into());
+    }
+    path.parent().map(Path::to_path_buf).ok_or_else(||"The project file has no workspace folder".into())
+}
+
 fn mesh_inspector_summary(
     mesh: &flursys::UnstructuredMesh,
     cache: &flursys::MeshRenderCache,
@@ -5418,7 +5471,7 @@ fn mesh_inspector_summary(
         maximum,
         threshold,
         bad_cells.len(),
-    )
+    ) + &format!("\nPreflight: max non-orth {:.2}° · aspect {:.3e} · centre-line skew {:.3e}\nCell measure {:.3e} .. {:.3e}",mesh.quality().max_non_orthogonality_degrees,mesh.quality().max_aspect_ratio,mesh.quality().max_skewness,mesh.quality().min_cell_volume,mesh.quality().max_cell_volume)
 }
 
 fn mesh_summary_text(session: &WorkbenchSession) -> String {
@@ -5725,6 +5778,7 @@ fn recent_project_labels(state: &AppState) -> Vec<SharedString> {
 }
 
 fn refresh_ui(ui: &MainWindow, state: &AppState) {
+    ui.set_current_step(state.current_step as i32);
     if state.current_step == 0 { ui.set_geometry_cad_view_3d(true); }
     cad::refresh(ui, state);
     ui.set_project_loaded(state.project_loaded);
@@ -6625,6 +6679,12 @@ fn result_colormap_label(index: i32) -> &'static str {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn modern_project_file_resolves_to_its_workspace_instead_of_being_ignored() {
+        assert_eq!(super::workspace_from_project_file(std::path::Path::new("/tmp/example/project.json")).unwrap(),std::path::PathBuf::from("/tmp/example"));
+        assert!(super::workspace_from_project_file(std::path::Path::new("/tmp/example/random.json")).is_err());
+    }
     use super::*;
     use flursys::cases::{BackwardStepCase, CylinderCase};
     use flursys::{

@@ -255,6 +255,7 @@ impl Gpu {
                 v: v(p.y),
                 enabled: false,
                 every: 10,
+                display:Default::default(),
             });
         };
         for (name, plane) in [
@@ -279,7 +280,7 @@ impl Gpu {
         let selected = if self.app.dialog.is_some() || self.app.session.active_sketch.is_some() {
             None
         } else {
-            self.app.session.selection.iter().find_map(|s| match s {
+            self.app.session.selection.iter().rev().find_map(|s| match s {
                 cad_engine::Sel::Plane { name } => planes
                     .iter()
                     .find(|p| p.name == *name)
@@ -389,6 +390,7 @@ fn worker(rx: Receiver<Request>, tx: SyncSender<Reply>) {
     let mut publish = Vec::new();
     let mut catalog = None;
     let mut catalog_input = None;
+    let mut catalog_model = None;
     #[cfg(debug_assertions)]
     let mut capture = std::env::var_os("FLURSYS_CAD_DEBUG_CAPTURE");
     loop {
@@ -459,7 +461,9 @@ fn worker(rx: Receiver<Request>, tx: SyncSender<Reply>) {
             gpu.app.session.selection.clone(),
             gpu.app.dialog.is_some() || gpu.app.session.active_sketch.is_some(),
         );
-        if catalog_input.as_ref() != Some(&key) {
+        let evaluated_model = gpu.app.session.model.state();
+        if catalog_input.as_ref() != Some(&key) || catalog_model.as_ref().is_none_or(|old| !std::sync::Arc::ptr_eq(old,&evaluated_model)) {
+            catalog_model=Some(evaluated_model);
             catalog_input = Some(key);
             let planes = gpu.plane_catalog();
             if catalog.as_ref() != Some(&planes) {
@@ -663,8 +667,10 @@ pub(super) fn bind(ui: &MainWindow, state: &Rc<RefCell<AppState>>) -> Timer {
             return;
         };
         let mut state = shared.borrow_mut();
-        if project != state.workbench_project.project_id {
-            project = state.workbench_project.project_id.clone();
+        let document_generation=format!("{}:{}",state.workbench_project.project_id,state.cad_reload_generation);
+        if project != document_generation {
+            project = document_generation;
+            ui.set_examples_open(false);
             let _ = tx.send(Request::Project(
                 project.clone(),
                 state.workbench_project.cad_document.clone(),

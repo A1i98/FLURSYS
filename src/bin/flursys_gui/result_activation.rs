@@ -61,7 +61,8 @@ impl AppState {
                 solution,
                 self.workbench.material().density,
             );
-            self.post.boundary_summary = result_analysis::boundary_summary(&reports);
+            let balance=flursys::workbench::boundary_reports::conservation_report(&mesh.mesh,solution,self.workbench.material().density);
+            self.post.boundary_summary = balance.summary()+"\n\n"+&result_analysis::boundary_summary(&reports);
             self.post.boundary_reports = reports;
         }
         Ok(())

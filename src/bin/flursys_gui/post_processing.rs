@@ -14,6 +14,10 @@ pub(super) struct State {
     pub profile_label: String,
     pub boundary_summary: String,
     pub boundary_reports: Vec<flursys::workbench::boundary_reports::BoundaryFlowReport>,
+    pub plane_frames: Vec<PathBuf>,
+    pub plane_frame: usize,
+    pub plane_playing: bool,
+    pub plane_tick: Option<std::time::Instant>,
     pub playing: bool,
     pub phase: f64,
     pub probes: Vec<ResultProbe>,
@@ -40,6 +44,8 @@ impl State {
         self.metric_histories = Default::default();
         self.continuity_full.clear();
         self.plane_samples.clear();
+        self.plane_frames.clear();
+        self.plane_playing = false;
         *self.base.get_mut() = None;
     }
     pub fn start_solve(&mut self) {
@@ -49,6 +55,8 @@ impl State {
         self.metric_histories = Default::default();
         self.continuity_full.clear();
         self.plane_samples.clear();
+        self.plane_frames.clear();
+        self.plane_playing = false;
         self.playing = false;
     }
     pub fn finish_solve(&mut self) {
@@ -386,6 +394,7 @@ pub(super) fn bind(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
             if let Err(e) = state.activate_persisted_result(&id) {
                 feedback(&ui, &mut state, e);
             }
+            plane_monitors::refresh_selected(&ui,&mut state);
             state.show_mesh = false;
             state.show_geometry_3d = false;
             state.current_step = 4;
@@ -465,6 +474,7 @@ pub(super) fn bind(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
             9 => ("line-profile.svg", "svg"),
             10 => ("boundary-flows.csv", "csv"),
             11 => ("convergence.svg", "svg"),
+            12 => ("field-statistics.csv", "csv"),
             _ => ("solution.vtk", "vtk"),
         };
         if kind == 1 {
@@ -498,6 +508,7 @@ pub(super) fn bind(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
             match kind {
                 0 => save_png(&path, &ui.get_visualization_image()),
                 6 => save_png(&path, &ui.get_residual_image()),
+                12 => result_analysis::atomic_text(&path,&result_analysis::engineering_summary_csv(&state)?),
                 7 => result_analysis::atomic_text(&path,&result_analysis::report(&state)?),
                 10 => result_analysis::atomic_text(&path,&result_analysis::boundary_csv(&state.post.boundary_reports)?),
                 11 => result_analysis::atomic_text(&path,&convergence_plot::build(&state,&convergence_plot::Options::from_ui(&ui)).svg),
@@ -597,6 +608,18 @@ pub(super) fn bind(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
 }
 
 pub(super) fn tick(ui: &MainWindow, state: &mut AppState) -> bool {
+    ui.set_solver_paused(state.solving && state.workbench_jobs.is_paused());
+    if state.post.plane_playing && state.current_step == 4 && ui.get_post_tab() == 5 {
+        let now = std::time::Instant::now();
+        if state.post.plane_tick.is_none_or(|t| now.duration_since(t).as_millis() >= (1000 / ui.get_flow_plane_fps().max(1)) as u128) {
+            state.post.plane_tick = Some(now);
+            if state.post.plane_frame + 1 < state.post.plane_frames.len() {
+                state.post.plane_frame += 1;
+            } else { state.post.plane_playing = false; }
+            plane_monitors::show_latest(ui, state);
+        }
+    }
+
     let mut changed = false;
     if let Some(rx) = state.post.export.take() {
         match rx.try_recv() {
@@ -652,7 +675,7 @@ pub(super) fn tick(ui: &MainWindow, state: &mut AppState) -> bool {
 }
 
 pub(super) fn refresh(ui: &MainWindow, state: &AppState) {
-    if state.current_step==3 {plane_monitors::show_latest(ui,state);}
+    if matches!(state.current_step,3|4) {plane_monitors::show_latest(ui,state);}
     if state.current_step==3 {convergence_plot::refresh(ui,state);}else{ui.set_continuity_chart_caption(chart_caption(state, ui.get_wb_chart_kind()).into());}
     ui.set_post_has_result(state.active_result().is_some());
     ui.set_post_is_3d(
@@ -857,6 +880,28 @@ mod tests {
         std::fs::write(format!("/tmp/flursys-post-{w}-{name}.ppm"), ppm).unwrap();
         assert!(ui.get_post_has_result());
     }
+    #[test]
+    fn archived_report_preserves_saved_settings_and_exports_statistics() {
+        let folder=tempfile::tempdir().unwrap();
+        let mut state=AppState::new();
+        let record=state.workbench_project.next_run(flursys::RunStatus::Converged);
+        let path=folder.path().join(&record.report_path);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path,r#"{"material":{"density":1234.5},"solver_version":"fixture-version","conservation":{"net_mass_flux":0.0}}"#).unwrap();
+        state.workbench_project.runs.push(record);
+        state.workspace_path=Some(folder.path().to_path_buf());
+        state.install_result_dataset(dataset()).unwrap();
+        let html=result_analysis::report(&state).unwrap();
+        assert!(html.contains("1234.5"));assert!(html.contains("fixture-version"));
+        assert!(html.contains("Conservative mass balance"));assert!(html.contains("Result mesh quality"));
+        assert!(!html.contains("Archived run settings unavailable"));
+        let csv=result_analysis::engineering_summary_csv(&state).unwrap();
+        assert!(csv.starts_with("quantity,minimum,maximum,volume_weighted_mean\n"));
+        assert!(csv.lines().count()>4);
+        std::fs::remove_file(path).unwrap();
+        assert!(result_analysis::report(&state).unwrap().contains("Archived run settings unavailable"));
+    }
+
     #[test]
     fn workspace_contours_animation_probes_exports_and_layout() {
         let window = MinimalSoftwareWindow::new(RepaintBufferType::NewBuffer);
