@@ -137,14 +137,9 @@ fn bind_grouping(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
             }
             state.mark_workbench_dirty();
         }
-        ui.set_mesh_entity_mode(mode);
+        ui.set_mesh_entity_mode(mode.clamp(0,3));
         state.wb_selected_targets.clear();
         state.geometry_editor.selection.clear();
-        if dimension == MeshDimension::TwoD {
-            let (yaw, pitch) = geometry_view_angles(2);
-            state.geometry_yaw = yaw;
-            state.geometry_pitch = pitch;
-        }
         show_geometry(&ui, &mut state, true);
         refresh_ui(&ui, &state);
     });
@@ -161,14 +156,21 @@ fn bind_grouping(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
         };
         let target = pick_canonical_geometry_target(
             state.workbench.geometry(),
-            state.geometry_yaw,
-            state.geometry_pitch,
-            state.geometry_zoom,
+            state.view_3d,
             point,
             ui.get_mesh_entity_mode(),
         );
         if let Some(target) = target {
             select_tree_geometry_target(&mut state, target, additive);
+            if state.current_step==2 {
+                let name=state.workbench.named_selections().iter().find(|g|g.targets.contains(&target)).map(|g|g.name.clone());
+                if let Some(name)=name {
+                    if let Some(index)=state.patch_names.iter().position(|p|p==&name) {
+                        ui.set_patch_index(index as i32);push_boundary_fields(&ui,&state.workbench,&name);
+                        state.selected_tree=Some(TreeSelection {kind:TREE_KIND_PATCH,payload:index as i32});
+                    }
+                }
+            }
         } else if !additive {
             state.wb_selected_targets.clear();
             state.geometry_editor.selection.clear();
@@ -273,17 +275,31 @@ pub(super) fn bind(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
     ui.on_mesh_view_drag(move |x, y, px, py, w, h| {
         let Some(ui) = weak.upgrade() else { return };
         let mut state = shared.borrow_mut();
-        if state.show_geometry_3d {
-            if state.workbench.mesh_dimension() == MeshDimension::ThreeD {
+        if state.show_geometry_3d
+            || (state.show_mesh && state.workbench.mesh_dimension() == MeshDimension::ThreeD)
+        {
+            if state.workbench.mesh_dimension() == MeshDimension::ThreeD || state.workbench.geometry().bodies().next().is_some() {
                 if state.geometry_drag_anchor.is_none() {
                     state.geometry_drag_anchor =
-                        Some((px, py, state.geometry_yaw, state.geometry_pitch));
+                        Some((px, py, state.view_3d.yaw, state.view_3d.pitch));
                 }
                 if let Some((sx, sy, yaw, pitch)) = state.geometry_drag_anchor {
-                    state.geometry_yaw = yaw + (x - sx) * 0.012;
-                    state.geometry_pitch = (pitch + (y - sy) * 0.008).clamp(-1.55, 1.55);
+                    let scale = viewport::preview_scale(w, h);
+                    state
+                        .view_3d
+                        .orbit_from(yaw, pitch, (x - sx) / scale, (y - sy) / scale);
+                    state.geometry_view_axis = 7;
                 }
                 refresh_ui(&ui, &state);
+            } else {
+                if state.mesh_pan_anchor.is_none_or(|a|a.0!=px || a.1!=py) {
+                    state.mesh_pan_anchor=Some((px,py,state.view_3d.pan.0,state.view_3d.pan.1));
+                }
+                if let Some((_,_,cx,cy))=state.mesh_pan_anchor {
+                    let scale=f64::from(viewport::preview_scale(w,h));
+                    state.view_3d.pan=(cx+f64::from(x-px)/scale,cy+f64::from(y-py)/scale);
+                }
+                refresh_ui(&ui,&state);
             }
             return;
         }
@@ -317,8 +333,10 @@ pub(super) fn bind(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
     ui.on_mesh_view_zoom(move |delta| {
         let Some(ui) = weak.upgrade() else { return };
         let mut state = shared.borrow_mut();
-        if state.show_geometry_3d {
-            state.geometry_zoom = (state.geometry_zoom * (-delta * 0.0015).exp()).clamp(0.2, 3.0);
+        if state.show_geometry_3d
+            || (state.show_mesh && state.workbench.mesh_dimension() == MeshDimension::ThreeD)
+        {
+            state.view_3d.zoom_by(delta);
             refresh_ui(&ui, &state);
             return;
         }
@@ -340,16 +358,10 @@ pub(super) fn bind(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
     ui.on_mesh_view_fit(move || {
         let Some(ui) = weak.upgrade() else { return };
         let mut state = shared.borrow_mut();
-        if state.show_geometry_3d {
-            state.geometry_zoom = 1.0;
-            let axis = if state.workbench.mesh_dimension() == MeshDimension::TwoD {
-                2
-            } else {
-                3
-            };
-            let (yaw, pitch) = geometry_view_angles(axis);
-            state.geometry_yaw = yaw;
-            state.geometry_pitch = pitch;
+        if state.show_geometry_3d
+            || (state.show_mesh && state.workbench.mesh_dimension() == MeshDimension::ThreeD)
+        {
+            state.view_3d.fit();
             state.geometry_drag_anchor = None;
             refresh_ui(&ui, &state);
             return;
@@ -428,6 +440,7 @@ pub(super) fn bind(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
 
 pub(super) fn refresh(ui: &MainWindow, state: &AppState) {
     ui.set_mesh_show_geometry(state.show_geometry_3d);
+    ui.set_mesh_spatial_view(if state.show_geometry_3d {state.workbench.geometry().bodies().next().is_some()} else {state.workbench.mesh_dimension()==MeshDimension::ThreeD});
     let local_index = state
         .workbench
         .patch_names()
@@ -628,9 +641,7 @@ mod tests {
             let s = state.borrow();
             render::project_measurement(
                 s.workbench.geometry(),
-                s.geometry_yaw,
-                s.geometry_pitch,
-                s.geometry_zoom,
+                s.view_3d,
                 &[
                     Vec3::new(0.5, 1.0, 0.0),
                     Vec3::new(0.0, 0.5, 0.0),
@@ -743,4 +754,67 @@ mod tests {
             2
         );
     }
+    #[test]
+    fn mesh_and_setup_pointer_navigation_and_entity_filters() {
+        use slint::platform::{PointerEventButton,WindowEvent};
+        let window=MinimalSoftwareWindow::new(RepaintBufferType::NewBuffer);
+        slint::platform::set_platform(Box::new(SoftwarePlatform(window.clone()))).unwrap();
+        let ui=MainWindow::new().unwrap();
+        let state=Rc::new(RefCell::new(AppState::new()));
+        state.borrow_mut().project_loaded=true;
+        state.borrow_mut().workbench.add_rectangle(1.0,1.0).unwrap();
+        super::super::bind_callbacks(&ui,&state);
+        super::super::flow_setup::bind(&ui,&state);
+        cad::bind(&ui,&state);
+        ui.show().unwrap();window.set_size(slint::PhysicalSize::new(1440,1000));
+        let drag=|button| {
+            let from=slint::LogicalPosition::new(600.,420.);
+            let to=slint::LogicalPosition::new(645.,445.);
+            ui.window().dispatch_event(WindowEvent::PointerPressed {position:from,button});
+            ui.window().dispatch_event(WindowEvent::PointerMoved {position:to});
+            ui.window().dispatch_event(WindowEvent::PointerReleased {position:to,button});
+        };
+        for step in [1,2] {
+            apply_workflow_step(&ui,&mut state.borrow_mut(),step);
+            window.request_redraw();
+            let mut pixels=vec![slint::Rgb8Pixel::default();1440*1000];
+            window.draw_if_needed(|renderer|{renderer.render(&mut pixels,1440);});
+            let before=state.borrow().view_3d.pan;
+            drag(PointerEventButton::Left);
+            assert_ne!(state.borrow().view_3d.pan,before,"2D left drag must pan in stage {step}");
+            let before=state.borrow().view_3d.zoom;ui.invoke_mesh_view_zoom(80.);
+            assert_ne!(state.borrow().view_3d.zoom,before);
+            ui.invoke_mesh_view_fit();assert_eq!(state.borrow().view_3d.pan,(0.,0.));
+            assert!(ui.get_cad_orientation_image().size().width>0);
+            let file=std::fs::File::create(format!("/tmp/flursys-navigation-stage-{step}.png")).unwrap();
+            let mut png=png::Encoder::new(file,1440,1000);png.set_color(png::ColorType::Rgb);
+            png.write_header().unwrap().write_image_data(&pixels.iter().flat_map(|p|[p.r,p.g,p.b]).collect::<Vec<_>>()).unwrap();
+        }
+        state.borrow_mut().workbench=WorkbenchSession::new();
+        let body=state.borrow_mut().workbench.geometry_mut().cad_add_primitive(
+            flursys::CadPrimitive::Box {length:1.,width:1.,height:1.},Vec3::new(0.,0.,0.),"Fluid").unwrap();
+        let original=state.borrow().workbench.geometry().clone();
+        ui.set_mesh_dimension_index(1);ui.invoke_mesh_entity_filter(0);
+        for step in [1,2] {
+            apply_workflow_step(&ui,&mut state.borrow_mut(),step);
+            window.request_redraw();let mut pixels=vec![slint::Rgb8Pixel::default();1440*1000];
+            window.draw_if_needed(|renderer|{renderer.render(&mut pixels,1440);});
+            let before=state.borrow().view_3d;
+            drag(PointerEventButton::Left);
+            assert_ne!(state.borrow().view_3d.yaw,before.yaw,"3D drag must orbit in stage {step}");
+            let pan=state.borrow().view_3d.pan;drag(PointerEventButton::Middle);
+            assert_ne!(state.borrow().view_3d.pan,pan);
+            for (mode,point) in [(0,Vec3::new(0.5,0.5,1.)),(1,Vec3::new(0.5,0.,1.)),(2,Vec3::new(1.,1.,1.)),(3,Vec3::new(0.5,0.5,1.))] {
+                ui.invoke_mesh_entity_filter(mode);ui.invoke_mesh_view_fit();ui.invoke_select_geometry_view_axis(2);
+                let screen={let s=state.borrow();render::project_measurement(s.workbench.geometry(),s.view_3d,&[point])[0]};
+                ui.invoke_mesh_pick_geometry(screen.0 as f32,screen.1 as f32,PREVIEW_WIDTH as f32,PREVIEW_HEIGHT as f32,false);
+                let target=state.borrow().wb_selected_targets.first().copied().expect("filter should pick the requested entity");
+                assert!(matches!((mode,target),(0,GeometrySelectionTarget::Face(_))|(1,GeometrySelectionTarget::Edge(_))|(2,GeometrySelectionTarget::Vertex(_))|(3,GeometrySelectionTarget::Body(_))));
+                if mode==3 {assert_eq!(target,GeometrySelectionTarget::Body(body));}
+            }
+        }
+        assert_eq!(state.borrow().workbench.geometry(),&original,"navigation and filters must never edit geometry");
+        ui.hide().unwrap();
+    }
+
 }

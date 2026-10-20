@@ -9,6 +9,7 @@ use post_export::{save_gif, save_png, write_probes};
 pub(super) struct State {
     pub metric_histories: [Vec<f64>; 3],
     pub continuity_full: Vec<f64>,
+    pub plane_samples: std::collections::BTreeMap<String,flursys::workbench::plane_monitor::PlaneSnapshot>,
     pub profile: Vec<result_analysis::ProfilePoint>,
     pub profile_label: String,
     pub boundary_summary: String,
@@ -38,6 +39,7 @@ impl State {
         self.traces.clear();
         self.metric_histories = Default::default();
         self.continuity_full.clear();
+        self.plane_samples.clear();
         *self.base.get_mut() = None;
     }
     pub fn start_solve(&mut self) {
@@ -46,6 +48,7 @@ impl State {
         self.iteration = 0;
         self.metric_histories = Default::default();
         self.continuity_full.clear();
+        self.plane_samples.clear();
         self.playing = false;
     }
     pub fn finish_solve(&mut self) {
@@ -291,6 +294,8 @@ pub(super) fn bind(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
             state.mesh_view.fit(Some((lo.x, lo.y, hi.x, hi.y)));
         }
         state.mesh_pan_anchor = None;
+        state.geometry_drag_anchor = None;
+        state.view_3d.fit();
         refresh_ui(&ui, &state);
     });
     let weak = ui.as_weak();
@@ -298,6 +303,15 @@ pub(super) fn bind(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
     ui.on_post_view_zoom(move |delta| {
         let Some(ui) = weak.upgrade() else { return };
         let mut state = shared.borrow_mut();
+        if state
+            .active_result()
+            .is_some_and(|r| r.mesh().dimension() == MeshDimension::ThreeD)
+            && ui.get_result_slice_axis() == 0
+        {
+            state.view_3d.zoom_by(delta);
+            refresh_ui(&ui, &state);
+            return;
+        }
         if state
             .active_result()
             .is_none_or(|r| r.mesh().dimension() != MeshDimension::TwoD)
@@ -315,6 +329,27 @@ pub(super) fn bind(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
     ui.on_post_view_drag(move |x, y, px, py, w, h| {
         let Some(ui) = weak.upgrade() else { return };
         let mut state = shared.borrow_mut();
+        if state
+            .active_result()
+            .is_some_and(|r| r.mesh().dimension() == MeshDimension::ThreeD)
+            && ui.get_result_slice_axis() == 0
+        {
+            if state
+                .geometry_drag_anchor
+                .is_none_or(|a| a.0 != px || a.1 != py)
+            {
+                state.geometry_drag_anchor = Some((px, py, state.view_3d.yaw, state.view_3d.pitch));
+            }
+            if let Some((sx, sy, yaw, pitch)) = state.geometry_drag_anchor {
+                let scale = viewport::preview_scale(w, h);
+                state
+                    .view_3d
+                    .orbit_from(yaw, pitch, (x - sx) / scale, (y - sy) / scale);
+                state.geometry_view_axis = 7;
+            }
+            refresh_ui(&ui, &state);
+            return;
+        }
         if state
             .active_result()
             .is_none_or(|r| r.mesh().dimension() != MeshDimension::TwoD)
@@ -465,7 +500,7 @@ pub(super) fn bind(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
                 6 => save_png(&path, &ui.get_residual_image()),
                 7 => result_analysis::atomic_text(&path,&result_analysis::report(&state)?),
                 10 => result_analysis::atomic_text(&path,&result_analysis::boundary_csv(&state.post.boundary_reports)?),
-                11 => result_analysis::atomic_text(&path,&result_analysis::convergence_svg(&state,ui.get_wb_chart_kind())),
+                11 => result_analysis::atomic_text(&path,&convergence_plot::build(&state,&convergence_plot::Options::from_ui(&ui)).svg),
                 8 | 9 => {
                     if state.post.profile.is_empty(){return Err("Sample a line profile first".into());}
                     let text=if kind==8{result_analysis::profile_csv(&state.post.profile,&state.post.profile_label)}else{result_analysis::profile_svg(&state.post.profile,&state.post.profile_label,false)};
@@ -617,7 +652,8 @@ pub(super) fn tick(ui: &MainWindow, state: &mut AppState) -> bool {
 }
 
 pub(super) fn refresh(ui: &MainWindow, state: &AppState) {
-    ui.set_continuity_chart_caption(chart_caption(state, ui.get_wb_chart_kind()).into());
+    if state.current_step==3 {plane_monitors::show_latest(ui,state);}
+    if state.current_step==3 {convergence_plot::refresh(ui,state);}else{ui.set_continuity_chart_caption(chart_caption(state, ui.get_wb_chart_kind()).into());}
     ui.set_post_has_result(state.active_result().is_some());
     ui.set_post_is_3d(
         state

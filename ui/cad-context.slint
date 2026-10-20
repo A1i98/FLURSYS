@@ -31,7 +31,7 @@ export component SketchLineContextMenu inherits Rectangle {
 export component CadContextMenu inherits Rectangle {
     width:0px;height:0px;
     property <bool> confirm-delete:false;
-    out property <length> menu-height:root.confirm-delete ? 186px : root.axis-task ? 104px : root.has-body ? 390px : root.has-sketch ? 240px : 164px;
+    out property <length> menu-height:root.confirm-delete ? 186px : root.axis-task ? 104px : root.has-body ? 428px : root.has-sketch ? 278px : 202px;
     public function show() { root.confirm-delete=false;menu.show(); }
     in property <bool> can-edit-feature:true;
     in property <bool> has-source-sketch:true;
@@ -45,6 +45,8 @@ export component CadContextMenu inherits Rectangle {
     callback command(int);
     callback activate(int);
     callback fit();
+    callback frame-selection();
+    callback normal-view();
     menu := PopupWindow {
         width:270px;height:root.menu-height;
         close-policy:close-on-click-outside;
@@ -101,6 +103,11 @@ export component CadContextMenu inherits Rectangle {
                         }
                     }
                     Rectangle {height:1px;background:UiTheme.border;}
+                    HorizontalLayout {spacing:5px;
+                        CadToolButton {icon:@image-url("icons/fit.svg");label:"Frame selection";clicked=>{menu.close();root.frame-selection();}}
+                        if root.planar-face : CadToolButton {icon:@image-url("icons/face.svg");label:"Look normal to selected planar face";clicked=>{menu.close();root.normal-view();}}
+                        Rectangle {horizontal-stretch:1;}
+                    }
                     Text {text:"DISPLAY & ORGANIZE";color:UiTheme.text-muted;font-size:9px;}
                     HorizontalLayout {spacing:5px;
                         if root.has-body : CadToolButton {icon:@image-url("icons/isolate.svg");label:"Isolate selected bodies · Undo restores visibility";enabled:!root.locked;clicked=>{menu.close();root.command(66);}}

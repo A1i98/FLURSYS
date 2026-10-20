@@ -42,13 +42,7 @@ pub(super) fn pick(
     let g = state.workbench.geometry();
     if ui.get_cad_measure_kind() == 1 {
         let position = if three_d {
-            super::render::measurement_surface_point(
-                g,
-                state.geometry_yaw,
-                state.geometry_pitch,
-                state.geometry_zoom,
-                point,
-            )
+            super::render::measurement_surface_point(g, state.view_3d, point)
         } else {
             let mut editor = state.geometry_editor.clone();
             editor.prefer_faces = false;
@@ -90,16 +84,9 @@ pub(super) fn pick(
         } else {
             vec![2, 1, 0]
         };
-        modes.into_iter().find_map(|mode| {
-            pick_canonical_geometry_target(
-                g,
-                state.geometry_yaw,
-                state.geometry_pitch,
-                state.geometry_zoom,
-                point,
-                mode,
-            )
-        })
+        modes
+            .into_iter()
+            .find_map(|mode| pick_canonical_geometry_target(g, state.view_3d, point, mode))
     } else {
         let mut editor = state.geometry_editor.clone();
         editor.prefer_faces = ui.get_cad_measure_kind() == 2;

@@ -166,21 +166,8 @@ fn activate(ui: &MainWindow, state: &mut AppState, action: i32) {
         }
     }
     if action == 213 {
-        match begin_face_sketch(state) {
-            Ok(message) => {
-                state.show_geometry_3d = false;
-                state.show_mesh = false;
-                ui.set_geometry_cad_view_3d(false);
-                ui.set_cad_workbench(0);
-                ui.set_geometry_sidebar_tab(0);
-                ui.set_cad_operation(213);
-                ui.set_cad_task_open(false);
-                ui.set_cad_sketch_editing(false);
-                ui.set_cad_pick_role(0);
-                ui.set_cad_feedback(message.into());
-            }
-            Err(e) => ui.set_cad_feedback(e.into()),
-        }
+        let result = super::drawing::begin(ui, state, true, false);
+        ui.set_cad_feedback(result.unwrap_or_else(|e| e).into());
         refresh_ui(ui, state);
         return;
     }

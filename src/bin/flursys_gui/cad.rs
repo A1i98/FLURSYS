@@ -188,17 +188,26 @@ pub(super) fn bind(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
     super::cad_units::bind(ui, state);
     super::cad_properties::bind(ui, state);
     super::cad_tree::bind(ui, state);
+    let hover_ui=ui.as_weak();let hover_state=state.clone();
+    ui.on_cad_hover(move |x,y,w,h|{
+        let Some(ui)=hover_ui.upgrade()else{return;};let state=hover_state.borrow();
+        let text=super::render::preview_image_point(x,y,w,h).and_then(|p|super::render::canonical_geometry_ray(state.workbench.geometry(),state.view_3d,p))
+            .and_then(|ray|state.workbench.geometry().pick_face(ray)).map(|hit|format!("X {:.5}   Y {:.5}   Z {:.5} · world / model units",hit.position.x,hit.position.y,hit.position.z))
+            .unwrap_or_else(||"World coordinates · point to a model surface".into());
+        ui.set_cad_cursor_coordinates(text.into());
+    });
     let weak = ui.as_weak();
     let shared = state.clone();
     ui.on_cad_pick_orientation(move |x, y| {
         let Some(ui) = weak.upgrade() else { return };
         let mut state = shared.borrow_mut();
         if let Some(axis) =
-            super::render::pick_orientation_overlay(state.geometry_yaw, state.geometry_pitch, x, y)
+            super::render::pick_orientation_overlay(state.view_3d.yaw, state.view_3d.pitch, x, y)
         {
+            let axis=if state.geometry_view_axis==axis {match axis{0=>4,1=>5,2=>6,4=>0,5=>1,6=>2,_=>axis}}else{axis};
             let (yaw, pitch) = geometry_view_angles(axis);
-            state.geometry_yaw = yaw;
-            state.geometry_pitch = pitch;
+            state.view_3d.yaw = yaw;
+            state.view_3d.pitch = pitch;
             state.geometry_view_axis = axis;
             state.geometry_drag_anchor = None;
             refresh_ui(&ui, &state);
@@ -266,21 +275,12 @@ pub(super) fn bind(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
         };
         let target = pick_canonical_geometry_target(
             state.workbench.geometry(),
-            state.geometry_yaw,
-            state.geometry_pitch,
-            state.geometry_zoom,
+            state.view_3d,
             point,
             state.geometry_pick_mode,
         )
         .or_else(|| {
-            pick_canonical_geometry_target(
-                state.workbench.geometry(),
-                state.geometry_yaw,
-                state.geometry_pitch,
-                state.geometry_zoom,
-                point,
-                0,
-            )
+            pick_canonical_geometry_target(state.workbench.geometry(), state.view_3d, point, 0)
         });
         if let Some(target) = target {
             // A context menu acts on the exact entity under the pointer. Keep
@@ -308,6 +308,10 @@ pub(super) fn bind(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
             return;
         }
         let mut state = shared.borrow_mut();
+        if matches!(action,21|22|39|28) {
+            let result=super::drawing::begin(&ui,&mut state,action==22,matches!(action,39|28));
+            ui.set_cad_feedback(result.unwrap_or_else(|e|e).into());refresh_ui(&ui,&state);return;
+        }
         if matches!(action,87..=91|93..=98) {
             if state.cad_job.is_some(){return;}
             let result=super::cad_profiles::command(&ui,&mut state,action);
@@ -1306,6 +1310,7 @@ pub(super) fn poll(ui: &MainWindow, state: &mut AppState) -> bool {
         }
         Err(e) => {
             state.log(format!("CAD: {e}"));
+            super::drawing::worker_feedback(state, &e);
             ui.set_cad_feedback(e.into());
         }
     }
@@ -1324,8 +1329,8 @@ pub(super) fn refresh(ui: &MainWindow, state: &AppState) {
             .into(),
     );
     ui.set_cad_orientation_image(super::render::render_orientation_overlay(
-        state.geometry_yaw,
-        state.geometry_pitch,
+        state.view_3d.yaw,
+        state.view_3d.pitch,
     ));
     ui.set_cad_can_loft(
         state
@@ -1764,13 +1769,13 @@ fn sketch_command(ui: &MainWindow, state: &mut AppState, action: i32) -> Result<
             .map(|(id, _)| id)
             .ok_or("Select a history body")?;
         if action == 65 {
-            let profile=super::cad_tree::profiles(g,body).into_iter().filter(|face|g.sketches().any(|s|s.profile_face==Some(*face) && s.profile.is_some())).nth(ui.get_cad_history_profile_index().max(0) as usize).ok_or("This operation has no editable source sketch. Select its input body in history.")?;
+            let profile=super::cad_tree::profiles(g,body).into_iter().filter(|face|g.sketches().any(|s|s.profile_face==Some(*face) && (s.profile.is_some() || s.drawing.is_some()))).nth(ui.get_cad_history_profile_index().max(0) as usize).ok_or("This operation has no editable source sketch. Select its input body in history.")?;
             let index = g
                 .sketches()
                 .position(|s| s.profile_face == Some(profile))
                 .ok_or("Source profile has no editable sketch record")?;
             ui.set_cad_sketch_index(index as i32);
-            return sketch_command(ui, state, 28);
+            return super::drawing::begin(ui, state, false, true);
         }
         let feature = g
             .extrude_features()
@@ -1798,7 +1803,7 @@ fn sketch_command(ui: &MainWindow, state: &mut AppState, action: i32) -> Result<
         return Ok("History body selected. Hidden predecessors remain hidden; use the visibility control to inspect them.".into());
     }
     if action == 39 {
-        return super::sketch_edit::begin(ui, state);
+        return super::drawing::begin(ui, state, false, true);
     }
     if action == 40 {
         super::cad_properties::close(ui, state);
@@ -2123,4 +2128,22 @@ pub(super) fn measure_selection(state: &AppState) -> Result<String, String> {
         });
     }
     Err("Pick a second vertex for distance, or two planar faces for distance / angle.".into())
+}
+
+/// Exact drawing publication shares the CAD worker's undo and stale-result guard.
+pub(super) fn submit_drawing(ui:&MainWindow,state:&mut AppState,id:Option<CadSketchId>,plane:CadSketchPlane,host:Option<FaceId>,drawing:flursys::sketching::core::Sketch)->Result<(),String>{
+    if state.cad_job.is_some(){return Err("CAD worker is busy".into());}
+    let source=state.workbench.geometry().clone();let mut candidate=source.clone();
+    let id=if let Some(id)=id{id}else if let Some(face)=host{candidate.create_sketch_on_face(face).map_err(|e|e.to_string())?.id}else{candidate.create_sketch_on_plane(plane).map_err(|e|e.to_string())?.id};
+    ui.set_cad_edit_sketch_id(id.get() as i32);
+    let workspace=state.workspace_path.clone();let project_id=state.workbench_project.project_id.clone();let (tx,rx)=mpsc::channel();
+    std::thread::spawn(move||{
+        let result=std::panic::catch_unwind(std::panic::AssertUnwindSafe(||{
+            let faces=candidate.cad_set_drawing(id,drawing).map_err(|e|e.to_string())?;
+            Ok((candidate,Vec::new(),true,format!("Sketch {} saved with {} closed region(s). Select a region for Pad, Revolve, Pocket or Loft.",id.get(),faces.len())))
+        })).unwrap_or_else(|_|Err("The sketch kernel rejected the operation; the source document was preserved.".into()));
+        let _=tx.send(result);
+    });
+    state.cad_job=Some(CadJob{generation:ui.get_cad_preview_generation(),preview:false,cancelled:false,source,workspace,project_id,result:rx});
+    ui.set_cad_busy(true);ui.set_cad_feedback("Publishing sketch and rebuilding dependent features…".into());Ok(())
 }

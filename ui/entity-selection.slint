@@ -1,0 +1,17 @@
+import { Button } from "std-widgets.slint";
+import { UiTheme } from "components.slint";
+export component EntitySelectionBar inherits HorizontalLayout {
+    in property <int> mode;
+    in property <bool> enabled:true;
+    callback select(int);callback clear();
+    spacing:4px;height:32px;
+    for entry in [
+        {id:1,label:"Edge",icon:@image-url("icons/edge.svg")},
+        {id:0,label:"Face",icon:@image-url("icons/face.svg")},
+        {id:2,label:"Vertex",icon:@image-url("icons/vertex.svg")},
+        {id:3,label:"Body",icon:@image-url("icons/cube.svg")}
+    ] : Button {text:entry.label;icon:entry.icon;enabled:root.enabled;checked:root.mode==entry.id;checkable:true;min-width:0px;max-height:32px;clicked=>{root.select(entry.id);}}
+    Button {text:"Clear";enabled:root.enabled;min-width:0px;max-height:32px;clicked=>{root.clear();}}
+    Rectangle {horizontal-stretch:1;}
+    Text {text:"Shift / Ctrl: add or remove";color:UiTheme.text-dim;font-size:10px;vertical-alignment:center;}
+}

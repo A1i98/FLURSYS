@@ -1,10 +1,32 @@
-import {ComboBox,Button,LineEdit,SpinBox,ProgressIndicator,TextEdit,ScrollView} from "std-widgets.slint";
+import { PlaneMonitorPanel } from "plane-monitor-panel.slint";
+import {CheckBox,ComboBox,Button,LineEdit,SpinBox,ProgressIndicator,TextEdit,ScrollView} from "std-widgets.slint";
 import {UiTheme} from "components.slint";
 component Tool inherits Button {min-width:0px;min-height:30px;max-height:34px;}
-component Label inherits Text {font-size:11px;color:UiTheme.text-muted;wrap:word-wrap;}
+component Label inherits Text {vertical-stretch:0;font-size:11px;color:UiTheme.text-muted;wrap:word-wrap;}
 export component SolutionWorkspace inherits Rectangle {
     in-out property <int> chart-kind;
     callback refresh-chart();
+    in-out property <bool> continuity:true;
+    in-out property <bool> momentum:true;
+    in-out property <bool> velocity:true;
+    in-out property <bool> pressure:true;
+    in-out property <bool> logarithmic:true;
+    in-out property <bool> normalized:false;
+    in-out property <bool> legend:true;
+    in-out property <int> history-window:0;
+    in property <string> readout;
+    callback resize-chart(float,float);
+    callback hover-chart(float);
+    in-out property <bool> show-plane:false;
+    in property <image> plane-image;
+    in property <[string]> plane-names;
+    in-out property <int> plane-index;
+    in-out property <int> plane-every;
+    in-out property <bool> plane-enabled;
+    in property <string> plane-details;
+    in property <string> plane-status;
+    callback export-plane(int);
+    callback select-plane(int);callback apply-plane();callback view-plane();
     in property <image> chart;
     in property <string> caption;
     in property <string> monitor;
@@ -25,69 +47,109 @@ export component SolutionWorkspace inherits Rectangle {
     in-out property <string> continuity-tolerance;
     in-out property <string> coupling-tolerance;
     in-out property <bool> show-log:false;
+    in-out property <bool> solver-panel-open:true;
+    in-out property <bool> report-panel-open:false;
     in-out property <int> export-format:0;
-    callback apply();callback run();callback cancel();callback results();callback edit-material();callback export-history();callback export-chart();callback export-vector();
+    callback apply();callback run();callback cancel();callback edit-material();callback export-history();callback export-chart();callback export-vector();
     background:UiTheme.background;
     VerticalLayout {padding:12px;spacing:9px;
         HorizontalLayout {height:34px;spacing:8px;
-            Text {text:"04  Solution";color:UiTheme.text;font-size:20px;font-weight:700;vertical-alignment:center;}
+            Text {text:"Solution";color:UiTheme.text;font-size:20px;font-weight:700;vertical-alignment:center;}
             Rectangle {horizontal-stretch:1;}
+            if root.busy : Tool {text:"■ Cancel";clicked=>{root.cancel();}}
             Tool {text:root.busy ? "Solving…" : "▶ Run solver";enabled:root.can-run && !root.busy;clicked=>{root.run();}}
-            Tool {text:"Results →";enabled:!root.busy;clicked=>{root.results();}}
         }
-        Text {text:root.monitor;color:UiTheme.text;font-size:12px;wrap:word-wrap;}
+        Text {text:root.monitor;color:UiTheme.text;font-size:12px;max-height:28px;overflow:elide;vertical-stretch:0;}
         HorizontalLayout {spacing:10px;
+            VerticalLayout {spacing:8px;
+                HorizontalLayout {height:30px;spacing:6px;
+                    Tool {text:!root.show-log && !root.show-plane ? "● Convergence" : "Convergence";clicked=>{root.show-log=false;root.show-plane=false;}}
+                    Tool {text:root.show-plane ? "● Plane vectors" : "Plane vectors";clicked=>{root.show-log=false;root.show-plane=true;}}
+                    Tool {text:root.show-log ? "● Solver log" : "Solver log";clicked=>{root.show-log=true;root.show-plane=false;}}
+                    Rectangle {horizontal-stretch:1;}
+                    ComboBox {model:root.show-plane ? ["Plane CSV","Plane PNG","Plane SVG"] : ["History CSV","Chart PNG","Chart SVG"];current-index <=> root.export-format;min-width:0px;preferred-width:125px;max-height:30px;}
+                    Tool {text:"Export ↓";clicked=>{if root.show-plane {root.export-plane(root.export-format);}else if root.export-format==0 {root.export-history();}else if root.export-format==1 {root.export-chart();}else{root.export-vector();}}}
+                }
+                if !root.show-log && !root.show-plane : HorizontalLayout {height:30px;spacing:5px;
+                    ComboBox {model:["Continuity RMS","Momentum relative","Velocity change","Pressure (inner)","All monitors"];current-index <=> root.chart-kind;min-width:0px;preferred-width:145px;max-height:30px;selected(value)=>{root.refresh-chart();}}
+                    CheckBox {text:"Log";checked <=> root.logarithmic;toggled=>{root.refresh-chart();}}
+                    CheckBox {text:"Normalize";checked <=> root.normalized;toggled=>{root.refresh-chart();}}
+                    ComboBox {model:["Full history","Last 400","Last 100"];current-index <=> root.history-window;min-width:0px;preferred-width:115px;max-height:30px;selected(value)=>{root.refresh-chart();}}
+                    CheckBox {text:"Legend";checked <=> root.legend;toggled=>{root.refresh-chart();}}
+                }
+                if !root.show-log && !root.show-plane && root.chart-kind==4 : HorizontalLayout {height:28px;spacing:7px;
+                    Rectangle {width:8px;height:8px;background:#58c4f6;}
+                    CheckBox {text:"Continuity";checked <=> root.continuity;toggled=>{root.refresh-chart();}}
+                    Rectangle {width:8px;height:8px;background:#f5b85b;}
+                    CheckBox {text:"Momentum";checked <=> root.momentum;toggled=>{root.refresh-chart();}}
+                    Rectangle {width:8px;height:8px;background:#65d49c;}
+                    CheckBox {text:"Δ velocity";checked <=> root.velocity;toggled=>{root.refresh-chart();}}
+                    Rectangle {width:8px;height:8px;background:#c49bff;}
+                    CheckBox {text:"Pressure";checked <=> root.pressure;toggled=>{root.refresh-chart();}}
+                    Rectangle {horizontal-stretch:1;}
+                }
+                plot:=Rectangle {vertical-stretch:1;min-height:200px;background:UiTheme.viewport;border-color:UiTheme.border;border-width:1px;
+                    changed width=>{if !root.show-log {root.resize-chart(self.width/1px,self.height/1px);}}
+                    changed height=>{if !root.show-log {root.resize-chart(self.width/1px,self.height/1px);}}
+                    if !root.show-log && !root.show-plane : Image {source:root.chart;width:parent.width;height:parent.height;image-fit:fill;}
+                    if !root.show-log && !root.show-plane : TouchArea {
+                        moved=>{root.hover-chart(self.mouse-x/1px);}
+                        if self.has-hover && self.mouse-x>96px && self.mouse-x<self.width - 24px : Rectangle {
+                            x:parent.mouse-x;y:root.legend ? 100px : 44px;width:1px;height:max(0px,parent.height - self.y - 62px);background:#ffffff55;
+                        }
+                    }
+                    if root.show-plane : Image {source:root.plane-image;width:parent.width;height:parent.height;image-fit:contain;}
+                    if root.show-plane : Text {text:root.plane-status;x:12px;y:8px;width:parent.width - 24px;max-height:70px;color:UiTheme.text;wrap:word-wrap;}
+                    if root.show-log : TextEdit {text:root.log;read-only:true;width:parent.width;height:parent.height;}
+                }
+                if !root.show-log && !root.show-plane : Label {text:root.readout;max-height:32px;overflow:elide;color:UiTheme.text;font-size:10px;}
+                if !root.show-log && !root.show-plane : Label {text:root.caption;max-height:38px;overflow:elide;font-size:10px;}
+                HorizontalLayout {height:16px;spacing:8px;
+                    Label {text:"Iteration budget";font-size:10px;vertical-alignment:center;}
+                    ProgressIndicator {progress:root.progress;max-height:10px;horizontal-stretch:1;}
+                    Label {text:"≠ convergence %";font-size:10px;vertical-alignment:center;}
+                }
+                if !root.can-run && !root.busy : Label {text:root.readiness;max-height:28px;overflow:elide;}
+            }
             Rectangle {width:300px;background:UiTheme.sidebar;border-color:UiTheme.border;border-width:1px;border-radius:4px;
                 panel:=ScrollView {width:parent.width;height:parent.height;horizontal-scrollbar-policy:always-off;
-                    VerticalLayout {width:panel.visible-width;padding:12px;spacing:9px;
-                        Label {text:"STEADY INCOMPRESSIBLE · SIMPLE";color:UiTheme.accent;font-weight:700;}
+                    VerticalLayout {width:panel.visible-width;padding:12px;spacing:9px;height:self.preferred-height;x:0px;y:0px;
+                        PlaneMonitorPanel {names:root.plane-names;index <=> root.plane-index;every <=> root.plane-every;record <=> root.plane-enabled;
+                            busy:root.busy;details:root.plane-details;status:root.plane-status;
+                            select(i)=>{root.select-plane(i);}apply=>{root.apply-plane();}view=>{root.view-plane();}
+                        }
+                        Rectangle {height:1px;background:UiTheme.border;}
+                        Label {text:"CASE PROPERTIES";color:UiTheme.accent;font-weight:700;}
+                        Tool {text:"Fluid material ▾";enabled:!root.busy;clicked=>{root.edit-material();}}
+                        Tool {text:root.solver-panel-open ? "▾ SIMPLE solver settings" : "▸ SIMPLE solver settings";clicked=>{root.solver-panel-open=!root.solver-panel-open;}}
+                        if root.solver-panel-open : VerticalLayout {spacing:8px;vertical-stretch:0;
+                        Label {text:"STEADY INCOMPRESSIBLE · SIMPLE";color:UiTheme.text-muted;font-weight:700;}
                         Label {text:root.material;}
-                        Tool {text:"Edit fluid material";enabled:!root.busy;clicked=>{root.edit-material();}}
                         Label {text:"CPU worker threads (0 = automatic)";}
-                        SpinBox {value <=> root.cpu-threads;minimum:0;maximum:root.cpu-limit;enabled:!root.busy;}
+                        SpinBox {max-height:32px;value <=> root.cpu-threads;minimum:0;maximum:root.cpu-limit;enabled:!root.busy;}
                         Label {text:"Available logical CPUs: "+root.cpu-limit+". Parallel work currently covers the velocity components.";}
                         Label {text:"Maximum outer iterations";}
-                        SpinBox {value <=> root.iterations;minimum:1;maximum:1000000;enabled:!root.busy;}
+                        SpinBox {max-height:32px;value <=> root.iterations;minimum:1;maximum:1000000;enabled:!root.busy;}
                         Label {text:"Velocity relaxation αu";}
-                        LineEdit {text <=> root.velocity-relaxation;min-width:0px;enabled:!root.busy;}
+                        LineEdit {max-height:32px;text <=> root.velocity-relaxation;min-width:0px;enabled:!root.busy;}
                         Label {text:"Pressure relaxation αp";}
-                        LineEdit {text <=> root.pressure-relaxation;min-width:0px;enabled:!root.busy;}
+                        LineEdit {max-height:32px;text <=> root.pressure-relaxation;min-width:0px;enabled:!root.busy;}
                         Label {text:"Absolute continuity tolerance";}
-                        LineEdit {text <=> root.continuity-tolerance;min-width:0px;enabled:!root.busy;}
+                        LineEdit {max-height:32px;text <=> root.continuity-tolerance;min-width:0px;enabled:!root.busy;}
                         Label {text:"Relative momentum / velocity tolerance";}
-                        LineEdit {text <=> root.coupling-tolerance;min-width:0px;enabled:!root.busy;}
+                        LineEdit {max-height:32px;text <=> root.coupling-tolerance;min-width:0px;enabled:!root.busy;}
                         Tool {text:"Apply settings only";enabled:!root.busy;clicked=>{root.apply();}}
-                        Label {text:root.can-run ? "Settings applied? Use Run solver above to start." : root.readiness;color:root.can-run ? UiTheme.text-muted : UiTheme.accent;}
-                        Label {text:"Convergence requires continuity, momentum reduction and a stable velocity field. A smaller continuity residual alone does not establish steady convergence.";}
-                        Rectangle {height:1px;background:UiTheme.border;}
+                        Label {text:root.can-run ? "Ready: use Run solver to start." : root.readiness;color:root.can-run ? UiTheme.text-muted : UiTheme.accent;}
+                        }
+                        Tool {text:root.report-panel-open ? "▾ Convergence and report" : "▸ Convergence and report";clicked=>{root.report-panel-open=!root.report-panel-open;}}
+                        if root.report-panel-open : VerticalLayout {spacing:8px;vertical-stretch:0;
+                        Label {text:"Continuity, momentum reduction and a stable velocity field are all required; a small continuity residual alone does not establish convergence.";}
                         Text {text:root.convergence-summary;color:UiTheme.text;font-size:11px;wrap:word-wrap;}
                         Label {text:"RUN REPORT";color:UiTheme.accent;font-weight:700;}
                         Text {text:root.summary;color:UiTheme.text;font-size:11px;wrap:word-wrap;}
                         Text {text:root.balance;color:UiTheme.text-soft;font-size:11px;wrap:word-wrap;}
+                        }
                     }
-                }
-            }
-            VerticalLayout {spacing:8px;
-                HorizontalLayout {height:34px;spacing:7px;
-                    if !root.show-log : ComboBox {model:["Continuity RMS","Momentum relative","Velocity change","Pressure linear residual"];current-index <=> root.chart-kind;min-width:0px;preferred-width:180px;selected(value)=>{root.refresh-chart();}}
-                    Tool {text:!root.show-log ? "● Convergence" : "Convergence";clicked=>{root.show-log=false;}}
-                    Tool {text:root.show-log ? "● Solver log" : "Solver log";clicked=>{root.show-log=true;}}
-                    Rectangle {horizontal-stretch:1;}
-                    ComboBox {model:["History CSV","Chart PNG","Chart SVG"];current-index <=> root.export-format;min-width:0px;preferred-width:135px;}
-                    Tool {text:"Export ↓";clicked=>{if root.export-format==0 {root.export-history();}else if root.export-format==1 {root.export-chart();}else{root.export-vector();}}}
-                }
-                Rectangle {vertical-stretch:1;background:UiTheme.viewport;border-color:UiTheme.border;border-width:1px;
-                    if !root.show-log : Image {source:root.chart;width:parent.width;height:parent.height;image-fit:contain;}
-                    if root.show-log : TextEdit {text:root.log;read-only:true;width:parent.width;height:parent.height;}
-                }
-                Label {text:root.caption;}
-                ProgressIndicator {progress:root.progress;}
-                Label {text:"Iteration budget used; this is not an estimate of convergence completion.";}
-                Label {text:root.readiness;}
-                HorizontalLayout {height:36px;spacing:8px;
-                    Tool {text:"■ Cancel solve";enabled:root.busy;clicked=>{root.cancel();}}
-                    Rectangle {horizontal-stretch:1;}
-                    Tool {text:"View results →";enabled:!root.busy;clicked=>{root.results();}}
                 }
             }
         }

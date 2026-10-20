@@ -47,13 +47,18 @@ export component ResultsWorkspace inherits Rectangle {
     callback select-run(int);callback select-field(int);callback style();callback apply-range();callback auto-range();
     callback action(int);callback export(int);callback export-cells();callback seek(float);callback select-probe(int);
     callback pick(float,float,float,float);callback hover(float,float,float,float);
+    in property <image> orientation;
+    in property <int> view-axis:3;
+    callback pan(float,float,float,float);
+    callback view(int);
+    callback pick-orientation(float,float);
     callback drag(float,float,float,float,float,float);callback drag-end();callback zoom(float);callback fit();
     background:UiTheme.background;
     VerticalLayout {
         padding:12px;spacing:8px;
         HorizontalLayout {
             height:34px;spacing:8px;
-            Text {text:"05  Results";color:UiTheme.text;font-size:20px;font-weight:700;vertical-alignment:center;}
+            Text {text:"Results";color:UiTheme.text;font-size:20px;font-weight:700;vertical-alignment:center;}
             Rectangle {horizontal-stretch:1;}
             Label {text:"RUN";vertical-alignment:center;}
             ComboBox {model:root.runs;current-index:root.run-index;enabled:root.runs.length>0;min-width:0px;preferred-width:300px;selected(value)=>{root.select-run(self.current-index);}}
@@ -76,7 +81,10 @@ export component ResultsWorkspace inherits Rectangle {
                 Text {text:root.title;color:UiTheme.accent;font-size:11px;font-weight:700;overflow:elide;}
                 if root.tab!=4 : InteractiveGeometryPreview {
                     vertical-stretch:1;preview-image:root.preview;
-                    help-text:root.is-3d ? "CLICK: PROBE · FIXED ISOMETRIC VIEW / SECTION" : "CLICK: PROBE · DRAG: PAN · WHEEL: ZOOM · DOUBLE CLICK: FIT";
+                    navigation-3d:root.is-3d && root.slice-axis==0;orientation-image:root.orientation;view-axis:root.view-axis;
+                    select-view-axis(axis)=>{root.view(axis);}pick-orientation(x,y)=>{root.pick-orientation(x,y);}
+                    pan(dx,dy,w,h)=>{root.pan(dx,dy,w,h);}
+                    help-text:root.is-3d ? "CLICK: PROBE · DRAG: ORBIT · MIDDLE / SHIFT-DRAG: PAN · WHEEL: ZOOM" : "CLICK: PROBE · DRAG: PAN · WHEEL: ZOOM · DOUBLE CLICK: FIT";
                     pick-boundary(x,y,w,h)=>{root.pick(x,y,w,h);}
                     hover(x,y,w,h)=>{root.hover(x,y,w,h);}
                     orbit(x,y,px,py)=>{root.drag(x,y,px,py,self.width/1px,self.height/1px);}

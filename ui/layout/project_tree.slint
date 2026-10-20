@@ -43,7 +43,7 @@ export component ProjectTree inherits Rectangle {
         padding: root.compact-ui ? 9px : 12px;
         spacing: root.compact-ui ? 6px : 8px;
         HorizontalLayout {spacing:4px;
-            Text {text:"MODEL & PROJECT";color:UiTheme.text-dim;font-size:10px;font-weight:700;vertical-alignment:center;horizontal-stretch:1;}
+            Text {text:"BROWSER";color:UiTheme.text-dim;font-size:10px;font-weight:700;vertical-alignment:center;horizontal-stretch:1;}
             Button {text:"▾";preferred-width:25px;min-width:25px;max-height:25px;clicked=>{root.expand-history(true);}}
             Button {text:"▸";preferred-width:25px;min-width:25px;max-height:25px;clicked=>{root.expand-history(false);}}
         }
@@ -52,7 +52,7 @@ export component ProjectTree inherits Rectangle {
             border-color: UiTheme.border-soft;
             border-width: 1px;
             border-radius: 3px;
-            background: rgb(12, 21, 28);
+            background: UiTheme.sidebar;
             tree-list := ListView { for row[visible-index] in root.project-tree-model : TreeRowView {
                 entry:row;
                 select(additive)=>{root.select-tree-row(row.index,additive);}
@@ -67,8 +67,5 @@ export component ProjectTree inherits Rectangle {
                 }
             }}
         }
-        Rectangle { height: 1px; background: UiTheme.border-soft; }
-        if !root.compact-ui : Text { text: "Active numerical core"; color: UiTheme.text-label; font-size: 10px; }
-        Text { text: root.compact-ui ? "2D FVM · 3D preview" : "Unstructured Gmsh FVM\n2D structured FVM · 3D preview"; color: UiTheme.text-mid; font-size: 10px; wrap: word-wrap; }
     }
 }

@@ -1,3 +1,5 @@
+#[path = "native_cad.rs"]
+mod native_cad;
 use flursys::app::{JobProgress, WorkbenchJobEvent, WorkbenchJobExecutor};
 use flursys::runtime::{SolverCommand, SolverController, SolverState, SolverUpdate};
 use flursys::workbench::{discover_templates_from_roots, save_case_template, CaseTemplateManifest};
@@ -27,6 +29,10 @@ use flursys::{ExtrudedMesh3D, StructuredMesh2D};
 mod post_processing;
 #[path = "result_activation.rs"]
 mod result_activation;
+#[path = "plane_monitors.rs"]
+mod plane_monitors;
+#[path = "convergence_plot.rs"]
+mod convergence_plot;
 #[path = "result_analysis.rs"]
 mod result_analysis;
 
@@ -59,6 +65,8 @@ mod measure;
 mod mesh_setup;
 #[path = "sketch_edit.rs"]
 mod sketch_edit;
+#[path = "drawing.rs"]
+mod drawing;
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum WorkspaceSaveRoute {
     Existing(PathBuf),
@@ -219,9 +227,7 @@ struct AppState {
     animation_playing: bool,
     show_mesh: bool,
     show_geometry_3d: bool,
-    geometry_yaw: f32,
-    geometry_pitch: f32,
-    geometry_zoom: f32,
+    view_3d: viewport::View3d,
     geometry_view_axis: i32,
     geometry_pick_mode: i32,
     geometry_drag_anchor: Option<(f32, f32, f32, f32)>,
@@ -281,6 +287,7 @@ struct AppState {
     cad_job: Option<cad::CadJob>,
     cad_preview: Option<cad::CadPreview>,
     sketch_edit: Option<sketch_edit::SketchEdit>,
+    drawing: Option<drawing::Draft>,
     gmsh_probe_rx: Option<Receiver<Result<String, String>>>,
     gmsh_status: String,
     current_step: usize,
@@ -352,9 +359,7 @@ impl AppState {
             animation_playing: false,
             show_mesh: false,
             show_geometry_3d: true,
-            geometry_yaw: 0.65,
-            geometry_pitch: 0.48,
-            geometry_zoom: 1.0,
+            view_3d: viewport::View3d::default(),
             geometry_view_axis: 3,
             geometry_pick_mode: 0,
             geometry_drag_anchor: None,
@@ -428,6 +433,7 @@ impl AppState {
             cad_job: None,
             cad_preview: None,
             sketch_edit: None,
+            drawing: None,
             gmsh_probe_rx: None,
             gmsh_status: "Gmsh: checking…".to_string(),
             current_step: 0,
@@ -722,12 +728,17 @@ impl AppState {
                     self.post.continuity_full.push(values[0]);
                     changed = true;
                 }
+                WorkbenchJobEvent::SolveProgress(JobProgress::Message(message))=>{self.log(message);changed=true;}
                 WorkbenchJobEvent::SolveProgress(JobProgress::Cancelled) => {
                     self.solving = false;
                     self.log("Solve cancellation requested.");
                     changed = true;
                 }
+                WorkbenchJobEvent::PlaneSample(snapshot) => {
+                    self.post.plane_samples.insert(snapshot.plane.id.clone(),snapshot);changed=true;
+                }
                 WorkbenchJobEvent::SolveCompleted(outcome) => {
+                    let plane_samples=std::mem::take(&mut self.post.plane_samples);
                     self.solving = false;
                     self.post.finish_solve();
                     match &outcome {
@@ -754,6 +765,7 @@ impl AppState {
                     if let Err(error) = self.persist_completed_workbench_run() {
                         self.log(format!("Could not persist workbench run: {error}"));
                     }
+                    self.post.plane_samples=plane_samples;
                     self.tree_dirty = true;
                     changed = true;
                 }
@@ -776,6 +788,9 @@ impl AppState {
             .to_project(self.workbench_project.name.clone());
         document.project_id = self.workbench_project.project_id.clone();
         document.runs = self.workbench_project.runs.clone();
+        document.cad_document = self.workbench_project.cad_document.clone();
+        document.cad_geometry_hash = self.workbench_project.cad_geometry_hash.clone();
+        document.plane_monitors = self.workbench_project.plane_monitors.clone();
         self.workbench_project = document;
     }
 
@@ -1718,6 +1733,7 @@ pub fn run() -> Result<(), slint::PlatformError> {
     bind_callbacks(&ui, &state);
     cad::bind(&ui, &state);
     flow_setup::bind(&ui, &state);
+    let _design_host = native_cad::bind(&ui, &state);
     let timer = Timer::default();
     let weak_ui = ui.as_weak();
     let poll_state = state.clone();
@@ -1841,7 +1857,41 @@ fn gallery_descriptors(templates: &[CaseTemplateManifest]) -> Vec<ExampleDescrip
 }
 
 fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
+    let weak = ui.as_weak();
+    let shared = state.clone();
+    ui.on_refresh_browser(move || {
+        if let Some(ui) = weak.upgrade() {
+            refresh_ui(&ui, &shared.borrow());
+        }
+    });
+    let weak = ui.as_weak();
+    let shared = state.clone();
+    ui.on_apply_fluid_material(move |density, viscosity| {
+        let Some(ui) = weak.upgrade() else { return false; };
+        let mut state = shared.borrow_mut();
+        if state.meshing || state.solving {
+            ui.set_material_dialog_feedback("Wait for the running job to finish.".into());
+            return false;
+        }
+        let density = parse_number(density.as_str(), f64::NAN);
+        let viscosity = parse_number(viscosity.as_str(), f64::NAN);
+        if let Err(error) = state.workbench.set_material(density, viscosity) {
+            ui.set_material_dialog_feedback(error.to_string().into());
+            return false;
+        }
+        ui.set_material_density(density.to_string().into());
+        ui.set_material_viscosity(viscosity.to_string().into());
+        state.mark_workbench_dirty();
+        state.log("Applied fluid material.");
+        rebuild_tree_rows(&mut state);
+        refresh_ui(&ui, &state);
+        true
+    });
     post_processing::bind(ui, state);
+    convergence_plot::bind(ui,state);
+    plane_monitors::bind(ui,state);
+    viewport::bind(ui, state);
+    drawing::bind(ui, state);
     // ---- Phase 9D stable geometry editor ----
     let weak_ui = ui.as_weak();
     let pick_state = state.clone();
@@ -2501,13 +2551,8 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
             refresh_ui(&ui, &state);
             return;
         }
-        match begin_face_sketch(&mut state) {
-            Ok(message) => {
-                state.show_geometry_3d = false;
-                state.show_mesh = false;
-                ui.set_geometry_cad_view_3d(false);
-                state.log(message);
-            }
+        match drawing::begin(&ui, &mut state, true, false) {
+            Ok(message) => state.log(message),
             Err(error) => state.log(error),
         }
         refresh_ui(&ui, &state);
@@ -3319,94 +3364,9 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
         state.show_geometry_3d = true;
         state.show_mesh = false;
         state.animation_playing = false;
-        state.geometry_yaw = (state.geometry_yaw + 0.45) % std::f32::consts::TAU;
+        state.view_3d.yaw = (state.view_3d.yaw + 0.45) % std::f32::consts::TAU;
         state.geometry_view_axis = 3;
         state.geometry_drag_anchor = None;
-        refresh_ui(&ui, &state);
-    });
-
-    let weak_ui = ui.as_weak();
-    let orbit_state = state.clone();
-    ui.on_geometry_drag(move |mouse_x, mouse_y, pressed_x, pressed_y| {
-        let Some(ui) = weak_ui.upgrade() else {
-            return;
-        };
-        let mut state = orbit_state.borrow_mut();
-        let new_gesture = state.geometry_drag_anchor.is_none_or(|(x, y, _, _)| {
-            (x - pressed_x).abs() > f32::EPSILON || (y - pressed_y).abs() > f32::EPSILON
-        });
-        if new_gesture {
-            state.geometry_drag_anchor = Some((
-                pressed_x,
-                pressed_y,
-                state.geometry_yaw,
-                state.geometry_pitch,
-            ));
-        }
-        if let Some((start_x, start_y, start_yaw, start_pitch)) = state.geometry_drag_anchor {
-            state.geometry_yaw = start_yaw + (mouse_x - start_x) * 0.012;
-            state.geometry_pitch = (start_pitch + (mouse_y - start_y) * 0.008).clamp(-0.85, 0.85);
-            state.geometry_view_axis = 3;
-        }
-        state.show_geometry_3d = true;
-        state.show_mesh = false;
-        refresh_ui(&ui, &state);
-    });
-    let orbit_end_state = state.clone();
-    ui.on_geometry_drag_end(move || {
-        orbit_end_state.borrow_mut().geometry_drag_anchor = None;
-    });
-
-    let weak_ui = ui.as_weak();
-    let zoom_state = state.clone();
-    ui.on_geometry_zoom(move |delta_y| {
-        let Some(ui) = weak_ui.upgrade() else {
-            return;
-        };
-        let mut state = zoom_state.borrow_mut();
-        state.geometry_zoom = (state.geometry_zoom * (-delta_y * 0.0015).exp()).clamp(0.62, 1.28);
-        state.show_geometry_3d = true;
-        state.show_mesh = false;
-        refresh_ui(&ui, &state);
-    });
-
-    let weak_ui = ui.as_weak();
-    let view_axis_state = state.clone();
-    ui.on_select_geometry_view_axis(move |axis| {
-        let Some(ui) = weak_ui.upgrade() else {
-            return;
-        };
-        let mut state = view_axis_state.borrow_mut();
-        let axis = axis.clamp(0, 3);
-        let (yaw, pitch) = geometry_view_angles(axis);
-        state.geometry_yaw = yaw;
-        state.geometry_pitch = pitch;
-        state.geometry_view_axis = axis;
-        state.geometry_drag_anchor = None;
-        state.show_geometry_3d = true;
-        state.show_mesh = false;
-        state.animation_playing = false;
-        state.log(format!(
-            "Selected {} geometry view.",
-            geometry_view_label(axis)
-        ));
-        refresh_ui(&ui, &state);
-    });
-
-    let weak_ui = ui.as_weak();
-    let reset_geometry_state = state.clone();
-    ui.on_reset_geometry_view(move || {
-        let Some(ui) = weak_ui.upgrade() else {
-            return;
-        };
-        let mut state = reset_geometry_state.borrow_mut();
-        (state.geometry_yaw, state.geometry_pitch) = geometry_view_angles(3);
-        state.geometry_zoom = 1.0;
-        state.geometry_view_axis = 3;
-        state.geometry_drag_anchor = None;
-        state.show_geometry_3d = true;
-        state.show_mesh = false;
-        state.log("Geometry camera reset.");
         refresh_ui(&ui, &state);
     });
 
@@ -3499,7 +3459,7 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
                     if ui.get_result_slice_axis() > 0 {
                         return state.active_result().and_then(|result| render::pick_result_slice_cell(result, ui.get_result_slice_axis(), ui.get_result_slice_percent(), point));
                     }
-                    let (origin, direction) = render::result_screen_ray(mesh_cache, point);
+                    let (origin, direction) = render::result_screen_ray(mesh_cache, point, state.view_3d);
                     mesh_cache
                         .pick_face_3d(origin, direction)
                         .and_then(|selection| match selection.target() {
@@ -3560,7 +3520,7 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
                         cache.pick_cell_2d(state.mesh_view.screen_to_world(point))
                     }
                     (MeshDimension::ThreeD, MeshPickMode::Face) => {
-                        let (origin, direction) = render::result_screen_ray(cache, point);
+                        let (origin, direction) = render::result_screen_ray(cache, point, state.view_3d);
                         cache.pick_face_3d(origin, direction)
                     }
                     (MeshDimension::ThreeD, MeshPickMode::Cell) => None,
@@ -3595,8 +3555,7 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
             if cad::preview(&state).is_some() {return;}
             if measure::pick(&ui,&mut state,point,true) {refresh_ui(&ui,&state);return;}
             if let Some(target) = pick_canonical_geometry_target(
-                state.workbench.geometry(), state.geometry_yaw, state.geometry_pitch,
-                state.geometry_zoom, point, if state.current_step == 0 { state.geometry_pick_mode } else { 0 },
+                state.workbench.geometry(), state.view_3d, point, if state.current_step == 0 { state.geometry_pick_mode } else { 0 },
             ) {
                     ui.set_geometry_feature_feedback(SharedString::default());
                     state.wb_selected_targets = vec![target];
@@ -3618,9 +3577,7 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
         } else if state.show_geometry_3d {
             pick_boundary_3d(
                 &state.project,
-                state.geometry_yaw,
-                state.geometry_pitch,
-                state.geometry_zoom,
+                state.view_3d,
                 point,
             )
         } else {
@@ -4384,7 +4341,7 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
         let Some(ui) = weak_ui.upgrade() else {
             return;
         };
-        ui.set_wb_chart_kind(0);
+        ui.set_wb_chart_kind(4);
         let mut state = run_state.borrow_mut();
         if state.meshing || state.solving {
             state.log("A job is already running; wait for it to finish.");
@@ -4420,7 +4377,11 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
             std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1)
         } else { case.solver.threads };
         state.workbench.mark_solving();
-        match state.workbench_jobs.start_solve(case) {
+        let planes=state.workbench_project.plane_monitors.clone();
+        let stamp=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos();
+        let folder=state.workspace_path.as_ref().unwrap().join("monitors").join(format!("solve-{stamp}"));
+        if planes.iter().any(|p|p.enabled) {state.log(format!("Plane vectors will be recorded under {} (SIMPLE iterations, not physical time).",folder.display()));}
+        match state.workbench_jobs.start_solve_with_planes(case,planes,folder) {
             Ok(()) => {
                 state.solving = true;
                 state.log(format!(
@@ -4642,7 +4603,8 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
                         cache.pick_cell_2d(state.mesh_view.screen_to_world(screen))
                     }
                     (MeshDimension::ThreeD, MeshPickMode::Face) => {
-                        let (origin, direction) = render::result_screen_ray(cache, screen);
+                        let (origin, direction) =
+                            render::result_screen_ray(cache, screen, state.view_3d);
                         cache.pick_face_3d(origin, direction)
                     }
                     (MeshDimension::ThreeD, MeshPickMode::Cell) => None,
@@ -4656,13 +4618,11 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
             };
             let hover = pick_canonical_geometry_target(
                 state.workbench.geometry(),
-                state.geometry_yaw,
-                state.geometry_pitch,
-                state.geometry_zoom,
+                state.view_3d,
                 point,
                 if state.current_step == 0 {
                     state.geometry_pick_mode
-                } else if state.current_step == 1 {
+                } else if matches!(state.current_step,1|2) {
                     ui.get_mesh_entity_mode()
                 } else {
                     0
@@ -4751,9 +4711,10 @@ fn apply_workflow_step(ui: &MainWindow, state: &mut AppState, step: i32) {
             });
             if state.workbench.mesh_dimension() == MeshDimension::TwoD {
                 let (yaw, pitch) = geometry_view_angles(2);
-                state.geometry_yaw = yaw;
-                state.geometry_pitch = pitch;
-                state.geometry_zoom = 1.0;
+                state.view_3d.yaw = yaw;
+                state.view_3d.pitch = pitch;
+                state.geometry_view_axis = 2;
+                state.view_3d.zoom = 1.0;
             }
         }
         4 => {
@@ -5750,6 +5711,7 @@ fn recent_project_labels(state: &AppState) -> Vec<SharedString> {
 }
 
 fn refresh_ui(ui: &MainWindow, state: &AppState) {
+    if state.current_step == 0 { ui.set_geometry_cad_view_3d(true); }
     cad::refresh(ui, state);
     ui.set_project_loaded(state.project_loaded);
     let recent_labels = recent_project_labels(state);
@@ -5916,6 +5878,7 @@ fn refresh_ui(ui: &MainWindow, state: &AppState) {
         state.logs.iter().cloned().collect::<Vec<_>>().join("\n"),
     ));
     result_activation::refresh(ui, state);
+    if state.current_step!=3 {
     ui.set_residual_image(
         if state.last_update.is_some() && state.workbench.geometry().vertices().next().is_none() {
             render_residual_chart(&state.residual_history)
@@ -5926,14 +5889,34 @@ fn refresh_ui(ui: &MainWindow, state: &AppState) {
             ))
         },
     );
+    }
     ui.set_mesh_inspection(SharedString::from(mesh_inspection(&state.project)));
 
     // ---- Workbench pipeline ----
+    let mut hidden_topology_depth = None;
     let tree_model: VecModel<ProjectTreeRow> =
         visible_project_tree_rows(&state.tree_rows, &state.collapsed_tree_groups)
             .into_iter()
+            .filter(|row| {
+                if ui.get_show_topology() { return true; }
+                if let Some(depth) = hidden_topology_depth {
+                    if row.depth > depth { return false; }
+                    hidden_topology_depth = None;
+                }
+                if row.kind == TREE_KIND_INERT && matches!(row.payload,
+                    TREE_GROUP_TOPOLOGY | TREE_GROUP_FACES | TREE_GROUP_EDGES | TREE_GROUP_VERTICES) {
+                    hidden_topology_depth = Some(row.depth);
+                    return false;
+                }
+                true
+            })
             .collect();
     ui.set_project_tree_model(ModelRc::new(tree_model));
+    let mut timeline_seen=BTreeSet::new();
+    let timeline=visible_project_tree_rows(&state.tree_rows,&BTreeSet::new()).into_iter()
+        .filter(|r|matches!(r.kind,TREE_KIND_SKETCH|TREE_KIND_HISTORY_FEATURE) && timeline_seen.insert((r.kind,r.payload))).collect::<Vec<_>>();
+    ui.set_cad_timeline(ModelRc::new(VecModel::from(timeline)));
+
 
     let patch_items: Vec<SharedString> = state
         .patch_names
@@ -6046,33 +6029,7 @@ fn refresh_ui(ui: &MainWindow, state: &AppState) {
                 |target| geometry_target_inspector(state.workbench.geometry(), target),
             ),
     ));
-    ui.set_geometry_editor_image(if let Some(image) = sketch_edit::render(state) {
-        image
-    } else if let Some(face) = state.face_sketch_host {
-        render_face_sketch(
-            state.workbench.geometry(),
-            face,
-            &state.geometry_editor,
-            state.face_sketch_start,
-            state.face_sketch_cursor,
-        )
-    } else {
-        render_geometry_editor(state.workbench.geometry(), &state.geometry_editor)
-    });
-    if ui.get_cad_measure_active() && !state.cad_measure_points.is_empty() {
-        let points = state
-            .cad_measure_points
-            .iter()
-            .map(|p| {
-                let q = state.geometry_editor.transform.world_to_screen((p.x, p.y));
-                (q.0 as i32, q.1 as i32)
-            })
-            .collect::<Vec<_>>();
-        ui.set_geometry_editor_image(render::annotate_measurement(
-            ui.get_geometry_editor_image(),
-            &points,
-        ));
-    }
+    drawing::sync(ui, state);
     ui.set_geometry_active_tool(match state.geometry_editor.active_tool {
         GeometryTool::Select => 0,
         GeometryTool::Line => 1,
@@ -6292,7 +6249,7 @@ fn refresh_ui(ui: &MainWindow, state: &AppState) {
         }
     }
 
-    if state.show_geometry_3d && !state.show_sketch_editor {
+    if (state.current_step == 0 && state.drawing.is_none()) || (state.show_geometry_3d && !state.show_sketch_editor) {
         ui.set_visualization_title(SharedString::from("CANONICAL 3D CAD"));
         let candidate = cad::preview(state);
         let topology = candidate
@@ -6309,16 +6266,14 @@ fn refresh_ui(ui: &MainWindow, state: &AppState) {
             topology.bodies().count(),
             topology.renderable_faces().len(),
             selected_target.map_or_else(|| "none".to_string(), |target| format!("{target:?}")),
-            state.geometry_yaw.to_degrees(),
-            state.geometry_pitch.to_degrees(),
-            state.geometry_zoom * 100.0,
+            state.view_3d.yaw.to_degrees(),
+            state.view_3d.pitch.to_degrees(),
+            state.view_3d.zoom * 100.0,
         )));
         ui.set_visualization_image(render_canonical_geometry_3d(
             topology,
-            state.geometry_yaw,
-            state.geometry_pitch,
-            state.geometry_zoom,
-            state.geometry_pick_mode,
+            state.view_3d,
+            if matches!(state.current_step,1|2) {ui.get_mesh_entity_mode()}else{state.geometry_pick_mode},
             &candidate
                 .map(|p| {
                     p.selection
@@ -6329,15 +6284,11 @@ fn refresh_ui(ui: &MainWindow, state: &AppState) {
                 })
                 .unwrap_or_else(|| state.wb_selected_targets.clone()),
             hovered_target,
+            ui.get_cad_display_mode(),
         ));
         if ui.get_cad_measure_active() && !state.cad_measure_points.is_empty() {
-            let points = render::project_measurement(
-                topology,
-                state.geometry_yaw,
-                state.geometry_pitch,
-                state.geometry_zoom,
-                &state.cad_measure_points,
-            );
+            let points =
+                render::project_measurement(topology, state.view_3d, &state.cad_measure_points);
             ui.set_visualization_image(render::annotate_measurement(
                 ui.get_visualization_image(),
                 &points,
@@ -6357,6 +6308,7 @@ fn refresh_ui(ui: &MainWindow, state: &AppState) {
             None,
             None,
             None,
+            state.view_3d,
         ));
     } else if state.show_mesh {
         if let Some(generated) = state.workbench.mesh() {
@@ -6386,6 +6338,7 @@ fn refresh_ui(ui: &MainWindow, state: &AppState) {
                     state.workbench.mesh_selection(),
                     state.workbench.mesh_hover(),
                     selected_patch_index(state.selected_tree),
+                    state.view_3d,
                 ));
             }
         } else {
@@ -6493,6 +6446,7 @@ fn refresh_ui(ui: &MainWindow, state: &AppState) {
                 state.streamline_paths(),
                 ui.get_result_contour_levels().clamp(3, 32) as usize,
                 ui.get_post_edges(),
+                state.view_3d,
             ),
         });
     } else if let Some(field) = state.frames.get(state.frame_index) {
@@ -6586,6 +6540,8 @@ const PREVIEW_HEIGHT: u32 = 320;
 
 #[path = "render.rs"]
 mod render;
+#[path = "viewport.rs"]
+mod viewport;
 use render::*;
 fn case_name(case: &flursys::ProjectCase) -> &'static str {
     match case {
@@ -6616,6 +6572,9 @@ fn geometry_view_angles(axis: i32) -> (f32, f32) {
         0 => (std::f32::consts::FRAC_PI_2, 0.0),
         1 => (0.0, 0.0),
         2 => (0.0, std::f32::consts::FRAC_PI_2),
+        4 => (-std::f32::consts::FRAC_PI_2, 0.0),
+        5 => (std::f32::consts::PI, 0.0),
+        6 => (0.0, -std::f32::consts::FRAC_PI_2),
         _ => (0.65, 0.48),
     }
 }
@@ -6625,6 +6584,9 @@ fn geometry_view_label(axis: i32) -> &'static str {
         0 => "X-axis",
         1 => "Y-axis",
         2 => "Z-axis",
+        4 => "opposite X-axis",
+        5 => "opposite Y-axis",
+        6 => "bottom",
         _ => "isometric",
     }
 }
@@ -7546,8 +7508,17 @@ mod tests {
         let rectangle = state.workbench.add_rectangle(2.0, 1.0).unwrap();
         let extrusion = state.workbench.extrude_face(rectangle.face, 0.5).unwrap();
 
-        let ray = canonical_geometry_ray(state.workbench.geometry(), 0.0, 0.0, 1.0, (260.0, 160.0))
-            .unwrap();
+        let ray = canonical_geometry_ray(
+            state.workbench.geometry(),
+            viewport::View3d {
+                yaw: 0.0,
+                pitch: 0.0,
+                zoom: 1.0,
+                ..viewport::View3d::default()
+            },
+            (260.0, 160.0),
+        )
+        .unwrap();
         let hit = state.workbench.geometry().pick_face(ray).unwrap();
 
         assert_eq!(hit.body, Some(extrusion.body));
