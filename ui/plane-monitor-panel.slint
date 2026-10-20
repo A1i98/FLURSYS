@@ -1,0 +1,25 @@
+import {Button,ComboBox,SpinBox,CheckBox} from "std-widgets.slint";
+import {UiTheme} from "components.slint";
+export component PlaneMonitorPanel inherits VerticalLayout {
+    in property <[string]> names;
+    in-out property <int> index;
+    in-out property <int> every:10;
+    in-out property <bool> record:false;
+    in property <bool> busy;
+    in property <string> details;
+    in property <string> status;
+    callback select(int);callback apply();callback view();
+    vertical-stretch:0;spacing:7px;
+    Text {text:"FLOW PLANE MONITOR";color:UiTheme.accent;font-size:11px;font-weight:700;vertical-stretch:0;}
+    ComboBox {model:root.names;current-index <=> root.index;max-height:32px;min-width:0px;enabled:!root.busy;selected(value)=>{root.select(self.current-index);}}
+    Text {text:root.details;color:UiTheme.text-muted;font-size:10px;wrap:word-wrap;vertical-stretch:0;}
+    CheckBox {text:"Record velocity and pressure";checked <=> root.record;enabled:!root.busy;}
+    HorizontalLayout {vertical-stretch:0;spacing:6px;
+        Text {text:"Every N iterations";color:UiTheme.text;font-size:11px;vertical-alignment:center;horizontal-stretch:1;}
+        SpinBox {value <=> root.every;minimum:1;maximum:1000000;max-height:32px;preferred-width:100px;min-width:0px;enabled:!root.busy;}
+    }
+    Button {text:"Apply recording settings";max-height:32px;min-width:0px;enabled:!root.busy && root.names.length>0;clicked=>{root.apply();}}
+    Button {text:"View flow vectors";max-height:32px;min-width:0px;enabled:root.names.length>0;clicked=>{root.view();}}
+    Text {text:root.status;color:UiTheme.text-secondary;font-size:10px;wrap:word-wrap;max-height:82px;overflow:elide;vertical-stretch:0;}
+    Text {text:"Steady SIMPLE iterations are not physical time. CSV + SVG snapshots keep the sampled fields. A final completed iteration is also saved.";color:UiTheme.text-dim;font-size:10px;wrap:word-wrap;vertical-stretch:0;}
+}
