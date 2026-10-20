@@ -1,5 +1,7 @@
 # FLURSYS
 
+<img src="ui/assets/flursys-logo.svg" alt="FLURSYS logo" width="220">
+
 **FLU**id + **R**ust + **SYS**tem
 
 FLURSYS is a Rust-based scientific simulation project. It currently contains a finite-volume solver

@@ -131,8 +131,7 @@ Gauss–Seidel preconditioning. A nonconverged linear solve is an error.
 
 ### 3.2 Deferred non-orthogonal diffusion
 
-The current SIMPLE default enables explicit non-orthogonal momentum diffusion
-with Gauss gradients. The operator uses the projection split
+The low-level SIMPLE default and 2D Workbench use explicit non-orthogonal momentum diffusion with Gauss gradients. The 3D Workbench uses a conservative limited correction. The operator uses the projection split
 
 $$\mathbf S_{\parallel}=\mathbf d\frac{\mathbf S_f\cdot\mathbf d}{|\mathbf d|^2},
 \qquad \mathbf S_{\perp}=\mathbf S_f-\mathbf S_{\parallel},$$
@@ -143,7 +142,7 @@ the current component field. Boundary correction follows the operator's
 fixed-value/zero-gradient treatment. This is deferred across SIMPLE iterations;
 it is not a separate configurable inner non-orthogonal pressure loop.
 
-`SimpleOptions::momentum_diffusion` can change the low-level operator selection.
+In 3D Workbench, the explicit face correction is bounded by the magnitude of the two-point face flux: $J_f=J_{orth}+\mathrm{clamp}(J_{corr},-|J_{orth}|,|J_{orth}|)$. The same signed contribution is added to the owner and subtracted from the neighbour, preserving conservation. This limiter sacrifices unrestricted non-orthogonal correction on poor meshes; mesh independence remains necessary. `SimpleOptions::momentum_diffusion` can change the low-level operator selection.
 Selecting explicit least-squares diffusion additionally requires the appropriate
 stencil; the active caller uses Gauss for this diffusion correction.
 
@@ -195,7 +194,7 @@ over-relaxed coefficient
 
 $$d_f=\overline{r_{AU}}_f\frac{|\mathbf S_f|^2}{\mathbf S_f\cdot\mathbf d}.$$
 
-The matching reconstructed-gradient contribution is used in the flux predictor.
+The reconstructed-gradient contribution is used in the flux predictor. In particular, interpolate the product $r_{AU}\nabla\pi$, rather than substituting the product of its separate interpolants; the response-gradient covariance is retained on nonuniform meshes. The 3D pressure source, Rhie–Chow reconstruction and cell velocity correction use the same Gauss gradient, with bounded face-distance interpolation and resolved fixed-value/owner-extrapolated pressure boundaries. The 2D coupling retains its least-squares reconstruction. Three-dimensional LSQ stencil validation uses positive-pivot Cholesky solves instead of a cancellation-prone cofactor inverse, with the existing boundary-normal closure for deficient stencils.
 Pressure boundaries add a half-cell/owner-to-face pressure response using their
 actual geometry. See `rhie_chow_flux_with_coefficients` and the boundary-aware
 pressure coefficient and flux routines in `simple.rs` for the full operator.
@@ -553,14 +552,18 @@ plotting two overlapping samples.
 
 Samples contain the intersected cell's **cell-centred** velocity and kinematic
 pressure. The plotted location is the mean of polygon vertices; there is no
-higher-order point interpolation or exact area-centroid integration. Arrows show
+higher-order point interpolation or exact area-centroid integration. Results → CAD section displays filled cell sections of speed, kinematic pressure,
+global velocity components or normal velocity, with a labelled colour bar and
+automatic/manual range. Optional arrows show
 in-plane velocity; symbols distinguish normal flow. The full vector is retained
 in CSV even when the display subsamples arrows.
 
 Every N completed SIMPLE iterations, and at the final successful iteration if
 not already scheduled, the job writes CSV and SVG under
 `monitors/solve-<id>/<encoded-plane-id>/`. Plane metadata is in `plane.json`.
-Manual export also supports PNG. CSV fields are:
+Display settings are saved per plane; scheduled SVG uses the field/style frozen
+at solve start, while CSV always contains every listed field. Manual SVG/PNG
+exports use the current display. CSV fields are:
 
 ```text
 iteration,cell,x_m,y_m,z_m,ux_m_s,uy_m_s,uz_m_s,u_plane_m_s,v_plane_m_s,normal_velocity_m_s,speed_m_s,kinematic_pressure_m2_s2

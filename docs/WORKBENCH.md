@@ -134,8 +134,10 @@ PIMPLE, BDF2, turbulence or heat transport.
 
 Select a CAD plane, configure the recording interval and enable recording before
 Run. Section data are sampled every N completed SIMPLE iterations and at the
-final successful iteration if not already due. Solution's Plane vectors view
-shows the latest section and exports CSV/SVG/PNG. Automatic recordings are CSV/SVG
+final successful iteration if not already due. Results → CAD section shows the selected plane with speed, kinematic pressure,
+velocity components or normal velocity. A colour bar, manual/automatic range,
+optional vectors and cell edges apply to the view and manual SVG/PNG exports.
+CSV always retains all recorded velocity components and kinematic pressure. Automatic recordings are CSV/SVG
 plus `plane.json` in `monitors/solve-<id>/`.
 
 These are cell-centred samples on a 3D convex-cell section, not interpolated
@@ -187,3 +189,55 @@ integration have compile/build checks but no new complete CFD validation campaig
 Record both the FLURSYS commit and CAD submodule commit, plus uncommitted changes,
 for reproducibility. The submodule is pinned; updating its tracking branch does
 not automatically update the recorded project gitlink.
+
+### Recorded CAD section playback
+
+In Results, choose CAD section and select a plane. Open recording selects a plane-specific folder under `monitors/solve-*/<encoded-plane-id>/`; Play frames, previous/next, the frame slider and FPS replay the recorded SIMPLE iteration history. This shows iterative convergence, not physical transient time. New recordings retain section geometry, velocity and kinematic pressure in JSON beside CSV/SVG, so field selection, vector overlays and colour ranges remain editable during replay. Older SVG recordings replay their original appearance. Latest field returns to the current solution. PNG/SVG/CSV exports use the selected recorded frame; legacy SVG data can be exported as SVG/PNG, while its original CSV remains beside it.
+
+Solution offers Initialize (uniform zero velocity and kinematic pressure), Run, Pause/Resume and Stop together. Initialization clears the active solution while preserving archived runs, mesh and boundary settings. Pause cooperatively blocks the current worker at a solver control checkpoint and retains all solver state in memory; Resume continues that same solve. Stop cancels the solve, including a paused worker. Resume does not restore a stopped process or survive application restart.
+
+### Solver preflight and conservation diagnostics
+
+Before Run, fatal non-positive/non-finite cell measures and invalid internal face orientation block execution. The detailed report lists invalid cell/face IDs, faces above 70 degrees non-orthogonality, and the largest adjacent-cell measure ratio. A ratio above 10 and centre-line skewness above 0.5 produce advisory warnings. These thresholds are heuristics, not accuracy guarantees, and skewness definitions differ between tools. Full scans occur during preparation and report generation; the regularly refreshed mesh inspector uses cached quality metrics.
+
+Completed runs save `mesh_preflight` and `conservation` in their report JSON. Solution/Results boundary reports include face-based inlet/outlet flow, net mass flux, relative imbalance normalized by the larger gross inlet/outlet flow, and volume-weighted absolute and signed divergence in inverse seconds. Zero-throughflow domains show relative imbalance as N/A; internal divergence remains informative for cavities. There is no physical time-step factor in these steady diagnostics. They supplement the existing convergence criteria.
+
+Failure messages retain the original technical error and add contextual checks for momentum/pressure linear failures, invalid momentum diagonals, pressure-outlet backflow and singular gradient stencils. These are diagnostic suggestions and do not establish an unmeasured root cause.
+
+### Field checkpoints and report export
+
+The Solution toolbar includes Load restart. Each solve saves `monitors/solve-*/checkpoint.json` after its first completed iteration, at the configured Save restart fields interval (default 100; 0 disables checkpoint writes and signature allocation), and on successful or iteration-limited completion. Atomic replacement retains the last complete file; failed writes are reported and do not intentionally abort the solve. Stop or process termination may lose iterations since the last completed save. The file contains geometry/connectivity and cell order, velocity, kinematic pressure, iteration and a material/numerical/boundary context string. Load restart validates the current mesh and queues these fields for the next Run; Initialize clears a queued restart. A field restart rebuilds face flux, linear solvers and convergence history with current settings, and iteration numbering starts again. It is distinct from an in-memory Pause/Resume and is not a bitwise continuation of SIMPLE.
+
+Results → Info offers field-statistics CSV and a printable HTML report. The HTML includes archived settings and boundary assignments from the selected run, solver version when recorded, mesh metrics, conservative mass-balance diagnostics, field statistics and convergence charts. Missing historical settings are marked unavailable instead of replaced with current editable settings. Use the browser print dialog to save the HTML as PDF. New report JSON files use report format 2 and retain solver version.
+
+### Plane vector visibility and automatic recording selection
+
+CAD section automatically finds the selected run's recording and opens its last frame; Play starts from the first frame when already at the end. New run reports store the workspace-relative monitor folder. For older reports, discovery requires a unique solve folder inside that run's time window, matching plane geometry and the final iteration. Ambiguous folders require Open recording. Changing the selected run or plane refreshes the recording selection.
+
+Normalize arrow length (default on) shows in-plane direction with a common length, making weak recirculation visible; length no longer represents speed. The colour field retains the actual selected scalar values. Turn normalization off for proportional arrows. Normal flow markers are optional and off by default. For a clear flow view choose Speed, enable Vectors and normalization, and hide Cell edges.
+
+### Explicit meshing controls
+
+In Mesh → Meshing controls, set sizes in metres and choose **Apply mesh settings**
+(or Generate Mesh to apply and generate). The required order is minimum ≤ target
+≤ maximum. The target now sets the geometry point sizes before local overrides;
+it is not a cell count. Enabled local and distance-field sizes outside the global
+bounds are rejected rather than silently clamped. Coarse/Medium/Fine are optional,
+geometry-scaled drafts; in 3D the target is capped at one third of the smallest
+positive model extent. These presets are starting estimates, not quality guarantees.
+Use Uniform size to explicitly set both bounds to the target.
+
+Algorithm & quality exposes triangle MeshAdapt/Delaunay/Frontal-Delaunay and
+Delaunay/Frontal/HXT tetrahedron algorithms, curvature elements per full circle
+(0 disables), smoothing iterations, boundary size extension, native tetrahedron
+optimization and optional Netgen optimization. Availability and parallel speedup
+depend on the installed Gmsh build. Optimization threshold is Gmsh's dimensionless
+quality value, not a CFD non-orthogonality angle. Controls persist in
+`mesh_recipe.tuning` and are included in subsequent run reports.
+
+Local sizing and Distance refinement replace an existing control for the same
+boundary group. Distance refinement exposes the fine-region distance, transition
+end distance and distance sampling. Use a wider transition interval to reduce
+size-field gradients; this does not impose a hard adjacent-cell-volume-ratio bound.
+Inspect the generated mesh before solving. Boundary layers remain supported only
+for 2D edges; no 3D prism-layer capability is implied by these controls.
