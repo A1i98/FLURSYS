@@ -208,12 +208,12 @@ impl GmshMeshOptions {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct GmshVersion {
     pub value: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct GmshMeshingReport {
     pub version: GmshVersion,
     pub dimension: MeshDimension,

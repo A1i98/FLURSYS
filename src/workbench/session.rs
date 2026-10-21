@@ -679,23 +679,34 @@ impl WorkbenchSession {
             .filter(|control| control.enabled)
             .collect::<Vec<_>>();
         boundary_layers.sort_by_key(|control| control.id);
-        for control in boundary_layers {
+        // Gmsh's BoundaryLayer constraint is a single active field. Merge
+        // compatible scopes rather than silently replacing an earlier field.
+        if let Some(first) = boundary_layers.first() {
             if self.mesh_dimension != MeshDimension::TwoD {
-                return Err(WorkbenchError::InvalidGrouping {
-                    message: "BoundaryLayer controls are currently supported only for 2D edges"
-                        .into(),
-                });
+                return Err(WorkbenchError::InvalidGrouping { message:
+                    "Prismatic inflation on arbitrary 3D CAD is not supported by this backend; use surface distance refinement instead".into() });
             }
-            let tags = self.recipe_target_tags(&export, &control.targets)?;
-            let thickness = control.first_layer_height
-                * (control.growth_ratio.powi(control.layer_count as i32) - 1.0)
-                / (control.growth_ratio - 1.0);
+            let mut tags = std::collections::BTreeSet::new();
+            for control in &boundary_layers {
+                control.layer_dimensions().map_err(|message| WorkbenchError::InvalidGrouping {message})?;
+                let equal = |a: f64, b: f64| (a-b).abs() <= 64.0*f64::EPSILON*a.abs().max(b.abs());
+                if !equal(control.first_layer_height, first.first_layer_height)
+                    || !equal(control.growth_ratio, first.growth_ratio) || control.layer_count != first.layer_count {
+                    return Err(WorkbenchError::InvalidGrouping {message:
+                        "Enabled 2D inflation controls must share first height, growth and target layers; combine compatible walls in one scope or disable conflicting controls".into()});
+                }
+                for tag in self.recipe_target_tags(&export, &control.targets)? {
+                    if !tags.insert(tag) {
+                        return Err(WorkbenchError::InvalidGrouping {message:
+                            "Inflation scopes overlap. Remove duplicate edges from the enabled controls".into()});
+                    }
+                }
+            }
+            let (thickness, _) = first.layer_dimensions().map_err(|message| WorkbenchError::InvalidGrouping {message})?;
             source.push_str(&format!(
-                "Field[{field_id}] = BoundaryLayer;\nField[{field_id}].CurvesList = {{{}}};\nField[{field_id}].hwall_n = {};\nField[{field_id}].ratio = {};\nField[{field_id}].thickness = {thickness};\nField[{field_id}].Quads = 1;\nBoundaryLayer Field = {field_id};\n",
-                join_tags(&tags),
-                control.first_layer_height,
-                control.growth_ratio,
-            ));
+                "Field[{field_id}] = BoundaryLayer;\nField[{field_id}].CurvesList = {{{}}};\nField[{field_id}].Size = {};\nField[{field_id}].Ratio = {};\nField[{field_id}].Thickness = {thickness};\nField[{field_id}].SizeFar = {};\nField[{field_id}].Quads = 1;\nField[{field_id}].IntersectMetrics = 1;\nBoundaryLayer Field = {field_id};\n",
+                join_tags(&tags.into_iter().collect::<Vec<_>>()), first.first_layer_height,
+                first.growth_ratio, self.global_size));
             field_id += 1;
         }
 
@@ -722,6 +733,15 @@ impl WorkbenchSession {
                 control.distance_max,
             ));
             threshold_fields.push(threshold_field);
+        }
+        for control in self.mesh_recipe.regions.iter().filter(|c| c.enabled) {
+            control.validate().map_err(|message| WorkbenchError::InvalidGrouping {message})?;
+            if control.size < self.min_size || control.size > self.max_size {
+                return Err(WorkbenchError::InvalidGrouping {message:format!("Region '{}' size is outside global bounds [{}, {}]", control.name, self.min_size, self.max_size)});
+            }
+            let a=control.minimum; let b=control.maximum;
+            source.push_str(&format!("Field[{field_id}] = Box;\nField[{field_id}].VIn = {};\nField[{field_id}].VOut = {};\nField[{field_id}].XMin = {};\nField[{field_id}].XMax = {};\nField[{field_id}].YMin = {};\nField[{field_id}].YMax = {};\nField[{field_id}].ZMin = {};\nField[{field_id}].ZMax = {};\nField[{field_id}].Thickness = {};\n",control.size,self.global_size,a.x,b.x,a.y,b.y,a.z,b.z,control.transition));
+            threshold_fields.push(field_id); field_id+=1;
         }
         match threshold_fields.as_slice() {
             [] => {}

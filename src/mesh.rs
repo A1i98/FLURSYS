@@ -4,6 +4,9 @@
 //! geometric representation for inspection and pre-processing, not a 3D CFD
 //! discretisation.
 
+mod snapshot;
+pub(crate) use snapshot::MeshSnapshot;
+
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
 use std::fmt;
@@ -225,7 +228,7 @@ pub struct Cell {
     pub volume: f64,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BoundaryType {
     VelocityInlet,
     PressureOutlet,
@@ -234,7 +237,7 @@ pub enum BoundaryType {
     ZeroGradient,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BoundaryPatch {
     pub name: String,
     pub face_indices: Vec<usize>,

@@ -127,9 +127,32 @@ impl Default for WorkbenchMeshSettings {
 #[serde(default)]
 pub struct MeshRecipe {
     pub tuning: MeshTuning,
+    pub regions: Vec<BoxRefinement>,
     pub local_sizes: Vec<LocalMeshSize>,
     pub refinements: Vec<ThresholdRefinement>,
     pub boundary_layers: Vec<BoundaryLayerControl>,
+}
+
+/// Axis-aligned volume sizing; independent of boundary naming.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct BoxRefinement {
+    pub id: u32,
+    pub name: String,
+    pub minimum: crate::Vec3,
+    pub maximum: crate::Vec3,
+    pub size: f64,
+    pub transition: f64,
+    pub enabled: bool,
+}
+impl BoxRefinement {
+    pub fn validate(&self) -> Result<(), String> {
+        let a = self.minimum; let b = self.maximum;
+        if ![a.x,a.y,a.z,b.x,b.y,b.z,self.size,self.transition].iter().all(|v|v.is_finite())
+            || a.x>=b.x || a.y>=b.y || a.z>=b.z || self.size<=0.0 || self.transition<0.0 || self.name.trim().is_empty() {
+            return Err("Box refinement requires finite min < max on every axis, positive size and nonnegative transition".into());
+        }
+        Ok(())
+    }
 }
 
 /// Explicit Gmsh controls shared by the UI, persistence and geometry export.
@@ -207,6 +230,25 @@ pub struct BoundaryLayerControl {
     pub growth_ratio: f64,
     pub layer_count: u32,
     pub enabled: bool,
+}
+
+impl BoundaryLayerControl {
+    /// Requested geometric stack; Gmsh may truncate layers near collisions.
+    pub fn layer_dimensions(&self) -> Result<(f64, f64), String> {
+        if !self.first_layer_height.is_finite() || self.first_layer_height <= 0.0
+            || !self.growth_ratio.is_finite() || !(1.0..=3.0).contains(&self.growth_ratio)
+            || !(1..=64).contains(&self.layer_count) {
+            return Err("Inflation requires positive first height, growth 1–3 and 1–64 target layers".into());
+        }
+        let mut height = self.first_layer_height;
+        let mut total = 0.0;
+        for _ in 0..self.layer_count { total += height; height *= self.growth_ratio; }
+        let last = height / self.growth_ratio;
+        if !total.is_finite() || !last.is_finite() {
+            return Err("Inflation thickness overflow; reduce height, growth or layer count".into());
+        }
+        Ok((total, last))
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -288,6 +330,9 @@ pub struct RunRecord {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct WorkbenchProject {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mesh_asset: Option<String>,
+
     pub format_version: u32,
     pub project_id: String,
     pub name: String,
@@ -320,6 +365,7 @@ impl Default for WorkbenchProject {
 impl WorkbenchProject {
     pub fn blank(name: impl Into<String>) -> Self {
         Self {
+            mesh_asset: None,
             format_version: WORKBENCH_PROJECT_FORMAT_VERSION,
             project_id: unique_id("project"),
             name: name.into(),
@@ -339,6 +385,10 @@ impl WorkbenchProject {
     }
 
     pub fn validate(&self) -> Result<(), ProjectDocumentError> {
+        if self.mesh_asset.as_ref().is_some_and(|s|s.len()!=64 || !s.bytes().all(|b|b.is_ascii_hexdigit())) {
+            return Err(ProjectDocumentError::Invalid("Invalid mesh asset identifier".into()));
+        }
+
         let mut plane_ids = BTreeSet::new();
         for plane in &self.plane_monitors {
             plane.validate().map_err(ProjectDocumentError::Invalid)?;
@@ -814,6 +864,7 @@ pub fn save_case_template(
     // Keep the caller's document intact while enforcing that storage boundary.
     let mut portable_manifest = manifest.clone();
     portable_manifest.project_template.runs.clear();
+    portable_manifest.project_template.mesh_asset=None;
     atomic_json_write(&destination, &portable_manifest)?;
     Ok(destination)
 }
@@ -962,6 +1013,11 @@ fn validate_mesh_recipe(
     named_selections: &BTreeSet<&String>,
 ) -> Result<(), ProjectDocumentError> {
     let mut ids = BTreeSet::new();
+    for control in &recipe.regions {
+        if !ids.insert(control.id) { return Err(ProjectDocumentError::Invalid("Duplicate mesh-control ID".into())); }
+        control.validate().map_err(ProjectDocumentError::Invalid)?;
+    }
+
     for control in &recipe.local_sizes {
         if !ids.insert(control.id)
             || control.name.trim().is_empty()
@@ -1002,13 +1058,14 @@ fn validate_mesh_recipe(
             || !control.first_layer_height.is_finite()
             || !control.growth_ratio.is_finite()
             || control.first_layer_height <= 0.0
-            || control.growth_ratio <= 1.0
+            || control.growth_ratio < 1.0
             || control.layer_count == 0
         {
             return Err(ProjectDocumentError::Invalid(
                 "invalid boundary layer control".into(),
             ));
         }
+        control.layer_dimensions().map_err(ProjectDocumentError::Invalid)?;
         validate_mesh_control_targets(&control.targets, geometry, named_selections)?;
     }
     Ok(())

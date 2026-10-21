@@ -160,6 +160,7 @@ codegen-units = 1
 panic = "unwind"
 
 [dependencies]
+sha2 = { workspace = true }
 arboard = { version = "3.6", default-features = false, optional = true }
 cad-workbench = { package = "solidcraft-ui-egui", path = "vendor/cad-workbench/crates/ui-egui", features = ["host-integration"], optional = true }
 cad-engine = { package = "solidcraft-engine", path = "vendor/cad-workbench/crates/engine", optional = true }
