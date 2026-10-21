@@ -425,24 +425,6 @@ pub(super) fn bind(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
 
     let weak = ui.as_weak();
     let shared = state.clone();
-    ui.on_select_mesh_control(move |index| {
-        let Some(ui) = weak.upgrade() else { return };
-        let state = shared.borrow();
-        let r = state.workbench.mesh_recipe();
-        if let Some(id) = r
-            .local_sizes
-            .iter()
-            .map(|c| c.id)
-            .chain(r.refinements.iter().map(|c| c.id))
-            .chain(r.boundary_layers.iter().map(|c| c.id))
-            .nth(index.max(0) as usize)
-        {
-            ui.set_wb_recipe_control_id(id.to_string().into());
-        }
-    });
-
-    let weak = ui.as_weak();
-    let shared = state.clone();
     ui.on_check_mesh_inputs(move || {
         let Some(ui)=weak.upgrade() else{return};
         let result=(|| {
@@ -490,6 +472,7 @@ pub(super) fn bind(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
 }
 
 pub(super) fn refresh(ui: &MainWindow, state: &AppState) {
+    super::mesh_inspection::refresh(ui,state);
     ui.set_mesh_show_geometry(state.show_geometry_3d);
     ui.set_mesh_spatial_view(if state.show_geometry_3d {state.workbench.geometry().bodies().next().is_some()} else {state.workbench.mesh_dimension()==MeshDimension::ThreeD});
     let local_index = state
@@ -565,18 +548,19 @@ pub(super) fn refresh(ui: &MainWindow, state: &AppState) {
     let controls = r
         .local_sizes
         .iter()
-        .map(|c| SharedString::from(format!("{} · Local {} · h={:.3e}", c.id, c.name, c.size)))
+        .map(|c| SharedString::from(format!("{} {} · h={:.3e}", if c.enabled {"●"}else{"○"}, c.name, c.size)))
         .chain(
             r.refinements
                 .iter()
-                .map(|c| SharedString::from(format!("{} · {} · h={:.2e}→{:.2e}, d={:.2e}→{:.2e}", c.id, c.name, c.size_min,c.size_max,c.distance_min,c.distance_max))),
+                .map(|c| SharedString::from(format!("{} {} · {:.2e}→{:.2e}",if c.enabled {"●"}else{"○"},c.name,c.size_min,c.size_max))),
         )
         .chain(r.boundary_layers.iter().map(|c| {
             SharedString::from(format!(
-                "{} · Layers {} · n={}",
-                c.id, c.name, c.layer_count
+                "{} {} · layers={}",
+                if c.enabled {"●"}else{"○"}, c.name, c.layer_count
             ))
         }))
+        .chain(r.regions.iter().map(|c|SharedString::from(format!("{} {} · box h={:.2e}",if c.enabled {"●"}else{"○"},c.name,c.size))))
         .collect::<Vec<_>>();
     ui.set_mesh_control_model(ModelRc::new(VecModel::from(controls)));
     let names = state.workbench.patch_names();

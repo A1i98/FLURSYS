@@ -1,6 +1,6 @@
 import {PlaneMonitorPanel} from "plane-monitor-panel.slint";
 import {Button,ComboBox,LineEdit,SpinBox,Slider,ScrollView,ListView,TextEdit} from "std-widgets.slint";
-import {UiTheme,InteractiveGeometryPreview} from "components.slint";
+import {UiTheme, PropertiesPanel,InteractiveGeometryPreview} from "components.slint";
 component Tool inherits Button {min-width:0px;min-height:30px;max-height:34px;}
 component Label inherits Text {color:UiTheme.text-muted;font-size:11px;wrap:word-wrap;}
 export component ResultsWorkspace inherits Rectangle {
@@ -89,84 +89,19 @@ export component ResultsWorkspace inherits Rectangle {
         }
         HorizontalLayout {
             spacing:10px;
-            VerticalLayout {
-                spacing:7px;
-                HorizontalLayout {
-                    height:34px;spacing:6px;
-                    if root.tab!=5 : ComboBox {model:["Speed |U|","Pressure p/ρ","Velocity X","Velocity Y","Velocity Z","Vorticity |curl U|","Divergence div U"];min-width:0px;preferred-width:210px;enabled:root.has-result;
-                        current-index:root.field-index==1 ? 1 : root.field-index==4 ? 2 : root.field-index==5 ? 3 : root.field-index==6 ? 4 : root.field-index==2 ? 5 : root.field-index==7 ? 6 : 0;
-                        selected(value)=>{root.select-field([0,1,4,5,6,2,7][self.current-index]);}
-                    }
-                    if root.tab!=5 : Tool {text:"▦ Mesh / field";enabled:root.has-result;clicked=>{root.action(6);}}
-                    Tool {text:root.tab==5 ? "● CAD section" : "CAD section";enabled:root.plane-names.length>0;clicked=>{root.tab=5;root.view-plane();}}
-                    Rectangle {horizontal-stretch:1;}
-                    if root.tab!=5 : Tool {text:"⊡ Fit";enabled:root.has-result;clicked=>{root.fit();}}
-                    Tool {text:"PNG ↓";enabled:root.has-result;clicked=>{if root.tab==5 {root.export-plane(1);}else{root.export(0);}}}
-                }
-                Text {text:root.tab==5 ? "CAD SECTION · CELL-CENTRED FIELDS" : root.title;color:UiTheme.accent;font-size:11px;font-weight:700;overflow:elide;}
-                if root.tab!=4 && root.tab!=5 : InteractiveGeometryPreview {
-                    vertical-stretch:1;preview-image:root.preview;
-                    navigation-3d:root.is-3d && root.slice-axis==0;orientation-image:root.orientation;view-axis:root.view-axis;
-                    select-view-axis(axis)=>{root.view(axis);}pick-orientation(x,y)=>{root.pick-orientation(x,y);}
-                    pan(dx,dy,w,h)=>{root.pan(dx,dy,w,h);}
-                    help-text:root.is-3d ? "CLICK: PROBE · DRAG: ORBIT · MIDDLE / SHIFT-DRAG: PAN · WHEEL: ZOOM" : "CLICK: PROBE · DRAG: PAN · WHEEL: ZOOM · DOUBLE CLICK: FIT";
-                    pick-boundary(x,y,w,h)=>{root.pick(x,y,w,h);}
-                    hover(x,y,w,h)=>{root.hover(x,y,w,h);}
-                    orbit(x,y,px,py)=>{root.drag(x,y,px,py,self.width/1px,self.height/1px);}
-                    orbit-end=>{root.drag-end();}zoom(delta)=>{root.zoom(delta);}reset-view=>{root.fit();}
-                }
-                if root.tab==5 : VerticalLayout {
-                    HorizontalLayout {height:32px;spacing:5px;
-                        Tool {text:"Open recording…";clicked=>{root.playback(0);}}
-                        Tool {text:"|◀";clicked=>{root.playback(2);}}
-                        Tool {text:root.plane-playing ? "Ⅱ Pause" : "▶ Play frames";clicked=>{root.playback(1);}}
-                        Tool {text:"▶|";clicked=>{root.playback(3);}}
-                        Tool {text:"Latest field";clicked=>{root.playback(4);}}
-                    }
-                    HorizontalLayout {height:30px;spacing:6px;
-                        Label {text:"Frame "+(root.plane-count>0 ? root.plane-frame+1 : 0)+" / "+root.plane-count;}
-                        Slider {minimum:0;maximum:max(1,root.plane-count - 1);value:root.plane-frame;enabled:root.plane-count>1;changed(value)=>{root.playback(1000+round(value));}}
-                        Label {text:"FPS";}
-                        SpinBox {minimum:1;maximum:30;value <=> root.plane-fps;preferred-width:70px;}
-                    }
-                    Image {source:root.plane-image;vertical-stretch:1;image-fit:contain;}
-                    Text {text:root.plane-status;color:UiTheme.text-muted;wrap:word-wrap;font-size:10px;max-height:42px;overflow:elide;}
-                }
-                if root.tab==4 : VerticalLayout {
-                    Image {source:root.profile-image;vertical-stretch:1;image-fit:contain;}
-                    Text {text:root.profile-caption;color:UiTheme.text;wrap:word-wrap;font-size:12px;}
-                }
-                if root.tab!=5 : Text {text:root.legend;color:UiTheme.text-soft;font-size:11px;wrap:word-wrap;}
-                if root.tab!=5 : Text {text:root.probe;color:UiTheme.text;font-size:11px;wrap:word-wrap;max-height:42px;overflow:elide;}
-                if root.tab!=4 && root.tab!=5 : Rectangle {
-                    height:69px;background:UiTheme.toolbar;border-color:UiTheme.border;border-width:1px;border-radius:4px;
-                    VerticalLayout {padding:6px;spacing:4px;
-                        HorizontalLayout {spacing:6px;
-                            Tool {text:root.playing ? "Ⅱ Pause" : "▶ Play";enabled:root.has-result;clicked=>{root.action(2);}}
-                            Tool {text:"↶";enabled:root.has-result;clicked=>{root.action(3);}}
-                            Label {text:root.is-3d ? "Slice sweep · 3D" : "Steady-flow tracers · 2D";horizontal-stretch:1;vertical-alignment:center;}
-                            SpinBox {min-width:90px;preferred-width:100px;max-width:110px;value <=> root.animation-rate;minimum:10;maximum:400;}
-                            Label {text:"%";vertical-alignment:center;}
-                        }
-                        HorizontalLayout {spacing:8px;
-                            Label {text:"Visual phase";vertical-alignment:center;}
-                            Slider {value:root.phase;minimum:0;maximum:1000;enabled:root.has-result;changed(value)=>{root.seek(value);}}
-                            Label {text:Math.round(root.phase/10)+"%";vertical-alignment:center;}
-                        }
-                    }
-                }
-                if root.tab!=5 : Text {text:root.feedback;color:UiTheme.text-soft;font-size:11px;wrap:word-wrap;max-height:32px;overflow:elide;}
-            }
-            Rectangle {
-                width:330px;background:UiTheme.sidebar;border-color:UiTheme.border;border-width:1px;border-radius:4px;
+            PropertiesPanel {
                 VerticalLayout {
                     padding:8px;spacing:8px;
-                    HorizontalLayout {spacing:3px;
-                        for label[index] in ["Display","Flow","Probes","Info","Plot","Plane"] : Tool {text:(index==root.tab ? "● " : "")+label;clicked=>{root.tab=index;}}
-                    }
+                    Label {text:"RESULT PROPERTIES";color:UiTheme.accent;font-weight:700;}
+                    ComboBox {model:["Display","Flow","Probes","Information","Plots","CAD plane"];current-index <=> root.tab;min-height:32px;max-height:32px;}
                     panel:=ScrollView {
+            min-height:0px;min-width:0px;
+            viewport-height:max(self.visible-height,property-content.height);
+            viewport-width:self.visible-width;
+            vertical-scrollbar-policy:always-on;
+
                         horizontal-scrollbar-policy:always-off;
-                        VerticalLayout {width:panel.visible-width;spacing:8px;padding:4px;
+                        property-content := VerticalLayout {width:panel.visible-width;spacing:8px;padding-bottom:24px;padding:4px;height:self.preferred-height;x:0px;y:0px;
                             if root.tab==5 : PlaneMonitorPanel {
                                 names:root.plane-names;index <=> root.plane-index;every <=> root.plane-every;record <=> root.plane-enabled;
                                 busy:root.busy;details:root.plane-details;status:root.plane-status;
@@ -254,6 +189,76 @@ export component ResultsWorkspace inherits Rectangle {
                     }
                 }
             }
+
+            VerticalLayout {
+                spacing:7px;
+                HorizontalLayout {
+                    height:34px;spacing:6px;
+                    if root.tab!=5 : ComboBox {model:["Speed |U|","Pressure p/ρ","Velocity X","Velocity Y","Velocity Z","Vorticity |curl U|","Divergence div U","Turbulent k","Specific dissipation ω","Turbulent viscosity νt"];min-width:0px;preferred-width:210px;enabled:root.has-result;
+                        current-index:root.field-index>=8 ? root.field-index - 1 : root.field-index==1 ? 1 : root.field-index==4 ? 2 : root.field-index==5 ? 3 : root.field-index==6 ? 4 : root.field-index==2 ? 5 : root.field-index==7 ? 6 : 0;
+                        selected(value)=>{root.select-field([0,1,4,5,6,2,7,8,9,10][self.current-index]);}
+                    }
+                    if root.tab!=5 : Tool {text:"▦ Mesh / field";enabled:root.has-result;clicked=>{root.action(6);}}
+                    Tool {text:root.tab==5 ? "● CAD section" : "CAD section";enabled:root.plane-names.length>0;clicked=>{root.tab=5;root.view-plane();}}
+                    Rectangle {horizontal-stretch:1;}
+                    if root.tab!=5 : Tool {text:"⊡ Fit";enabled:root.has-result;clicked=>{root.fit();}}
+                    Tool {text:"PNG ↓";enabled:root.has-result;clicked=>{if root.tab==5 {root.export-plane(1);}else{root.export(0);}}}
+                }
+                Text {text:root.tab==5 ? "CAD SECTION · CELL-CENTRED FIELDS" : root.title;color:UiTheme.accent;font-size:11px;font-weight:700;overflow:elide;}
+                if root.tab!=4 && root.tab!=5 : InteractiveGeometryPreview {
+                    vertical-stretch:1;preview-image:root.preview;
+                    navigation-3d:root.is-3d && root.slice-axis==0;orientation-image:root.orientation;view-axis:root.view-axis;
+                    select-view-axis(axis)=>{root.view(axis);}pick-orientation(x,y)=>{root.pick-orientation(x,y);}
+                    pan(dx,dy,w,h)=>{root.pan(dx,dy,w,h);}
+                    help-text:root.is-3d ? "CLICK: PROBE · DRAG: ORBIT · MIDDLE / SHIFT-DRAG: PAN · WHEEL: ZOOM" : "CLICK: PROBE · DRAG: PAN · WHEEL: ZOOM · DOUBLE CLICK: FIT";
+                    pick-boundary(x,y,w,h)=>{root.pick(x,y,w,h);}
+                    hover(x,y,w,h)=>{root.hover(x,y,w,h);}
+                    orbit(x,y,px,py)=>{root.drag(x,y,px,py,self.width/1px,self.height/1px);}
+                    orbit-end=>{root.drag-end();}zoom(delta)=>{root.zoom(delta);}reset-view=>{root.fit();}
+                }
+                if root.tab==5 : VerticalLayout {
+                    HorizontalLayout {height:32px;spacing:5px;
+                        Tool {text:"Open recording…";clicked=>{root.playback(0);}}
+                        Tool {text:"|◀";clicked=>{root.playback(2);}}
+                        Tool {text:root.plane-playing ? "Ⅱ Pause" : "▶ Play frames";clicked=>{root.playback(1);}}
+                        Tool {text:"▶|";clicked=>{root.playback(3);}}
+                        Tool {text:"Latest field";clicked=>{root.playback(4);}}
+                    }
+                    HorizontalLayout {height:30px;spacing:6px;
+                        Label {text:"Frame "+(root.plane-count>0 ? root.plane-frame+1 : 0)+" / "+root.plane-count;}
+                        Slider {minimum:0;maximum:max(1,root.plane-count - 1);value:root.plane-frame;enabled:root.plane-count>1;changed(value)=>{root.playback(1000+round(value));}}
+                        Label {text:"FPS";}
+                        SpinBox {minimum:1;maximum:30;value <=> root.plane-fps;preferred-width:70px;}
+                    }
+                    Image {source:root.plane-image;vertical-stretch:1;image-fit:contain;}
+                    Text {text:root.plane-status;color:UiTheme.text-muted;wrap:word-wrap;font-size:10px;max-height:42px;overflow:elide;}
+                }
+                if root.tab==4 : VerticalLayout {
+                    Image {source:root.profile-image;vertical-stretch:1;image-fit:contain;}
+                    Text {text:root.profile-caption;color:UiTheme.text;wrap:word-wrap;font-size:12px;}
+                }
+                if root.tab!=5 : Text {text:root.legend;color:UiTheme.text-soft;font-size:11px;wrap:word-wrap;}
+                if root.tab!=5 : Text {text:root.probe;color:UiTheme.text;font-size:11px;wrap:word-wrap;max-height:42px;overflow:elide;}
+                if root.tab!=4 && root.tab!=5 : Rectangle {
+                    height:69px;background:UiTheme.toolbar;border-color:UiTheme.border;border-width:1px;border-radius:4px;
+                    VerticalLayout {padding:6px;spacing:4px;
+                        HorizontalLayout {spacing:6px;
+                            Tool {text:root.playing ? "Ⅱ Pause" : "▶ Play";enabled:root.has-result;clicked=>{root.action(2);}}
+                            Tool {text:"↶";enabled:root.has-result;clicked=>{root.action(3);}}
+                            Label {text:root.is-3d ? "Slice sweep · 3D" : "Steady-flow tracers · 2D";horizontal-stretch:1;vertical-alignment:center;}
+                            SpinBox {min-width:90px;preferred-width:100px;max-width:110px;value <=> root.animation-rate;minimum:10;maximum:400;}
+                            Label {text:"%";vertical-alignment:center;}
+                        }
+                        HorizontalLayout {spacing:8px;
+                            Label {text:"Visual phase";vertical-alignment:center;}
+                            Slider {value:root.phase;minimum:0;maximum:1000;enabled:root.has-result;changed(value)=>{root.seek(value);}}
+                            Label {text:Math.round(root.phase/10)+"%";vertical-alignment:center;}
+                        }
+                    }
+                }
+                if root.tab!=5 : Text {text:root.feedback;color:UiTheme.text-soft;font-size:11px;wrap:word-wrap;max-height:32px;overflow:elide;}
+            }
+
         }
     }
 }

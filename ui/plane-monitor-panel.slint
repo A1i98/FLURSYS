@@ -40,10 +40,10 @@ export component PlaneMonitorPanel inherits VerticalLayout {
     Rectangle {height:1px;background:UiTheme.border;}
     CheckBox {min-height:30px;max-height:30px;text:"Record all velocity + pressure fields";checked <=> root.record;enabled:!root.busy;}
     HorizontalLayout {vertical-stretch:0;spacing:6px;
-        Label {text:"Every N iterations";horizontal-stretch:1;}
+        Label {text:"Every N iterations / time steps";horizontal-stretch:1;}
         SpinBox {value <=> root.every;minimum:1;maximum:1000000;max-height:32px;preferred-width:100px;min-width:0px;enabled:!root.busy;}
     }
     Action {text:"Apply recording settings";enabled:!root.busy && root.names.length>0;clicked=>{root.apply();}}
     Label {text:root.status;max-height:68px;overflow:elide;}
-    Label {text:"CSV always contains p/ρ and all three velocity components. Scheduled SVG uses the display selected before Run. Steady iterations are not physical time.";}
+    Label {text:"CSV always contains p/ρ and all three velocity components. Scheduled SVG uses the display selected before Run. Steady: iteration history. Transient: accepted physical time levels.";}
 }

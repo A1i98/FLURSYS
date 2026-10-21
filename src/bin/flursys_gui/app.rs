@@ -16,7 +16,7 @@ use flursys::{
 };
 use slint::{ComponentHandle, ModelRc, SharedString, Timer, TimerMode, VecModel};
 use std::cell::RefCell;
-use std::collections::{BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::mpsc::Receiver;
@@ -63,6 +63,11 @@ mod flow_setup;
 mod measure;
 #[path = "mesh_setup.rs"]
 mod mesh_setup;
+#[path = "mesh_controls.rs"]
+mod mesh_controls;
+mod preferences;
+#[path = "mesh_inspection.rs"]
+mod mesh_inspection;
 #[path = "sketch_edit.rs"]
 mod sketch_edit;
 #[path = "drawing.rs"]
@@ -247,6 +252,7 @@ struct AppState {
     /// panels; new workspace save/load routes through this document only.
     workbench_project: WorkbenchProject,
     workspace_path: Option<PathBuf>,
+    saved_mesh_copies: BTreeMap<(PathBuf,u64,String),String>,
     cad_reload_generation: u64,
     active_plane_recording_folder: Option<PathBuf>,
     workbench_dirty: bool,
@@ -264,6 +270,7 @@ struct AppState {
     mesh_view: ViewTransform,
     mesh_pan_anchor: Option<(f32, f32, f64, f64)>,
     mesh_display_mode: MeshDisplayMode,
+    mesh_clip: Option<mesh_inspection::MeshClip>,
     mesh_pick_mode: MeshPickMode,
     mesh_color_mode: MeshColorMode,
     mesh_quality_metric: MeshQualityMetric,
@@ -378,6 +385,7 @@ impl AppState {
             workbench: WorkbenchSession::new(),
             workbench_project: WorkbenchProject::blank("Untitled Project"),
             workspace_path: None,
+            saved_mesh_copies: BTreeMap::new(),
             cad_reload_generation: 0,
             active_plane_recording_folder: None,
             workbench_dirty: true,
@@ -404,7 +412,8 @@ impl AppState {
                 view.set_viewport(f64::from(PREVIEW_WIDTH), f64::from(PREVIEW_HEIGHT));
                 view
             },
-            mesh_display_mode: MeshDisplayMode::SurfaceEdges,
+            mesh_display_mode: MeshDisplayMode::Wireframe,
+            mesh_clip: None,
             mesh_pick_mode: MeshPickMode::Face,
             mesh_color_mode: MeshColorMode::Neutral,
             mesh_quality_metric: MeshQualityMetric::AspectRatio,
@@ -660,6 +669,7 @@ impl AppState {
                         generated.report.patch_count
                     );
                     self.workbench.install_mesh(generated);
+                    self.mark_workbench_dirty();
                     self.show_mesh = true;
                     self.show_geometry_3d = false;
                     if let Some(cache) = self.workbench.mesh_render_cache() {
@@ -713,7 +723,8 @@ impl AppState {
                     changed = true;
                     if current == 1 || current == max || current % 10 == 0 {
                         self.log(format!(
-                            "Solve iteration {current}/{max}, continuity {:.3e}.",
+                            "Solve {} {current}/{max}, continuity {:.3e}.",
+                            if matches!(self.workbench.solver_options().time,flursys::unstructured_incompressible::TimeIntegration::Steady){"iteration"}else{"physical step"},
                             residual.unwrap_or(f64::NAN)
                         ));
                         changed = true;
@@ -795,6 +806,7 @@ impl AppState {
         document.cad_document = self.workbench_project.cad_document.clone();
         document.cad_geometry_hash = self.workbench_project.cad_geometry_hash.clone();
         document.plane_monitors = self.workbench_project.plane_monitors.clone();
+        if self.workbench.has_mesh() {document.mesh_asset=self.workbench_project.mesh_asset.clone();}
         self.workbench_project = document;
     }
 
@@ -802,6 +814,18 @@ impl AppState {
         self.workbench_dirty = true;
         self.workbench_autosave_needed = true;
         self.sync_workbench_project();
+    }
+
+    fn persist_workbench_mesh(&mut self,workspace:&Path)->Result<(),String>{
+        let Some(generated)=self.workbench.mesh() else {self.workbench_project.mesh_asset=None;return Ok(())};
+        let intent=flursys::workbench::mesh_storage::intent(&self.workbench_project)?;
+        let key=(workspace.to_path_buf(),generated.mesh.id().get(),intent);
+        if let Some(asset)=self.saved_mesh_copies.get(&key).filter(|asset|workspace.join("meshes").join(format!("{asset}.json")).is_file()) {
+            self.workbench_project.mesh_asset=Some(asset.clone());return Ok(());
+        }
+        let asset=flursys::workbench::mesh_storage::save(workspace,&self.workbench_project,generated)?;
+        self.workbench_project.mesh_asset=Some(asset.clone());self.saved_mesh_copies.insert(key,asset);
+        Ok(())
     }
 
     fn autosave_workbench_if_needed(&mut self) -> Result<bool, String> {
@@ -812,6 +836,7 @@ impl AppState {
             return Ok(false);
         };
         self.sync_workbench_project();
+        self.persist_workbench_mesh(&workspace)?;
         flursys::workbench::autosave_workspace(&workspace, &self.workbench_project)
             .map_err(|error| error.to_string())?;
         self.workbench_autosave_needed = false;
@@ -820,6 +845,7 @@ impl AppState {
 
     fn save_workbench_workspace(&mut self, workspace: PathBuf) -> Result<(), String> {
         self.sync_workbench_project();
+        self.persist_workbench_mesh(&workspace)?;
         flursys::save_workspace(&workspace, &self.workbench_project)
             .map_err(|error| error.to_string())?;
         self.workspace_path = Some(workspace.clone());
@@ -836,8 +862,13 @@ impl AppState {
 
     fn load_workbench_workspace(&mut self, workspace: PathBuf) -> Result<(), String> {
         let document = flursys::load_workspace(&workspace).map_err(|error| error.to_string())?;
-        let session =
+        let mut session =
             WorkbenchSession::from_project(&document).map_err(|error| error.to_string())?;
+        match flursys::workbench::mesh_storage::restore(&workspace,&document,&mut session) {
+            Ok(true)=>self.log("Saved mesh restored with boundary groups; Gmsh regeneration is not required."),
+            Ok(false)=>{},
+            Err(error)=>self.log(format!("Project opened without saved mesh: {error}. Regenerate the mesh.")),
+        }
         let recovery_available =
             flursys::workbench::recovery_is_newer(&workspace).map_err(|error| error.to_string())?;
         self.cad_reload_generation = self.cad_reload_generation.wrapping_add(1);
@@ -888,8 +919,13 @@ impl AppState {
             .ok_or_else(|| "There is no workspace recovery to load.".to_string())?;
         let document = flursys::load_workspace(&workspace.join("autosave"))
             .map_err(|error| error.to_string())?;
-        let session =
+        let mut session =
             WorkbenchSession::from_project(&document).map_err(|error| error.to_string())?;
+        match flursys::workbench::mesh_storage::restore(&workspace,&document,&mut session) {
+            Ok(true)=>self.log("Saved mesh restored with boundary groups; Gmsh regeneration is not required."),
+            Ok(false)=>{},
+            Err(error)=>self.log(format!("Project opened without saved mesh: {error}. Regenerate the mesh.")),
+        }
         self.cad_reload_generation = self.cad_reload_generation.wrapping_add(1);
         self.current_step=0;
         self.show_mesh=false;
@@ -930,6 +966,7 @@ impl AppState {
             return Err("Save this project to a workspace before finalizing a run.".into());
         };
         self.sync_workbench_project();
+        self.persist_workbench_mesh(&workspace)?;
         let finalized = flursys::workbench::finalize_workspace_run(
             &workspace,
             &mut self.workbench_project,
@@ -1744,6 +1781,7 @@ fn apply_axis_constraint(state: &mut AppState, axis: SketchAxis) {
 pub fn run() -> Result<(), slint::PlatformError> {
     let ui = MainWindow::new()?;
     slint::set_xdg_app_id("flursys")?;
+    preferences::bind(&ui);
     let state = Rc::new(RefCell::new(AppState::new()));
     write_project_to_ui(&ui, &state.borrow().project);
     {
@@ -3543,7 +3581,9 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
                     }
                     (MeshDimension::ThreeD, MeshPickMode::Face) => {
                         let (origin, direction) = render::result_screen_ray(cache, point, state.view_3d);
-                        cache.pick_face_3d(origin, direction)
+                        if let Some(clip)=state.mesh_clip.filter(|_|ui.get_mesh_clip_enabled()) {
+                            state.workbench.mesh().and_then(|g|mesh_inspection::pick(&g.mesh,cache,clip,origin,direction))
+                        } else {cache.pick_face_3d(origin, direction)}
                     }
                     (MeshDimension::ThreeD, MeshPickMode::Cell) => None,
                 };
@@ -3646,9 +3686,12 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
         let Some(ui) = weak_ui.upgrade() else {
             return;
         };
-        ui.set_result_field_index(index.clamp(0, 7));
-        results_state.borrow_mut().result_manual_range = None;
-        let mut state = results_state.borrow_mut();
+        let mut state=results_state.borrow_mut();
+        let selected=match index {8=>Some(ResultFieldKind::TurbulentK),9=>Some(ResultFieldKind::SpecificDissipation),10=>Some(ResultFieldKind::TurbulentViscosity),_=>None};
+        if selected.is_some_and(|f|state.active_result().is_none_or(|d|d.scalar_values(f).is_empty())) {
+            state.log("The selected run has no data for this turbulence field. Showing velocity magnitude.");ui.set_result_field_index(0);
+        }else{ui.set_result_field_index(index.clamp(0,10));}
+        state.result_manual_range=None;
         state.show_mesh = false;
         state.show_geometry_3d = false;
         state.animation_playing = false;
@@ -3827,6 +3870,21 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
         };
         match row.kind {
             TREE_KIND_STAGE => apply_workflow_step(&ui, &mut state, row.payload),
+            TREE_KIND_MESH_CONTROL => {
+                apply_workflow_step(&ui, &mut state, 1);
+                ui.set_mesh_task(1);
+                if let Err(error)=mesh_controls::edit(&ui,&mut state,row.payload,0) {state.log(error);}
+                state.selected_tree=Some(TreeSelection{kind:TREE_KIND_MESH_CONTROL,payload:row.payload});
+            }
+            TREE_KIND_MESH_PANEL => {
+                apply_workflow_step(&ui, &mut state, 1);
+                ui.set_mesh_task(row.payload);
+                state.show_mesh = state.workbench.has_mesh();
+                state.show_geometry_3d = !state.show_mesh;
+                if row.payload==2 {state.mesh_color_mode=MeshColorMode::Quality;}
+                state.selected_tree=Some(TreeSelection{kind:TREE_KIND_MESH_PANEL,payload:row.payload});
+            }
+
             TREE_KIND_INERT => {
                 toggle_tree_group(
                     &mut state,
@@ -4090,128 +4148,8 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
         }
     });
 
-    let weak_ui = ui.as_weak();
-    let recipe_state = state.clone();
-    ui.on_add_local_size_wb(move || {
-        let Some(ui) = weak_ui.upgrade() else {
-            return;
-        };
-        let mut state = recipe_state.borrow_mut();
-        let target = ui.get_wb_local_target().trim().to_string();
-        let size = parse_number(ui.get_wb_local_size().as_str(), 0.0);
-        if target.is_empty() || !size.is_finite() || size <= 0.0 {
-            state.log(
-                "Local mesh size requires an existing Named Selection and a finite positive size.",
-            );
-        } else if state.workbench.named_selections().get(&target).is_none() {
-            state.log(format!(
-                "Local mesh size target {target:?} is not a Named Selection."
-            ));
-        } else {
-            let mut recipe = state.workbench.mesh_recipe().clone();
-            let id = recipe
-                .local_sizes
-                .iter()
-                .map(|control| control.id)
-                .chain(recipe.refinements.iter().map(|control| control.id))
-                .chain(recipe.boundary_layers.iter().map(|control| control.id))
-                .max()
-                .unwrap_or(0)
-                + 1;
-            recipe.local_sizes.retain(|c| c.targets != vec![MeshControlTarget::NamedSelection(target.clone())]);
-            recipe.local_sizes.push(LocalMeshSize {
-                id,
-                name: format!("local-{target}"),
-                targets: vec![MeshControlTarget::NamedSelection(target.clone())],
-                size,
-                enabled: true,
-            });
-            state.workbench.set_mesh_recipe(recipe);
-            state.mark_workbench_dirty();
-            state.log(format!(
-                "Added local size {size} for Named Selection {target:?}; current mesh is outdated."
-            ));
-        }
-        refresh_ui(&ui, &state);
-    });
-
-    let weak_ui = ui.as_weak();
-    let refinement_state = state.clone();
-    ui.on_add_threshold_refinement_wb(move || {
-        let Some(ui) = weak_ui.upgrade() else { return; };
-        let mut state = refinement_state.borrow_mut();
-        let target = ui.get_wb_local_target().trim().to_string();
-        let min = parse_number(ui.get_wb_refine_min().as_str(), 0.0);
-        let max = parse_number(ui.get_wb_refine_max().as_str(), 0.0);
-        let distance = parse_number(ui.get_wb_refine_distance().as_str(), 0.0);
-        let start = parse_number(ui.get_mesh_refine_start().as_str(), -1.0);
-        let sampling = ui.get_mesh_refine_sampling().clamp(10,1000) as u32;
-        if target.is_empty() || state.workbench.named_selections().get(&target).is_none() || !(min.is_finite() && max.is_finite() && distance.is_finite() && start.is_finite() && min > 0.0 && min <= max && start >= 0.0 && distance > start) {
-            state.log("Threshold refinement requires an existing Named Selection, 0 < min ≤ max, and 0 ≤ fine-region distance < transition-end distance.");
-        } else {
-            let mut recipe = state.workbench.mesh_recipe().clone();
-            let id = recipe.local_sizes.iter().map(|c| c.id).chain(recipe.refinements.iter().map(|c| c.id)).chain(recipe.boundary_layers.iter().map(|c| c.id)).max().unwrap_or(0) + 1;
-            recipe.refinements.retain(|c| c.targets != vec![MeshControlTarget::NamedSelection(target.clone())]);
-            recipe.refinements.push(ThresholdRefinement { id, name: format!("threshold-{target}"), targets: vec![MeshControlTarget::NamedSelection(target)], sampling, size_min: min, size_max: max, distance_min: start, distance_max: distance, enabled: true });
-            state.workbench.set_mesh_recipe(recipe);
-            state.mark_workbench_dirty();
-            state.log("Added persisted Distance/Threshold refinement; current mesh is outdated.");
-        }
-        refresh_ui(&ui, &state);
-    });
-
-    let weak_ui = ui.as_weak();
-    let layer_state = state.clone();
-    ui.on_add_boundary_layer_wb(move || {
-        let Some(ui) = weak_ui.upgrade() else { return; };
-        let mut state = layer_state.borrow_mut();
-        let target = ui.get_wb_local_target().trim().to_string();
-        let first = parse_number(ui.get_wb_layer_first().as_str(), 0.0);
-        let growth = parse_number(ui.get_wb_layer_growth().as_str(), 0.0);
-        let count = ui.get_wb_layer_count().max(0) as u32;
-        if state.workbench.mesh_dimension() != MeshDimension::TwoD || target.is_empty() || state.workbench.named_selections().get(&target).is_none() || !(first > 0.0 && growth > 1.0 && count > 0) {
-            state.log("2D BoundaryLayer requires an existing Named Selection, positive first height, growth > 1, and layers > 0.");
-        } else {
-            let mut recipe = state.workbench.mesh_recipe().clone();
-            let id = recipe.local_sizes.iter().map(|c| c.id).chain(recipe.refinements.iter().map(|c| c.id)).chain(recipe.boundary_layers.iter().map(|c| c.id)).max().unwrap_or(0) + 1;
-            recipe.boundary_layers.push(BoundaryLayerControl { id, name: format!("layer-{target}"), targets: vec![MeshControlTarget::NamedSelection(target)], first_layer_height: first, growth_ratio: growth, layer_count: count, enabled: true });
-            state.workbench.set_mesh_recipe(recipe);
-            state.mark_workbench_dirty();
-            state.log("Added persisted 2D BoundaryLayer; current mesh is outdated.");
-        }
-        refresh_ui(&ui, &state);
-    });
-
-    let weak_ui = ui.as_weak();
-    let remove_recipe_state = state.clone();
-    ui.on_remove_mesh_control_wb(move || {
-        let Some(ui) = weak_ui.upgrade() else {
-            return;
-        };
-        let mut state = remove_recipe_state.borrow_mut();
-        let id = ui.get_wb_recipe_control_id().trim().parse::<u32>();
-        let Ok(id) = id else {
-            state.log("Mesh control removal requires a positive persisted control ID.");
-            refresh_ui(&ui, &state);
-            return;
-        };
-        let mut recipe = state.workbench.mesh_recipe().clone();
-        let before = recipe.local_sizes.len() + recipe.refinements.len() + recipe.boundary_layers.len();
-        recipe.local_sizes.retain(|control| control.id != id);
-        recipe.refinements.retain(|control| control.id != id);
-        recipe.boundary_layers.retain(|control| control.id != id);
-        let after = recipe.local_sizes.len() + recipe.refinements.len() + recipe.boundary_layers.len();
-        if before == after {
-            state.log(format!("Mesh control ID {id} does not exist."));
-        } else {
-            state.workbench.set_mesh_recipe(recipe);
-            state.mark_workbench_dirty();
-            state.log(format!(
-                "Removed mesh control ID {id}; current mesh is outdated and historical Runs are retained."
-            ));
-        }
-        refresh_ui(&ui, &state);
-    });
+    mesh_controls::bind(ui, &state);
+    mesh_inspection::bind(ui, &state);
 
     let weak_ui = ui.as_weak();
     let mesh_state = state.clone();
@@ -4394,7 +4332,7 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
             refresh_ui(&ui, &state);
             return;
         }
-        let case = match state.workbench.prepare_case() {
+        let mut case = match state.workbench.prepare_case() {
             Ok(case) => case,
             Err(error) => {
                 state.log(format!("Run blocked: {error}"));
@@ -4402,16 +4340,21 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
                 return;
             }
         };
+        if let Some(solution) = state.workbench.solution() {
+            case.initial_conditions = solution.restart();
+            state.log("Continuing retained fields with the current settings and an additional iteration / time-step budget; convergence may end the run earlier.");
+        }
         state.log(flursys::workbench::diagnostics::mesh_preflight(&case.mesh).summary());
         let cells = case.mesh.cell_count();
         let cpu_workers = if case.solver.threads == 0 {
             std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1)
         } else { case.solver.threads };
+        state.log(format!("Integration: {:?}; momentum transport: {:?}. New transient/turbulence paths are experimental and not benchmark validated.",case.solver.time,case.solver.turbulence.model));
         state.workbench.mark_solving();
         let planes=state.workbench_project.plane_monitors.clone();
         let stamp=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos();
         let folder=state.workspace_path.as_ref().unwrap().join("monitors").join(format!("solve-{stamp}"));
-        if planes.iter().any(|p|p.enabled) {state.log(format!("Plane vectors will be recorded under {} (SIMPLE iterations, not physical time).",folder.display()));}
+        if planes.iter().any(|p|p.enabled) {state.log(format!("Plane fields will be recorded under {}. Steady: every N SIMPLE iterations; transient: every N completed physical time steps.",folder.display()));}
         state.workbench_jobs.set_checkpoint_interval(ui.get_wb_checkpoint_every().max(0) as usize);
         if ui.get_wb_checkpoint_every()>0 {state.log(format!("Field restart checkpoint: {} (periodic overwrite and final save).",folder.join("checkpoint.json").display()));} else {state.log("Automatic field checkpoints disabled.");}
         let recording_folder=folder.clone();
@@ -4441,7 +4384,7 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
         };
         let mut state = cancel_job_state.borrow_mut();
         if state.workbench_jobs.cancel() {
-            state.log("Cancellation requested for the active workbench job.");
+            if state.solving { state.log("Stop requested. The last completed iteration is retained in memory; change settings and use Run / Continue to restart from those fields."); } else { state.log("Cancellation requested for the active meshing job."); }
         } else {
             state.log("There is no active workbench job to cancel.");
         }
@@ -4641,7 +4584,9 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
                     (MeshDimension::ThreeD, MeshPickMode::Face) => {
                         let (origin, direction) =
                             render::result_screen_ray(cache, screen, state.view_3d);
-                        cache.pick_face_3d(origin, direction)
+                        if let Some(clip)=state.mesh_clip.filter(|_|ui.get_mesh_clip_enabled()) {
+                            state.workbench.mesh().and_then(|g|mesh_inspection::pick(&g.mesh,cache,clip,origin,direction))
+                        } else {cache.pick_face_3d(origin, direction)}
                     }
                     (MeshDimension::ThreeD, MeshPickMode::Cell) => None,
                 }
@@ -4941,6 +4886,20 @@ fn rebuild_tree_rows(state: &mut AppState) {
             }
         }
     }
+    // Project scoped controls into the Mesh outline, without duplicating their data.
+    if let Some(parent)=state.tree_rows.iter().position(|r|r.kind==TREE_KIND_MESH_PANEL && r.payload==1) {
+        let recipe=state.workbench.mesh_recipe();
+        let items=recipe.local_sizes.iter().map(|c|(&c.name,c.enabled,"Sizing"))
+            .chain(recipe.refinements.iter().map(|c|(&c.name,c.enabled,"Distance")))
+            .chain(recipe.boundary_layers.iter().map(|c|(&c.name,c.enabled,"Inflation")))
+            .chain(recipe.regions.iter().map(|c|(&c.name,c.enabled,"Volume box")))
+            .enumerate().map(|(index,(name,enabled,kind))|ProjectTreeRowData {
+                icon:0,label:name.clone(),note:format!("{} · {kind}",if enabled {"Enabled"}else{"Suppressed"}),
+                depth:2,kind:TREE_KIND_MESH_CONTROL,payload:index as i32,
+                active:state.selected_tree==Some(TreeSelection{kind:TREE_KIND_MESH_CONTROL,payload:index as i32}),
+            }).collect::<Vec<_>>();
+        state.tree_rows.splice(parent+1..parent+1,items);
+    }
     cad_tree::rebuild(state);
 }
 
@@ -4951,6 +4910,7 @@ fn toggle_tree_group(state: &mut AppState, index: usize) {
     if !matches!(
         row.kind,
         TREE_KIND_STAGE
+            | TREE_KIND_MESH_PANEL
             | TREE_KIND_INERT
             | TREE_KIND_SKETCH
             | TREE_KIND_BODY
@@ -5264,6 +5224,7 @@ fn status_label(session: &WorkbenchSession) -> String {
     match session.status() {
         SolveStatus::Idle => "idle".to_string(),
         SolveStatus::Solving => "running".to_string(),
+        SolveStatus::Converged if session.solution().is_some_and(|s|s.physical_time.is_some()) => "time interval complete".to_string(),
         SolveStatus::Converged => "converged".to_string(),
         SolveStatus::MaxIterations => "iteration limit".to_string(),
         SolveStatus::Failed(message) => format!("failed: {message}"),
@@ -5286,6 +5247,9 @@ fn bc_kind_label(condition: IncompressibleBoundaryCondition) -> &'static str {
 }
 
 fn push_workbench_defaults(ui: &MainWindow, session: &WorkbenchSession) {
+    ui.set_mesh_edit_id("".into());
+    ui.set_mesh_control_name("".into());
+    ui.set_mesh_clip_enabled(false);
     let (global_size, min_size, max_size) = session.mesh_sizes();
     let t = &session.mesh_recipe().tuning;
     ui.set_mesh_algorithm2d(match t.algorithm_2d { 6=>0, 5=>1, _=>2 });
@@ -5312,6 +5276,12 @@ fn push_workbench_defaults(ui: &MainWindow, session: &WorkbenchSession) {
         material.kinematic_viscosity
     )));
     let solver = session.solver_options();
+    use flursys::unstructured_incompressible::TimeIntegration;
+    ui.set_wb_time_mode(if matches!(solver.time,TimeIntegration::Steady){0}else{1});
+    if let TimeIntegration::Euler{dt,steps}=solver.time {ui.set_wb_time_step(dt.to_string().into());ui.set_wb_time_steps(steps as i32);}
+    use flursys::turbulence::TurbulenceModel;
+    ui.set_wb_turbulence_model(match solver.turbulence.model {TurbulenceModel::Laminar=>0,TurbulenceModel::KOmega=>1,TurbulenceModel::KOmegaSst=>2,TurbulenceModel::Smagorinsky=>3,TurbulenceModel::Wale=>4});
+    ui.set_wb_turbulence_k(solver.turbulence.k.to_string().into());ui.set_wb_turbulence_omega(solver.turbulence.omega.to_string().into());
     ui.set_wb_coupling_tolerance(SharedString::from(format!(
         "{:e}",
         solver.coupling_relative_tolerance
@@ -5418,6 +5388,11 @@ fn sync_solver_panel(ui: &MainWindow, session: &mut WorkbenchSession) -> Result<
     let velocity = parse_number(ui.get_wb_velocity_relaxation().as_str(), f64::NAN);
     let pressure = parse_number(ui.get_wb_pressure_relaxation().as_str(), f64::NAN);
     let continuity = parse_number(ui.get_wb_continuity_tolerance().as_str(), f64::NAN);
+    use flursys::unstructured_incompressible::TimeIntegration;
+    use flursys::turbulence::{TurbulenceModel,TurbulenceOptions};
+    let time=if ui.get_wb_time_mode()==1 {TimeIntegration::Euler{dt:parse_number(ui.get_wb_time_step().as_str(),f64::NAN),steps:ui.get_wb_time_steps().max(0) as usize}}else{TimeIntegration::Steady};
+    let model=match ui.get_wb_turbulence_model(){1=>TurbulenceModel::KOmega,2=>TurbulenceModel::KOmegaSst,3=>TurbulenceModel::Smagorinsky,4=>TurbulenceModel::Wale,_=>TurbulenceModel::Laminar};
+    let turbulence=TurbulenceOptions {model,k:if matches!(model,TurbulenceModel::KOmega|TurbulenceModel::KOmegaSst){parse_number(ui.get_wb_turbulence_k().as_str(),f64::NAN)}else{session.solver_options().turbulence.k},omega:if matches!(model,TurbulenceModel::KOmega|TurbulenceModel::KOmegaSst){parse_number(ui.get_wb_turbulence_omega().as_str(),f64::NAN)}else{session.solver_options().turbulence.omega},..session.solver_options().turbulence.clone()};
     // Validate the complete form before invalidating an existing solution.
     let mut draft = WorkbenchSession::from_project(&session.to_project("Solver validation"))
         .map_err(|e| e.to_string())?;
@@ -5430,6 +5405,8 @@ fn sync_solver_panel(ui: &MainWindow, session: &mut WorkbenchSession) -> Result<
     draft
         .set_solver_controls(iterations, velocity, pressure, continuity)
         .map_err(|e| e.to_string())?;
+    draft.set_flow_models(time,turbulence.clone()).map_err(|e|e.to_string())?;
+    session.set_flow_models(time,turbulence).map_err(|e|e.to_string())?;
     session.set_convection(if ui.get_wb_convection_index()==1 {flursys::momentum::MomentumConvection::LimitedLinear}else{flursys::momentum::MomentumConvection::Upwind});
     session.set_cpu_threads(threads);
     session
@@ -5514,8 +5491,9 @@ fn solution_summary_text(session: &WorkbenchSession) -> String {
                 .rev()
                 .map(|(iteration, value)| format!("  iter {iteration:>5}  continuity {value:.3e}"))
                 .collect();
+            let time=solution.physical_time.map(|t|format!("physical time {t:.9e} s\naccepted steps {}\nnonlinear correctors {}\nlast max Co {:.4e}\n",solution.completed_time_steps,solution.nonlinear_iterations,solution.max_courant.unwrap_or(0.0))).unwrap_or_default();
             format!(
-                "status      {}\nCPU workers {}\niterations  {}\ninitial mass RMS {:.3e}\nfinal mass RMS   {:.3e}\nmomentum rel {:.3e}\nvelocity Δrel {:.3e}\ninflow      {:.5}\noutflow     {:.5}\nnet flux    {:+.3e}\n{}",
+                "{time}status      {}\nCPU workers {}\niterations  {}\ninitial mass RMS {:.3e}\nfinal mass RMS   {:.3e}\nmomentum rel {:.3e}\nvelocity Δrel {:.3e}\ninflow      {:.5}\noutflow     {:.5}\nnet flux    {:+.3e}\n{}",
                 status_label(session),
                 report.cpu_threads,
                 report.outer_iterations,
@@ -5778,6 +5756,9 @@ fn recent_project_labels(state: &AppState) -> Vec<SharedString> {
 }
 
 fn refresh_ui(ui: &MainWindow, state: &AppState) {
+    let selected=match ui.get_result_field_index(){8=>Some(ResultFieldKind::TurbulentK),9=>Some(ResultFieldKind::SpecificDissipation),10=>Some(ResultFieldKind::TurbulentViscosity),_=>None};
+    if selected.is_some_and(|f|state.active_result().is_some_and(|d|d.scalar_values(f).is_empty())) {ui.set_result_field_index(0);}
+
     ui.set_current_step(state.current_step as i32);
     if state.current_step == 0 { ui.set_geometry_cad_view_3d(true); }
     cad::refresh(ui, state);
@@ -6032,10 +6013,11 @@ fn refresh_ui(ui: &MainWindow, state: &AppState) {
     ui.set_wb_mesh_summary(SharedString::from(mesh_summary));
     let recipe = state.workbench.mesh_recipe();
     ui.set_wb_mesh_recipe_summary(SharedString::from(format!(
-        "local={} · distance/threshold={} · boundary layers={} · targets use stable IDs / named selections",
+        "local={} · distance/threshold={} · boundary layers={} · volume boxes={}",
         recipe.local_sizes.iter().filter(|control| control.enabled).count(),
         recipe.refinements.iter().filter(|control| control.enabled).count(),
         recipe.boundary_layers.iter().filter(|control| control.enabled).count(),
+        recipe.regions.iter().filter(|control| control.enabled).count(),
     )));
     let bad_cell_indices = state
         .workbench
@@ -6370,13 +6352,14 @@ fn refresh_ui(ui: &MainWindow, state: &AppState) {
             result.mesh(),
             cache.mesh_cache(),
             &state.mesh_view,
-            MeshDisplayMode::SurfaceEdges,
+            MeshDisplayMode::Wireframe,
             MeshColorMode::Neutral,
             state.mesh_quality_metric,
             None,
             None,
             None,
             state.view_3d,
+            None,
         ));
     } else if state.show_mesh {
         if let Some(generated) = state.workbench.mesh() {
@@ -6407,6 +6390,7 @@ fn refresh_ui(ui: &MainWindow, state: &AppState) {
                     state.workbench.mesh_hover(),
                     selected_patch_index(state.selected_tree),
                     state.view_3d,
+                    state.mesh_clip.filter(|_| ui.get_mesh_clip_enabled()),
                 ));
             }
         } else {

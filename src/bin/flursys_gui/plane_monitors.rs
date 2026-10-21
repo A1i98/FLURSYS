@@ -134,7 +134,7 @@ pub(super) fn show_latest(ui: &MainWindow, state: &AppState) {
         }
         ui.set_flow_plane_status(
             format!(
-                "Frame {}/{} · {} · SIMPLE iteration history{}",
+                "Frame {}/{} · {} · recorded field history{}",
                 state.post.plane_frame + 1,
                 state.post.plane_frames.len(),
                 path.file_stem().unwrap_or_default().to_string_lossy(),
@@ -219,8 +219,10 @@ fn sample_selected(ui: &MainWindow, state: &mut AppState) -> Result<(), String> 
         .find(|r| r.id == data.run_id())
         .and_then(|r| r.iterations)
         .unwrap_or(state.post.iteration);
-    let sample =
+    let mut sample =
         plane_monitor::sample(&plane, &cells, iteration, data.velocity(), data.pressure())?;
+    sample.physical_time=state.workbench_project.runs.iter().find(|r|r.id==data.run_id()).and_then(|r|r.physical_time)
+        .or_else(||state.workbench.solution().and_then(|s|s.physical_time));
     state.post.plane_samples.insert(plane.id.clone(), sample);
     Ok(())
 }
@@ -478,19 +480,23 @@ pub(super) fn bind(ui: &MainWindow, shared: &Rc<RefCell<AppState>>) {
             s.log(if paused {"Pause requested; the worker retains all solver fields. Resume continues the same solve."}else{"Solve resumed from retained fields."});
         } else if action==0 && !s.solving {
             let case=match s.workbench.prepare_case(){Ok(c)=>c,Err(e)=>{s.log(e.to_string());return;}};
-            s.workbench_jobs.set_restart(None);
+            let values=[ui.get_initial_x(),ui.get_initial_y(),ui.get_initial_z(),ui.get_initial_p()];
+            let parsed=values.iter().map(|v|v.trim().parse::<f64>()).collect::<Result<Vec<_>,_>>();
+            let values=match parsed {Ok(v) if v.iter().all(|x|x.is_finite())=>v,_=>{s.log("Initialization requires finite velocity and pressure values.");refresh_ui(&ui,&s);return;}};
+            let initial_velocity=Vec3::new(values[0],values[1],values[2]);
+            s.workbench_jobs.set_initial_fields(case.mesh.id(),flursys::IncompressibleInitialConditions::uniform(initial_velocity,values[3]));
             s.workbench.initialize_solution();
             s.active_result=None;
             s.post.reset_result();ui.set_solver_paused(false);
-            let velocity=vec![flursys::Vec3::ZERO;case.mesh.cell_count()];
-            let pressure=vec![0.0;case.mesh.cell_count()];
+            let velocity=vec![initial_velocity;case.mesh.cell_count()];
+            let pressure=vec![values[3];case.mesh.cell_count()];
             for plane in s.workbench_project.plane_monitors.clone() {
                 if let Ok(cells)=plane_monitor::intersect(&case.mesh,&plane) {
                     if let Ok(snapshot)=plane_monitor::sample(&plane,&cells,0,&velocity,&pressure){s.post.plane_samples.insert(plane.id.clone(),snapshot);}
                 }
             }
             show_latest(&ui,&s);
-            s.log("Initialized uniform U=(0,0,0) m/s and p/rho=0. Boundary conditions are applied when Run starts. Archived runs are retained.");
+            s.log("Initialized the specified uniform velocity and kinematic pressure. Boundary conditions are applied when Run starts. Archived runs are retained.");
         }
         refresh_ui(&ui,&s);
     });
@@ -627,7 +633,7 @@ pub(super) fn bind(ui: &MainWindow, shared: &Rc<RefCell<AppState>>) {
         let Some(mut plane)=selected(&ui,&s)else{return;};plane.display=match display(&ui) {Ok(d)=>d,Err(e)=>{ui.set_flow_plane_status(e.into());return;}};plane.every=ui.get_flow_plane_every().max(1) as usize;plane.enabled=ui.get_flow_plane_enabled();
         if let Err(e)=plane.validate(){ui.set_flow_plane_status(e.into());return;}
         if let Some(p)=s.workbench_project.plane_monitors.iter_mut().find(|p|p.id==plane.id){*p=plane.clone();}
-        s.mark_workbench_dirty();ui.set_flow_plane_status(format!("{}: {}. Values are sampled after each completed SIMPLE iteration; iteration is not physical time.",plane.name,if plane.enabled{format!("record every {} iterations",plane.every)}else{"recording disabled".into()}).into());
+        s.mark_workbench_dirty();ui.set_flow_plane_status(format!("{}: {}. Steady mode samples completed SIMPLE iterations; transient mode samples accepted physical time steps.",plane.name,if plane.enabled{format!("record every {} iterations",plane.every)}else{"recording disabled".into()}).into());
     });
     let weak = ui.as_weak();
     let state = shared.clone();

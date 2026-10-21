@@ -1,4 +1,4 @@
-import { Button, LineEdit } from "std-widgets.slint";
+import { Button, LineEdit, CheckBox, ComboBox } from "std-widgets.slint";
 import { UiTheme } from "../components.slint";
 
 // Window-sized modal scrim; dialogs never participate in workspace layout.
@@ -92,4 +92,32 @@ export component SketchPlaneDialog inherits ModalFrame {
     Button {text:"Selected planar face";enabled:root.planar-face;clicked=>{root.choose(3);}}
     Rectangle {vertical-stretch:1;}
     HorizontalLayout {Rectangle {horizontal-stretch:1;}Button {text:"Cancel";clicked=>{root.cancel();}}}
+}
+
+export component SettingsDialog inherits ModalFrame {
+    in-out property <bool> browser:true;
+    in-out property <bool> topology:false;
+    in-out property <int> panel-size:1;
+    callback cancel();
+    callback apply(bool,bool,int);
+    close-requested=>{root.cancel();}
+    panel-width:540px;panel-height:410px;
+    Text {text:"Settings";font-size:20px;font-weight:700;color:UiTheme.text-title;}
+    Text {text:"Application preferences · saved for this user";font-size:12px;color:UiTheme.text-muted;}
+    Rectangle {height:1px;background:UiTheme.border;}
+    Text {text:"WORKSPACE LAYOUT";font-size:11px;font-weight:700;color:UiTheme.accent;}
+    CheckBox {text:"Show Browser";checked <=> root.browser;}
+    CheckBox {text:"Show topology inspector";checked <=> root.topology;}
+    HorizontalLayout {spacing:12px;
+        Text {text:"Properties panel width";color:UiTheme.text;vertical-alignment:center;}
+        ComboBox {model:["Compact","Standard","Wide"];current-index <=> root.panel-size;}
+    }
+    Text {text:"Applies to CFD workspace panels. Geometry editing keeps its contextual CAD panels. Mesh, fluid and solver settings belong to each project.";font-size:11px;color:UiTheme.text-muted;wrap:word-wrap;}
+    Rectangle {vertical-stretch:1;}
+    HorizontalLayout {spacing:8px;
+        Button {text:"Restore defaults";clicked=>{root.browser=true;root.topology=false;root.panel-size=1;}}
+        Rectangle {horizontal-stretch:1;}
+        Button {text:"Cancel";clicked=>{root.cancel();}}
+        Button {text:"Apply";clicked=>{root.apply(root.browser,root.topology,root.panel-size);}}
+    }
 }

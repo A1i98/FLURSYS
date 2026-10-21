@@ -141,20 +141,31 @@ pub(super) fn render_workbench_mesh(
     hovered: Option<MeshSelection>,
     highlighted_patch: Option<usize>,
     view_3d: View3d,
+    clip: Option<super::mesh_inspection::MeshClip>,
 ) -> Image {
-    let camera = Camera3d::fit(cache.positions().iter().copied(), view_3d);
-    let (width, height) = (PREVIEW_WIDTH, PREVIEW_HEIGHT);
+    // Keep picking/navigation in logical pixels while drawing a sharper mesh.
+    let raster_scale = 2_u32;
+    let (width, height) = (PREVIEW_WIDTH * raster_scale, PREVIEW_HEIGHT * raster_scale);
+    let camera = Camera3d::fit(cache.positions().iter().copied(), view_3d)
+        .at_resolution(width, height);
     let mut pixels = vec![0_u8; (width * height * 4) as usize];
     let mut depth_buffer = vec![f64::INFINITY; (width * height) as usize];
-    fill(&mut pixels, [46, 52, 64, 255]);
+    let wireframe = !display_mode.draws_surface();
+    // Empty wireframe pixels reveal the actual viewport, not opaque cell faces.
+    if !wireframe { fill(&mut pixels, [46, 52, 64, 255]); }
+    let visible_cells = clip.filter(|_|mesh.dimension()==MeshDimension::ThreeD)
+        .map(|c|c.mask(mesh,cache.bounds())).unwrap_or_else(||vec![true;mesh.cell_count()]);
+    let visible_cell = |i|super::mesh_inspection::face_cell(mesh,i,&visible_cells);
     let values = cache.quality().values(metric);
     let (minimum, maximum) = cache.quality().color_range(metric).unwrap_or((0.0, 0.0));
     let face_color = |face_index: usize| {
         let face = &mesh.faces()[face_index];
-        let selected_face =
-            selected.is_some_and(|entry| entry.target() == MeshSelectionTarget::Face(face_index));
-        let hovered_face =
-            hovered.is_some_and(|entry| entry.target() == MeshSelectionTarget::Face(face_index));
+        let matches = |entry: MeshSelection| match entry.target() {
+            MeshSelectionTarget::Face(i) => i == face_index,
+            MeshSelectionTarget::Cell(i) => i == face.owner || face.neighbour == Some(i),
+        };
+        let selected_face = selected.is_some_and(matches);
+        let hovered_face = hovered.is_some_and(matches);
         let patch_selected = highlighted_patch.is_some()
             && highlighted_patch == cache.face_patch_indices()[face_index];
         if selected_face {
@@ -167,7 +178,7 @@ pub(super) fn render_workbench_mesh(
             match color_mode {
                 MeshColorMode::Neutral => [70, 109, 128, 255],
                 MeshColorMode::Patches => patch_color(cache.face_patch_indices()[face_index]),
-                MeshColorMode::Quality => quality_color(values[face.owner], minimum, maximum),
+                MeshColorMode::Quality => quality_color(values[visible_cell(face_index).unwrap_or(face.owner)], minimum, maximum),
             }
         }
     };
@@ -190,37 +201,39 @@ pub(super) fn render_workbench_mesh(
                 if let Some(polygon) = cache.cell_polygon(cell_index) {
                     let points: Vec<_> = polygon
                         .iter()
-                        .map(|&point| view.world_to_screen(point))
+                        .map(|&point| { let (x,y)=view.world_to_screen(point); (x * f64::from(raster_scale), y * f64::from(raster_scale)) })
                         .collect();
                     draw_filled_polygon(&mut pixels, width, height, &points, color);
                 }
             }
         } else {
-            for (triangle, &face_index) in
-                cache.surface_triangles().iter().zip(cache.triangle_faces())
-            {
-                let projected = triangle.map(|index| {
-                    let p = cache.positions()[index];
-                    let (x, y) = camera.screen(p);
-                    (x, y, camera.depth(&[p]))
-                });
-                draw_cad_triangle(
-                    &mut pixels,
-                    &mut depth_buffer,
-                    width,
-                    height,
-                    projected,
-                    face_color(face_index),
-                );
+            for (face_index, face) in mesh.faces().iter().enumerate() {
+                if visible_cell(face_index).is_none() {continue;}
+                for k in 1..face.vertices.len().saturating_sub(1) {
+                    let triangle=[face.vertices[0],face.vertices[k],face.vertices[k+1]];
+                    let projected=triangle.map(|index| {
+                        let p=cache.positions()[index];let (x,y)=camera.screen(p);(x,y,camera.depth(&[p]))
+                    });
+                    draw_cad_triangle(&mut pixels,&mut depth_buffer,width,height,projected,face_color(face_index));
+                }
             }
         }
     }
     if display_mode.draws_edges() {
         for (face_index, face) in mesh.faces().iter().enumerate() {
-            if mesh.dimension() == MeshDimension::ThreeD && face.neighbour.is_some() {
+            if mesh.dimension() == MeshDimension::ThreeD && visible_cell(face_index).is_none() {
                 continue;
             }
-            let color = face_color(face_index);
+            let face_tint = face_color(face_index);
+            let emphasized = face_tint == [255, 214, 95, 255] || face_tint == [127, 234, 188, 255];
+            let color = if emphasized { face_tint } else if wireframe {
+                if color_mode == MeshColorMode::Neutral { [225, 235, 248, 255] }
+                else { face_tint.map(|v| (f64::from(v) * 0.65 + 255.0 * 0.35).round() as u8) }
+            } else {
+                // Edges must differ from the fill, including quality colours.
+                let luminance = 0.2126*f64::from(face_tint[0]) + 0.7152*f64::from(face_tint[1]) + 0.0722*f64::from(face_tint[2]);
+                if luminance > 110.0 { [12, 18, 26, 255] } else { [222, 235, 248, 255] }
+            };
             for (&a, &b) in face
                 .vertices
                 .iter()
@@ -229,7 +242,8 @@ pub(super) fn render_workbench_mesh(
             {
                 let project = |point: flursys::Vec3| {
                     if mesh.dimension() == MeshDimension::TwoD {
-                        view.world_to_screen((point.x, point.y))
+                        let (x,y)=view.world_to_screen((point.x, point.y));
+                        (x*f64::from(raster_scale),y*f64::from(raster_scale))
                     } else {
                         camera.screen(point)
                     }
@@ -248,14 +262,13 @@ pub(super) fn render_workbench_mesh(
                 }
                 let a = project(mesh.points()[a].position);
                 let b = project(mesh.points()[b].position);
-                draw_line(
-                    &mut pixels,
-                    width,
-                    height,
-                    (a.0 as i32, a.1 as i32),
-                    (b.0 as i32, b.1 as i32),
-                    color,
-                );
+                for oy in 0..raster_scale as i32 {
+                    for ox in 0..raster_scale as i32 {
+                        draw_line(&mut pixels, width, height,
+                            (a.0 as i32 + ox, a.1 as i32 + oy),
+                            (b.0 as i32 + ox, b.1 as i32 + oy), color);
+                    }
+                }
             }
         }
     }
@@ -3861,12 +3874,16 @@ mod tests {
             None,
             None,
             view,
+            None,
         )
         .to_rgba8()
         .unwrap();
         let offset =
             (screen.1.round() as usize * PREVIEW_WIDTH as usize + screen.0.round() as usize) * 4;
-        assert_eq!(&image.as_bytes()[offset..offset + 4], &[255, 214, 95, 255]);
+        let mesh_scale = image.width() as f64 / PREVIEW_WIDTH as f64;
+        let mesh_offset = ((screen.1 * mesh_scale).round() as usize * image.width() as usize
+            + (screen.0 * mesh_scale).round() as usize) * 4;
+        assert_eq!(&image.as_bytes()[mesh_offset..mesh_offset + 4], &[255, 214, 95, 255]);
         let dataset = ResultDataset::from_values(
             "3d-camera",
             &mesh,

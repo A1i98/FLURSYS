@@ -33,7 +33,7 @@ impl AppState {
             solution.pressure.values().to_vec(),
             solution.velocity.values().to_vec(),
         )
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| e.to_string())?.with_turbulence(solution.turbulence.as_ref());
         self.wb_residual_history = solution
             .report
             .continuity_history
@@ -100,12 +100,13 @@ pub(super) fn refresh(ui: &MainWindow, state: &AppState) {
         let summary = record
             .map(|r| {
                 format!(
-                    "Run {} · {}\nIterations {}\nFinal continuity {}",
+                    "Run {} · {}\nIterations / steps {}\nFinal continuity {}{}",
                     r.id,
-                    run_status_label(&r.status),
+                    if r.physical_time.is_some(){"Time interval complete"}else{run_status_label(&r.status)},
                     r.iterations.map_or("—".into(), |i| i.to_string()),
                     r.continuity_residual
-                        .map_or("—".into(), |v| format!("{v:.3e}"))
+                        .map_or("—".into(), |v| format!("{v:.3e}")),
+                    r.physical_time.map(|t|format!("\nPhysical time {t:.9e} s\nAccepted steps {}",r.time_steps)).unwrap_or_default()
                 )
             })
             .unwrap_or_else(|| solution_summary_text(&state.workbench));

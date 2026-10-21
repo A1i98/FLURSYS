@@ -32,6 +32,7 @@ export component TopBar inherits Rectangle {
     in-out property <bool> show-browser:true;
     in-out property <bool> show-history:true;
     in-out property <bool> show-topology:false;
+    callback open-settings();
     callback refresh-browser();callback fit-view();
     callback new-project(); callback show-examples(); callback open-project();
     callback open-recent-project(int); callback save-project(); callback save-project-as();
@@ -49,6 +50,7 @@ export component TopBar inherits Rectangle {
             Text {text:"CFD WORKBENCH";color:UiTheme.text-label;font-size:10px;vertical-alignment:center;}
             file-button := MenuLabel {text:"File";clicked=>{file-menu.show();}}
             view-button := MenuLabel {text:"View";clicked=>{view-menu.show();}}
+            MenuLabel {text:"Settings";width:66px;clicked=>{root.open-settings();}}
             tools-button := MenuLabel {text:"Tools";clicked=>{tools-menu.show();}}
             Rectangle {width:1px;height:22px;background:UiTheme.border;}
             Text {text:root.project-loaded ? root.project-name : "Untitled Project";color:UiTheme.text-project;font-size:11px;min-width:0px;horizontal-stretch:1;overflow:elide;horizontal-alignment:right;vertical-alignment:center;}

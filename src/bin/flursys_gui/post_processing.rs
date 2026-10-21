@@ -126,6 +126,7 @@ fn field(index: i32) -> ResultFieldKind {
         5 => ResultFieldKind::VelocityY,
         6 => ResultFieldKind::VelocityZ,
         7 => ResultFieldKind::VelocityDivergence,
+        8=>ResultFieldKind::TurbulentK,9=>ResultFieldKind::SpecificDissipation,10=>ResultFieldKind::TurbulentViscosity,
         _ => ResultFieldKind::VelocityMagnitude,
     }
 }
@@ -752,9 +753,10 @@ pub(super) fn refresh(ui: &MainWindow, state: &AppState) {
     });
     ui.set_wb_solve_monitor(
         format!(
-            "{} · iteration {iteration} / {} · elapsed {:.2} s",
+            "{} · {} {iteration} / {} · elapsed {:.2} s",
             status_label(&state.workbench),
-            state.post.limit.max(ui.get_wb_max_iterations() as usize),
+            if ui.get_wb_time_mode()==1 {"physical step"}else{"iteration"},
+            if ui.get_wb_time_mode()==1 {state.post.limit.max(ui.get_wb_time_steps() as usize)}else{state.post.limit.max(ui.get_wb_max_iterations() as usize)},
             state.post.elapsed
         )
         .into(),
@@ -765,7 +767,8 @@ pub(super) fn refresh(ui: &MainWindow, state: &AppState) {
         } else {
             0
         });
-        let f = field(ui.get_result_field_index());
+        let mut f = field(ui.get_result_field_index());
+        if data.scalar_values(f).is_empty() {ui.set_result_field_index(0);f=ResultFieldKind::VelocityMagnitude;}
         let values = data.scalar_values(f);
         if let (Some((imin, vmin)), Some((imax, vmax))) = (
             values.iter().enumerate().min_by(|a, b| a.1.total_cmp(b.1)),

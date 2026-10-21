@@ -1,6 +1,6 @@
 import { EntitySelectionBar } from "entity-selection.slint";
 import { Button, ComboBox, LineEdit, SpinBox, ScrollView, ListView, ProgressIndicator, CheckBox } from "std-widgets.slint";
-import { UiTheme, InteractiveGeometryPreview } from "components.slint";
+import { UiTheme, PropertiesPanel, InteractiveGeometryPreview } from "components.slint";
 
 component ToolButton inherits Button {
     min-width:0px; min-height:30px; max-height:34px;
@@ -11,9 +11,10 @@ component Label inherits Text {
 component Field inherits VerticalLayout {
     in property <string> label;
     in-out property <string> value;
+    callback changed();
     spacing:4px;vertical-stretch:0;min-width:0px;
     Label {text:root.label;}
-    LineEdit {text <=> root.value;min-width:0px;min-height:32px;max-height:32px;vertical-stretch:0;}
+    LineEdit {edited=>{root.changed();}text <=> root.value;min-width:0px;min-height:32px;max-height:32px;vertical-stretch:0;}
 }
 
 // Geometry grouping and mesh controls share one viewport, with a bounded task pane.
@@ -52,6 +53,29 @@ export component MeshWorkspace inherits Rectangle {
     in-out property <string> global-size;
     in-out property <string> min-size;
     in-out property <string> max-size;
+    in-out property <bool> clip-enabled;
+    in-out property <int> clip-axis;
+    in-out property <int> clip-position;
+    in-out property <bool> clip-invert;
+    in property <[float]> quality-bins;
+    in property <string> quality-stats;
+    in property <string> quality-low;
+    in property <string> quality-high;
+    in-out property <string> box-min;
+    in-out property <string> box-max;
+    in-out property <string> box-size;
+    in-out property <string> box-transition;
+    callback inspect(int);
+    callback add-region();
+    callback region-bounds();
+    in-out property <int> scope-mode;
+    in-out property <int> control-kind;
+    in-out property <string> control-name;
+    in property <string> edit-id;
+    in-out property <int> layer-mode;
+    in property <string> layer-summary;
+    callback control-action(int,int);
+    callback layer-preview();
     in-out property <string> local-target;
     in-out property <string> local-size;
     in-out property <string> refine-min;
@@ -71,9 +95,6 @@ export component MeshWorkspace inherits Rectangle {
     in property <[string]> bad-cells;
     in property <image> preview;
     private property <bool> quality-open:false;
-    private property <bool> local-open:false;
-    private property <bool> advanced:false;
-    private property <bool> layers:false;
     private property <int> control-index:0;
     callback apply-settings();
     callback task-changed(int);
@@ -86,7 +107,6 @@ export component MeshWorkspace inherits Rectangle {
     callback group-action(int);
     callback use-face();callback check();callback generate();callback cancel();
     callback preset(int);callback add-local();callback add-refinement();callback add-layers();
-    callback remove-control(int);
     callback display(int);callback select-color(int);callback quality(int);callback threshold();callback select-bad(int);
     callback hover(float,float,float,float);
     in property <image> orientation;
@@ -105,59 +125,45 @@ export component MeshWorkspace inherits Rectangle {
         }
         HorizontalLayout {
             spacing:10px;
-            VerticalLayout {
-                spacing:8px;
-                HorizontalLayout {
-                    height:34px;spacing:6px;
-                    ToolButton {text:root.geometry-view ? "✓ Geometry" : "Geometry";clicked=>{root.show-geometry(true);}}
-                    ToolButton {text:!root.geometry-view ? "✓ Mesh" : "Mesh";clicked=>{root.show-geometry(false);}}
-                    Rectangle {horizontal-stretch:1;}
-                    if !root.geometry-view : ComboBox {model:["Wireframe","Surface","Surface + edges"];current-index <=> root.display-mode;selected(value)=>{root.display(self.current-index);}}
-                    if !root.geometry-view : ComboBox {model:["Neutral","Boundary zones","Quality"];current-index <=> root.color-mode;selected(value)=>{root.select-color(self.current-index);}}
-                    ToolButton {text:"⊡ Fit";clicked=>{root.fit();}}
-                }
-                EntitySelectionBar {mode:root.entity-mode;enabled:!root.busy;select(mode)=>{root.select-filter(mode);}clear=>{root.group-action(0);}}
-                InteractiveGeometryPreview {
-                    vertical-stretch:1;preview-image:root.preview;
-                    navigation-3d:true;planar-navigation:!root.spatial;orientation-image:root.orientation;view-axis:root.view-axis;
-                    select-view-axis(axis)=>{root.view(axis);}pick-orientation(x,y)=>{root.pick-orientation(x,y);}
-                    pan(dx,dy,w,h)=>{root.pan(dx,dy,w,h);}
-                    help-text:root.geometry-view ? "CLICK: SELECT · SHIFT-CLICK: ADD / REMOVE · DRAG: PAN (2D) / ORBIT (3D) · MIDDLE: PAN · WHEEL: ZOOM" : root.dimension==0 ? "CLICK: INSPECT FACE · DRAG: PAN · WHEEL: ZOOM" : "CLICK: INSPECT · DRAG: ORBIT · MIDDLE / SHIFT-DRAG: PAN · WHEEL: ZOOM";
-                    pick-modified(x,y,w,h,additive)=>{if root.geometry-view {root.pick(x,y,w,h,additive);} else {root.pick-mesh(x,y,w,h);}}
-                    hover(x,y,w,h)=>{root.hover(x,y,w,h);}
-                    orbit(x,y,px,py)=>{root.drag(x,y,px,py,self.width/1px,self.height/1px);}
-                    orbit-end=>{root.drag-end();}
-                    zoom(delta)=>{root.zoom(delta);}
-                    reset-view=>{root.fit();}
-                }
-                Text {text:root.feedback;color:UiTheme.text-soft;font-size:11px;wrap:word-wrap;max-height:48px;overflow:elide;}
-                Label {text:root.readiness;}
-                if root.meshing : VerticalLayout {
-                    spacing:4px;
-                    Label {text:root.stage;}
-                    ProgressIndicator {progress:root.progress;}
-                    Label {text:"Stage progress; not an estimate of time remaining.";}
-                }
-                HorizontalLayout {
-                    height:36px;spacing:8px;
-                    ToolButton {text:"Validate inputs";enabled:!root.busy;clicked=>{root.check();}}
-                    ToolButton {text:root.meshing ? "Generating…" : "Generate mesh";enabled:!root.busy;clicked=>{root.generate();}}
-                    if root.meshing : ToolButton {text:"Cancel";clicked=>{root.cancel();}}
-                }
-            }
-            Rectangle {
-                width:300px;
-                background:UiTheme.sidebar;border-width:1px;border-color:UiTheme.border;border-radius:4px;
+            PropertiesPanel {
                 VerticalLayout {padding:8px;spacing:8px;
-                Label {text:"MESH PROPERTIES";color:UiTheme.accent;}
+                Label {text:"DETAILS OF MESH";color:UiTheme.accent;}
                 ComboBox {min-height:32px;max-height:32px;vertical-stretch:0;model:["Boundary groups","Meshing controls","Mesh quality"];current-index <=> root.task;selected(value)=>{root.task-changed(self.current-index);}}
                 pane := ScrollView {
+            min-height:0px;min-width:0px;
+            viewport-height:max(self.visible-height,property-content.height);
+            viewport-width:self.visible-width;
+            vertical-scrollbar-policy:always-on;
+
                     vertical-stretch:1;horizontal-scrollbar-policy:always-off;
-                    VerticalLayout {
-                        width:pane.visible-width;padding:4px;spacing:9px;height:self.preferred-height;x:0px;y:0px;
+                    property-content := VerticalLayout {
+                        width:pane.visible-width;padding-bottom:24px;padding:4px;spacing:9px;height:self.preferred-height;x:0px;y:0px;
+                        Label {text:"DISPLAY";color:UiTheme.accent;}
+                        ComboBox {min-height:32px;max-height:32px;model:["Geometry for scoping","Generated mesh"];current-index:root.geometry-view ? 0 : 1;selected(value)=>{root.show-geometry(self.current-index==0);}}
+                        if !root.geometry-view : VerticalLayout {vertical-stretch:0;spacing:6px;
+                            ComboBox {min-height:32px;max-height:32px;model:["Wireframe · transparent","Surface","Surface + edges"];current-index <=> root.display-mode;selected(value)=>{root.display(self.current-index);}}
+                            ComboBox {min-height:32px;max-height:32px;model:["Neutral","Boundary zones","Quality"];current-index <=> root.color-mode;selected(value)=>{root.select-color(self.current-index);}}
+                        }
+                        Rectangle {height:1px;background:UiTheme.border;}
                         Label {text:"DOMAIN DIMENSION";}
                             ComboBox {min-height:32px;max-height:32px;vertical-stretch:0;model:["2D planar domain","3D fluid volume"];current-index <=> root.dimension;enabled:!root.busy;selected(value)=>{root.select-filter(root.dimension==0 ? 1 : 0);}}
 
+                        if root.dimension==1 && !root.geometry-view : VerticalLayout {vertical-stretch:0;spacing:6px;
+                            Label {text:"3D CELL CUTAWAY";color:UiTheme.accent;}
+                            CheckBox {text:"Enable cutaway";checked <=> root.clip-enabled;}
+                            ComboBox {min-height:32px;max-height:32px;model:["X axis","Y axis","Z axis"];current-index <=> root.clip-axis;}
+                            HorizontalLayout {vertical-stretch:0;
+                                Label {text:"Position (%)";horizontal-stretch:1;}
+                                SpinBox {min-height:32px;max-height:32px;min-width:0px;preferred-width:100px;maximum:100;minimum:0;value <=> root.clip-position;}
+                            }
+                            CheckBox {text:"Keep upper side";checked <=> root.clip-invert;}
+                            Label {text:"Whole cells are kept by centre position. The exposed cut is stepped; this is not a geometric plane section.";}
+                            HorizontalLayout {vertical-stretch:0;
+                                ToolButton {text:"Apply cut";clicked=>{root.inspect(0);}}
+                                ToolButton {text:"Reset cut";clicked=>{root.inspect(1);}}
+                            }
+                            Rectangle {height:1px;background:UiTheme.border;}
+                        }
                         if root.task==0 : VerticalLayout {vertical-stretch:0;
                             spacing:9px;
                             Text {vertical-stretch:0;text:"NAMED BOUNDARIES";color:UiTheme.accent;font-size:12px;font-weight:700;}
@@ -249,48 +255,93 @@ export component MeshWorkspace inherits Rectangle {
                             ToolButton {text:"Apply mesh settings";enabled:!root.busy;clicked=>{root.apply-settings();}}
 
                             Rectangle {height:1px;background:UiTheme.border;}
-                            ToolButton {text:root.local-open ? "▾ Local sizing & refinement" : "▸ Local sizing & refinement";clicked=>{root.local-open=!root.local-open;}}
-                            if root.local-open : VerticalLayout {vertical-stretch:0;spacing:8px;
-                            Label {text:"Boundary group";}
-                            ComboBox {min-height:32px;max-height:32px;vertical-stretch:0;model:root.group-names;current-index <=> root.local-group-index;enabled:!root.busy && root.group-names.length>0;selected(value)=>{root.local-target=value;}}
-                            Field {label:"Local element size";value <=> root.local-size;}
-                            ToolButton {text:"Set / replace local size";enabled:!root.busy && root.group-names.length>0;clicked=>{root.add-local();}}
-                            ToolButton {text:root.advanced ? "▾ Distance refinement" : "▸ Distance refinement";clicked=>{root.advanced=!root.advanced;}}
-                            if root.advanced : VerticalLayout {vertical-stretch:0;
-                                spacing:7px;
-                                HorizontalLayout {vertical-stretch:0;Field {label:"Near size";value <=> root.refine-min;} Field {label:"Far size";value <=> root.refine-max;}}
+                            Text {vertical-stretch:0;text:"SCOPED MESH CONTROLS";color:UiTheme.accent;font-size:12px;font-weight:700;}
+                            Label {text:"Select geometry in the viewport, then choose a control. Boundary names and mesh controls are independent.";}
+                            if root.edit-id!="" : Label {text:"Editing control #"+root.edit-id; color:UiTheme.accent;}
+                            ToolButton {text:"+ New control";enabled:!root.busy;clicked=>{root.control-action(3,0);}}
+                            Field {label:"Control name (optional)";value <=> root.control-name;}
+                            if root.control-kind!=3 : Label {text:"Scope";}
+                            if root.control-kind!=3 : ComboBox {min-height:32px;max-height:32px;vertical-stretch:0;model:["Named boundary group","Current geometry selection"];current-index <=> root.scope-mode;enabled:!root.busy;selected(value)=>{if self.current-index==1 {root.show-geometry(true);}}}
+                            if root.scope-mode==0 && root.control-kind!=3 : ComboBox {min-height:32px;max-height:32px;vertical-stretch:0;model:root.group-names;current-index <=> root.local-group-index;enabled:!root.busy && root.group-names.length>0;selected(value)=>{root.local-target=value;}}
+                            if root.scope-mode==1 && root.control-kind!=3 : Label {text:root.selection;}
+                            Label {text:"Control type";}
+                            ComboBox {min-height:32px;max-height:32px;vertical-stretch:0;model:["Edge / surface sizing","Distance refinement","Inflation (2D)","Volume refinement box"];current-index <=> root.control-kind;enabled:!root.busy;selected(value)=>{root.layer-preview();}}
+                            if root.control-kind==0 : VerticalLayout {vertical-stretch:0;spacing:7px;
+                                Field {label:"Element size (m)";value <=> root.local-size;}
+                                ToolButton {text:root.edit-id=="" ? "Apply sizing to scope" : "Update sizing";enabled:!root.busy;clicked=>{root.add-local();}}
+                            }
+                            if root.control-kind==1 : VerticalLayout {vertical-stretch:0;spacing:7px;
+                                HorizontalLayout {vertical-stretch:0;Field {label:"Near size (m)";value <=> root.refine-min;} Field {label:"Far size (m)";value <=> root.refine-max;}}
                                 Field {label:"Fine region distance (m)";value <=> root.refine-start;}
                                 Field {label:"Transition end distance (m)";value <=> root.refine-distance;}
-                                Label {text:"Size varies from Near to Far across this distance interval. Use a wider interval for a gentler transition.";}
+                                Label {text:"A wider transition interval gives gentler refinement around the selected edges or surfaces.";}
                                 HorizontalLayout {vertical-stretch:0;
                                     Label {text:"Distance sampling";horizontal-stretch:1;}
                                     SpinBox {min-height:32px;max-height:32px;minimum:10;maximum:1000;value <=> root.refine-sampling;}
                                 }
-                                ToolButton {text:"Set / replace distance field";enabled:!root.busy;clicked=>{root.add-refinement();}}
+                                ToolButton {text:root.edit-id=="" ? "Apply refinement to scope" : "Update refinement";enabled:!root.busy;clicked=>{root.add-refinement();}}
                             }
-                            ToolButton {text:root.layers ? "▾ Boundary layers" : "▸ Boundary layers";enabled:root.dimension==0;clicked=>{root.layers=!root.layers;}}
-                            if root.layers && root.dimension==0 : VerticalLayout {vertical-stretch:0;
-                                spacing:7px;
-                                Field {label:"First layer height";value <=> root.layer-first;}
-                                Field {label:"Growth ratio (>1)";value <=> root.layer-growth;}
-                                Label {text:"Number of layers";}
-                                SpinBox {min-height:32px;max-height:32px;vertical-stretch:0;min-width:0px;value <=> root.layer-count;minimum:1;maximum:64;}
-                                ToolButton {text:"Add boundary layers";enabled:!root.busy;clicked=>{root.add-layers();}}
+                            if root.control-kind==2 && root.dimension==1 : Label {text:"Prismatic inflation for arbitrary 3D CAD is not implemented. Distance refinement works on selected 3D surfaces, but does not produce prism layers.";}
+                            if root.control-kind==2 && root.dimension==0 : VerticalLayout {vertical-stretch:0;spacing:7px;
+                                Label {text:"Inflation definition";}
+                                ComboBox {min-height:32px;max-height:32px;model:["First layer height","Total thickness"];current-index <=> root.layer-mode;selected(value)=>{root.layer-preview();}}
+                                Field {label:root.layer-mode==0 ? "First layer height (m)" : "Total thickness (m)";value <=> root.layer-first;changed=>{root.layer-preview();}}
+                                Field {label:"Growth ratio (1–3)";value <=> root.layer-growth;changed=>{root.layer-preview();}}
+                                HorizontalLayout {vertical-stretch:0;
+                                    Label {text:"Target layers";horizontal-stretch:1;}
+                                    SpinBox {min-height:32px;max-height:32px;min-width:0px;preferred-width:100px;max-width:100px;value <=> root.layer-count;minimum:1;maximum:64;edited(value)=>{root.layer-preview();}}
+                                }
+                                Label {text:root.layer-summary;}
+                                Label {text:"Quadrilateral layers on selected 2D boundary edges. Multiple enabled scopes currently require matching layer parameters.";}
+                                ToolButton {text:root.edit-id=="" ? "Apply inflation to scope" : "Update inflation";enabled:!root.busy;clicked=>{root.add-layers();}}
                             }
+                            if root.control-kind==3 : VerticalLayout {vertical-stretch:0;spacing:7px;
+                                Label {text:"Axis-aligned box in model coordinates (metres). Useful for wake refinement; no boundary group is required.";}
+                                ToolButton {text:"Start from model bounds";enabled:!root.busy;clicked=>{root.region-bounds();}}
+                                Field {label:"Minimum X, Y, Z (m)";value <=> root.box-min;}
+                                Field {label:"Maximum X, Y, Z (m)";value <=> root.box-max;}
+                                Field {label:"Inside element size (m)";value <=> root.box-size;}
+                                Field {label:"Outside transition thickness (m)";value <=> root.box-transition;}
+                                Label {text:"Combined with other refinements by minimum requested size. Use a positive transition for a gradual change.";}
+                                ToolButton {text:root.edit-id=="" ? "Apply volume refinement" : "Update volume refinement";enabled:!root.busy && root.dimension==1;clicked=>{root.add-region();}}
                             }
-                            if root.controls.length>0 : VerticalLayout {vertical-stretch:0;
-                                spacing:6px;
-                                Label {text:"ACTIVE MESH CONTROLS";}
-                                ComboBox {min-height:32px;max-height:32px;vertical-stretch:0;model:root.controls;current-index <=> root.control-index;}
-                                ToolButton {text:"Remove selected control";enabled:!root.busy;clicked=>{root.remove-control(root.control-index);}}
+                            Rectangle {height:1px;background:UiTheme.border;}
+                            if root.controls.length>0 : VerticalLayout {vertical-stretch:0;spacing:6px;
+                                Label {text:"MESH CONTROLS · ● enabled / ○ suppressed";}
+                                ListView {height:min(160px,root.controls.length*38px);
+                                    for control[index] in root.controls : ToolButton {
+                                        text:(root.control-index==index ? "▸ " : "")+control;
+                                        enabled:!root.busy;clicked=>{root.control-index=index;root.control-action(0,index);}
+                                    }
+                                }
+                                HorizontalLayout {vertical-stretch:0;
+                                    ToolButton {text:"Edit";enabled:!root.busy;clicked=>{root.control-action(0,root.control-index);}}
+                                    ToolButton {text:"On / off";enabled:!root.busy;clicked=>{root.control-action(1,root.control-index);}}
+                                    ToolButton {text:"Delete";enabled:!root.busy;clicked=>{root.control-action(2,root.control-index);root.control-index=0;}}
+                                }
                             }
+
                         }
                         if root.task==2 : VerticalLayout {vertical-stretch:0;
                             spacing:9px;
                             Text {vertical-stretch:0;text:"MESH QUALITY";color:UiTheme.accent;font-size:12px;font-weight:700;}
                             Label {text:root.summary;}
+                            Label {text:"Wireframe colours the edges. Choose Surface + edges to inspect filled quality colours.";}
                             Label {text:"Metric";}
                             ComboBox {min-height:32px;max-height:32px;vertical-stretch:0;model:["Aspect ratio","Skewness","Non-orthogonality","Cell measure"];current-index <=> root.quality-mode;selected(value)=>{root.quality(self.current-index);}}
+                            Label {text:root.quality-stats;}
+                            Rectangle {height:12px;background:root.display-mode==0 ? @linear-gradient(90deg, rgb(115,206,171) 0%,rgb(255,112,112) 100%) : @linear-gradient(90deg,rgb(40,180,125) 0%,rgb(255,35,35) 100%);}
+                            HorizontalLayout {vertical-stretch:0;
+                                Label {text:root.quality-low;horizontal-stretch:1;}
+                                Label {text:root.quality-high;}
+                            }
+                            HorizontalLayout {height:72px;spacing:3px;vertical-stretch:0;
+                                for value[index] in root.quality-bins : Rectangle {
+                                    background:transparent;horizontal-stretch:1;
+                                    Rectangle {x:0px;y:parent.height*(1-value);width:parent.width;height:parent.height*value;background:UiTheme.accent;}
+                                }
+                            }
+                            Label {text:"Histogram height = relative bin count. Range and counts include all cells, including those hidden by cutaway.";}
                             Field {label:"Highlight cells above threshold";value <=> root.quality-threshold;}
                             ToolButton {text:"Apply threshold";clicked=>{root.threshold();}}
                             Label {text:root.inspection;}
@@ -305,6 +356,45 @@ export component MeshWorkspace inherits Rectangle {
                 }
                 }
             }
+
+            VerticalLayout {
+                spacing:8px;
+
+
+                InteractiveGeometryPreview {
+                    vertical-stretch:1;preview-image:root.preview;
+                    navigation-3d:true;show-fit-control:false;planar-navigation:!root.spatial;orientation-image:root.orientation;view-axis:root.view-axis;
+                    select-view-axis(axis)=>{root.view(axis);}pick-orientation(x,y)=>{root.pick-orientation(x,y);}
+                    pan(dx,dy,w,h)=>{root.pan(dx,dy,w,h);}
+                    help-text:root.geometry-view ? "CLICK: SELECT · SHIFT-CLICK: ADD / REMOVE · DRAG: PAN (2D) / ORBIT (3D) · MIDDLE: PAN · WHEEL: ZOOM" : root.dimension==0 ? "CLICK: INSPECT FACE · DRAG: PAN · WHEEL: ZOOM" : "CLICK: INSPECT · DRAG: ORBIT · MIDDLE / SHIFT-DRAG: PAN · WHEEL: ZOOM";
+                    pick-modified(x,y,w,h,additive)=>{if root.geometry-view {root.pick(x,y,w,h,additive);} else {root.pick-mesh(x,y,w,h);}}
+                    hover(x,y,w,h)=>{root.hover(x,y,w,h);}
+                    orbit(x,y,px,py)=>{root.drag(x,y,px,py,self.width/1px,self.height/1px);}
+                    orbit-end=>{root.drag-end();}
+                    zoom(delta)=>{root.zoom(delta);}
+                    reset-view=>{root.fit();}
+                }
+                HorizontalLayout {height:34px;spacing:6px;
+                EntitySelectionBar {mode:root.entity-mode;enabled:!root.busy;select(mode)=>{root.select-filter(mode);}clear=>{root.group-action(0);}}
+                    ToolButton {text:"Fit";icon:@image-url("icons/fit.svg");preferred-width:62px;clicked=>{root.fit();}}
+                }
+
+                Text {text:root.feedback;color:UiTheme.text-soft;font-size:11px;wrap:word-wrap;max-height:48px;overflow:elide;}
+                Label {text:root.readiness;}
+                if root.meshing : VerticalLayout {
+                    spacing:4px;
+                    Label {text:root.stage;}
+                    ProgressIndicator {progress:root.progress;}
+                    Label {text:"Stage progress; not an estimate of time remaining.";}
+                }
+                HorizontalLayout {
+                    height:36px;spacing:8px;
+                    ToolButton {text:"Validate inputs";enabled:!root.busy;clicked=>{root.check();}}
+                    ToolButton {text:root.meshing ? "Generating…" : "Generate mesh";enabled:!root.busy;clicked=>{root.generate();}}
+                    if root.meshing : ToolButton {text:"Cancel";clicked=>{root.cancel();}}
+                }
+            }
+
         }
     }
 }

@@ -15,6 +15,7 @@
 
     export global UiTheme {
         in-out property <bool> cad-active:true;
+        in-out property <length> properties-width:300px;
         in property <color> background: UiTheme.cad-active ? rgb(28,31,38) : rgb(11, 19, 26);
         in property <color> sidebar: UiTheme.cad-active ? rgb(39,43,52) : rgb(14, 25, 34);
         in property <color> toolbar: UiTheme.cad-active ? rgb(37,41,49) : rgb(18, 32, 43);
@@ -64,11 +65,25 @@
     }
 
     // Scroll controls independently from the mesh / boundary viewport.
-    export component WorkflowControlCard inherits Card {
+// Shared dock surface for workspace properties. Browser remains independent.
+export component PropertiesPanel inherits Rectangle {
+    width:UiTheme.properties-width;
+    background:UiTheme.sidebar;
+    border-color:UiTheme.border;
+    border-width:1px;
+    border-radius:4px;
+    @children
+}
+
+    export component WorkflowControlCard inherits PropertiesPanel {
         control-scroll := ScrollView {
+            viewport-height:max(self.visible-height,property-content.height);
+            viewport-width:self.visible-width;
+            vertical-scrollbar-policy:always-on;
+
             width:parent.width;height:parent.height;
             horizontal-scrollbar-policy:always-off;
-            VerticalLayout {width:control-scroll.visible-width;padding:14px;spacing:8px;height:self.preferred-height;x:0px;y:0px;@children}
+            property-content := VerticalLayout {width:control-scroll.visible-width;padding-bottom:24px;padding:14px;spacing:8px;height:self.preferred-height;x:0px;y:0px;@children}
         }
     }
 
@@ -87,6 +102,7 @@
         in property <int> view-axis: 3;
         in property <image> orientation-image;
         in property <bool> navigation-3d:false;
+        in property <bool> show-fit-control:true;
         in property <bool> planar-navigation:false;
         in property <bool> display-controls:false;
         in property <string> coordinates;
@@ -197,7 +213,7 @@
                 if !root.planar-navigation : Button {icon:@image-url("icons/rotate.svg");accessible-label:"Orbit · drag in viewport";checked:root.navigation-mode==0;checkable:true;min-width:28px;max-width:30px;clicked=>{root.navigation-mode=0;}}
                 Button {text:"✥";accessible-label:"Pan · drag in viewport";checked:root.navigation-mode==1;checkable:true;min-width:28px;max-width:30px;clicked=>{root.navigation-mode=1;}}
                 Button {text:"⌕";accessible-label:"Zoom · drag in viewport";checked:root.navigation-mode==2;checkable:true;min-width:28px;max-width:30px;clicked=>{root.navigation-mode=2;}}
-                Button {icon:@image-url("icons/fit.svg");accessible-label:"Fit model · F";min-width:28px;max-width:30px;clicked=>{root.reset-view();}}
+                if root.show-fit-control : Button {icon:@image-url("icons/fit.svg");accessible-label:"Fit model · F";min-width:28px;max-width:30px;clicked=>{root.reset-view();}}
                 if root.display-controls : Button {text:"⌖";accessible-label:"Look at selected face";min-width:28px;max-width:30px;clicked=>{root.normal-view();}}
                 Button {icon:@image-url("icons/cube.svg");accessible-label:"Home isometric view";min-width:28px;max-width:30px;clicked=>{root.reset-view();root.select-view-axis(root.planar-navigation ? 2 : 3);}}
                 ComboBox {model:["Right · X","Front · Y","Top · Z","Isometric","Left · −X","Back · −Y","Bottom · −Z","Custom"];current-index:root.view-axis;

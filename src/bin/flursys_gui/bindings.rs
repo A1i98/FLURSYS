@@ -429,6 +429,8 @@ pub(super) const TREE_KIND_SKETCH: i32 = 8;
 pub(super) const TREE_KIND_EXTRUDE_FEATURE: i32 = 9;
 pub(super) const TREE_KIND_HISTORY_FEATURE: i32 = 10;
 pub(super) const TREE_KIND_REGION: i32 = 11;
+pub(super) const TREE_KIND_MESH_PANEL: i32 = 12;
+pub(super) const TREE_KIND_MESH_CONTROL: i32 = 13;
 pub(super) const TREE_GROUP_HISTORY: i32 = 20;
 pub(super) const TREE_GROUP_TOPOLOGY: i32 = 21;
 pub(super) const TREE_KIND_INERT: i32 = -1;
@@ -653,6 +655,9 @@ pub(super) fn build_project_tree_rows(
         TREE_KIND_STAGE,
         1,
     ));
+    rows.push((1, "Meshing controls".to_string(), "Sizing · refinement · inflation".to_string(), TREE_KIND_MESH_PANEL, 1));
+    rows.push((1, "Mesh quality".to_string(), "Metrics · histogram · cutaway".to_string(), TREE_KIND_MESH_PANEL, 2));
+
 
     rows.push((
         0,

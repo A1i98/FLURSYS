@@ -280,7 +280,7 @@ pub(super) fn build(state: &AppState, options: &Options) -> Plot {
     }
     let _ = write!(
         svg,
-        r##"<path d="M{left} {top} V{bottom} H{right}" fill="none" stroke="#a4afbf"/><text x="{}" y="{}" text-anchor="middle">Outer iteration</text>"##,
+        r##"<path d="M{left} {top} V{bottom} H{right}" fill="none" stroke="#a4afbf"/><text x="{}" y="{}" text-anchor="middle">Iteration / physical step</text>"##,
         (left + right) / 2.,
         h - 17.
     );
@@ -371,7 +371,7 @@ pub(super) fn build(state: &AppState, options: &Options) -> Plot {
         );
     }
     svg.push_str("</g></svg>");
-    let caption=format!("Iterations {x0:.0}–{x1:.0} · {}{} · {}. Pressure is an inner-solver metric; continuity alone does not prove convergence.{}",if options.logarithmic{"logarithmic"}else{"linear"},if options.normalized{" · normalized display"}else{" · raw values"},if options.normalized{"Stopping criteria use original values"}else{"Monitors have different definitions / units"},if omitted>0 {format!(" {omitted} zero or invalid samples omitted on this scale.")}else{String::new()});
+    let caption=format!("Iterations / steps {x0:.0}–{x1:.0} · {}{} · {}. Pressure is an inner-solver metric; continuity alone does not prove convergence.{}",if options.logarithmic{"logarithmic"}else{"linear"},if options.normalized{" · normalized display"}else{" · raw values"},if options.normalized{"Stopping criteria use original values"}else{"Monitors have different definitions / units"},if omitted>0 {format!(" {omitted} zero or invalid samples omitted on this scale.")}else{String::new()});
     Plot { svg, caption }
 }
 pub(super) fn readout(state: &AppState, options: &Options, x: f64) -> String {
@@ -398,7 +398,7 @@ pub(super) fn readout(state: &AppState, options: &Options, x: f64) -> String {
             )
         })
         .collect::<Vec<_>>();
-    format!("Iteration {iteration}  |  {}", values.join("  ·  "))
+    format!("Iteration / step {iteration}  |  {}", values.join("  ·  "))
 }
 pub(super) fn refresh(ui: &MainWindow, state: &AppState) {
     let plot = build(state, &Options::from_ui(ui));

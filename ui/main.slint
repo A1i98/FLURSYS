@@ -11,7 +11,7 @@ import { TopBar } from "layout/topbar.slint";
 import { ProjectTree } from "layout/project_tree.slint";
 import { ExampleGallery, ExampleDescriptor } from "layout/example_gallery.slint";
 import { StatusBar } from "layout/status_bar.slint";
-import { LegacyImportDialog, RecoveryDialog, UnsavedChangesDialog, FluidMaterialDialog } from "layout/project_dialogs.slint";
+import { LegacyImportDialog, RecoveryDialog, UnsavedChangesDialog, FluidMaterialDialog, SettingsDialog } from "layout/project_dialogs.slint";
 
 export component MainWindow inherits Window {
     init => { Palette.color-scheme = ColorScheme.dark; UiTheme.cad-active=true; }
@@ -145,6 +145,10 @@ export component MainWindow inherits Window {
     // Binding this directly to root.width creates a cycle:
     // root.width -> compact-ui -> child layoutinfo -> root.layoutinfo -> root.width.
     // The backend may toggle this property on resize if automatic compact mode is desired.
+    in-out property <int> preferences-panel-size:1;
+    changed preferences-panel-size => {UiTheme.properties-width=root.preferences-panel-size==0 ? 270px : root.preferences-panel-size==2 ? 340px : 300px;}
+    property <bool> settings-open:false;
+    callback save-preferences();
     in-out property <bool> compact-ui: true;
     changed width => { root.compact-ui = root.width < 1500px; }
     in-out property <bool> recovery-pending: false;
@@ -291,6 +295,10 @@ export component MainWindow inherits Window {
     callback flow-plane-playback(int);
     in-out property <bool> solver-paused:false;
     in-out property <int> wb-checkpoint-every:100;
+    in-out property <string> initial-x:"0";
+    in-out property <string> initial-y:"0";
+    in-out property <string> initial-z:"0";
+    in-out property <string> initial-p:"0";
     callback solver-control(int);
     in-out property <[string]> flow-plane-names;
     in-out property <int> flow-plane-index:0;
@@ -476,14 +484,13 @@ export component MainWindow inherits Window {
     in-out property <string> wb-mesh-recipe-summary: "Advanced controls: no persisted controls.";
     in-out property <string> wb-local-target: "";
     in-out property <string> wb-local-size: "0.05";
-    in-out property <string> wb-recipe-control-id: "";
     in-out property <string> wb-refine-min: "0.025";
     in-out property <string> wb-refine-max: "0.1";
     in-out property <string> wb-refine-distance: "0.5";
     in-out property <string> wb-layer-first: "0.005";
     in-out property <string> wb-layer-growth: "1.2";
     in-out property <int> wb-layer-count: 4;
-    in-out property <int> mesh-display-index: 2;
+    in-out property <int> mesh-display-index: 0;
     in-out property <int> mesh-selection-index: 0;
     in-out property <int> mesh-color-index: 0;
     in-out property <int> mesh-quality-index: 0;
@@ -503,8 +510,37 @@ export component MainWindow inherits Window {
     in-out property <string> bc-assigned: "Unassigned";
     in-out property <string> material-density: "1.0";
     in-out property <string> material-viscosity: "0.01";
+    in-out property <int> wb-time-mode:0;
+    in-out property <string> wb-time-step:"0.001";
+    in-out property <int> wb-time-steps:100;
+    in-out property <int> wb-turbulence-model:0;
+    in-out property <string> wb-turbulence-k:"0.0001";
+    in-out property <string> wb-turbulence-omega:"1";
     in-out property <int> wb-max-iterations: 1000;
     in-out property <int> wb-cpu-threads: 1;
+    in-out property <bool> mesh-clip-enabled:false;
+    in-out property <int> mesh-clip-axis:2;
+    in-out property <int> mesh-clip-position:50;
+    in-out property <bool> mesh-clip-invert:false;
+    in-out property <[float]> mesh-quality-bins;
+    in-out property <string> mesh-quality-stats:"";
+    in-out property <string> mesh-quality-low:"";
+    in-out property <string> mesh-quality-high:"";
+    in-out property <string> mesh-box-min:"";
+    in-out property <string> mesh-box-max:"";
+    in-out property <string> mesh-box-size:"";
+    in-out property <string> mesh-box-transition:"0";
+    callback mesh-inspection-apply(int);
+    callback mesh-add-region();
+    callback mesh-region-bounds();
+    in-out property <int> mesh-scope-mode:0;
+    in-out property <int> mesh-control-kind:0;
+    in-out property <string> mesh-control-name:"";
+    in-out property <string> mesh-edit-id:"";
+    in-out property <int> mesh-layer-mode:0;
+    in-out property <string> mesh-layer-summary:"";
+    callback mesh-control-action(int,int);
+    callback mesh-layer-preview();
     in-out property <int> mesh-algorithm2d:0;
     in-out property <int> mesh-algorithm3d:0;
     in-out property <int> mesh-curvature:32;
@@ -582,7 +618,6 @@ export component MainWindow inherits Window {
     callback mesh-view-fit();
     callback check-mesh-inputs();
     in-out property <[string]> mesh-control-model;
-    callback select-mesh-control(int);
     in-out property <string> wb-operation-feedback;
     callback generate-mesh-wb();
     callback select-fluid-domain();
@@ -596,7 +631,6 @@ export component MainWindow inherits Window {
     callback add-local-size-wb();
     callback add-threshold-refinement-wb();
     callback add-boundary-layer-wb();
-    callback remove-mesh-control-wb();
     callback apply-boundary-wb();
     callback unassign-boundary-wb();
     callback apply-solver-settings-wb();
@@ -610,6 +644,7 @@ export component MainWindow inherits Window {
     VerticalLayout {
         spacing: 0px;
         TopBar {
+            open-settings=>{root.settings-open=true;}
             compact-ui: root.compact-ui;
             project-loaded: root.project-loaded;
             wb-busy: root.wb-busy;
@@ -652,6 +687,58 @@ export component MainWindow inherits Window {
                 horizontal-stretch: 1;
                 spacing: 0px;
 
+                if root.current-step == 4 && root.inspector-mode == 6 : Rectangle {
+                    min-width: root.compact-ui ? 236px : 264px;
+                    preferred-width: root.compact-ui ? 260px : 292px;
+                    max-width: root.compact-ui ? 288px : 320px;
+                    background: UiTheme.sidebar;
+                    border-color: UiTheme.border-soft;
+                    border-width: 1px;
+
+                    VerticalLayout {
+                        padding: root.compact-ui ? 9px : 12px;
+                        spacing: 8px;
+
+                        Text {
+                            text: "PROPERTIES";
+                            color: UiTheme.text-dim;
+                            font-size: 10px;
+                            font-weight: 700;
+                        }
+                        Text {
+                            text: root.inspector-title;
+                            color: UiTheme.accent;
+                            font-size: 12px;
+                            font-weight: 800;
+                        }
+
+                        inspector-scroll := ScrollView {
+                            min-height:0px;min-width:0px;
+                            viewport-height:max(self.visible-height,inspector-content.height);
+                            viewport-width:self.visible-width;
+                            vertical-scrollbar-policy:always-on;
+                            vertical-stretch: 1;
+                            horizontal-scrollbar-policy: always-off;
+
+                            inspector-content := VerticalLayout {
+                                width:inspector-scroll.visible-width;
+                                height:self.preferred-height;
+                                padding-bottom:24px;
+                                spacing: 8px;
+
+                                // 6 — persisted run record
+                                if root.inspector-mode == 6 : VerticalLayout {
+                                    spacing: 6px;
+                                    InspectorLabel { text: "PERSISTED RUN METADATA"; }
+                                    InspectorValue { text: root.inspector-info; font-family: "monospace"; }
+                                    Rectangle { height: 1px; background: UiTheme.border; }
+                                    Button { text: "DELETE RUN"; enabled: !root.wb-busy; clicked => { root.delete-run-wb(); } }
+                                    InspectorLabel { text: "Delete is a two-step action: press once to arm confirmation, then press again to permanently remove this run's workspace artifacts."; wrap: word-wrap; color: rgb(126,153,170); font-size: 10px; }
+                                }
+                            }
+                        }
+                    }
+                }
                 Rectangle {
                     horizontal-stretch: 1;
                     background: UiTheme.background;
@@ -683,10 +770,12 @@ export component MainWindow inherits Window {
                 }
 
                     if root.cad-flow-plane-selected : Rectangle {
-                        x:max(8px,parent.width - self.width - 12px);y:110px;width:292px;height:min(parent.height - 125px,650px);
+                        x:min(260px,max(8px,parent.width - self.width - 8px));y:110px;width:292px;height:min(parent.height - 125px,650px);
                         background:UiTheme.sidebar;border-color:UiTheme.border;border-width:1px;border-radius:4px;
-                        ScrollView {width:parent.width;height:parent.height;horizontal-scrollbar-policy:always-off;
-                            PlaneMonitorPanel {width:parent.visible-width;
+                        plane-scroll := ScrollView {width:parent.width;height:parent.height;horizontal-scrollbar-policy:always-off;
+                            viewport-height:max(self.visible-height,plane-content.height + 24px);
+                            viewport-width:self.visible-width;vertical-scrollbar-policy:always-on;
+                            plane-content := PlaneMonitorPanel {width:plane-scroll.visible-width;height:self.preferred-height;
                                 field <=> root.flow-plane-field;vectors <=> root.flow-plane-vectors;edges <=> root.flow-plane-edges;normalize <=> root.flow-plane-normalize;normal-marks <=> root.flow-plane-normal-marks;range-min <=> root.flow-plane-min;range-max <=> root.flow-plane-max;
                                 style=>{root.flow-plane-style();}export(i)=>{root.flow-plane-export(i);}
                                 names:root.flow-plane-names;index <=> root.flow-plane-index;every <=> root.flow-plane-every;record <=> root.flow-plane-enabled;
@@ -723,6 +812,19 @@ export component MainWindow inherits Window {
                     apply-settings()=>{root.mesh-apply-settings();}
                     cpu-threads <=> root.wb-mesh-threads;cpu-limit:root.wb-cpu-limit;
                     global-size <=> root.wb-global-size;min-size <=> root.wb-min-size;max-size <=> root.wb-max-size;
+                    clip-enabled <=> root.mesh-clip-enabled;clip-axis <=> root.mesh-clip-axis;
+                    clip-position <=> root.mesh-clip-position;clip-invert <=> root.mesh-clip-invert;
+                    quality-bins:root.mesh-quality-bins;quality-stats:root.mesh-quality-stats;
+                    quality-low:root.mesh-quality-low;quality-high:root.mesh-quality-high;
+                    box-min <=> root.mesh-box-min;box-max <=> root.mesh-box-max;
+                    box-size <=> root.mesh-box-size;box-transition <=> root.mesh-box-transition;
+                    inspect(action)=>{root.mesh-inspection-apply(action);}
+                    add-region()=>{root.mesh-add-region();}region-bounds()=>{root.mesh-region-bounds();}
+                    scope-mode <=> root.mesh-scope-mode;control-kind <=> root.mesh-control-kind;
+                    control-name <=> root.mesh-control-name;edit-id:root.mesh-edit-id;
+                    layer-mode <=> root.mesh-layer-mode;layer-summary:root.mesh-layer-summary;
+                    control-action(action,index)=>{root.mesh-control-action(action,index);}
+                    layer-preview()=>{root.mesh-layer-preview();}
                     local-target <=> root.wb-local-target;local-size <=> root.wb-local-size;
                     refine-min <=> root.wb-refine-min;refine-max <=> root.wb-refine-max;refine-distance <=> root.wb-refine-distance;
                     layer-first <=> root.wb-layer-first;layer-growth <=> root.wb-layer-growth;layer-count <=> root.wb-layer-count;
@@ -747,7 +849,6 @@ export component MainWindow inherits Window {
                     add-local=>{root.add-local-size-wb();}
                     add-refinement=>{root.add-threshold-refinement-wb();}
                     add-layers=>{root.add-boundary-layer-wb();}
-                    remove-control(index)=>{root.select-mesh-control(index);root.remove-mesh-control-wb();}
                     display(index)=>{root.mesh-display(index);}
                     select-color(index)=>{root.mesh-color(index);}
                     quality(index)=>{root.mesh-quality(index);}
@@ -772,25 +873,8 @@ export component MainWindow inherits Window {
                         SectionHint {text:"Select a boundary zone, assign its physical condition, then set the fluid material.";}
                         HorizontalLayout {
                             spacing:10px;
-                            Card {
-                                horizontal-stretch:1;
-                                VerticalLayout {
-                                    padding:10px;spacing:8px;
-                                    Text {text:"BOUNDARY ZONES";color:UiTheme.accent;font-size:11px;font-weight:700;}
-HorizontalLayout {height:32px;spacing:5px;
-                                        Button {text:root.mesh-show-geometry ? "✓ Geometry" : "Geometry";clicked=>{root.mesh-workspace-view(true);}}
-                                        Button {text:!root.mesh-show-geometry ? "✓ Mesh" : "Mesh";enabled:!root.wb-busy;clicked=>{root.mesh-workspace-view(false);}}
-                                    }
-                                    EntitySelectionBar {mode:root.mesh-entity-mode;enabled:!root.wb-busy;select(mode)=>{root.mesh-entity-filter(mode);}clear=>{root.mesh-group-action(0);}}
-                                    InteractiveGeometryPreview { vertical-stretch: 1; preview-image: root.visualization-image;navigation-3d:true;planar-navigation:!root.mesh-spatial-view;orientation-image:root.cad-orientation-image;pick-orientation(x,y)=>{root.cad-pick-orientation(x,y);}select-view-axis(axis)=>{root.select-geometry-view-axis(axis);}pan(dx,dy,w,h)=>{root.viewport-pan(dx,dy,w,h);} help-text:!root.mesh-spatial-view ? "CLICK: SELECT · DRAG: PAN · WHEEL: ZOOM · DOUBLE CLICK: FIT" : "CLICK: SELECT · DRAG: ORBIT · MIDDLE: PAN · WHEEL: ZOOM"; view-axis: root.geometry-view-axis; orbit(x, y, pressed-x, pressed-y) => { root.mesh-view-drag(x,y,pressed-x,pressed-y,self.width/1px,self.height/1px); } orbit-end => { root.mesh-view-end(); } zoom(delta) => { root.mesh-view-zoom(delta); } reset-view => { root.mesh-view-fit(); } pick-modified(x,y,w,h,add)=>{if root.mesh-show-geometry {root.mesh-pick-geometry(x,y,w,h,add);}else{root.pick-boundary(x,y,w,h);}} hover(x, y, w, h) => { root.mesh-hover(x, y, w, h); } }
-                                    Text {text:root.wb-flow-feedback;color:UiTheme.text-soft;font-size:11px;wrap:word-wrap;}
-                                    HorizontalLayout {
-                                        Text {text:root.wb-boundary-summary;color:UiTheme.text-soft;font-size:11px;wrap:word-wrap;vertical-alignment:center;horizontal-stretch:1;}
-                                    }
-                                }
-                            }
                             WorkflowControlCard {
-                                width:300px;
+                                width:UiTheme.properties-width;
                                 Text {text:"BOUNDARY CONDITIONS";color:UiTheme.accent;font-size:11px;font-weight:700;}
                                 InspectorValue {text:root.wb-boundary-summary;}
                                 ListView {height:min(150px,max(68px,root.patch-status-model.length*34px));
@@ -851,6 +935,24 @@ HorizontalLayout {height:32px;spacing:5px;
                                 Button {text:"Edit fluid material…";enabled:!root.wb-busy;clicked=>{root.open-material-editor();}}
 
                             }
+                            Card {
+                                horizontal-stretch:1;
+                                VerticalLayout {
+                                    padding:10px;spacing:8px;
+                                    Text {text:"BOUNDARY ZONES";color:UiTheme.accent;font-size:11px;font-weight:700;}
+HorizontalLayout {height:32px;spacing:5px;
+                                        Button {text:root.mesh-show-geometry ? "✓ Geometry" : "Geometry";clicked=>{root.mesh-workspace-view(true);}}
+                                        Button {text:!root.mesh-show-geometry ? "✓ Mesh" : "Mesh";enabled:!root.wb-busy;clicked=>{root.mesh-workspace-view(false);}}
+                                    }
+                                    EntitySelectionBar {mode:root.mesh-entity-mode;enabled:!root.wb-busy;select(mode)=>{root.mesh-entity-filter(mode);}clear=>{root.mesh-group-action(0);}}
+                                    InteractiveGeometryPreview { vertical-stretch: 1; preview-image: root.visualization-image;navigation-3d:true;planar-navigation:!root.mesh-spatial-view;orientation-image:root.cad-orientation-image;pick-orientation(x,y)=>{root.cad-pick-orientation(x,y);}select-view-axis(axis)=>{root.select-geometry-view-axis(axis);}pan(dx,dy,w,h)=>{root.viewport-pan(dx,dy,w,h);} help-text:!root.mesh-spatial-view ? "CLICK: SELECT · DRAG: PAN · WHEEL: ZOOM · DOUBLE CLICK: FIT" : "CLICK: SELECT · DRAG: ORBIT · MIDDLE: PAN · WHEEL: ZOOM"; view-axis: root.geometry-view-axis; orbit(x, y, pressed-x, pressed-y) => { root.mesh-view-drag(x,y,pressed-x,pressed-y,self.width/1px,self.height/1px); } orbit-end => { root.mesh-view-end(); } zoom(delta) => { root.mesh-view-zoom(delta); } reset-view => { root.mesh-view-fit(); } pick-modified(x,y,w,h,add)=>{if root.mesh-show-geometry {root.mesh-pick-geometry(x,y,w,h,add);}else{root.pick-boundary(x,y,w,h);}} hover(x, y, w, h) => { root.mesh-hover(x, y, w, h); } }
+                                    Text {text:root.wb-flow-feedback;color:UiTheme.text-soft;font-size:11px;wrap:word-wrap;}
+                                    HorizontalLayout {
+                                        Text {text:root.wb-boundary-summary;color:UiTheme.text-soft;font-size:11px;wrap:word-wrap;vertical-alignment:center;horizontal-stretch:1;}
+                                    }
+                                }
+                            }
+
                         }
                     }
                 }
@@ -875,8 +977,11 @@ HorizontalLayout {height:32px;spacing:5px;
                     log:root.log-text;material:"ρ="+root.material-density+" · ν="+root.material-viscosity;
                     checkpoint-every <=> root.wb-checkpoint-every;
                     three-d:root.mesh-dimension-index==1;
+                    initial-x <=> root.initial-x;initial-y <=> root.initial-y;initial-z <=> root.initial-z;initial-p <=> root.initial-p;
                     paused:root.solver-paused;control(i)=>{root.solver-control(i);}
                     busy:root.wb-busy;can-run:root.can-run-workbench;progress:root.wb-solve-progress;
+                    time-mode <=> root.wb-time-mode;time-step <=> root.wb-time-step;time-steps <=> root.wb-time-steps;
+                    turbulence-model <=> root.wb-turbulence-model;turbulence-k <=> root.wb-turbulence-k;turbulence-omega <=> root.wb-turbulence-omega;
                     cpu-limit:root.wb-cpu-limit;cpu-threads <=> root.wb-cpu-threads;iterations <=> root.wb-max-iterations;velocity-relaxation <=> root.wb-velocity-relaxation;
                     convection-index <=> root.wb-convection-index;
                     pressure-relaxation <=> root.wb-pressure-relaxation;continuity-tolerance <=> root.wb-continuity-tolerance;
@@ -921,53 +1026,8 @@ HorizontalLayout {height:32px;spacing:5px;
 
                 }
 
-                // ---- RIGHT PROPERTIES INSPECTOR ----
-                if root.current-step == 4 && root.inspector-mode == 6 : Rectangle {
-                    min-width: root.compact-ui ? 236px : 264px;
-                    preferred-width: root.compact-ui ? 260px : 292px;
-                    max-width: root.compact-ui ? 288px : 320px;
-                    background: UiTheme.sidebar;
-                    border-color: UiTheme.border-soft;
-                    border-width: 1px;
+                // Properties are docked on the left.
 
-                    VerticalLayout {
-                        padding: root.compact-ui ? 9px : 12px;
-                        spacing: 8px;
-
-                        Text {
-                            text: "PROPERTIES";
-                            color: UiTheme.text-dim;
-                            font-size: 10px;
-                            font-weight: 700;
-                        }
-                        Text {
-                            text: root.inspector-title;
-                            color: UiTheme.accent;
-                            font-size: 12px;
-                            font-weight: 800;
-                        }
-
-                        inspector-scroll := ScrollView {
-                            vertical-stretch: 1;
-                            horizontal-scrollbar-policy: always-off;
-
-                            VerticalLayout {
-                                min-height: inspector-scroll.visible-height;
-                                spacing: 8px;
-
-                                // 6 — persisted run record
-                                if root.inspector-mode == 6 : VerticalLayout {
-                                    spacing: 6px;
-                                    InspectorLabel { text: "PERSISTED RUN METADATA"; }
-                                    InspectorValue { text: root.inspector-info; font-family: "monospace"; }
-                                    Rectangle { height: 1px; background: UiTheme.border; }
-                                    Button { text: "DELETE RUN"; enabled: !root.wb-busy; clicked => { root.delete-run-wb(); } }
-                                    InspectorLabel { text: "Delete is a two-step action: press once to arm confirmation, then press again to permanently remove this run's workspace artifacts."; wrap: word-wrap; color: rgb(126,153,170); font-size: 10px; }
-                                }
-                            }
-                        }
-                    }
-                }
             }
         }
 
@@ -1015,4 +1075,15 @@ HorizontalLayout {height:32px;spacing:5px;
     }
 
 
+    if root.settings-open : SettingsDialog {
+        browser:root.show-browser;topology:root.show-topology;
+        panel-size:root.preferences-panel-size;
+        cancel=>{root.settings-open=false;}
+        apply(browser,topology,size)=>{
+            root.show-browser=browser;root.show-topology=topology;
+            root.preferences-panel-size=size;
+            UiTheme.properties-width=size==0 ? 270px : size==2 ? 340px : 300px;
+            root.refresh-browser();root.save-preferences();root.settings-open=false;
+        }
+    }
 }
