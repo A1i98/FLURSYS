@@ -1,9 +1,10 @@
 FLURSYS includes SolidCraft geometry and sketch crates.
 Copyright (c) 2026 SolidCraft contributors.
-Source: https://github.com/tangency-labs/solidcraft at 8a562f2719ebe362399f5512296dea2cccb1a14e
+Source: https://github.com/tangency-labs/solidcraft at b289dc2421a8c3a172afa4754f731072eea7f6ef
 Licensed under MIT OR Apache-2.0; complete texts are in vendor/cad-workbench/LICENSE-MIT and LICENSE-APACHE.
 The sketch text implementation embeds Liberation Sans; its unmodified font and SIL OFL 1.1 notice are in vendor/cad-workbench/assets/fonts/liberation-sans/.
 BIZ UDP Gothic test font data retains its accompanying OFL notice.
+The CAD UI also embeds IBM Plex Sans and IBM Plex Mono; their font files and SIL OFL notices are retained under vendor/cad-workbench/assets/fonts/.
 
 CAD viewport artwork is supplied by the submodule assets; attribution is retained in vendor/cad-workbench/ATTRIBUTION.md.
 Exact B-rep freeform edge adapter derives from SolidCraft crates/kernel/src/freeform.rs and build.rs under the same license.

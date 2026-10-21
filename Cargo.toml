@@ -5,7 +5,7 @@ default-members = ["."]
 exclude = ["vendor/cad-workbench/vendor"]
 
 [workspace.package]
-version = "0.16.2"
+version = "0.18.4"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 rust-version = "1.95"
@@ -13,6 +13,8 @@ authors = ["SolidCraft contributors"]
 repository = "https://github.com/bherbruck/solidcraft"
 
 [workspace.dependencies]
+schemars = "1.2"
+serde_path_to_error = "0.1"
 encoding_rs = "0.8"
 chardetng = "0.1"
 # internal
