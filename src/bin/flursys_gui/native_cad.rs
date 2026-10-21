@@ -124,6 +124,7 @@ impl Gpu {
         self.app.ui.show_timeline = false;
         self.app.home.open = false;
         let app = &mut self.app;
+        cad_workbench::frame::set_left_docking(&self.ctx, true);
         let mut out = self.ctx.run_ui(input, |ui| {
             app.logic(ui.ctx());
             app.ui(ui);
