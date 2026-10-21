@@ -12,7 +12,7 @@ use crate::{
 };
 
 mod time;
-pub use time::TimeIntegration;
+pub use time::{AdaptiveTimeStep, TimeIntegration};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum IncompressibleBoundaryCondition {
@@ -103,6 +103,7 @@ pub enum IncompressibleInitialConditions {
         pressure: CellField<f64>,
         face_flux: FaceField<f64>,
         time: f64,
+        last_dt: Option<f64>,
         turbulence: Option<crate::turbulence::TurbulenceFields>,
     },
     Uniform {
@@ -615,6 +616,8 @@ pub struct IncompressibleSolution {
     pub nonlinear_iterations: usize,
     pub max_courant: Option<f64>,
     pub turbulence: Option<crate::turbulence::TurbulenceFields>,
+    pub last_time_step: Option<f64>,
+    pub rejected_time_steps: usize,
     pub physical_time: Option<f64>,
     pub completed_time_steps: usize,
     pub velocity: CellField<Vec3>,
@@ -640,6 +643,7 @@ pub struct SolveControl<'a> {
         >,
     >,
     restart_every: usize,
+    on_message: Option<Box<dyn Fn(String) + Send + Sync + 'a>>,
     on_fields: Option<
         Box<
             dyn Fn(usize, &CellField<Vec3>, &CellField<f64>) -> Result<(), String>
@@ -662,6 +666,7 @@ impl<'a> SolveControl<'a> {
             on_step: None,
             on_restart: None,
             restart_every: 0,
+            on_message: None,
             on_fields: None,
         }
     }
@@ -695,6 +700,10 @@ impl<'a> SolveControl<'a> {
         self.restart_every = every;
         self
     }
+    pub fn with_message(mut self, callback: impl Fn(String) + Send + Sync + 'a) -> Self {
+        self.on_message = Some(Box::new(callback));
+        self
+    }
     pub fn with_completed_step(
         mut self,
         callback: impl Fn(usize, &IncompressibleSolution) -> Result<(), String> + Send + Sync + 'a,
@@ -718,6 +727,7 @@ impl IncompressibleSolution {
             pressure: self.pressure.clone(),
             face_flux: self.face_flux.clone(),
             time: self.physical_time.unwrap_or(0.0),
+            last_dt: self.last_time_step,
             turbulence: self.turbulence.clone(),
         }
     }
@@ -991,6 +1001,7 @@ fn solve_incompressible_on_pool(
                             pressure: state.pressure.clone(),
                             face_flux: state.face_flux.clone(),
                             time: 0.0,
+                            last_dt: None,
                             turbulence: closure.as_ref().map(|c| c.lock().unwrap().fields()),
                         },
                     )
@@ -1015,6 +1026,7 @@ fn solve_incompressible_on_pool(
                             pressure: state.pressure.clone(),
                             face_flux: state.face_flux.clone(),
                             time: 0.0,
+                            last_dt: None,
                             turbulence: closure.as_ref().map(|c| c.lock().unwrap().fields()),
                         },
                     ) {
@@ -1096,6 +1108,8 @@ fn solve_incompressible_on_pool(
         max_courant: None,
         turbulence: closure.as_ref().map(|c| c.lock().unwrap().fields()),
         physical_time: None,
+        last_time_step: None,
+        rejected_time_steps: 0,
         completed_time_steps: 0,
         velocity: state.velocity,
         pressure: state.pressure,

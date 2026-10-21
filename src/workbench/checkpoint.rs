@@ -34,6 +34,8 @@ struct FieldCheckpoint {
     #[serde(default)]
     time: Option<f64>,
     #[serde(default)]
+    last_dt: Option<f64>,
+    #[serde(default)]
     face_flux: Option<Vec<f64>>,
     #[serde(default)]
     turbulence: Option<StoredTurbulence>,
@@ -76,6 +78,7 @@ pub fn write_restart(
         pressure,
         face_flux,
         time,
+        last_dt,
         turbulence,
     } = initial
     else {
@@ -109,6 +112,7 @@ pub fn write_restart(
         pressure: pressure.values().to_vec(),
         context: context.into(),
         time: physical.then_some(*time),
+        last_dt: if physical { *last_dt } else { None },
         face_flux: Some(face_flux.values().to_vec()),
         turbulence: turbulence.as_ref().map(|t| StoredTurbulence {
             model: t.model,
@@ -197,6 +201,7 @@ pub fn load(
     let initial = if let Some(phi) = saved.face_flux {
         if phi.iter().any(|v| !v.is_finite())
             || saved.time.is_some_and(|t| !t.is_finite() || t < 0.0)
+            || saved.last_dt.is_some_and(|dt| !dt.is_finite() || dt <= 0.0)
         {
             return Err("Checkpoint time or flux is invalid".into());
         }
@@ -224,6 +229,7 @@ pub fn load(
             pressure,
             face_flux: crate::FaceField::from_values(mesh, phi).map_err(|e| format!("{e:?}"))?,
             time: saved.time.unwrap_or(0.0),
+            last_dt: saved.last_dt,
             turbulence,
         }
     } else {
