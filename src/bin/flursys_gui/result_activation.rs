@@ -61,6 +61,8 @@ impl AppState {
                 solution,
                 self.workbench.material().density,
             );
+            self.post.wall_report_index=Some(solution.report.outer_iterations);self.post.wall_report_time=solution.physical_time;
+            if let Ok(case)=self.workbench.prepare_case() {self.post.wall_reports=flursys::workbench::wall_reports::reports(&case,&solution.velocity,&solution.pressure,true).unwrap_or_default();}
             let balance=flursys::workbench::boundary_reports::conservation_report(&mesh.mesh,solution,self.workbench.material().density);
             self.post.boundary_summary = balance.summary()+"\n\n"+&result_analysis::boundary_summary(&reports);
             self.post.boundary_reports = reports;

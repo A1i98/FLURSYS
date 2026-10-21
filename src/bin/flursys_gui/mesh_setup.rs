@@ -145,7 +145,7 @@ fn bind_grouping(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
     ui.on_mesh_task_changed(move |task| {
         let Some(ui) = weak.upgrade() else { return };
         let mut state = shared.borrow_mut();
-        let geometry = task == 0 || !state.workbench.has_mesh();
+        let geometry = task == 0 || task == 3 || !state.workbench.has_mesh();
         show_geometry(&ui, &mut state, geometry);
         if task == 2 {
             state.mesh_color_mode = MeshColorMode::Quality;

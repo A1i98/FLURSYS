@@ -1,6 +1,6 @@
 import { EntitySelectionBar } from "entity-selection.slint";
 import { Button, ComboBox, LineEdit, SpinBox, ScrollView, ListView, ProgressIndicator, CheckBox } from "std-widgets.slint";
-import { UiTheme, PropertiesPanel, InteractiveGeometryPreview } from "components.slint";
+import { UiTheme, PropertiesPanel, PropertyScroll, WorkspaceSections, InteractiveGeometryPreview } from "components.slint";
 
 component ToolButton inherits Button {
     min-width:0px; min-height:30px; max-height:34px;
@@ -118,26 +118,13 @@ export component MeshWorkspace inherits Rectangle {
     background:UiTheme.background;
     VerticalLayout {
         padding:12px;spacing:10px;
-        HorizontalLayout {
-            height:36px;spacing:8px;
-            Text {text:"Mesh";color:UiTheme.text;font-size:20px;font-weight:700;vertical-alignment:center;}
-            Rectangle {horizontal-stretch:1;}
-        }
+        WorkspaceSections {model:["Boundaries","Sizing","Quality","Refinement","View"];current-index <=> root.task;selected(i)=>{root.task-changed(i);}}
         HorizontalLayout {
             spacing:10px;
             PropertiesPanel {
                 VerticalLayout {padding:8px;spacing:8px;
-                Label {text:"DETAILS OF MESH";color:UiTheme.accent;}
-                ComboBox {min-height:32px;max-height:32px;vertical-stretch:0;model:["Boundary groups","Meshing controls","Mesh quality"];current-index <=> root.task;selected(value)=>{root.task-changed(self.current-index);}}
-                pane := ScrollView {
-            min-height:0px;min-width:0px;
-            viewport-height:max(self.visible-height,property-content.height);
-            viewport-width:self.visible-width;
-            vertical-scrollbar-policy:always-on;
-
-                    vertical-stretch:1;horizontal-scrollbar-policy:always-off;
-                    property-content := VerticalLayout {
-                        width:pane.visible-width;padding-bottom:24px;padding:4px;spacing:9px;height:self.preferred-height;x:0px;y:0px;
+                PropertyScroll {section:root.task;
+                        if root.task==4 : VerticalLayout {spacing:8px;vertical-stretch:0;
                         Label {text:"DISPLAY";color:UiTheme.accent;}
                         ComboBox {min-height:32px;max-height:32px;model:["Geometry for scoping","Generated mesh"];current-index:root.geometry-view ? 0 : 1;selected(value)=>{root.show-geometry(self.current-index==0);}}
                         if !root.geometry-view : VerticalLayout {vertical-stretch:0;spacing:6px;
@@ -164,6 +151,7 @@ export component MeshWorkspace inherits Rectangle {
                             }
                             Rectangle {height:1px;background:UiTheme.border;}
                         }
+                        }
                         if root.task==0 : VerticalLayout {vertical-stretch:0;
                             spacing:9px;
                             Text {vertical-stretch:0;text:"NAMED BOUNDARIES";color:UiTheme.accent;font-size:12px;font-weight:700;}
@@ -179,8 +167,7 @@ export component MeshWorkspace inherits Rectangle {
                             Rectangle {height:1px;background:UiTheme.border;}
                             Label {text:"EXISTING GROUPS";}
                             if root.groups.length==0 : Label {text:"No named groups yet.";}
-                            if root.groups.length>0 : ListView {
-                                height:min(220px,root.groups.length*34px);
+                            if root.groups.length>0 : VerticalLayout {spacing:3px;vertical-stretch:0;
                                 for group[index] in root.groups : ToolButton {
                                     text:(index==root.group-index ? "● " : "○ ")+group;
                                     enabled:!root.busy;clicked=>{root.select-group(index);}
@@ -255,6 +242,8 @@ export component MeshWorkspace inherits Rectangle {
                             ToolButton {text:"Apply mesh settings";enabled:!root.busy;clicked=>{root.apply-settings();}}
 
                             Rectangle {height:1px;background:UiTheme.border;}
+                        }
+                        if root.task==3 : VerticalLayout {spacing:8px;vertical-stretch:0;
                             Text {vertical-stretch:0;text:"SCOPED MESH CONTROLS";color:UiTheme.accent;font-size:12px;font-weight:700;}
                             Label {text:"Select geometry in the viewport, then choose a control. Boundary names and mesh controls are independent.";}
                             if root.edit-id!="" : Label {text:"Editing control #"+root.edit-id; color:UiTheme.accent;}
@@ -308,7 +297,7 @@ export component MeshWorkspace inherits Rectangle {
                             Rectangle {height:1px;background:UiTheme.border;}
                             if root.controls.length>0 : VerticalLayout {vertical-stretch:0;spacing:6px;
                                 Label {text:"MESH CONTROLS · ● enabled / ○ suppressed";}
-                                ListView {height:min(160px,root.controls.length*38px);
+                                VerticalLayout {spacing:3px;vertical-stretch:0;
                                     for control[index] in root.controls : ToolButton {
                                         text:(root.control-index==index ? "▸ " : "")+control;
                                         enabled:!root.busy;clicked=>{root.control-index=index;root.control-action(0,index);}
@@ -345,14 +334,13 @@ export component MeshWorkspace inherits Rectangle {
                             Field {label:"Highlight cells above threshold";value <=> root.quality-threshold;}
                             ToolButton {text:"Apply threshold";clicked=>{root.threshold();}}
                             Label {text:root.inspection;}
-                            if root.bad-cells.length>0 : ListView {
-                                height:180px;
+                            if root.bad-cells.length>0 : VerticalLayout {spacing:3px;vertical-stretch:0;
                                 for cell[index] in root.bad-cells : ToolButton {text:cell;clicked=>{root.select-bad(index);}}
                             }
                             Label {text:root.gmsh;}
                         }
 
-                    }
+
                 }
                 }
             }

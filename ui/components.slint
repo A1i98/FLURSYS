@@ -68,6 +68,10 @@
 // Shared dock surface for workspace properties. Browser remains independent.
 export component PropertiesPanel inherits Rectangle {
     width:UiTheme.properties-width;
+    min-height:0px;
+    preferred-height:0px;
+    vertical-stretch:1;
+    clip:true;
     background:UiTheme.sidebar;
     border-color:UiTheme.border;
     border-width:1px;
@@ -75,17 +79,67 @@ export component PropertiesPanel inherits Rectangle {
     @children
 }
 
-    export component WorkflowControlCard inherits PropertiesPanel {
-        control-scroll := ScrollView {
-            viewport-height:max(self.visible-height,property-content.height);
-            viewport-width:self.visible-width;
-            vertical-scrollbar-policy:always-on;
-
-            width:parent.width;height:parent.height;
-            horizontal-scrollbar-policy:always-off;
-            property-content := VerticalLayout {width:control-scroll.visible-width;padding-bottom:24px;padding:14px;spacing:8px;height:self.preferred-height;x:0px;y:0px;@children}
+// The extent is a Rectangle, not a layout directly inside Flickable. Its height
+// is the complete unconstrained column height, including width-dependent hints.
+// This keeps viewport constraints out of the content layout and clamps stale
+// offsets after selecting a shorter section or resizing the window.
+export component PropertyScroll inherits Rectangle {
+    in property <int> section:0;
+    out property <length> visible-width:max(0px,scroller.visible-width - 16px);
+    min-height:0px;min-width:0px;preferred-height:0px;vertical-stretch:1;
+    clip:true;
+    function clamp-offset() {
+        scroller.viewport-y=max(min(0px,scroller.viewport-y),min(0px,scroller.visible-height - extent.height));
+    }
+    changed section=>{scroller.viewport-y=0px;}
+    changed height=>{root.clamp-offset();}
+    changed width=>{root.clamp-offset();}
+    scroller:=ScrollView {
+        width:parent.width;height:parent.height;
+        horizontal-scrollbar-policy:always-off;
+        vertical-scrollbar-policy:always-on;
+        viewport-width:self.visible-width;
+        viewport-height:max(self.visible-height,extent.height);
+        extent:=Rectangle {
+            x:0px;y:0px;width:root.visible-width;height:column.height;
+            changed height=>{root.clamp-offset();}
+            column:=VerticalLayout {
+                x:0px;y:0px;width:parent.width;
+                // Minimum layout extent contains intrinsic control heights without
+                // inheriting percentage preferred heights from the viewport.
+                height:self.min-height;
+                padding:10px;padding-bottom:32px;spacing:8px;
+                @children
+            }
         }
     }
+}
+
+export component WorkspaceSections inherits Rectangle {
+    in property <[string]> model;
+    in-out property <int> current-index:0;
+    callback selected(int);
+    min-height:36px;preferred-height:36px;max-height:36px;vertical-stretch:0;
+    background:UiTheme.topbar;
+    Rectangle {y:parent.height - 1px;width:parent.width;height:1px;background:UiTheme.border;}
+    HorizontalLayout {spacing:2px;
+        for title[index] in root.model : Rectangle {
+            min-width:48px;preferred-width:112px;max-width:160px;horizontal-stretch:1;
+            background:root.current-index==index ? UiTheme.sidebar : hit.has-hover ? UiTheme.border-soft : transparent;
+            Rectangle {y:parent.height - 3px;width:parent.width;height:2px;background:root.current-index==index ? UiTheme.accent : transparent;}
+            Text {text:title;color:root.current-index==index ? UiTheme.text-title : UiTheme.text-muted;font-size:11px;font-weight:root.current-index==index ? 700 : 500;horizontal-alignment:center;vertical-alignment:center;overflow:elide;}
+            hit:=TouchArea {mouse-cursor:pointer;clicked=>{root.current-index=index;root.selected(index);}}
+        }
+        Rectangle {horizontal-stretch:1;min-width:0px;}
+    }
+}
+
+export component WorkflowControlCard inherits PropertiesPanel {
+    in property <int> section:0;
+    VerticalLayout {padding:0px;spacing:0px;
+        PropertyScroll {section:root.section;@children}
+    }
+}
 
     export component MetricCard inherits Card {
         in property <string> label;

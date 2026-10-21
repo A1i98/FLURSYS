@@ -13,6 +13,9 @@ pub(super) struct State {
     pub profile: Vec<result_analysis::ProfilePoint>,
     pub profile_label: String,
     pub boundary_summary: String,
+    pub wall_report_index:Option<usize>,
+    pub wall_report_time:Option<f64>,
+    pub wall_reports:Vec<flursys::workbench::wall_reports::WallPatchReport>,
     pub boundary_reports: Vec<flursys::workbench::boundary_reports::BoundaryFlowReport>,
     pub plane_frames: Vec<PathBuf>,
     pub plane_frame: usize,
@@ -39,7 +42,7 @@ impl State {
         self.profile.clear();
         self.profile_label.clear();
         self.boundary_summary.clear();
-        self.boundary_reports.clear();
+        self.boundary_reports.clear();self.wall_reports.clear();self.wall_report_index=None;self.wall_report_time=None;
         self.traces.clear();
         self.metric_histories = Default::default();
         self.continuity_full.clear();
@@ -476,6 +479,7 @@ pub(super) fn bind(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
             10 => ("boundary-flows.csv", "csv"),
             11 => ("convergence.svg", "svg"),
             12 => ("field-statistics.csv", "csv"),
+            13 => ("wall-patches.csv","csv"),14=>("wall-faces.csv","csv"),
             _ => ("solution.vtk", "vtk"),
         };
         if kind == 1 {
@@ -509,6 +513,11 @@ pub(super) fn bind(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
             match kind {
                 0 => save_png(&path, &ui.get_visualization_image()),
                 6 => save_png(&path, &ui.get_residual_image()),
+                13|14=>{
+                    if state.post.wall_reports.is_empty() {return Err("No wall report is available for this run".into());}
+                    if kind==14 && state.post.wall_reports.iter().all(|r|r.samples.is_empty()) {return Err("Per-face export requires a completed run with detailed wall samples".into());}
+                    result_analysis::atomic_text(&path,&flursys::workbench::wall_reports::csv(&state.post.wall_reports,kind==14))
+                },
                 12 => result_analysis::atomic_text(&path,&result_analysis::engineering_summary_csv(&state)?),
                 7 => result_analysis::atomic_text(&path,&result_analysis::report(&state)?),
                 10 => result_analysis::atomic_text(&path,&result_analysis::boundary_csv(&state.post.boundary_reports)?),
@@ -676,6 +685,10 @@ pub(super) fn tick(ui: &MainWindow, state: &mut AppState) -> bool {
 }
 
 pub(super) fn refresh(ui: &MainWindow, state: &AppState) {
+    let identity=state.post.wall_report_time.map(|t|format!("Sample at physical time {t:.9e} s\n")).or_else(||state.post.wall_report_index.map(|i|format!("Sample at iteration {i}\n"))).unwrap_or_default();
+    ui.set_post_wall_summary((identity+&flursys::workbench::wall_reports::summary(&state.post.wall_reports)).into());
+    ui.set_post_has_wall_report(!state.post.wall_reports.is_empty());
+    ui.set_post_has_wall_samples(state.post.wall_reports.iter().any(|r|!r.samples.is_empty()));
     if matches!(state.current_step,3|4) {plane_monitors::show_latest(ui,state);}
     if state.current_step==3 {convergence_plot::refresh(ui,state);}else{ui.set_continuity_chart_caption(chart_caption(state, ui.get_wb_chart_kind()).into());}
     ui.set_post_has_result(state.active_result().is_some());
@@ -755,8 +768,8 @@ pub(super) fn refresh(ui: &MainWindow, state: &AppState) {
         format!(
             "{} · {} {iteration} / {} · elapsed {:.2} s",
             status_label(&state.workbench),
-            if ui.get_wb_time_mode()==1 {"physical step"}else{"iteration"},
-            if ui.get_wb_time_mode()==1 {state.post.limit.max(ui.get_wb_time_steps() as usize)}else{state.post.limit.max(ui.get_wb_max_iterations() as usize)},
+            if ui.get_wb_time_mode()!=0 {"physical step"}else{"iteration"},
+            if ui.get_wb_time_mode()!=0 {state.post.limit.max(ui.get_wb_time_steps() as usize)}else{state.post.limit.max(ui.get_wb_max_iterations() as usize)},
             state.post.elapsed
         )
         .into(),

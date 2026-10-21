@@ -67,6 +67,11 @@ pub enum WorkbenchJobEvent {
     SolveProgress(JobProgress),
     SolveCompleted(Result<IncompressibleSolution, IncompressibleSolveError>),
     PlaneSample(crate::workbench::plane_monitor::PlaneSnapshot),
+    WallReports {
+        iteration: usize,
+        physical_time: Option<f64>,
+        reports: Vec<crate::workbench::wall_reports::WallPatchReport>,
+    },
 }
 
 /// Owns worker channels and lifecycle state for the canonical workbench jobs.
@@ -194,14 +199,7 @@ impl WorkbenchJobExecutor {
                 .1;
             self.restart = None;
         }
-        let physical = match case.solver.time {
-            crate::unstructured_incompressible::TimeIntegration::Euler { dt, .. } => Some(dt),
-            _ => None,
-        };
-        let start_time = match &case.initial_conditions {
-            crate::IncompressibleInitialConditions::Restart { time, .. } => *time,
-            _ => 0.0,
-        };
+        let physical = case.solver.time.is_transient();
         let checkpoint_every = if folder.as_os_str().is_empty() {
             0
         } else {
@@ -212,6 +210,11 @@ impl WorkbenchJobExecutor {
         let retained_mesh = case.mesh.id();
         self.start(|sender, cancellation| {
             std::thread::spawn(move || {
+                let case=Arc::new(case);
+                let sample_time=Arc::new(Mutex::new(None));
+                let completed_time=sample_time.clone();
+                let monitor_case=case.clone();let monitor_sender=sender.clone();
+                let message_sender=sender.clone();
                 let _ = sender.send(WorkbenchJobEvent::SolveProgress(JobProgress::Started));
                 let progress_sender = sender.clone();
                 let control_cancellation = cancellation.clone();
@@ -281,7 +284,11 @@ impl WorkbenchJobExecutor {
                 let completed_context=final_checkpoint_context.clone();
                 let completed_sender=sender.clone();
 
+                let control = control.with_message(move |message|{let _=message_sender.send(WorkbenchJobEvent::SolveProgress(JobProgress::Message(message)));});
                 let control = control.with_fields(move |iteration, velocity, pressure| {
+                    if iteration==1 || iteration%10==0 {
+                        if let Ok(walls)=crate::workbench::wall_reports::reports(&monitor_case,velocity,pressure,false) {let _=monitor_sender.send(WorkbenchJobEvent::WallReports{iteration,physical_time:*sample_time.lock().unwrap(),reports:walls});}
+                    }
                     for (plane, cells) in observer_plans.iter() {
                         if iteration % plane.every != 0 {
                             continue;
@@ -293,7 +300,7 @@ impl WorkbenchJobExecutor {
                             velocity.values(),
                             pressure.values(),
                         )?;
-                        snapshot.physical_time=physical.map(|dt|start_time+iteration as f64*dt);
+                        snapshot.physical_time=*sample_time.lock().unwrap();
                         snapshot.path = Some(crate::workbench::plane_monitor::write_csv(
                             &snapshot,
                             &recording_folder,
@@ -311,13 +318,14 @@ impl WorkbenchJobExecutor {
                     *iteration_retained.lock().unwrap()=Some((retained_mesh,initial));Ok(())
                 });
                 let control=control.with_completed_step(move |index,solution| {
+                    *completed_time.lock().unwrap()=solution.physical_time;
                     *completed_retained.lock().unwrap()=Some((retained_mesh,solution.restart()));
                     if let Some(mesh)=completed_mesh.as_ref().filter(|_|index==1||index%checkpoint_every==0) {
                         if let Err(error)=crate::workbench::checkpoint::write_solution(&completed_path,mesh,index,solution,&completed_context) {
                             let _=completed_sender.send(WorkbenchJobEvent::SolveProgress(JobProgress::Message(format!("Complete-state checkpoint failed: {error}"))));
                         }
                     }
-                    if let Some(time)=solution.physical_time {let _=completed_sender.send(WorkbenchJobEvent::SolveProgress(JobProgress::Message(format!("Completed physical time step {index}: t={time:.9e} s, nonlinear correctors={}, max Co={:.4e}",solution.report.outer_iterations,solution.max_courant.unwrap_or(0.0)))));}
+                    if let Some(time)=solution.physical_time {let _=completed_sender.send(WorkbenchJobEvent::SolveProgress(JobProgress::Message(format!("Completed physical time step {index}: t={time:.9e} s, dt={:.6e} s, nonlinear correctors={}, max Co={:.4e}, rejected steps={}",solution.last_time_step.unwrap_or(0.0),solution.report.outer_iterations,solution.max_courant.unwrap_or(0.0),solution.rejected_time_steps))));}
                     Ok(())
                 });
                 let result = solve_incompressible_with_control(&case, &control);
@@ -325,7 +333,7 @@ impl WorkbenchJobExecutor {
                     if let Some(final_checkpoint_mesh) = final_checkpoint_mesh.as_ref() {
                         if let Err(error) = crate::workbench::checkpoint::write_solution(
                             &final_checkpoint_path, final_checkpoint_mesh,
-                            if physical.is_some() {solution.completed_time_steps}else{solution.report.outer_iterations},
+                            if physical {solution.completed_time_steps}else{solution.report.outer_iterations},
                             solution,&final_checkpoint_context,
                         ) {
                             let _ = sender.send(WorkbenchJobEvent::SolveProgress(
@@ -333,7 +341,7 @@ impl WorkbenchJobExecutor {
                             ));
                         }
                     }
-                    let iteration = if physical.is_some() {solution.completed_time_steps}else{solution.report.outer_iterations};
+                    let iteration = if physical {solution.completed_time_steps}else{solution.report.outer_iterations};
                     for (plane, cells) in plans.iter().filter(|(p, _)| iteration % p.every != 0) {
                         let saved = crate::workbench::plane_monitor::sample(
                             plane,

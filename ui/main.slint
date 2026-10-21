@@ -6,7 +6,7 @@ import { SolutionWorkspace } from "solution-workspace.slint";
 import { SketchDimension, SketchDimensionsOverlay } from "cad-tools.slint";
 import { MeshWorkspace } from "mesh-workspace.slint";
 import { Button, ComboBox, LineEdit, SpinBox, TextEdit, ScrollView, ListView, Palette } from "std-widgets.slint";
-import { SectionTitle, SectionHint, Card, WorkflowControlCard, MetricCard, InteractiveGeometryPreview, WorkflowItem, TreeRowView, InspectorLabel, InspectorValue, ProjectTreeRow, UiTheme } from "components.slint";
+import { SectionTitle, SectionHint, Card, WorkflowControlCard, MetricCard, InteractiveGeometryPreview, WorkflowItem, TreeRowView, InspectorLabel, InspectorValue, ProjectTreeRow, UiTheme, PropertyScroll, WorkspaceSections } from "components.slint";
 import { TopBar } from "layout/topbar.slint";
 import { ProjectTree } from "layout/project_tree.slint";
 import { ExampleGallery, ExampleDescriptor } from "layout/example_gallery.slint";
@@ -148,6 +148,7 @@ export component MainWindow inherits Window {
     in-out property <int> preferences-panel-size:1;
     changed preferences-panel-size => {UiTheme.properties-width=root.preferences-panel-size==0 ? 270px : root.preferences-panel-size==2 ? 340px : 300px;}
     property <bool> settings-open:false;
+    property <int> setup-section:0;
     callback save-preferences();
     in-out property <bool> compact-ui: true;
     changed width => { root.compact-ui = root.width < 1500px; }
@@ -510,6 +511,13 @@ export component MainWindow inherits Window {
     in-out property <string> bc-assigned: "Unassigned";
     in-out property <string> material-density: "1.0";
     in-out property <string> material-viscosity: "0.01";
+    in-out property <string> wb-target-courant:"0.5";
+    in-out property <string> wb-min-time-step:"1e-8";
+    in-out property <string> wb-max-time-step:"0.01";
+    in-out property <string> wb-time-growth:"1.2";
+    in-out property <string> post-wall-summary;
+    in-out property <bool> post-has-wall-report:false;
+    in-out property <bool> post-has-wall-samples:false;
     in-out property <int> wb-time-mode:0;
     in-out property <string> wb-time-step:"0.001";
     in-out property <int> wb-time-steps:100;
@@ -712,20 +720,7 @@ export component MainWindow inherits Window {
                             font-weight: 800;
                         }
 
-                        inspector-scroll := ScrollView {
-                            min-height:0px;min-width:0px;
-                            viewport-height:max(self.visible-height,inspector-content.height);
-                            viewport-width:self.visible-width;
-                            vertical-scrollbar-policy:always-on;
-                            vertical-stretch: 1;
-                            horizontal-scrollbar-policy: always-off;
-
-                            inspector-content := VerticalLayout {
-                                width:inspector-scroll.visible-width;
-                                height:self.preferred-height;
-                                padding-bottom:24px;
-                                spacing: 8px;
-
+                        PropertyScroll {section:root.inspector-mode;
                                 // 6 — persisted run record
                                 if root.inspector-mode == 6 : VerticalLayout {
                                     spacing: 6px;
@@ -735,7 +730,7 @@ export component MainWindow inherits Window {
                                     Button { text: "DELETE RUN"; enabled: !root.wb-busy; clicked => { root.delete-run-wb(); } }
                                     InspectorLabel { text: "Delete is a two-step action: press once to arm confirmation, then press again to permanently remove this run's workspace artifacts."; wrap: word-wrap; color: rgb(126,153,170); font-size: 10px; }
                                 }
-                            }
+
                         }
                     }
                 }
@@ -772,17 +767,15 @@ export component MainWindow inherits Window {
                     if root.cad-flow-plane-selected : Rectangle {
                         x:min(260px,max(8px,parent.width - self.width - 8px));y:110px;width:292px;height:min(parent.height - 125px,650px);
                         background:UiTheme.sidebar;border-color:UiTheme.border;border-width:1px;border-radius:4px;
-                        plane-scroll := ScrollView {width:parent.width;height:parent.height;horizontal-scrollbar-policy:always-off;
-                            viewport-height:max(self.visible-height,plane-content.height + 24px);
-                            viewport-width:self.visible-width;vertical-scrollbar-policy:always-on;
-                            plane-content := PlaneMonitorPanel {width:plane-scroll.visible-width;height:self.preferred-height;
+                        VerticalLayout {padding:0px;PropertyScroll {section:root.flow-plane-index;
+PlaneMonitorPanel {
                                 field <=> root.flow-plane-field;vectors <=> root.flow-plane-vectors;edges <=> root.flow-plane-edges;normalize <=> root.flow-plane-normalize;normal-marks <=> root.flow-plane-normal-marks;range-min <=> root.flow-plane-min;range-max <=> root.flow-plane-max;
                                 style=>{root.flow-plane-style();}export(i)=>{root.flow-plane-export(i);}
                                 names:root.flow-plane-names;index <=> root.flow-plane-index;every <=> root.flow-plane-every;record <=> root.flow-plane-enabled;
                                 busy:root.wb-busy;details:root.flow-plane-details;status:root.flow-plane-status;
                                 select(i)=>{root.flow-plane-select(i);}apply=>{root.flow-plane-apply();}view=>{root.flow-plane-view();}
                             }
-                        }
+}}
                     }
                     }
 
@@ -869,15 +862,14 @@ export component MainWindow inherits Window {
                     width:parent.width;height:parent.height;
                     VerticalLayout {
                         padding:12px;spacing:8px;
-                        SectionTitle {text:"Setup";}
-                        SectionHint {text:"Select a boundary zone, assign its physical condition, then set the fluid material.";}
+                        WorkspaceSections {model:["Boundaries","Material","Readiness"];current-index <=> root.setup-section;}
                         HorizontalLayout {
                             spacing:10px;
-                            WorkflowControlCard {
-                                width:UiTheme.properties-width;
+                            WorkflowControlCard {section:root.setup-section;
+                                if root.setup-section==0 : VerticalLayout {spacing:8px;vertical-stretch:0;
                                 Text {text:"BOUNDARY CONDITIONS";color:UiTheme.accent;font-size:11px;font-weight:700;}
                                 InspectorValue {text:root.wb-boundary-summary;}
-                                ListView {height:min(150px,max(68px,root.patch-status-model.length*34px));
+                                VerticalLayout {spacing:3px;vertical-stretch:0;
                                     for patch[index] in root.patch-status-model : Button {min-width:0px;
                                         text:(index==root.patch-index ? "● " : "○ ")+patch;
                                         enabled:!root.wb-busy;clicked=>{root.patch-index=index;root.select-patch-wb(index);}
@@ -929,11 +921,22 @@ export component MainWindow inherits Window {
                                     InspectorValue { text: root.bc-assigned; }
                                     InspectorLabel { text: "Solve stays disabled until every exterior patch is assigned. The backend re-validates the full case before starting."; wrap: word-wrap; color: rgb(126,153,170); font-size: 10px; }
 
+
+                                }
+                                if root.setup-section==1 : VerticalLayout {spacing:8px;vertical-stretch:0;
                                 Rectangle {height:1px;background:UiTheme.border;}
                                 Text {text:"FLUID MATERIAL";color:UiTheme.accent;font-size:11px;font-weight:700;}
                                 InspectorValue {text:"ρ="+root.material-density+" · ν="+root.material-viscosity;}
                                 Button {text:"Edit fluid material…";enabled:!root.wb-busy;clicked=>{root.open-material-editor();}}
 
+
+                                }
+                                if root.setup-section==2 : VerticalLayout {spacing:8px;vertical-stretch:0;
+                                    Text {text:"BOUNDARY READINESS";color:UiTheme.accent;font-size:11px;font-weight:700;}
+                                    InspectorValue {text:root.wb-boundary-summary;}
+                                    InspectorLabel {text:root.wb-run-readiness;wrap:word-wrap;}
+                                    InspectorLabel {text:"Define names on the original geometry, assign every exterior zone, and inspect units before running.";wrap:word-wrap;}
+                                }
                             }
                             Card {
                                 horizontal-stretch:1;
@@ -980,6 +983,8 @@ HorizontalLayout {height:32px;spacing:5px;
                     initial-x <=> root.initial-x;initial-y <=> root.initial-y;initial-z <=> root.initial-z;initial-p <=> root.initial-p;
                     paused:root.solver-paused;control(i)=>{root.solver-control(i);}
                     busy:root.wb-busy;can-run:root.can-run-workbench;progress:root.wb-solve-progress;
+                    target-courant <=> root.wb-target-courant;min-time-step <=> root.wb-min-time-step;max-time-step <=> root.wb-max-time-step;time-growth <=> root.wb-time-growth;
+                    wall-summary:root.post-wall-summary;
                     time-mode <=> root.wb-time-mode;time-step <=> root.wb-time-step;time-steps <=> root.wb-time-steps;
                     turbulence-model <=> root.wb-turbulence-model;turbulence-k <=> root.wb-turbulence-k;turbulence-omega <=> root.wb-turbulence-omega;
                     cpu-limit:root.wb-cpu-limit;cpu-threads <=> root.wb-cpu-threads;iterations <=> root.wb-max-iterations;velocity-relaxation <=> root.wb-velocity-relaxation;
@@ -997,6 +1002,7 @@ HorizontalLayout {height:32px;spacing:5px;
                     busy:root.wb-busy;plane-details:root.flow-plane-details;plane-status:root.flow-plane-status;
                     plane-field <=> root.flow-plane-field;plane-vectors <=> root.flow-plane-vectors;plane-edges <=> root.flow-plane-edges;plane-normalize <=> root.flow-plane-normalize;plane-normal-marks <=> root.flow-plane-normal-marks;plane-min <=> root.flow-plane-min;plane-max <=> root.flow-plane-max;
                     style-plane=>{root.flow-plane-style();}select-plane(i)=>{root.flow-plane-select(i);}apply-plane=>{root.flow-plane-apply();}view-plane=>{root.flow-plane-view();}export-plane(i)=>{root.flow-plane-export(i);}
+                    wall-summary:root.post-wall-summary;has-wall-report:root.post-has-wall-report;has-wall-samples:root.post-has-wall-samples;
                     tab <=> root.post-tab;
                     balance:root.post-balance;profile-image:root.post-profile-image;profile-caption:root.post-profile-caption;
                     line-x0 <=> root.post-line-x0;line-y0 <=> root.post-line-y0;line-x1 <=> root.post-line-x1;line-y1 <=> root.post-line-y1;line-samples <=> root.post-line-samples;

@@ -1,9 +1,12 @@
 import {PlaneMonitorPanel} from "plane-monitor-panel.slint";
 import {Button,ComboBox,LineEdit,SpinBox,Slider,ScrollView,ListView,TextEdit} from "std-widgets.slint";
-import {UiTheme, PropertiesPanel,InteractiveGeometryPreview} from "components.slint";
+import {UiTheme, PropertiesPanel, PropertyScroll, WorkspaceSections,InteractiveGeometryPreview} from "components.slint";
 component Tool inherits Button {min-width:0px;min-height:30px;max-height:34px;}
 component Label inherits Text {color:UiTheme.text-muted;font-size:11px;wrap:word-wrap;}
 export component ResultsWorkspace inherits Rectangle {
+    in property <string> wall-summary;
+    in property <bool> has-wall-report;
+    in property <bool> has-wall-samples;
     in-out property <int> plane-field;
     in-out property <bool> plane-vectors;
     in-out property <bool> plane-edges;
@@ -82,26 +85,17 @@ export component ResultsWorkspace inherits Rectangle {
         padding:12px;spacing:8px;
         HorizontalLayout {
             height:34px;spacing:8px;
-            Text {text:"Results";color:UiTheme.text;font-size:20px;font-weight:700;vertical-alignment:center;}
             Rectangle {horizontal-stretch:1;}
             Label {text:"RUN";vertical-alignment:center;}
             ComboBox {model:root.runs;current-index:root.run-index;enabled:root.runs.length>0;min-width:0px;preferred-width:300px;selected(value)=>{root.select-run(self.current-index);}}
         }
+        WorkspaceSections {model:["Display","Flow","Probes","Information","Plots","Planes","Walls"];current-index <=> root.tab;selected(i)=>{if i==5 {root.view-plane();}}}
         HorizontalLayout {
             spacing:10px;
             PropertiesPanel {
                 VerticalLayout {
                     padding:8px;spacing:8px;
-                    Label {text:"RESULT PROPERTIES";color:UiTheme.accent;font-weight:700;}
-                    ComboBox {model:["Display","Flow","Probes","Information","Plots","CAD plane"];current-index <=> root.tab;min-height:32px;max-height:32px;}
-                    panel:=ScrollView {
-            min-height:0px;min-width:0px;
-            viewport-height:max(self.visible-height,property-content.height);
-            viewport-width:self.visible-width;
-            vertical-scrollbar-policy:always-on;
-
-                        horizontal-scrollbar-policy:always-off;
-                        property-content := VerticalLayout {width:panel.visible-width;spacing:8px;padding-bottom:24px;padding:4px;height:self.preferred-height;x:0px;y:0px;
+                    PropertyScroll {section:root.tab;
                             if root.tab==5 : PlaneMonitorPanel {
                                 names:root.plane-names;index <=> root.plane-index;every <=> root.plane-every;record <=> root.plane-enabled;
                                 busy:root.busy;details:root.plane-details;status:root.plane-status;
@@ -148,9 +142,15 @@ export component ResultsWorkspace inherits Rectangle {
                             if root.tab==2 : VerticalLayout {spacing:8px;
                                 Label {text:"CELL PROBES · "+root.probe-count;color:UiTheme.accent;font-weight:700;}
                                 Label {text:"Click a cell to inspect its centre, pressure and velocity. Up to 32 probes are retained for this run.";}
-                                ListView {height:240px;for probe[index] in root.probes : Tool {text:probe;clicked=>{root.select-probe(index);}}}
+                                VerticalLayout {spacing:3px;vertical-stretch:0;for probe[index] in root.probes : Tool {text:probe;clicked=>{root.select-probe(index);}}}
                                 Tool {text:"Export probes · CSV";enabled:root.probe-count>0;clicked=>{root.export(2);}}
                                 Tool {text:"Clear probes";clicked=>{root.action(4);}}
+                            }
+                            if root.tab==6 : VerticalLayout {spacing:8px;vertical-stretch:0;
+                                Label {text:"WALL RESOLUTION AND LOADS";color:UiTheme.accent;font-weight:700;}
+                                Label {text:root.wall-summary;}
+                                Tool {text:"Export patch statistics · CSV";enabled:root.has-wall-report && !root.export-busy;clicked=>{root.export(13);}}
+                                Tool {text:"Export wall-face samples · CSV";enabled:root.has-wall-samples && !root.export-busy;clicked=>{root.export(14);}}
                             }
                             if root.tab==4 : VerticalLayout {spacing:8px;
                                 Label {text:"LINE PROFILE · 2D";color:UiTheme.accent;font-weight:700;}
@@ -183,10 +183,10 @@ export component ResultsWorkspace inherits Rectangle {
                                 Tool {text:"Copy result artifact · VTK";enabled:root.has-result;clicked=>{root.export(4);}}
                                 Tool {text:"Export convergence · CSV";clicked=>{root.export(3);}}
                                 Label {text:"SOLVER LOG";}
-                                TextEdit {text:root.log;read-only:true;height:220px;}
+                                Text {text:root.log;color:UiTheme.text-muted;font-size:10px;wrap:word-wrap;vertical-stretch:0;}
                             }
-                        }
-                    }
+
+                }
                 }
             }
 

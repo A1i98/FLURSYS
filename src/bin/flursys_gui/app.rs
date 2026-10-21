@@ -749,6 +749,7 @@ impl AppState {
                     self.log("Solve cancellation requested.");
                     changed = true;
                 }
+                WorkbenchJobEvent::WallReports{iteration,physical_time,reports}=>{self.post.wall_report_index=Some(iteration);self.post.wall_report_time=physical_time;self.post.wall_reports=reports;changed=true;}
                 WorkbenchJobEvent::PlaneSample(snapshot) => {
                     self.post.plane_samples.insert(snapshot.plane.id.clone(),snapshot);changed=true;
                 }
@@ -1107,6 +1108,8 @@ impl AppState {
         if let Some(record) = self.workbench_project.runs.iter().find(|r| r.id == run_id) {
             if let Ok(text) = std::fs::read_to_string(workspace.join(&record.report_path)) {
                 if let Ok(report) = serde_json::from_str::<serde_json::Value>(&text) {
+                    self.post.wall_report_index=record.iterations;self.post.wall_report_time=record.physical_time;
+                    self.post.wall_reports=report.get("wall_reports").and_then(|v|serde_json::from_value(v.clone()).ok()).unwrap_or_default();
                     if let Some(v) = report.get("boundary_flow_reports") {
                         if let Ok(reports) = serde_json::from_value::<
                             Vec<flursys::workbench::boundary_reports::BoundaryFlowReport>,
@@ -3872,7 +3875,7 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
             TREE_KIND_STAGE => apply_workflow_step(&ui, &mut state, row.payload),
             TREE_KIND_MESH_CONTROL => {
                 apply_workflow_step(&ui, &mut state, 1);
-                ui.set_mesh_task(1);
+                ui.set_mesh_task(3);
                 if let Err(error)=mesh_controls::edit(&ui,&mut state,row.payload,0) {state.log(error);}
                 state.selected_tree=Some(TreeSelection{kind:TREE_KIND_MESH_CONTROL,payload:row.payload});
             }
@@ -5277,8 +5280,10 @@ fn push_workbench_defaults(ui: &MainWindow, session: &WorkbenchSession) {
     )));
     let solver = session.solver_options();
     use flursys::unstructured_incompressible::TimeIntegration;
-    ui.set_wb_time_mode(if matches!(solver.time,TimeIntegration::Steady){0}else{1});
-    if let TimeIntegration::Euler{dt,steps}=solver.time {ui.set_wb_time_step(dt.to_string().into());ui.set_wb_time_steps(steps as i32);}
+    ui.set_wb_time_mode(match solver.time {TimeIntegration::Steady=>0,TimeIntegration::Euler{..}=>1,TimeIntegration::AdaptiveEuler{..}=>2});
+    let (dt,steps)=solver.time.parameters().unwrap_or((0.001,100));ui.set_wb_time_step(dt.to_string().into());ui.set_wb_time_steps(steps as i32);
+    let adaptive=solver.time.adaptive().unwrap_or_default();
+    ui.set_wb_target_courant(adaptive.target_courant.to_string().into());ui.set_wb_min_time_step(adaptive.min_dt.to_string().into());ui.set_wb_max_time_step(adaptive.max_dt.to_string().into());ui.set_wb_time_growth(adaptive.max_growth.to_string().into());
     use flursys::turbulence::TurbulenceModel;
     ui.set_wb_turbulence_model(match solver.turbulence.model {TurbulenceModel::Laminar=>0,TurbulenceModel::KOmega=>1,TurbulenceModel::KOmegaSst=>2,TurbulenceModel::Smagorinsky=>3,TurbulenceModel::Wale=>4});
     ui.set_wb_turbulence_k(solver.turbulence.k.to_string().into());ui.set_wb_turbulence_omega(solver.turbulence.omega.to_string().into());
@@ -5390,7 +5395,11 @@ fn sync_solver_panel(ui: &MainWindow, session: &mut WorkbenchSession) -> Result<
     let continuity = parse_number(ui.get_wb_continuity_tolerance().as_str(), f64::NAN);
     use flursys::unstructured_incompressible::TimeIntegration;
     use flursys::turbulence::{TurbulenceModel,TurbulenceOptions};
-    let time=if ui.get_wb_time_mode()==1 {TimeIntegration::Euler{dt:parse_number(ui.get_wb_time_step().as_str(),f64::NAN),steps:ui.get_wb_time_steps().max(0) as usize}}else{TimeIntegration::Steady};
+    let time=match ui.get_wb_time_mode() {
+        1=>TimeIntegration::Euler {dt:parse_number(ui.get_wb_time_step().as_str(),f64::NAN),steps:ui.get_wb_time_steps().max(0) as usize},
+        2=>TimeIntegration::AdaptiveEuler {dt:parse_number(ui.get_wb_time_step().as_str(),f64::NAN),steps:ui.get_wb_time_steps().max(0) as usize,controls:flursys::unstructured_incompressible::AdaptiveTimeStep {target_courant:parse_number(ui.get_wb_target_courant().as_str(),f64::NAN),min_dt:parse_number(ui.get_wb_min_time_step().as_str(),f64::NAN),max_dt:parse_number(ui.get_wb_max_time_step().as_str(),f64::NAN),max_growth:parse_number(ui.get_wb_time_growth().as_str(),f64::NAN)}},
+        _=>TimeIntegration::Steady,
+    };
     let model=match ui.get_wb_turbulence_model(){1=>TurbulenceModel::KOmega,2=>TurbulenceModel::KOmegaSst,3=>TurbulenceModel::Smagorinsky,4=>TurbulenceModel::Wale,_=>TurbulenceModel::Laminar};
     let turbulence=TurbulenceOptions {model,k:if matches!(model,TurbulenceModel::KOmega|TurbulenceModel::KOmegaSst){parse_number(ui.get_wb_turbulence_k().as_str(),f64::NAN)}else{session.solver_options().turbulence.k},omega:if matches!(model,TurbulenceModel::KOmega|TurbulenceModel::KOmegaSst){parse_number(ui.get_wb_turbulence_omega().as_str(),f64::NAN)}else{session.solver_options().turbulence.omega},..session.solver_options().turbulence.clone()};
     // Validate the complete form before invalidating an existing solution.

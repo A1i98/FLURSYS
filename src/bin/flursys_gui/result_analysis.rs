@@ -280,7 +280,7 @@ pub(super) fn report(state: &AppState) -> Result<String, String> {
             ));
         }
     }
-    out.push_str("</table><p>Pressure is kinematic gauge pressure p/ρ. Curl and divergence are reconstructed from cell values; reconstructed divergence is not conservative flux continuity. Boundary traction and wall shear are unavailable in this archive.</p>");
+    out.push_str("</table><p>Pressure is kinematic gauge pressure p/ρ. Curl and divergence are reconstructed from cell values; reconstructed divergence is not conservative flux continuity. First-cell wall traction estimates, when stored with this run, are listed separately below.</p>");
     if !state.post.boundary_reports.is_empty() {
         out.push_str("<h2>Conservative patch flow integrals</h2><table><tr><th>Patch</th><th>Measure</th><th>Signed Q</th><th>Signed ρQ</th><th>Adjacent p/ρ mean</th></tr>");
         for r in &state.post.boundary_reports {
@@ -296,6 +296,11 @@ pub(super) fn report(state: &AppState) -> Result<String, String> {
             ));
         }
         out.push_str("</table><p>Negative flux enters the fluid. In 2D, measure is length, Q and ρQ are per unit depth. Pressure is an adjacent-cell estimate; no wall-force inference is made.</p>");
+    }
+    if !state.post.wall_reports.is_empty() {
+        out.push_str("<h2>Wall resolution and force estimates</h2><pre>");
+        out.push_str(&escape(&flursys::workbench::wall_reports::summary(&state.post.wall_reports)));
+        out.push_str("</pre><p>First-cell wall-resolved estimate; pressure force uses adjacent-cell gauge pressure. No high-Re wall function. Integrated 2D forces are per unit depth.</p>");
     }
     out.push_str("<h2>Run provenance and settings</h2>");
     if let Some(saved)=saved_report(state) {
