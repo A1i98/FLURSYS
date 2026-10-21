@@ -5,6 +5,7 @@
 //! of a concrete numerical backend.
 
 pub mod boundary_reports;
+pub mod wall_reports;
 pub mod diagnostics;
 pub mod checkpoint;
 pub mod mesh_storage;
