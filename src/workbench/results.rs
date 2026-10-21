@@ -16,6 +16,7 @@ pub mod streamlines;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ResultFieldKind {
     Pressure,
+    Temperature,
     VelocityMagnitude,
     VelocityX,
     VelocityY,
@@ -28,6 +29,7 @@ pub enum ResultFieldKind {
 impl ResultFieldKind {
     pub const fn label(self) -> &'static str {
         match self {
+            Self::Temperature=>"Temperature (K)",
             Self::Pressure => "Kinematic gauge pressure p/rho",
             Self::VelocityMagnitude => "Velocity Magnitude",
             Self::VelocityX => "Velocity X",
@@ -61,6 +63,7 @@ pub struct ResultDataset {
     vorticity: Vec<f64>,
     divergence: Vec<f64>,
     turbulence:Option<[Vec<f64>;3]>,
+    temperature:Option<Vec<f64>>,
 }
 
 impl ResultDataset {
@@ -100,6 +103,7 @@ impl ResultDataset {
         let (vorticity, divergence) = derivatives::velocity_derivatives(mesh, &velocity);
         Ok(Self {
             turbulence:None,
+            temperature:None,
             vorticity,
             divergence,
             run_id,
@@ -135,8 +139,12 @@ impl ResultDataset {
         &self.velocity_magnitude
     }
 
+    pub fn with_temperature(mut self,temperature:Option<Vec<f64>>)->Result<Self,ResultDataError>{
+        if temperature.as_ref().is_some_and(|v|v.len()!=self.mesh.cell_count()||v.iter().any(|v|!v.is_finite()||*v<=0.0)){return Err(ResultDataError::Invalid("Invalid temperature field".into()))}self.temperature=temperature;Ok(self)
+    }
     pub fn scalar_values(&self, field: ResultFieldKind) -> &[f64] {
         match field {
+            ResultFieldKind::Temperature=>self.temperature.as_deref().unwrap_or(&[]),
             ResultFieldKind::Pressure => &self.pressure,
             ResultFieldKind::VelocityMagnitude => &self.velocity_magnitude,
             ResultFieldKind::VelocityX => &self.velocity_components[0],
@@ -191,13 +199,13 @@ impl ResultDataset {
         let mut file = std::io::BufWriter::new(std::fs::File::create(path)?);
         writeln!(
             file,
-            "cell,x,y,z,cell_measure,p_over_rho,ux,uy,uz,speed,vorticity_lsq,div_u_lsq,turbulent_k,specific_dissipation,turbulent_viscosity"
+            "cell,x,y,z,cell_measure,p_over_rho,ux,uy,uz,speed,vorticity_lsq,div_u_lsq,turbulent_k,specific_dissipation,turbulent_viscosity,temperature_K"
         )?;
         for (index, cell) in self.mesh.cells().iter().enumerate() {
             let u = self.velocity[index];
             writeln!(
                 file,
-                "{index},{:.17e},{:.17e},{:.17e},{:.17e},{:.17e},{:.17e},{:.17e},{:.17e},{:.17e},{:.17e},{:.17e},{},{},{}",
+                "{index},{:.17e},{:.17e},{:.17e},{:.17e},{:.17e},{:.17e},{:.17e},{:.17e},{:.17e},{:.17e},{:.17e},{},{},{},{}",
                 cell.center.x,
                 cell.center.y,
                 cell.center.z,
@@ -209,7 +217,8 @@ impl ResultDataset {
                 self.velocity_magnitude[index],self.vorticity[index],self.divergence[index],
                 self.turbulence.as_ref().and_then(|v|v[0].get(index)).map(|x|format!("{x:.17e}")).unwrap_or_default(),
                 self.turbulence.as_ref().and_then(|v|v[1].get(index)).map(|x|format!("{x:.17e}")).unwrap_or_default(),
-                self.turbulence.as_ref().and_then(|v|v[2].get(index)).map(|x|format!("{x:.17e}")).unwrap_or_default()
+                self.turbulence.as_ref().and_then(|v|v[2].get(index)).map(|x|format!("{x:.17e}")).unwrap_or_default(),
+                self.temperature.as_ref().and_then(|v|v.get(index)).map(|x|format!("{x:.17e}")).unwrap_or_default()
             )?;
         }
         file.flush()
@@ -241,6 +250,7 @@ pub struct ResultRenderCache {
     vorticity: Vec<f64>,
     divergence: Vec<f64>,
     turbulence:Option<[Vec<f64>;3]>,
+    temperature:Option<Vec<f64>>,
     face_owners: Vec<usize>,
 }
 
@@ -260,6 +270,7 @@ impl ResultRenderCache {
             vorticity: dataset.vorticity.clone(),
             divergence: dataset.divergence.clone(),
             turbulence:dataset.turbulence.clone(),
+            temperature:dataset.temperature.clone(),
             face_owners: dataset.mesh.faces().iter().map(|face| face.owner).collect(),
         })
     }
@@ -285,6 +296,7 @@ impl ResultRenderCache {
 
     pub fn scalar_for_cell(&self, field: ResultFieldKind, cell: usize) -> Option<f64> {
         match field {
+            ResultFieldKind::Temperature=>self.temperature.as_ref().and_then(|v|v.get(cell).copied()),
             ResultFieldKind::Pressure => self.pressure.get(cell).copied(),
             ResultFieldKind::VelocityMagnitude => self.velocity_magnitude.get(cell).copied(),
             ResultFieldKind::VelocityX => self.velocity_components[0].get(cell).copied(),
@@ -346,6 +358,7 @@ fn result_artifact_fingerprint(dataset: &ResultDataset) -> u64 {
         }
     }
     if let Some(t)=&dataset.turbulence {for values in t {for v in values {hash=mix_fingerprint(hash,v.to_bits());}}}
+    if let Some(t)=&dataset.temperature {hash=mix_fingerprint(hash,0x54454d50);for v in t {hash=mix_fingerprint(hash,v.to_bits());}}
     hash
 }
 
@@ -476,15 +489,16 @@ pub fn parse_legacy_vtk_result(
         velocity.push(parse_vec(lines.next())?);
     }
     let mut tail=lines.peekable();
-    let turbulence=if tail.peek().is_some() {
+    let turbulence=if tail.peek().is_some_and(|s|s.starts_with("SCALARS turbulent_k ")) {
         let k=parse_scalar(&mut tail,"turbulent_k",mesh.cell_count())?;
         let omega=if tail.peek().is_some_and(|s|s.starts_with("SCALARS specific_dissipation ")) {parse_scalar(&mut tail,"specific_dissipation",mesh.cell_count())?}else{Vec::new()};
         let nut=parse_scalar(&mut tail,"turbulent_viscosity",mesh.cell_count())?;
         if k.iter().chain(&omega).chain(&nut).any(|v|!v.is_finite()||*v<0.0) {return Err(ResultDataError::Invalid("Invalid turbulence result fields".into()));}
         Some([k,omega,nut])
     }else{None};
+    let temperature=if tail.peek().is_some_and(|s|s.starts_with("SCALARS temperature ")) {Some(parse_scalar(&mut tail,"temperature",mesh.cell_count())?)}else{None};
     if tail.next().is_some() {return Err(ResultDataError::Unsupported("Unexpected trailing VTK data".into()));}
-    let mut dataset=ResultDataset::from_values(run_id,&mesh,pressure,velocity)?;dataset.turbulence=turbulence;Ok(dataset)
+    let mut dataset=ResultDataset::from_values(run_id,&mesh,pressure,velocity)?;dataset.turbulence=turbulence;dataset.with_temperature(temperature)
 }
 
 fn header_count(line: &str, keyword: &str) -> Result<usize, ResultDataError> {
@@ -685,7 +699,7 @@ mod tests {
 
     #[test]
     fn loader_rejects_unrecognized_trailing_vtk_fields() {
-        let vtk = "# vtk DataFile Version 3.0\nFLURSYS result\nASCII\nDATASET UNSTRUCTURED_GRID\nPOINTS 3 double\n0 0 0\n1 0 0\n0 1 0\nCELLS 1 4\n3 0 1 2\nCELL_TYPES 1\n7\nCELL_DATA 1\nSCALARS pressure double 1\nLOOKUP_TABLE default\n1\nSCALARS velocity_magnitude double 1\nLOOKUP_TABLE default\n2\nVECTORS velocity double\n1 0 0\nSCALARS temperature double 1\nLOOKUP_TABLE default\n300\n";
+        let vtk = "# vtk DataFile Version 3.0\nFLURSYS result\nASCII\nDATASET UNSTRUCTURED_GRID\nPOINTS 3 double\n0 0 0\n1 0 0\n0 1 0\nCELLS 1 4\n3 0 1 2\nCELL_TYPES 1\n7\nCELL_DATA 1\nSCALARS pressure double 1\nLOOKUP_TABLE default\n1\nSCALARS velocity_magnitude double 1\nLOOKUP_TABLE default\n2\nVECTORS velocity double\n1 0 0\nSCALARS unknown_scalar double 1\nLOOKUP_TABLE default\n300\n";
 
         assert!(matches!(
             parse_legacy_vtk_result(vtk, "run-0001"),

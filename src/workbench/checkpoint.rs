@@ -39,6 +39,7 @@ struct FieldCheckpoint {
     face_flux: Option<Vec<f64>>,
     #[serde(default)]
     turbulence: Option<StoredTurbulence>,
+    #[serde(default)] temperature:Option<Vec<f64>>,
 }
 #[derive(Serialize, Deserialize)]
 struct StoredTurbulence {
@@ -47,6 +48,7 @@ struct StoredTurbulence {
     k: Vec<f64>,
     omega: Vec<f64>,
     nut: Vec<f64>,
+    #[serde(default)] epsilon:Option<Vec<f64>>,
 }
 /// Complete time-level restart, including conservative flux and RANS state.
 pub fn write_solution(
@@ -79,6 +81,7 @@ pub fn write_restart(
         face_flux,
         time,
         last_dt,
+        temperature,
         turbulence,
     } = initial
     else {
@@ -104,6 +107,11 @@ pub fn write_restart(
     {
         return Err("Restart field sizes do not match mesh".into());
     }
+    if let Some(t) = temperature {
+        if t.values().len() != mesh.cells.len() || t.values().iter().any(|v| !v.is_finite() || *v <= 0.0) {
+            return Err("Invalid restart temperature field".into());
+        }
+    }
     let record = FieldCheckpoint {
         format: 1,
         mesh: mesh.clone(),
@@ -114,11 +122,13 @@ pub fn write_restart(
         time: physical.then_some(*time),
         last_dt: if physical { *last_dt } else { None },
         face_flux: Some(face_flux.values().to_vec()),
+        temperature:temperature.as_ref().map(|t|t.values().to_vec()),
         turbulence: turbulence.as_ref().map(|t| StoredTurbulence {
             model: t.model,
             k: t.k.values().to_vec(),
             omega: t.omega.values().to_vec(),
             nut: t.nut.values().to_vec(),
+            epsilon:t.epsilon.as_ref().map(|e|e.values().to_vec()),
         }),
     };
     let parent = path.parent().unwrap_or(Path::new("."));
@@ -208,6 +218,7 @@ pub fn load(
         let turbulence = saved
             .turbulence
             .map(|t| -> Result<crate::turbulence::TurbulenceFields, String> {
+                if t.epsilon.as_ref().is_some_and(|e|e.iter().any(|v|!v.is_finite()||*v<=0.0)) {return Err("Invalid restart epsilon field".into());}
                 if t.k
                     .iter()
                     .chain(&t.omega)
@@ -221,6 +232,7 @@ pub fn load(
                     k: CellField::from_values(mesh, t.k).map_err(|e| format!("{e:?}"))?,
                     omega: CellField::from_values(mesh, t.omega).map_err(|e| format!("{e:?}"))?,
                     nut: CellField::from_values(mesh, t.nut).map_err(|e| format!("{e:?}"))?,
+                    epsilon:t.epsilon.map(|e|CellField::from_values(mesh,e).map_err(|e|format!("{e:?}"))).transpose()?,
                 })
             })
             .transpose()?;
@@ -230,6 +242,7 @@ pub fn load(
             face_flux: crate::FaceField::from_values(mesh, phi).map_err(|e| format!("{e:?}"))?,
             time: saved.time.unwrap_or(0.0),
             last_dt: saved.last_dt,
+            temperature:saved.temperature.map(|v|{if v.iter().any(|v|!v.is_finite()||*v<=0.0){return Err("Invalid checkpoint temperature".into())}CellField::from_values(mesh,v).map_err(|e|format!("{e:?}"))}).transpose()?,
             turbulence,
         }
     } else {

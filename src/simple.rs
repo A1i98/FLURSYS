@@ -95,6 +95,7 @@ impl SimpleState {
 
 #[derive(Clone, Copy, Debug)]
 pub struct SimpleOptions<'a> {
+    pub(crate) thermal:Option<&'a std::sync::Mutex<crate::thermal::Closure>>,
     pub(crate) closure: Option<&'a std::sync::Mutex<crate::turbulence::Closure>>,
     pub time_step: Option<f64>,
     pub time_velocity: Option<&'a CellField<Vec3>>,
@@ -131,6 +132,7 @@ impl<'a> SimpleOptions<'a> {
         pressure_stencil: &'a LeastSquaresGradientStencil,
     ) -> Self {
         Self {
+            thermal:None,
             closure: None,
             time_step: None,
             time_velocity: None,
@@ -389,6 +391,12 @@ pub fn solve_simple_with_observer(
             }
         }
 
+        if let Some(thermal)=options.thermal {
+            let turbulent=options.closure.map(|c|c.lock().unwrap());
+            let nut=turbulent.as_ref().map(|c|c.turbulent_viscosity());
+            let force=thermal.lock().unwrap().correct(mesh,state,nut,options.time_step,options.momentum_solver)?;
+            for (value,extra) in pressure_source.values_mut().iter_mut().zip(force.values()){*value+=*extra;}
+        }
         let source_x = momentum_component_field(mesh, &pressure_source, MomentumComponent::X)?;
         let source_y = momentum_component_field(mesh, &pressure_source, MomentumComponent::Y)?;
         let source_z = momentum_component_field(mesh, &pressure_source, MomentumComponent::Z)?;
@@ -597,6 +605,7 @@ pub fn solve_simple_with_observer(
             && (momentum_relative <= options.coupling_relative_tolerance
                 || momentum_initial <= options.momentum_solver.absolute_tolerance)
             && velocity_relative <= options.coupling_relative_tolerance
+            && options.thermal.is_none_or(|t|t.lock().unwrap().converged())
             && options.closure.is_none_or(|c| {
                 c.lock().unwrap().relative_change <= options.coupling_relative_tolerance
             })

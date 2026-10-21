@@ -20,6 +20,7 @@ use crate::{
 };
 use std::collections::BTreeMap;
 mod flow_domain;
+mod structured;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum SolveStatus {
@@ -110,6 +111,7 @@ pub struct WorkbenchSession {
     mesh_hover: Option<MeshSelection>,
     boundaries: BTreeMap<String, IncompressibleBoundaryCondition>,
     material: IncompressibleMaterial,
+    catalog_material:Option<crate::materials::MaterialSnapshot>,
     solver: IncompressibleSolverOptions,
     solution: Option<IncompressibleSolution>,
     status: SolveStatus,
@@ -142,6 +144,7 @@ impl WorkbenchSession {
             mesh_selection: None,
             mesh_hover: None,
             boundaries: BTreeMap::new(),
+            catalog_material:None,
             material: IncompressibleMaterial {
                 density: 1.0,
                 kinematic_viscosity: 0.01,
@@ -163,6 +166,8 @@ impl WorkbenchSession {
         let mut session = Self::new();
         session.geometry = project.geometry.clone();
         session.fluid_face_selection = project.fluid_face;
+        session.solver.boundary_profiles=project.solver.boundary_profiles.clone();
+        session.solver.thermal=project.solver.thermal.clone();
         session.solver.time=project.solver.time;session.solver.turbulence=project.solver.turbulence.clone();
         session.solver.coupling_relative_tolerance = project.solver.coupling_relative_tolerance;
         session.geometry.ensure_extrusion_edges()?;
@@ -183,6 +188,7 @@ impl WorkbenchSession {
             project.material.density,
             project.material.kinematic_viscosity,
         )?;
+        session.catalog_material=project.material.catalog.clone();
         session.set_solver_controls(
             project.solver.max_outer_iterations,
             project.solver.velocity_relaxation,
@@ -231,6 +237,9 @@ impl WorkbenchSession {
         project.mesh.max_size = self.max_size;
         project.mesh.element_order = self.element_order;
         project.mesh_recipe = self.mesh_recipe.clone();
+        project.material.catalog=self.catalog_material.clone();
+        project.solver.boundary_profiles=self.solver.boundary_profiles.clone();
+        project.solver.thermal=self.solver.thermal.clone();
         project.material.density = self.material.density;
         project.material.kinematic_viscosity = self.material.kinematic_viscosity;
         project.solver.time=self.solver.time;project.solver.turbulence=self.solver.turbulence.clone();
@@ -544,6 +553,9 @@ impl WorkbenchSession {
         new_name: &str,
     ) -> Result<(), WorkbenchError> {
         self.named_selections.rename(old_name, new_name)?;
+        if let Some(b)=self.solver.boundary_profiles.remove(old_name){self.solver.boundary_profiles.insert(new_name.trim().into(),b);}
+        if let Some(b)=self.solver.turbulence.inlets.remove(old_name){self.solver.turbulence.inlets.insert(new_name.trim().into(),b);}
+        if let Some(bc)=self.solver.thermal.boundaries.remove(old_name){self.solver.thermal.boundaries.insert(new_name.trim().into(),bc);}
         if let Some(condition) = self.boundaries.remove(old_name) {
             self.boundaries.insert(new_name.trim().into(), condition);
         }
@@ -554,6 +566,7 @@ impl WorkbenchSession {
                 }
             }
         };
+        for control in &mut self.mesh_recipe.edge_divisions {for target in &mut control.targets {rename_target(target);}}
         for control in &mut self.mesh_recipe.local_sizes {
             control.targets.iter_mut().for_each(rename_target);
         }
@@ -571,6 +584,9 @@ impl WorkbenchSession {
         let deleted = self.named_selections.delete(name);
         if deleted {
             self.boundaries.remove(name);
+            self.solver.thermal.boundaries.remove(name);
+            self.solver.turbulence.inlets.remove(name);
+            self.solver.boundary_profiles.remove(name);
             self.invalidate_mesh();
         }
         deleted
@@ -626,6 +642,7 @@ impl WorkbenchSession {
         &self,
         mut export: GeometryGmshExport,
     ) -> Result<GeometryGmshExport, WorkbenchError> {
+        export = self.apply_topology_method(export)?;
         let mut source = String::from("\n// FLURSYS persisted advanced mesh recipe.\n");
         let t = &self.mesh_recipe.tuning;
         t.validate().map_err(|message| WorkbenchError::InvalidGrouping { message })?;
@@ -671,6 +688,18 @@ impl WorkbenchSession {
                 join_tags(&tags),
                 control.size
             ));
+        }
+
+        let mut divided=std::collections::BTreeSet::new();
+        for control in self.mesh_recipe.edge_divisions.iter().filter(|c|c.enabled) {
+            control.validate().map_err(|message|WorkbenchError::InvalidGrouping{message})?;
+            if self.mesh_dimension!=MeshDimension::TwoD {return Err(WorkbenchError::InvalidGrouping{message:"Exact edge divisions currently require analytic 2D boundary edges".into()});}
+            for tag in self.recipe_target_tags(&export,&control.targets)? {
+                if !divided.insert(tag) {return Err(WorkbenchError::InvalidGrouping{message:"Enabled edge division scopes overlap; remove the duplicate control".into()});}
+                let signed=if control.reverse {-(tag as i64)}else{tag as i64};
+                let distribution=if control.symmetric {"Bump"} else {"Progression"};
+                source.push_str(&format!("Transfinite Curve {{{signed}}} = {} Using {distribution} {:.17};\n",control.cells+1,control.progression));
+            }
         }
 
         let mut field_id = 1_u32;
@@ -722,6 +751,12 @@ impl WorkbenchSession {
         let mut threshold_fields = Vec::new();
         for control in refinements {
             let tags = self.recipe_target_tags(&export, &control.targets)?;
+            if let Some(g)=self.mesh_recipe.tuning.max_size_growth {
+                let required=(control.size_max-control.size_min)/g.ln();
+                if control.distance_max-control.distance_min < required*(1.0-1e-10) {
+                    return Err(WorkbenchError::InvalidGrouping {message:format!("Distance control '{}' transition is too short for growth {g}: require width ≥ {required:.6e} m (end ≥ {:.6e} m). Use Calculate transition or increase the end distance.",control.name,control.distance_min+required)});
+                }
+            }
             let distance_field = field_id;
             let threshold_field = field_id + 1;
             field_id += 2;
@@ -868,6 +903,9 @@ impl WorkbenchSession {
                     if cad_bodies.len() != 1 {
                         return Err(WorkbenchError::InvalidGrouping { message: "Meshing requires one visible CAD fluid body; hide other bodies or combine them first".into() });
                     }
+                    if self.mesh_recipe.tuning.method==super::MeshMethod::HexBlock {
+                        return Ok(GmshGeometryExporter::cad_hex_box(&self.geometry,cad_bodies[0].0,groups,"fluid")?);
+                    }
                     return Ok(GmshGeometryExporter::cad_faceted(
                         &self.geometry,
                         cad_bodies[0].0,
@@ -888,11 +926,12 @@ impl WorkbenchSession {
                         crate::GeometryBodyRepresentation::Extrude { .. }
                     )
                 }) {
-                    Ok(GmshGeometryExporter::extruded(
+                    Ok(GmshGeometryExporter::extruded_with_layers(
                         &self.geometry,
                         body.id,
                         groups,
                         "fluid",
+                        matches!(self.mesh_recipe.tuning.method,super::MeshMethod::SweepPrism|super::MeshMethod::SweepHex).then_some(self.mesh_recipe.tuning.divisions[2]),
                     )?)
                 } else {
                     Err(WorkbenchError::NoGeometry {
@@ -1151,10 +1190,29 @@ impl WorkbenchSession {
         self.boundaries.get(patch)
     }
 
+    pub fn set_boundary_profile(&mut self,name:&str,profile:Option<crate::unstructured_incompressible::BoundaryProfile>)->Result<(),WorkbenchError>{
+        if let Some(p)=&profile{let bc=*self.boundaries.get(name).ok_or_else(||WorkbenchError::InvalidGrouping{message:"Assign a physical boundary first".into()})?;p.apply(bc,0.0).map_err(|message|WorkbenchError::InvalidGrouping{message})?;}
+        if self.solver.boundary_profiles.get(name)!=profile.as_ref(){
+            if let Some(p)=profile{self.solver.boundary_profiles.insert(name.into(),p);}else{self.solver.boundary_profiles.remove(name);}
+            self.solution=None;self.status=SolveStatus::Idle;
+        }Ok(())
+    }
     pub fn material(&self) -> &IncompressibleMaterial {
         &self.material
     }
 
+    pub fn set_user_material(&mut self,rho:f64,nu:f64)->Result<(),WorkbenchError>{self.set_material(rho,nu)?;self.catalog_material=None;Ok(())}
+    pub fn set_thermal(&mut self,options:crate::thermal::Options)->Result<(),WorkbenchError>{
+        options.validate().map_err(|message|WorkbenchError::InvalidGrouping{message})?;
+        if options!=self.solver.thermal {self.solution=None;self.status=SolveStatus::Idle;self.solver.thermal=options;}
+        Ok(())
+    }
+    pub fn apply_catalog_material(&mut self,material:crate::materials::MaterialSnapshot)->Result<(),WorkbenchError>{
+        material.validate().map_err(|message|WorkbenchError::InvalidGrouping{message})?;
+        self.set_material(material.density,material.kinematic_viscosity())?;
+        let mut thermal=self.solver.thermal.clone();thermal.specific_heat=material.specific_heat;thermal.conductivity=material.conductivity;thermal.expansion=material.expansion;thermal.reference_temperature=material.temperature;
+        self.set_thermal(thermal)?;self.catalog_material=Some(material);Ok(())
+    }
     pub fn set_material(
         &mut self,
         density: f64,
@@ -1177,6 +1235,7 @@ impl WorkbenchSession {
         {
             self.solution = None;
             self.status = SolveStatus::Idle;
+            self.catalog_material=None;
         }
         self.material = IncompressibleMaterial {
             density,
@@ -1200,8 +1259,15 @@ impl WorkbenchSession {
 
     pub fn set_flow_models(&mut self,time:crate::unstructured_incompressible::TimeIntegration,turbulence:crate::turbulence::TurbulenceOptions)->Result<(),WorkbenchError> {
         time.validate().and_then(|_|turbulence.validate()).map_err(|message|WorkbenchError::InvalidGrouping {message})?;
+        for name in turbulence.inlets.keys(){
+            if self.named_selections.get(name).is_none(){return Err(WorkbenchError::InvalidGrouping{message:format!("Unknown turbulence boundary {name}")});}
+            if matches!(self.boundaries.get(name),Some(IncompressibleBoundaryCondition::NoSlipWall|IncompressibleBoundaryCondition::MovingWall{..}|IncompressibleBoundaryCondition::Slip|IncompressibleBoundaryCondition::Symmetry)){return Err(WorkbenchError::InvalidGrouping{message:format!("Incoming turbulence requires an open boundary, not {name}")});}
+        }
         if matches!(turbulence.model,crate::turbulence::TurbulenceModel::Smagorinsky|crate::turbulence::TurbulenceModel::Wale) && (matches!(time,crate::unstructured_incompressible::TimeIntegration::Steady) || self.mesh_dimension!=MeshDimension::ThreeD) {
             return Err(WorkbenchError::InvalidGrouping {message:"LES requires transient integration and a 3D mesh".into()});
+        }
+        if turbulence.model==crate::turbulence::TurbulenceModel::KEpsilon && turbulence.wall_treatment!=crate::turbulence::WallTreatment::EquilibriumKEpsilon && self.boundaries.values().any(|b|matches!(b,IncompressibleBoundaryCondition::NoSlipWall|IncompressibleBoundaryCondition::MovingWall{..})) {
+            return Err(WorkbenchError::InvalidGrouping{message:"Select equilibrium wall treatment for k-epsilon walls, or use resolved SST".into()});
         }
         if self.solver.time!=time || self.solver.turbulence!=turbulence {self.solution=None;self.status=SolveStatus::Idle;}
         self.solver.time=time;self.solver.turbulence=turbulence;Ok(())
@@ -1259,6 +1325,18 @@ impl WorkbenchSession {
         let Some(generated) = &self.mesh else {
             return Err("generate a mesh first (Mesh stage)".to_string());
         };
+        if !self.solver.boundary_profiles.is_empty() && !self.solver.time.is_transient(){return Err("Time-dependent boundaries require transient integration".into());}
+        for (name,p) in &self.solver.boundary_profiles {let bc=*self.boundaries.get(name).ok_or_else(||format!("Missing physical boundary for time table: {name}"))?;p.apply(bc,0.0)?;}
+        self.solver.turbulence.validate()?;
+        for name in self.solver.turbulence.inlets.keys(){
+            if !generated.mesh.boundary_patches().iter().any(|p|&p.name==name){return Err(format!("Unknown turbulence boundary {name}"));}
+            if matches!(self.boundaries.get(name),Some(IncompressibleBoundaryCondition::NoSlipWall|IncompressibleBoundaryCondition::MovingWall{..}|IncompressibleBoundaryCondition::Slip|IncompressibleBoundaryCondition::Symmetry)){return Err(format!("Clear incoming turbulence on impermeable boundary {name}"));}
+        }
+        self.solver.thermal.validate()?;
+        if self.solver.thermal.enabled {
+            let missing=generated.mesh.boundary_patches().iter().filter(|p|!self.solver.thermal.boundaries.contains_key(&p.name)).map(|p|p.name.clone()).collect::<Vec<_>>();
+            if !missing.is_empty(){return Err(format!("Assign thermal boundary conditions: {}",missing.join(", ")))}
+        }
         let quality=generated.mesh.quality();
         if !quality.min_cell_volume.is_finite() || quality.min_cell_volume<=0.0 || !quality.max_non_orthogonality_degrees.is_finite() || quality.max_non_orthogonality_degrees>=90.0 {
             return Err("Invalid mesh geometry: check positive cell measures and owner-to-neighbour face orientation before solving.".into());
@@ -1426,7 +1504,7 @@ fn condition_values(condition: IncompressibleBoundaryCondition) -> Vec<f64> {
         | IncompressibleBoundaryCondition::VelocityInlet { velocity } => {
             [velocity.x, velocity.y, velocity.z, 0.0]
         }
-        IncompressibleBoundaryCondition::PressureOutlet { pressure } => [pressure, 0.0, 0.0, 0.0],
+        IncompressibleBoundaryCondition::TotalPressure {pressure} | IncompressibleBoundaryCondition::PressureOutlet { pressure } => [pressure, 0.0, 0.0, 0.0],
     };
     values.to_vec()
 }
@@ -1435,6 +1513,7 @@ fn boundary_condition_to_document(
     condition: IncompressibleBoundaryCondition,
 ) -> PhysicalBoundaryCondition {
     match condition {
+        IncompressibleBoundaryCondition::TotalPressure {pressure}=>PhysicalBoundaryCondition::TotalPressure{pressure},
         IncompressibleBoundaryCondition::ParabolicInlet {
             velocity,
             axis,
@@ -1474,6 +1553,7 @@ fn boundary_condition_from_document(
     condition: &PhysicalBoundaryCondition,
 ) -> IncompressibleBoundaryCondition {
     match *condition {
+        PhysicalBoundaryCondition::TotalPressure {pressure}=>IncompressibleBoundaryCondition::TotalPressure{pressure},
         PhysicalBoundaryCondition::ParabolicInlet {
             velocity,
             axis,

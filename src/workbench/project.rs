@@ -59,6 +59,7 @@ impl RecentProjects {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum PhysicalBoundaryCondition {
+    TotalPressure { pressure:f64 },
     ParabolicInlet {
         velocity: Vec3,
         axis: usize,
@@ -127,10 +128,36 @@ impl Default for WorkbenchMeshSettings {
 #[serde(default)]
 pub struct MeshRecipe {
     pub tuning: MeshTuning,
+    pub edge_divisions: Vec<EdgeDivisionControl>,
     pub regions: Vec<BoxRefinement>,
     pub local_sizes: Vec<LocalMeshSize>,
     pub refinements: Vec<ThresholdRefinement>,
     pub boundary_layers: Vec<BoundaryLayerControl>,
+}
+
+/// Analytic 2D boundary curves: exact element count and optional grading.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct EdgeDivisionControl {
+    pub id: u32,
+    pub name: String,
+    pub targets: Vec<MeshControlTarget>,
+    pub cells: u32,
+    pub progression: f64,
+    pub reverse: bool,
+    #[serde(default)] pub symmetric: bool,
+    pub enabled: bool,
+}
+impl EdgeDivisionControl {
+    pub fn validate(&self)->Result<(),String> {
+        if self.name.trim().is_empty() || self.targets.is_empty() || !(1..=10000).contains(&self.cells)
+            || !self.progression.is_finite()
+            || if self.symmetric {!(0.01..=1.0).contains(&self.progression)} else {
+                !(0.5..=2.0).contains(&self.progression) || self.progression.ln().abs()*f64::from(self.cells.saturating_sub(1))>1000.0_f64.ln()
+            } {
+            return Err("Edge divisions require a scope, 1–10000 cells; progression 0.5–2 with end ratio ≤1000, or symmetric Bump coefficient 0.01–1".into());
+        }
+        Ok(())
+    }
 }
 
 /// Axis-aligned volume sizing; independent of boundary naming.
@@ -155,10 +182,30 @@ impl BoxRefinement {
     }
 }
 
+/// Explicit topology method: counts are cells, not Gmsh node counts.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum MeshMethod {
+    #[default]
+    Unstructured,
+    QuadDominant,
+    MappedQuad,
+    OGrid,
+    HexBlock,
+    SweepPrism,
+    SweepHex,
+}
+
 /// Explicit Gmsh controls shared by the UI, persistence and geometry export.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct MeshTuning {
+    pub method: MeshMethod,
+    pub max_size_growth: Option<f64>,
+    pub divisions: [u32; 3],
+    /// Cell-to-cell growth along mapped I/J or O-grid radial direction.
+    pub progression: [f64; 2],
+
     pub algorithm_2d: u8,
     pub algorithm_3d: u8,
     pub curvature_points: u32,
@@ -170,13 +217,30 @@ pub struct MeshTuning {
 }
 impl Default for MeshTuning {
     fn default() -> Self {
-        Self { algorithm_2d: 6, algorithm_3d: 1, curvature_points: 32,
+        Self { max_size_growth: None, method: MeshMethod::Unstructured, divisions: [40, 40, 10], progression: [1.0, 1.0], algorithm_2d: 6, algorithm_3d: 1, curvature_points: 32,
             smoothing_steps: 10, optimize: true, optimize_netgen: false,
             optimize_threshold: 0.3, extend_boundary_sizes: true }
     }
 }
 impl MeshTuning {
     pub fn validate(&self) -> Result<(), String> {
+        if self.max_size_growth.is_some_and(|g| !g.is_finite() || !(1.01..=2.0).contains(&g)) {
+            return Err("Distance-field growth limit must be 1.01–2, or left empty".into());
+        }
+        if self.divisions.iter().any(|n| !(1..=10000).contains(n))
+            || self.progression.iter().any(|r| !r.is_finite() || !(0.5..=2.0).contains(r)) {
+            return Err("Mapped divisions must be 1–10000; progression must be finite and 0.5–2".into());
+        }
+        let cells = self.divisions.iter().map(|n| u64::from(*n)).product::<u64>();
+        let estimate = match self.method { MeshMethod::HexBlock|MeshMethod::SweepHex=>cells, MeshMethod::OGrid=>4*u64::from(self.divisions[0])*u64::from(self.divisions[1]), _=>u64::from(self.divisions[0])*u64::from(self.divisions[1]) };
+        if matches!(self.method,MeshMethod::MappedQuad|MeshMethod::OGrid|MeshMethod::HexBlock|MeshMethod::SweepHex) && estimate > 20_000_000 {
+            return Err("Requested structured mesh exceeds 20 million cells; reduce divisions".into());
+        }
+        for axis in 0..2 {
+            if self.progression[axis].ln().abs() * f64::from(self.divisions[axis].saturating_sub(1)) > 1000.0_f64.ln() {
+                return Err("Mapped progression creates an end-to-end size ratio above 1000; reduce growth or divisions".into());
+            }
+        }
         if ![1,5,6].contains(&self.algorithm_2d) || ![1,4,10].contains(&self.algorithm_3d) {
             return Err("Unsupported triangle/tetrahedron meshing algorithm".into());
         }
@@ -253,6 +317,7 @@ impl BoundaryLayerControl {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct WorkbenchMaterial {
+    #[serde(default)] pub catalog:Option<crate::materials::MaterialSnapshot>,
     pub density: f64,
     pub kinematic_viscosity: f64,
 }
@@ -260,6 +325,7 @@ pub struct WorkbenchMaterial {
 impl Default for WorkbenchMaterial {
     fn default() -> Self {
         Self {
+            catalog:None,
             density: 1.0,
             kinematic_viscosity: 0.01,
         }
@@ -268,6 +334,8 @@ impl Default for WorkbenchMaterial {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct WorkbenchSolverSettings {
+    #[serde(default)] pub boundary_profiles:crate::unstructured_incompressible::BoundaryProfiles,
+    #[serde(default)] pub thermal:crate::thermal::Options,
     #[serde(default)] pub time:crate::unstructured_incompressible::TimeIntegration,
     #[serde(default)] pub turbulence:crate::turbulence::TurbulenceOptions,
     #[serde(default)]
@@ -285,6 +353,8 @@ pub struct WorkbenchSolverSettings {
 impl Default for WorkbenchSolverSettings {
     fn default() -> Self {
         Self {
+            boundary_profiles:Default::default(),
+            thermal:crate::thermal::Options::default(),
             time:Default::default(),turbulence:Default::default(),
             convection: crate::momentum::MomentumConvection::Upwind,
             threads: 1,
@@ -464,6 +534,9 @@ impl WorkbenchProject {
                 "invalid SIMPLE settings".into(),
             ));
         }
+        for p in self.solver.boundary_profiles.values(){p.validate().map_err(ProjectDocumentError::Invalid)?;}
+        self.solver.thermal.validate().map_err(ProjectDocumentError::Invalid)?;
+        if let Some(material)=&self.material.catalog {material.validate().map_err(ProjectDocumentError::Invalid)?;}
         self.mesh_recipe.tuning.validate().map_err(ProjectDocumentError::Invalid)?;
         let mut names = BTreeSet::new();
         for selection in &self.named_selections {
@@ -736,8 +809,8 @@ pub fn finalize_workspace_run(
         "max_courant_last_step":session.solution().and_then(|s|s.max_courant),
         "last_time_step_s":session.solution().and_then(|s|s.last_time_step),
         "rejected_time_steps":session.solution().map(|s|s.rejected_time_steps),
-        "wall_reports":session.solution().and_then(|s|session.prepare_case().ok().and_then(|c|super::wall_reports::reports(&c,&s.velocity,&s.pressure,true).ok())),
-        "turbulence":session.solution().and_then(|s|s.turbulence.as_ref()).map(|t|serde_json::json!({"nut_max":t.nut.values().iter().copied().fold(0.0,f64::max),"k_max":t.k.values().iter().copied().fold(0.0,f64::max),"omega_max":t.omega.values().iter().copied().fold(0.0,f64::max),"wall_treatment":"wall-resolved; no high-Re wall functions","validation":"experimental; not benchmark validated"})),
+        "wall_reports":session.solution().and_then(|s|session.prepare_case().ok().and_then(|c|super::wall_reports::reports_with_turbulence(&c,&s.velocity,&s.pressure,s.turbulence.as_ref(),true).ok())),
+        "turbulence":session.solution().and_then(|s|s.turbulence.as_ref()).map(|t|serde_json::json!({"nut_max":t.nut.values().iter().copied().fold(0.0,f64::max),"k_max":t.k.values().iter().copied().fold(0.0,f64::max),"omega_max":(t.model!=crate::turbulence::TurbulenceModel::KEpsilon).then(||t.omega.values().iter().copied().fold(0.0,f64::max)),"epsilon_max":t.epsilon.as_ref().map(|e|e.values().iter().copied().fold(0.0,f64::max)),"wall_treatment":if t.model==crate::turbulence::TurbulenceModel::KEpsilon {if session.solver_options().turbulence.wall_treatment==crate::turbulence::WallTreatment::EquilibriumKEpsilon {"experimental smooth equilibrium wall functions"}else{"free shear; solid walls rejected"}}else{"wall-resolved; no high-Re wall functions"},"validation":"experimental; not benchmark validated"})),
         "cpu_worker_threads": session.solution().map(|s| s.report.cpu_threads),
         "boundaries": &project.boundaries,
         "spatial_methods": session.mesh().map(|m| if m.mesh.dimension()==MeshDimension::ThreeD {serde_json::json!({"pressure_gradient":"Gauss with bounded face-pressure interpolation","momentum_nonorthogonal":"limited correction: abs(explicit flux) <= abs(two-point flux)","rhie_chow":"interpolated cell pressure response; response-gradient covariance retained"})}else{serde_json::json!({"pressure_gradient":"least squares","momentum_nonorthogonal":"explicit Gauss correction","rhie_chow":"interpolated cell pressure response; response-gradient covariance retained"})}),
@@ -1030,6 +1103,11 @@ fn validate_mesh_recipe(
     named_selections: &BTreeSet<&String>,
 ) -> Result<(), ProjectDocumentError> {
     let mut ids = BTreeSet::new();
+    for control in &recipe.edge_divisions {
+        if !ids.insert(control.id) {return Err(ProjectDocumentError::Invalid("Duplicate mesh-control ID".into()));}
+        control.validate().map_err(ProjectDocumentError::Invalid)?;
+        validate_mesh_control_targets(&control.targets,geometry,named_selections)?;
+    }
     for control in &recipe.regions {
         if !ids.insert(control.id) { return Err(ProjectDocumentError::Invalid("Duplicate mesh-control ID".into())); }
         control.validate().map_err(ProjectDocumentError::Invalid)?;
@@ -1142,7 +1220,7 @@ fn validate_boundary(condition: &PhysicalBoundaryCondition) -> Result<(), Projec
         | PhysicalBoundaryCondition::VelocityInlet { velocity } => {
             &[velocity.x, velocity.y, velocity.z]
         }
-        PhysicalBoundaryCondition::PressureOutlet { pressure } => std::slice::from_ref(pressure),
+        PhysicalBoundaryCondition::TotalPressure {pressure} | PhysicalBoundaryCondition::PressureOutlet { pressure } => std::slice::from_ref(pressure),
     };
     values
         .iter()

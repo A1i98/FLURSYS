@@ -1,4 +1,4 @@
-//! Fixed-mesh implicit Euler; only converged, Courant-accepted steps advance time.
+//! Fixed-mesh Euler/BDF2; only converged, Courant-accepted steps advance time.
 use super::*;
 use serde::{Deserialize, Serialize};
 
@@ -29,6 +29,10 @@ pub enum TimeIntegration {
         dt: f64,
         steps: usize,
     },
+    Backward {
+        dt: f64,
+        steps: usize,
+    },
     AdaptiveEuler {
         dt: f64,
         steps: usize,
@@ -42,7 +46,9 @@ impl TimeIntegration {
     pub fn parameters(self) -> Option<(f64, usize)> {
         match self {
             Self::Steady => None,
-            Self::Euler { dt, steps } | Self::AdaptiveEuler { dt, steps, .. } => Some((dt, steps)),
+            Self::Euler { dt, steps }
+            | Self::Backward { dt, steps }
+            | Self::AdaptiveEuler { dt, steps, .. } => Some((dt, steps)),
         }
     }
     pub fn adaptive(self) -> Option<AdaptiveTimeStep> {
@@ -136,13 +142,26 @@ pub(super) fn solve_time_loop(
         )
         .into());
     }
+    if !case.solver.time.is_transient() && !case.solver.boundary_profiles.is_empty() {
+        return Err(SimpleError::PhysicalBoundary(
+            "Time-table boundaries require transient integration".into(),
+        )
+        .into());
+    }
     let Some((initial_dt, steps)) = case.solver.time.parameters() else {
-        let result = solve_incompressible_on_pool(case, control, None)?;
+        let result = solve_incompressible_on_pool(case, control, None, None)?;
         if let Some(cb) = control.and_then(|c| c.on_step.as_ref()) {
             cb(result.report.outer_iterations, &result).map_err(SimpleError::Monitor)?;
         }
         return Ok(result);
     };
+    let backward = matches!(case.solver.time, TimeIntegration::Backward { .. });
+    if backward {
+        if let Some(cb) = control.and_then(|c| c.on_message.as_ref()) {
+            cb("BDF2: first step uses Euler; a restarted invocation rebuilds two-level history with one Euler step.".into());
+        }
+    }
+    let mut older = None;
     let adaptive = case.solver.time.adaptive();
     let mut step_case = case.clone();
     step_case.solver.time = TimeIntegration::Steady;
@@ -150,13 +169,43 @@ pub(super) fn solve_time_loop(
         IncompressibleInitialConditions::Restart { time, last_dt, .. } => (*time, *last_dt),
         _ => (0.0, None),
     };
+    profiles::apply(&mut step_case, time)?;
+    // Freeze actual initial face flux at t_n before any future boundary evaluation.
+    if backward
+        && !matches!(
+            step_case.initial_conditions,
+            IncompressibleInitialConditions::Restart { .. }
+        )
+    {
+        let (u, p) = match &step_case.initial_conditions {
+            IncompressibleInitialConditions::Uniform { velocity, pressure } => (
+                CellField::filled(&case.mesh, *velocity),
+                CellField::filled(&case.mesh, *pressure),
+            ),
+            IncompressibleInitialConditions::Fields { velocity, pressure } => {
+                (velocity.clone(), pressure.clone())
+            }
+            _ => unreachable!(),
+        };
+        let b = step_case.resolve_boundaries()?;
+        let phi = initial_face_flux(&case.mesh, &u, b.boundary_flux())?;
+        step_case.initial_conditions = IncompressibleInitialConditions::Restart {
+            velocity: u,
+            pressure: p,
+            face_flux: phi,
+            time,
+            last_dt: None,
+            temperature: None,
+            turbulence: None,
+        };
+    }
     let mut dt = if adaptive.is_some() {
         previous_dt.unwrap_or(initial_dt)
     } else {
         initial_dt
     };
     let mut rate = if adaptive.is_some() {
-        initial_rate(case)?
+        initial_rate(&step_case)?
     } else {
         0.0
     };
@@ -199,11 +248,21 @@ pub(super) fn solve_time_loop(
                 )
                 .into());
             }
+            profiles::apply(&mut step_case, next)?;
             let inner = SolveControl::new(
                 || control.is_some_and(SolveControl::cancelled),
                 |_, _, _| {},
             );
-            let mut result = solve_incompressible_on_pool(&step_case, Some(&inner), Some(dt))?;
+            let mut result = solve_incompressible_on_pool(
+                &step_case,
+                Some(&inner),
+                Some(if backward && older.is_some() {
+                    2.0 * dt / 3.0
+                } else {
+                    dt
+                }),
+                if backward { older.as_ref() } else { None },
+            )?;
             initial_continuity.get_or_insert(result.report.initial_continuity_rms);
             correctors += result.report.outer_iterations;
             let next_rate = courant_rate(&case.mesh, &result.face_flux)?;
@@ -278,6 +337,9 @@ pub(super) fn solve_time_loop(
             if let Some(cb) = &c.on_fields {
                 cb(step, &result.velocity, &result.pressure).map_err(SimpleError::Monitor)?;
             }
+        }
+        if backward {
+            older = Some(step_case.initial_conditions.clone());
         }
         step_case.initial_conditions = result.restart();
         last = Some(result);

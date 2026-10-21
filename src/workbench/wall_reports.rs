@@ -40,6 +40,23 @@ pub fn reports(
     p: &CellField<f64>,
     detailed: bool,
 ) -> Result<Vec<WallPatchReport>, String> {
+    reports_with_turbulence(case, u, p, None, detailed)
+}
+pub fn reports_with_turbulence(
+    case: &IncompressibleCase,
+    u: &CellField<Vec3>,
+    p: &CellField<f64>,
+    turbulence: Option<&crate::turbulence::TurbulenceFields>,
+    detailed: bool,
+) -> Result<Vec<WallPatchReport>, String> {
+    let equilibrium = case.solver.turbulence.wall_treatment
+        == crate::turbulence::WallTreatment::EquilibriumKEpsilon;
+    if equilibrium && turbulence.is_none() {
+        return Err("Wall-function reports require the matching turbulence fields".into());
+    }
+    if let Some(t) = turbulence {
+        t.k.ensure_mesh(&case.mesh).map_err(|e| format!("{e:?}"))?;
+    }
     let mesh = &case.mesh;
     u.ensure_mesh(mesh).map_err(|e| format!("{e:?}"))?;
     p.ensure_mesh(mesh).map_err(|e| format!("{e:?}"))?;
@@ -87,9 +104,14 @@ pub fn reports(
             let y = (f.center - mesh.cells()[f.owner].center).dot(normal).abs();
             let relative = u[f.owner] - velocity;
             let tangent = relative - normal * relative.dot(normal);
-            let tau = tangent * (rho * nu / y);
+            let nut = if equilibrium {
+                crate::turbulence::smooth_wall(turbulence.unwrap().k[f.owner], y, nu)?.1
+            } else {
+                0.0
+            };
+            let tau = tangent * (rho * (nu + nut) / y);
             let magnitude = tau.norm();
-            let friction = (nu * tangent.norm() / y).sqrt();
+            let friction = ((nu + nut) * tangent.norm() / y).sqrt();
             let yplus = (nu > 0.0).then(|| friction * y / nu);
             if y <= 0.0
                 || !y.is_finite()

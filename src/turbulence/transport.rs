@@ -5,6 +5,7 @@ impl Closure {
         &mut self,
         mesh: &UnstructuredMesh,
         state: &SimpleState,
+        bc: &ResolvedVelocityBoundaryConditions,
         g: &[[[f64; 3]; 3]],
         nu: f64,
         dt: Option<f64>,
@@ -16,10 +17,15 @@ impl Closure {
         for (i, f) in mesh.faces().iter().enumerate() {
             if f.neighbour.is_none() {
                 let incoming = state.face_flux[i] < 0.0;
+                let (in_k, in_w, _in_e) = if incoming {
+                    self.incoming_values(mesh, state, bc, i)?
+                } else {
+                    (self.config.k, self.config.omega, self.config.epsilon)
+                };
                 kb[i] = Some(if self.walls[i] {
                     ScalarBoundaryCondition::FixedValue(0.0)
                 } else if incoming {
-                    ScalarBoundaryCondition::FixedValue(self.config.k)
+                    ScalarBoundaryCondition::FixedValue(in_k)
                 } else {
                     ScalarBoundaryCondition::ZeroGradient
                 });
@@ -29,7 +35,7 @@ impl Closure {
                         .abs();
                     ScalarBoundaryCondition::FixedValue(60.0 * nu / (0.075 * y * y))
                 } else if incoming {
-                    ScalarBoundaryCondition::FixedValue(self.config.omega)
+                    ScalarBoundaryCondition::FixedValue(in_w)
                 } else {
                     ScalarBoundaryCondition::ZeroGradient
                 });
@@ -119,7 +125,26 @@ impl Closure {
             linear,
             &self.walls,
             nu,
+            None,
         )?;
+        // Use the newly solved bounded omega in k destruction and SST limiter.
+        for i in 0..n {
+            let k = self.fields.k[i].max(1e-14);
+            self.fields.omega[i] = self.fields.omega[i].max(1e-12).max(k / (1e5 * nu));
+            let w = self.fields.omega[i];
+            let tr = (0..3).map(|a| g[i][a][a]).sum::<f64>();
+            sinkk[i] = 0.09 * w + (2.0 / 3.0 * tr).max(0.0);
+            if self.config.model == TurbulenceModel::KOmegaSst {
+                let mut strain = 0.0;
+                for a in 0..3 {
+                    for b in 0..3 {
+                        strain += 0.5 * (g[i][a][b] + g[i][b][a]).powi(2);
+                    }
+                }
+                let production = self.fields.nut[i] * (strain - 2.0 / 3.0 * tr * tr).max(0.0);
+                sk[i] = production.min(10.0 * 0.09 * k * w) + (-2.0 / 3.0 * tr).max(0.0) * k;
+            }
+        }
         scalar_solve(
             mesh,
             &state.face_flux,
@@ -134,6 +159,7 @@ impl Closure {
             linear,
             &self.walls,
             nu,
+            None,
         )?;
         for i in 0..n {
             self.fields.k[i] = self.fields.k[i].max(1e-14);
@@ -145,7 +171,7 @@ impl Closure {
     }
 }
 #[allow(clippy::too_many_arguments)]
-fn scalar_solve(
+pub(super) fn scalar_solve(
     mesh: &UnstructuredMesh,
     phi: &FaceField<f64>,
     bc: &ResolvedScalarBoundaryConditions,
@@ -159,6 +185,7 @@ fn scalar_solve(
     linear: LinearSolverOptions,
     walls: &[bool],
     nu: f64,
+    prescribed: Option<&[Option<f64>]>,
 ) -> Result<(), SimpleError> {
     let mut face_diffusion = interpolate_diffusivity(
         mesh,
@@ -187,9 +214,19 @@ fn scalar_solve(
     );
     let mut rhs = system.rhs().to_vec();
     for (i, cell) in mesh.cells().iter().enumerate() {
+        if let Some(v) = prescribed.and_then(|p| p[i]) {
+            builder.add(i, i, 1.0)?;
+            rhs[i] = v;
+            continue;
+        }
         let diag = matrix.get(i, i).unwrap_or(0.0) + sink[i] * cell.volume;
         for j in matrix.row_offsets()[i]..matrix.row_offsets()[i + 1] {
-            builder.add(i, matrix.column_indices()[j], matrix.values()[j])?;
+            let col = matrix.column_indices()[j];
+            if let Some(v) = prescribed.and_then(|p| p[col]) {
+                rhs[i] -= matrix.values()[j] * v;
+            } else {
+                builder.add(i, col, matrix.values()[j])?;
+            }
         }
         builder.add(i, i, sink[i] * cell.volume + (1.0 / alpha - 1.0) * diag)?;
         rhs[i] += (1.0 / alpha - 1.0) * diag * field[i];

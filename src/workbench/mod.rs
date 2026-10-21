@@ -9,6 +9,7 @@ pub mod wall_reports;
 pub mod diagnostics;
 pub mod checkpoint;
 pub mod mesh_storage;
+pub mod mesh_report;
 pub mod editor;
 pub mod examples;
 pub mod legacy_import;
@@ -41,7 +42,7 @@ pub use project::{
     discover_templates_from_roots, finalize_workspace_run, load_recent_projects, load_workspace,
     load_workspace_result, recovery_is_newer, save_case_template, save_recent_projects,
     save_workspace, BoundaryAssignment, BoundaryLayerControl, CaseTemplateManifest, LocalMeshSize,
-    MeshControlTarget, MeshRecipe, MeshTuning, BoxRefinement, PhysicalBoundaryCondition, ProjectDocumentError,
+    EdgeDivisionControl, MeshControlTarget, MeshRecipe, MeshTuning, MeshMethod, BoxRefinement, PhysicalBoundaryCondition, ProjectDocumentError,
     RecentProjectEntry, RecentProjects, RunRecord, RunStatus, TemplateExpectations,
     ThresholdRefinement, WorkbenchMaterial, WorkbenchMeshSettings, WorkbenchProject,
     WorkbenchSolverSettings, PROJECT_DOCUMENT_FILE, RECENT_PROJECTS_FILE,

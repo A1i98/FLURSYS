@@ -57,6 +57,7 @@ pub enum MeshQualityMetric {
     NonOrthogonality,
     Skewness,
     CellMeasure,
+    AdjacentVolumeRatio,
 }
 
 impl MeshQualityMetric {
@@ -66,6 +67,7 @@ impl MeshQualityMetric {
             Self::NonOrthogonality => "Non-orthogonality (deg)",
             Self::Skewness => "Skewness",
             Self::CellMeasure => "Cell measure",
+            Self::AdjacentVolumeRatio => "Max adjacent cell-measure ratio",
         }
     }
 }
@@ -76,6 +78,7 @@ pub struct MeshQualityValues {
     non_orthogonality: Vec<f64>,
     skewness: Vec<f64>,
     cell_measure: Vec<f64>,
+    adjacent_volume_ratio: Vec<f64>,
 }
 
 impl MeshQualityValues {
@@ -98,6 +101,7 @@ impl MeshQualityValues {
             MeshQualityMetric::NonOrthogonality => &self.non_orthogonality,
             MeshQualityMetric::Skewness => &self.skewness,
             MeshQualityMetric::CellMeasure => &self.cell_measure,
+            MeshQualityMetric::AdjacentVolumeRatio => &self.adjacent_volume_ratio,
         }
     }
 
@@ -112,7 +116,7 @@ impl MeshQualityValues {
         })
     }
 
-    /// Returns cell indices strictly above a visualization threshold. The
+    /// Returns indices above a threshold, or below it for cell measure. The
     /// threshold never affects mesh validity or solver readiness.
     pub fn bad_cells(&self, metric: MeshQualityMetric, threshold: f64) -> Vec<usize> {
         if !threshold.is_finite() {
@@ -121,7 +125,7 @@ impl MeshQualityValues {
         self.values(metric)
             .iter()
             .enumerate()
-            .filter_map(|(index, &value)| (value.is_finite() && value > threshold).then_some(index))
+            .filter_map(|(index, &value)| (!value.is_finite() || if metric==MeshQualityMetric::CellMeasure {value<threshold}else{value>threshold}).then_some(index))
             .collect()
     }
 }
@@ -409,8 +413,13 @@ fn calculate_quality(mesh: &UnstructuredMesh) -> MeshQualityValues {
         .collect();
     let mut non_orthogonality = vec![0.0_f64; mesh.cell_count()];
     let mut skewness = vec![0.0_f64; mesh.cell_count()];
+    let mut adjacent_volume_ratio=vec![1.0_f64;mesh.cell_count()];
     for face in mesh.faces().iter().filter(|face| face.neighbour.is_some()) {
         let neighbour = face.neighbour.expect("filtered");
+        let a=mesh.cells()[face.owner].volume;let b=mesh.cells()[neighbour].volume;
+        let ratio=if a>0.0 && b>0.0 {(a/b).max(b/a)}else{f64::INFINITY};
+        adjacent_volume_ratio[face.owner]=adjacent_volume_ratio[face.owner].max(ratio);
+        adjacent_volume_ratio[neighbour]=adjacent_volume_ratio[neighbour].max(ratio);
         let delta = mesh.cells()[neighbour].center - mesh.cells()[face.owner].center;
         let distance = delta.norm();
         if distance <= 1.0e-12 {
@@ -431,6 +440,7 @@ fn calculate_quality(mesh: &UnstructuredMesh) -> MeshQualityValues {
     }
     MeshQualityValues {
         aspect_ratio,
+        adjacent_volume_ratio,
         non_orthogonality,
         skewness,
         cell_measure: mesh.cells().iter().map(|cell| cell.volume).collect(),
