@@ -268,6 +268,8 @@ impl Default for WorkbenchMaterial {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct WorkbenchSolverSettings {
+    #[serde(default)] pub time:crate::unstructured_incompressible::TimeIntegration,
+    #[serde(default)] pub turbulence:crate::turbulence::TurbulenceOptions,
     #[serde(default)]
     pub convection: crate::momentum::MomentumConvection,
     #[serde(default = "default_cpu_threads")]
@@ -283,6 +285,7 @@ pub struct WorkbenchSolverSettings {
 impl Default for WorkbenchSolverSettings {
     fn default() -> Self {
         Self {
+            time:Default::default(),turbulence:Default::default(),
             convection: crate::momentum::MomentumConvection::Upwind,
             threads: 1,
             max_outer_iterations: 1000,
@@ -312,6 +315,8 @@ pub enum RunStatus {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct RunRecord {
+    #[serde(default)] pub physical_time:Option<f64>,
+    #[serde(default)] pub time_steps:usize,
     pub id: String,
     pub ordinal: u32,
     pub created_unix_ms: u128,
@@ -385,6 +390,8 @@ impl WorkbenchProject {
     }
 
     pub fn validate(&self) -> Result<(), ProjectDocumentError> {
+        self.solver.time.validate().map_err(ProjectDocumentError::Invalid)?;
+        self.solver.turbulence.validate().map_err(ProjectDocumentError::Invalid)?;
         if self.mesh_asset.as_ref().is_some_and(|s|s.len()!=64 || !s.bytes().all(|b|b.is_ascii_hexdigit())) {
             return Err(ProjectDocumentError::Invalid("Invalid mesh asset identifier".into()));
         }
@@ -499,6 +506,7 @@ impl WorkbenchProject {
         let ordinal = self.runs.iter().map(|run| run.ordinal).max().unwrap_or(0) + 1;
         let directory = format!("runs/run-{ordinal:04}");
         RunRecord {
+            physical_time:None,time_steps:0,
             id: format!("run-{ordinal:04}"),
             ordinal,
             created_unix_ms: now_ms(),
@@ -698,6 +706,7 @@ pub fn finalize_workspace_run(
     let run_directory = workspace.join(format!("runs/run-{:04}", record.ordinal));
     fs::create_dir_all(&run_directory).map_err(io_error)?;
     if let (Some(mesh), Some(solution)) = (session.mesh(), session.solution()) {
+        record.physical_time=solution.physical_time;record.time_steps=solution.completed_time_steps;
         record.mesh_identity = Some(mesh.mesh.id().get());
         record.iterations = Some(solution.report.outer_iterations);
         record.continuity_residual = Some(solution.report.final_continuity_rms);
@@ -721,6 +730,11 @@ pub fn finalize_workspace_run(
         "mesh_recipe": &project.mesh_recipe,
         "material": &project.material,
         "solver_settings": &project.solver,
+        "physical_time_s":session.solution().and_then(|s|s.physical_time),
+        "completed_time_steps":session.solution().map(|s|s.completed_time_steps),
+        "nonlinear_iterations":session.solution().map(|s|s.nonlinear_iterations),
+        "max_courant_last_step":session.solution().and_then(|s|s.max_courant),
+        "turbulence":session.solution().and_then(|s|s.turbulence.as_ref()).map(|t|serde_json::json!({"nut_max":t.nut.values().iter().copied().fold(0.0,f64::max),"k_max":t.k.values().iter().copied().fold(0.0,f64::max),"omega_max":t.omega.values().iter().copied().fold(0.0,f64::max),"wall_treatment":"wall-resolved; no high-Re wall functions","validation":"experimental; not benchmark validated"})),
         "cpu_worker_threads": session.solution().map(|s| s.report.cpu_threads),
         "boundaries": &project.boundaries,
         "spatial_methods": session.mesh().map(|m| if m.mesh.dimension()==MeshDimension::ThreeD {serde_json::json!({"pressure_gradient":"Gauss with bounded face-pressure interpolation","momentum_nonorthogonal":"limited correction: abs(explicit flux) <= abs(two-point flux)","rhie_chow":"interpolated cell pressure response; response-gradient covariance retained"})}else{serde_json::json!({"pressure_gradient":"least squares","momentum_nonorthogonal":"explicit Gauss correction","rhie_chow":"interpolated cell pressure response; response-gradient covariance retained"})}),

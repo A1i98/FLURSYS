@@ -22,6 +22,7 @@ pub enum ResultFieldKind {
     VelocityZ,
     VorticityMagnitude,
     VelocityDivergence,
+    TurbulentK,SpecificDissipation,TurbulentViscosity,
 }
 
 impl ResultFieldKind {
@@ -34,6 +35,7 @@ impl ResultFieldKind {
             Self::VelocityZ => "Velocity Z",
             Self::VorticityMagnitude => "Reconstructed vorticity magnitude",
             Self::VelocityDivergence => "Reconstructed velocity divergence",
+            Self::TurbulentK=>"Turbulent kinetic energy k (m2/s2)",Self::SpecificDissipation=>"Specific dissipation omega (1/s)",Self::TurbulentViscosity=>"Turbulent viscosity nu_t (m2/s)",
         }
     }
 }
@@ -58,6 +60,7 @@ pub struct ResultDataset {
     velocity_components: [Vec<f64>; 3],
     vorticity: Vec<f64>,
     divergence: Vec<f64>,
+    turbulence:Option<[Vec<f64>;3]>,
 }
 
 impl ResultDataset {
@@ -96,6 +99,7 @@ impl ResultDataset {
         }
         let (vorticity, divergence) = derivatives::velocity_derivatives(mesh, &velocity);
         Ok(Self {
+            turbulence:None,
             vorticity,
             divergence,
             run_id,
@@ -111,6 +115,10 @@ impl ResultDataset {
         })
     }
 
+    pub fn with_turbulence(mut self,fields:Option<&crate::turbulence::TurbulenceFields>)->Self {
+        self.turbulence=fields.map(|t|[t.k.values().to_vec(),if matches!(t.model,crate::turbulence::TurbulenceModel::KOmega|crate::turbulence::TurbulenceModel::KOmegaSst){t.omega.values().to_vec()}else{Vec::new()},t.nut.values().to_vec()]);self
+    }
+    pub fn has_turbulence(&self)->bool {self.turbulence.is_some()}
     pub fn run_id(&self) -> &str {
         &self.run_id
     }
@@ -136,6 +144,9 @@ impl ResultDataset {
             ResultFieldKind::VelocityZ => &self.velocity_components[2],
             ResultFieldKind::VorticityMagnitude => &self.vorticity,
             ResultFieldKind::VelocityDivergence => &self.divergence,
+            ResultFieldKind::TurbulentK=>self.turbulence.as_ref().map_or(&[],|v|v[0].as_slice()),
+            ResultFieldKind::SpecificDissipation=>self.turbulence.as_ref().map_or(&[],|v|v[1].as_slice()),
+            ResultFieldKind::TurbulentViscosity=>self.turbulence.as_ref().map_or(&[],|v|v[2].as_slice()),
         }
     }
 
@@ -180,13 +191,13 @@ impl ResultDataset {
         let mut file = std::io::BufWriter::new(std::fs::File::create(path)?);
         writeln!(
             file,
-            "cell,x,y,z,cell_measure,p_over_rho,ux,uy,uz,speed,vorticity_lsq,div_u_lsq"
+            "cell,x,y,z,cell_measure,p_over_rho,ux,uy,uz,speed,vorticity_lsq,div_u_lsq,turbulent_k,specific_dissipation,turbulent_viscosity"
         )?;
         for (index, cell) in self.mesh.cells().iter().enumerate() {
             let u = self.velocity[index];
             writeln!(
                 file,
-                "{index},{:.17e},{:.17e},{:.17e},{:.17e},{:.17e},{:.17e},{:.17e},{:.17e},{:.17e},{:.17e},{:.17e}",
+                "{index},{:.17e},{:.17e},{:.17e},{:.17e},{:.17e},{:.17e},{:.17e},{:.17e},{:.17e},{:.17e},{:.17e},{},{},{}",
                 cell.center.x,
                 cell.center.y,
                 cell.center.z,
@@ -195,7 +206,10 @@ impl ResultDataset {
                 u.x,
                 u.y,
                 u.z,
-                self.velocity_magnitude[index],self.vorticity[index],self.divergence[index]
+                self.velocity_magnitude[index],self.vorticity[index],self.divergence[index],
+                self.turbulence.as_ref().and_then(|v|v[0].get(index)).map(|x|format!("{x:.17e}")).unwrap_or_default(),
+                self.turbulence.as_ref().and_then(|v|v[1].get(index)).map(|x|format!("{x:.17e}")).unwrap_or_default(),
+                self.turbulence.as_ref().and_then(|v|v[2].get(index)).map(|x|format!("{x:.17e}")).unwrap_or_default()
             )?;
         }
         file.flush()
@@ -226,6 +240,7 @@ pub struct ResultRenderCache {
     velocity_components: [Vec<f64>; 3],
     vorticity: Vec<f64>,
     divergence: Vec<f64>,
+    turbulence:Option<[Vec<f64>;3]>,
     face_owners: Vec<usize>,
 }
 
@@ -244,6 +259,7 @@ impl ResultRenderCache {
             velocity_components: dataset.velocity_components.clone(),
             vorticity: dataset.vorticity.clone(),
             divergence: dataset.divergence.clone(),
+            turbulence:dataset.turbulence.clone(),
             face_owners: dataset.mesh.faces().iter().map(|face| face.owner).collect(),
         })
     }
@@ -276,6 +292,9 @@ impl ResultRenderCache {
             ResultFieldKind::VelocityZ => self.velocity_components[2].get(cell).copied(),
             ResultFieldKind::VorticityMagnitude => self.vorticity.get(cell).copied(),
             ResultFieldKind::VelocityDivergence => self.divergence.get(cell).copied(),
+            ResultFieldKind::TurbulentK=>self.turbulence.as_ref().and_then(|v|v[0].get(cell).copied()),
+            ResultFieldKind::SpecificDissipation=>self.turbulence.as_ref().and_then(|v|v[1].get(cell).copied()),
+            ResultFieldKind::TurbulentViscosity=>self.turbulence.as_ref().and_then(|v|v[2].get(cell).copied()),
         }
     }
 
@@ -326,6 +345,7 @@ fn result_artifact_fingerprint(dataset: &ResultDataset) -> u64 {
             hash = mix_fingerprint(hash, value.to_bits());
         }
     }
+    if let Some(t)=&dataset.turbulence {for values in t {for v in values {hash=mix_fingerprint(hash,v.to_bits());}}}
     hash
 }
 
@@ -455,12 +475,16 @@ pub fn parse_legacy_vtk_result(
     for _ in 0..mesh.cell_count() {
         velocity.push(parse_vec(lines.next())?);
     }
-    if lines.next().is_some() {
-        return Err(ResultDataError::Unsupported(
-            "unexpected trailing VTK field or data".into(),
-        ));
-    }
-    ResultDataset::from_values(run_id, &mesh, pressure, velocity)
+    let mut tail=lines.peekable();
+    let turbulence=if tail.peek().is_some() {
+        let k=parse_scalar(&mut tail,"turbulent_k",mesh.cell_count())?;
+        let omega=if tail.peek().is_some_and(|s|s.starts_with("SCALARS specific_dissipation ")) {parse_scalar(&mut tail,"specific_dissipation",mesh.cell_count())?}else{Vec::new()};
+        let nut=parse_scalar(&mut tail,"turbulent_viscosity",mesh.cell_count())?;
+        if k.iter().chain(&omega).chain(&nut).any(|v|!v.is_finite()||*v<0.0) {return Err(ResultDataError::Invalid("Invalid turbulence result fields".into()));}
+        Some([k,omega,nut])
+    }else{None};
+    if tail.next().is_some() {return Err(ResultDataError::Unsupported("Unexpected trailing VTK data".into()));}
+    let mut dataset=ResultDataset::from_values(run_id,&mesh,pressure,velocity)?;dataset.turbulence=turbulence;Ok(dataset)
 }
 
 fn header_count(line: &str, keyword: &str) -> Result<usize, ResultDataError> {

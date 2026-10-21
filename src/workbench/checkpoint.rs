@@ -31,6 +31,100 @@ struct FieldCheckpoint {
     velocity: Vec<Vec3>,
     pressure: Vec<f64>,
     context: String,
+    #[serde(default)]
+    time: Option<f64>,
+    #[serde(default)]
+    face_flux: Option<Vec<f64>>,
+    #[serde(default)]
+    turbulence: Option<StoredTurbulence>,
+}
+#[derive(Serialize, Deserialize)]
+struct StoredTurbulence {
+    #[serde(default)]
+    model: crate::turbulence::TurbulenceModel,
+    k: Vec<f64>,
+    omega: Vec<f64>,
+    nut: Vec<f64>,
+}
+/// Complete time-level restart, including conservative flux and RANS state.
+pub fn write_solution(
+    path: &Path,
+    mesh: &MeshSignature,
+    iteration: usize,
+    solution: &crate::IncompressibleSolution,
+    context: &str,
+) -> Result<(), String> {
+    write_restart(
+        path,
+        mesh,
+        iteration,
+        &solution.restart(),
+        solution.physical_time.is_some(),
+        context,
+    )
+}
+pub fn write_restart(
+    path: &Path,
+    mesh: &MeshSignature,
+    iteration: usize,
+    initial: &IncompressibleInitialConditions,
+    physical: bool,
+    context: &str,
+) -> Result<(), String> {
+    let IncompressibleInitialConditions::Restart {
+        velocity,
+        pressure,
+        face_flux,
+        time,
+        turbulence,
+    } = initial
+    else {
+        return Err("A complete restart state is required".into());
+    };
+    if !time.is_finite()
+        || *time < 0.0
+        || velocity
+            .values()
+            .iter()
+            .any(|v| ![v.x, v.y, v.z].iter().all(|x| x.is_finite()))
+        || pressure
+            .values()
+            .iter()
+            .chain(face_flux.values())
+            .any(|x| !x.is_finite())
+    {
+        return Err("Non-finite complete restart state".into());
+    }
+    if velocity.values().len() != mesh.cells.len()
+        || pressure.values().len() != mesh.cells.len()
+        || face_flux.values().len() != mesh.faces.len()
+    {
+        return Err("Restart field sizes do not match mesh".into());
+    }
+    let record = FieldCheckpoint {
+        format: 1,
+        mesh: mesh.clone(),
+        iteration,
+        velocity: velocity.values().to_vec(),
+        pressure: pressure.values().to_vec(),
+        context: context.into(),
+        time: physical.then_some(*time),
+        face_flux: Some(face_flux.values().to_vec()),
+        turbulence: turbulence.as_ref().map(|t| StoredTurbulence {
+            model: t.model,
+            k: t.k.values().to_vec(),
+            omega: t.omega.values().to_vec(),
+            nut: t.nut.values().to_vec(),
+        }),
+    };
+    let parent = path.parent().unwrap_or(Path::new("."));
+    std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    let mut file = tempfile::NamedTempFile::new_in(parent).map_err(|e| e.to_string())?;
+    serde_json::to_writer(&mut file, &record).map_err(|e| e.to_string())?;
+    file.flush().map_err(|e| e.to_string())?;
+    file.as_file().sync_all().map_err(|e| e.to_string())?;
+    file.persist(path).map_err(|e| e.to_string())?;
+    Ok(())
 }
 pub fn write(
     path: &Path,
@@ -100,10 +194,42 @@ pub fn load(
     }
     let velocity = CellField::from_values(mesh, saved.velocity).map_err(|e| format!("{e:?}"))?;
     let pressure = CellField::from_values(mesh, saved.pressure).map_err(|e| format!("{e:?}"))?;
-    Ok((
-        saved.iteration,
-        IncompressibleInitialConditions::fields(velocity, pressure),
-    ))
+    let initial = if let Some(phi) = saved.face_flux {
+        if phi.iter().any(|v| !v.is_finite())
+            || saved.time.is_some_and(|t| !t.is_finite() || t < 0.0)
+        {
+            return Err("Checkpoint time or flux is invalid".into());
+        }
+        let turbulence = saved
+            .turbulence
+            .map(|t| -> Result<crate::turbulence::TurbulenceFields, String> {
+                if t.k
+                    .iter()
+                    .chain(&t.omega)
+                    .chain(&t.nut)
+                    .any(|x| !x.is_finite() || *x < 0.0)
+                {
+                    return Err("Invalid restart turbulence fields".into());
+                }
+                Ok(crate::turbulence::TurbulenceFields {
+                    model: t.model,
+                    k: CellField::from_values(mesh, t.k).map_err(|e| format!("{e:?}"))?,
+                    omega: CellField::from_values(mesh, t.omega).map_err(|e| format!("{e:?}"))?,
+                    nut: CellField::from_values(mesh, t.nut).map_err(|e| format!("{e:?}"))?,
+                })
+            })
+            .transpose()?;
+        IncompressibleInitialConditions::Restart {
+            velocity,
+            pressure,
+            face_flux: crate::FaceField::from_values(mesh, phi).map_err(|e| format!("{e:?}"))?,
+            time: saved.time.unwrap_or(0.0),
+            turbulence,
+        }
+    } else {
+        IncompressibleInitialConditions::fields(velocity, pressure)
+    };
+    Ok((saved.iteration, initial))
 }
 
 #[cfg(test)]

@@ -86,6 +86,8 @@ pub struct PlaneSample {
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PlaneSnapshot {
+    #[serde(default)]
+    pub physical_time:Option<f64>,
     pub plane: FlowPlaneMonitor,
     pub iteration: usize,
     pub samples: Vec<PlaneSample>,
@@ -204,6 +206,7 @@ pub fn sample(
         })
         .collect::<Result<Vec<_>, String>>()?;
     Ok(PlaneSnapshot {
+        physical_time:None,
         plane: plane.clone(),
         iteration,
         samples,
@@ -257,6 +260,7 @@ pub fn vector_svg(snapshot: &PlaneSnapshot) -> String {
 
 /// Filled cell sections: no smoothing or invented point interpolation.
 pub fn section_svg(snapshot: &PlaneSnapshot, style: &PlaneDisplay) -> String {
+    let time_caption=snapshot.physical_time.map(|t|format!("Physical time: {t:.6e} s")).unwrap_or_else(||"Steady iteration, not physical time".into());
     let p = &snapshot.plane;
     let field = style.field.min(5);
     let (label, unit) = match field {
@@ -453,18 +457,19 @@ pub fn section_svg(snapshot: &PlaneSnapshot, style: &PlaneDisplay) -> String {
     };
     let _ = write!(
         svg,
-        r##"<path d="M{left} {top} V{bottom} H{right}" fill="none" stroke="#9aabbf"/><text x="{cx}" y="607" text-anchor="middle">Plane u (m)</text><text transform="translate(18 {cy}) rotate(-90)" text-anchor="middle">Plane v (m)</text><text x="845" y="109">{unit}</text><text x="{left}" y="635">Steady iteration, not physical time · vectors: {vector_label}</text></g></svg>"##
+        r##"<path d="M{left} {top} V{bottom} H{right}" fill="none" stroke="#9aabbf"/><text x="{cx}" y="607" text-anchor="middle">Plane u (m)</text><text transform="translate(18 {cy}) rotate(-90)" text-anchor="middle">Plane v (m)</text><text x="845" y="109">{unit}</text><text x="{left}" y="635">{time_caption} · vectors: {vector_label}</text></g></svg>"##
     );
     svg
 }
 
 pub fn csv_text(snapshot: &PlaneSnapshot) -> String {
     let mut csv = String::new();
-    let _=writeln!(csv,"iteration,cell,x_m,y_m,z_m,ux_m_s,uy_m_s,uz_m_s,u_plane_m_s,v_plane_m_s,normal_velocity_m_s,speed_m_s,kinematic_pressure_m2_s2");
+    let _=writeln!(csv,"iteration,cell,x_m,y_m,z_m,ux_m_s,uy_m_s,uz_m_s,u_plane_m_s,v_plane_m_s,normal_velocity_m_s,speed_m_s,kinematic_pressure_m2_s2,time_s");
     for s in &snapshot.samples {
         let p = s.geometry.point;
         let v = s.velocity;
         let _=writeln!(csv,"{},{},{:.16e},{:.16e},{:.16e},{:.16e},{:.16e},{:.16e},{:.16e},{:.16e},{:.16e},{:.16e},{:.16e}",snapshot.iteration,s.geometry.cell,p.x,p.y,p.z,v.x,v.y,v.z,v.dot(snapshot.plane.u),v.dot(snapshot.plane.v),v.dot(snapshot.plane.normal()),v.norm(),s.pressure);
+        if let Some(time)=snapshot.physical_time {csv.pop();let _=writeln!(csv,",{time:.16e}");}else{csv.pop();csv.push_str(",\n");}
     }
     csv
 }
@@ -486,6 +491,7 @@ mod recording_tests {
             display: PlaneDisplay::default(),
         };
         let snapshot = PlaneSnapshot {
+            physical_time:None,
             plane,
             iteration: 20,
             path: None,

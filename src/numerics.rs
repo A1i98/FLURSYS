@@ -53,6 +53,7 @@ impl Default for DiffusionOptions {
 pub enum Diffusivity<'a> {
     Constant(f64),
     CellField(&'a CellField<f64>),
+    Faces(&'a FaceField<f64>),
 }
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct NonOrthogonalDecomposition {
@@ -363,6 +364,16 @@ fn weight(mesh: &UnstructuredMesh, face_index: usize) -> Result<f64, NumericsErr
 }
 
 impl ResolvedScalarBoundaryConditions {
+    pub fn from_face_conditions(mesh:&UnstructuredMesh,conditions:Vec<Option<ScalarBoundaryCondition>>)->Result<Self,NumericsError> {
+        if conditions.len()!=mesh.face_count() {return Err(NumericsError::MissingBoundaryCondition {face:mesh.face_count()});}
+        for (i,f) in mesh.faces().iter().enumerate() {
+            if f.neighbour.is_none() && conditions[i].is_none() {return Err(NumericsError::MissingBoundaryCondition {face:i});}
+            if f.neighbour.is_some() && conditions[i].is_some() {return Err(NumericsError::BoundaryConditionOnInternalFace {face:i});}
+            if matches!(conditions[i],Some(ScalarBoundaryCondition::FixedValue(v)) if !v.is_finite()) {return Err(NumericsError::MissingBoundaryCondition {face:i});}
+        }
+        Ok(Self {mesh_id:mesh.id(),conditions})
+    }
+
     pub fn strict(
         mesh: &UnstructuredMesh,
         assignments: &[(&str, ScalarBoundaryCondition)],
@@ -438,6 +449,7 @@ fn cell_diffusivity(
     cell: usize,
 ) -> Result<f64, NumericsError> {
     match diffusivity {
+        Diffusivity::Faces(_) => unreachable!("face diffusivity is resolved before cell interpolation"),
         Diffusivity::Constant(value) => checked_diffusivity(value, cell),
         Diffusivity::CellField(values) => {
             values.ensure_mesh(mesh)?;
@@ -453,6 +465,13 @@ pub fn interpolate_diffusivity_into(
     output: &mut FaceField<f64>,
 ) -> Result<(), NumericsError> {
     output.ensure_mesh(mesh)?;
+    if let Diffusivity::Faces(values)=diffusivity {
+        values.ensure_mesh(mesh)?;
+        for (i,v) in values.values().iter().enumerate() {
+            if !v.is_finite() || *v<0.0 {return Err(NumericsError::InvalidFaceDiffusivity {face:i});}
+        }
+        output.values_mut().copy_from_slice(values.values());return Ok(());
+    }
     if let Diffusivity::CellField(values) = diffusivity {
         values.ensure_mesh(mesh)?;
     }

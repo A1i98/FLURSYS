@@ -1,5 +1,5 @@
-//! High-level case configuration and boundary resolution for steady,
-//! constant-density unstructured incompressible flow.
+//! Case configuration, boundary resolution and fixed-mesh time integration
+//! for constant-density unstructured incompressible flow.
 //!
 //! This module owns physical case semantics. The numerical SIMPLE iteration
 //! remains in `crate::simple`.
@@ -10,6 +10,9 @@ use crate::{
     ScalarBoundaryCondition, SimpleError, SimpleOptions, SimpleReport, SimpleState,
     UnstructuredMesh, Vec3, VelocityBoundaryCondition,
 };
+
+mod time;
+pub use time::TimeIntegration;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum IncompressibleBoundaryCondition {
@@ -60,6 +63,8 @@ pub struct IncompressibleMaterial {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct IncompressibleSolverOptions {
+    pub time: TimeIntegration,
+    pub turbulence: crate::turbulence::TurbulenceOptions,
     pub convection: crate::momentum::MomentumConvection,
     /// Private worker-pool size; zero uses the CPUs available to this process.
     /// Momentum components can run concurrently; pressure is currently serial.
@@ -76,6 +81,8 @@ pub struct IncompressibleSolverOptions {
 impl Default for IncompressibleSolverOptions {
     fn default() -> Self {
         Self {
+            time: TimeIntegration::Steady,
+            turbulence: crate::turbulence::TurbulenceOptions::default(),
             convection: crate::momentum::MomentumConvection::Upwind,
             threads: 1,
             max_outer_iterations: 1000,
@@ -91,6 +98,13 @@ impl Default for IncompressibleSolverOptions {
 
 #[derive(Clone, Debug)]
 pub enum IncompressibleInitialConditions {
+    Restart {
+        velocity: CellField<Vec3>,
+        pressure: CellField<f64>,
+        face_flux: FaceField<f64>,
+        time: f64,
+        turbulence: Option<crate::turbulence::TurbulenceFields>,
+    },
     Uniform {
         velocity: Vec3,
         pressure: f64,
@@ -598,6 +612,11 @@ impl IncompressibleSolveReport {
 
 #[derive(Clone, Debug)]
 pub struct IncompressibleSolution {
+    pub nonlinear_iterations: usize,
+    pub max_courant: Option<f64>,
+    pub turbulence: Option<crate::turbulence::TurbulenceFields>,
+    pub physical_time: Option<f64>,
+    pub completed_time_steps: usize,
     pub velocity: CellField<Vec3>,
     pub pressure: CellField<f64>,
     pub face_flux: FaceField<f64>,
@@ -612,6 +631,15 @@ pub struct SolveControl<'a> {
     is_cancelled: Box<dyn Fn() -> bool + Send + Sync + 'a>,
     on_iteration: Box<dyn Fn(usize, usize, f64) + Send + Sync + 'a>,
     on_metrics: Option<Box<dyn Fn(usize, [f64; 4]) + Send + Sync + 'a>>,
+    on_step: Option<
+        Box<dyn Fn(usize, &IncompressibleSolution) -> Result<(), String> + Send + Sync + 'a>,
+    >,
+    on_restart: Option<
+        Box<
+            dyn Fn(usize, IncompressibleInitialConditions) -> Result<(), String> + Send + Sync + 'a,
+        >,
+    >,
+    restart_every: usize,
     on_fields: Option<
         Box<
             dyn Fn(usize, &CellField<Vec3>, &CellField<f64>) -> Result<(), String>
@@ -631,6 +659,9 @@ impl<'a> SolveControl<'a> {
             is_cancelled: Box::new(is_cancelled),
             on_iteration: Box::new(on_iteration),
             on_metrics: None,
+            on_step: None,
+            on_restart: None,
+            restart_every: 0,
             on_fields: None,
         }
     }
@@ -652,6 +683,25 @@ impl<'a> SolveControl<'a> {
         self
     }
 
+    pub fn with_restart_state(
+        mut self,
+        every: usize,
+        callback: impl Fn(usize, IncompressibleInitialConditions) -> Result<(), String>
+            + Send
+            + Sync
+            + 'a,
+    ) -> Self {
+        self.on_restart = Some(Box::new(callback));
+        self.restart_every = every;
+        self
+    }
+    pub fn with_completed_step(
+        mut self,
+        callback: impl Fn(usize, &IncompressibleSolution) -> Result<(), String> + Send + Sync + 'a,
+    ) -> Self {
+        self.on_step = Some(Box::new(callback));
+        self
+    }
     fn cancelled(&self) -> bool {
         (self.is_cancelled)()
     }
@@ -662,6 +712,16 @@ impl<'a> SolveControl<'a> {
 }
 
 impl IncompressibleSolution {
+    pub fn restart(&self) -> IncompressibleInitialConditions {
+        IncompressibleInitialConditions::Restart {
+            velocity: self.velocity.clone(),
+            pressure: self.pressure.clone(),
+            face_flux: self.face_flux.clone(),
+            time: self.physical_time.unwrap_or(0.0),
+            turbulence: self.turbulence.clone(),
+        }
+    }
+
     /// Returns the cell-centred velocity magnitude for result export and
     /// visualization without reconstructing fluxes or mutating solution state.
     pub fn speed(&self) -> CellField<f64> {
@@ -747,12 +807,13 @@ fn solve_incompressible_impl(
         .num_threads(threads)
         .build()
         .map_err(|e| IncompressibleSolveError::ThreadPool(e.to_string()))?;
-    pool.install(|| solve_incompressible_on_pool(case, control))
+    pool.install(|| time::solve_time_loop(case, control))
 }
 
 fn solve_incompressible_on_pool(
     case: &IncompressibleCase,
     control: Option<&SolveControl<'_>>,
+    time_step: Option<f64>,
 ) -> Result<IncompressibleSolution, IncompressibleSolveError> {
     let resolved = case.resolve_boundaries()?;
     let prescribed_flux = case
@@ -796,7 +857,10 @@ fn solve_incompressible_on_pool(
                 CellField::filled(&case.mesh, *pressure),
             )
         }
-        IncompressibleInitialConditions::Fields { velocity, pressure } => {
+        IncompressibleInitialConditions::Fields { velocity, pressure }
+        | IncompressibleInitialConditions::Restart {
+            velocity, pressure, ..
+        } => {
             velocity
                 .ensure_mesh(&case.mesh)
                 .map_err(IncompressibleCaseError::from)?;
@@ -811,7 +875,30 @@ fn solve_incompressible_on_pool(
             (velocity.clone(), pressure.clone())
         }
     };
-    let face_flux = initial_face_flux(&case.mesh, &velocity, resolved.boundary_flux())?;
+    let face_flux = if let IncompressibleInitialConditions::Restart { face_flux, .. } =
+        &case.initial_conditions
+    {
+        face_flux
+            .ensure_mesh(&case.mesh)
+            .map_err(IncompressibleCaseError::from)?;
+        let mut flux = face_flux.clone();
+        for (i, f) in case.mesh.faces().iter().enumerate() {
+            if f.neighbour.is_none()
+                && !matches!(
+                    resolved
+                        .velocity_boundary()
+                        .component(crate::MomentumComponent::X)
+                        .condition(i),
+                    Some(ScalarBoundaryCondition::ZeroGradient)
+                )
+            {
+                flux[i] = resolved.boundary_flux()[i];
+            }
+        }
+        flux
+    } else {
+        initial_face_flux(&case.mesh, &velocity, resolved.boundary_flux())?
+    };
     let mut state = SimpleState::new(&case.mesh, velocity, pressure, face_flux)?;
     let mut options = SimpleOptions::steady(
         Diffusivity::Constant(case.material.kinematic_viscosity),
@@ -853,6 +940,29 @@ fn solve_incompressible_on_pool(
     options.pressure_relaxation = case.solver.pressure_relaxation;
     options.momentum_solver = case.solver.momentum_solver;
     options.pressure_solver = case.solver.pressure_solver;
+    let initial_turbulence = match &case.initial_conditions {
+        IncompressibleInitialConditions::Restart { turbulence, .. } => turbulence.clone(),
+        _ => None,
+    };
+    let closure = if case.solver.turbulence.model != crate::turbulence::TurbulenceModel::Laminar {
+        Some(std::sync::Mutex::new(crate::turbulence::Closure::new(
+            &case.mesh,
+            case,
+            initial_turbulence,
+        )?))
+    } else {
+        None
+    };
+    options.closure = closure.as_ref();
+    if closure.is_some() {
+        options.boundary_case = Some(case);
+    }
+    let temporal_velocity = time_step.map(|_| state.velocity.clone());
+    let temporal_flux = time_step.map(|_| state.face_flux.clone());
+    options.time_step = time_step;
+    options.time_velocity = temporal_velocity.as_ref();
+    options.time_flux = temporal_flux.as_ref();
+    let last_completed = std::cell::Cell::new(0usize);
     let simple = crate::simple::solve_simple_with_observer(
         &case.mesh,
         &mut state,
@@ -867,6 +977,26 @@ fn solve_incompressible_on_pool(
             }
         },
         |iteration, state| {
+            last_completed.set(iteration);
+            if time_step.is_none()
+                && control.is_some_and(|c| {
+                    c.restart_every > 0 && (iteration == 1 || iteration % c.restart_every == 0)
+                })
+            {
+                if let Some(callback) = control.and_then(|c| c.on_restart.as_ref()) {
+                    callback(
+                        iteration,
+                        IncompressibleInitialConditions::Restart {
+                            velocity: state.velocity.clone(),
+                            pressure: state.pressure.clone(),
+                            face_flux: state.face_flux.clone(),
+                            time: 0.0,
+                            turbulence: closure.as_ref().map(|c| c.lock().unwrap().fields()),
+                        },
+                    )
+                    .map_err(SimpleError::Monitor)?;
+                }
+            }
             if let Some(callback) = control.and_then(|c| c.on_fields.as_ref()) {
                 callback(iteration, &state.velocity, &state.pressure)
                     .map_err(SimpleError::Monitor)?;
@@ -875,7 +1005,25 @@ fn solve_incompressible_on_pool(
         },
     )
     .map_err(|error| match error {
-        SimpleError::Cancelled => IncompressibleSolveError::Cancelled,
+        SimpleError::Cancelled => {
+            if time_step.is_none() {
+                if let Some(callback) = control.and_then(|c| c.on_restart.as_ref()) {
+                    if let Err(error) = callback(
+                        last_completed.get(),
+                        IncompressibleInitialConditions::Restart {
+                            velocity: state.velocity.clone(),
+                            pressure: state.pressure.clone(),
+                            face_flux: state.face_flux.clone(),
+                            time: 0.0,
+                            turbulence: closure.as_ref().map(|c| c.lock().unwrap().fields()),
+                        },
+                    ) {
+                        return IncompressibleSolveError::Simple(SimpleError::Monitor(error));
+                    }
+                }
+            }
+            IncompressibleSolveError::Cancelled
+        }
         SimpleError::Momentum(crate::MomentumError::BackflowOnZeroGradient { face }) => {
             if let Some((patch, _)) = case.boundaries.iter().find(|(name, condition)| {
                 matches!(
@@ -944,6 +1092,11 @@ fn solve_incompressible_on_pool(
             }
         });
     Ok(IncompressibleSolution {
+        nonlinear_iterations: simple.outer_iterations,
+        max_courant: None,
+        turbulence: closure.as_ref().map(|c| c.lock().unwrap().fields()),
+        physical_time: None,
+        completed_time_steps: 0,
         velocity: state.velocity,
         pressure: state.pressure,
         face_flux: state.face_flux,

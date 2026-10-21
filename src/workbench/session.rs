@@ -163,6 +163,7 @@ impl WorkbenchSession {
         let mut session = Self::new();
         session.geometry = project.geometry.clone();
         session.fluid_face_selection = project.fluid_face;
+        session.solver.time=project.solver.time;session.solver.turbulence=project.solver.turbulence.clone();
         session.solver.coupling_relative_tolerance = project.solver.coupling_relative_tolerance;
         session.geometry.ensure_extrusion_edges()?;
         session.geometry.ensure_cad_subelements()?;
@@ -232,6 +233,7 @@ impl WorkbenchSession {
         project.mesh_recipe = self.mesh_recipe.clone();
         project.material.density = self.material.density;
         project.material.kinematic_viscosity = self.material.kinematic_viscosity;
+        project.solver.time=self.solver.time;project.solver.turbulence=self.solver.turbulence.clone();
         project.solver.max_outer_iterations = self.solver.max_outer_iterations;
         project.solver.continuity_absolute_tolerance = self.solver.continuity_absolute_tolerance;
         project.solver.coupling_relative_tolerance = self.solver.coupling_relative_tolerance;
@@ -1196,6 +1198,14 @@ impl WorkbenchSession {
         self.solver.convection = convection;
     }
 
+    pub fn set_flow_models(&mut self,time:crate::unstructured_incompressible::TimeIntegration,turbulence:crate::turbulence::TurbulenceOptions)->Result<(),WorkbenchError> {
+        time.validate().and_then(|_|turbulence.validate()).map_err(|message|WorkbenchError::InvalidGrouping {message})?;
+        if matches!(turbulence.model,crate::turbulence::TurbulenceModel::Smagorinsky|crate::turbulence::TurbulenceModel::Wale) && (matches!(time,crate::unstructured_incompressible::TimeIntegration::Steady) || self.mesh_dimension!=MeshDimension::ThreeD) {
+            return Err(WorkbenchError::InvalidGrouping {message:"LES requires transient integration and a 3D mesh".into()});
+        }
+        if self.solver.time!=time || self.solver.turbulence!=turbulence {self.solution=None;self.status=SolveStatus::Idle;}
+        self.solver.time=time;self.solver.turbulence=turbulence;Ok(())
+    }
     pub fn solver_options(&self) -> &IncompressibleSolverOptions {
         &self.solver
     }
@@ -1348,6 +1358,7 @@ impl WorkbenchSession {
                 self.solution = Some(solution);
             }
             Err(error) => {
+                self.solution=None;
                 self.status = SolveStatus::Failed(error.to_string());
             }
         }

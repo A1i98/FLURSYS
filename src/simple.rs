@@ -95,6 +95,10 @@ impl SimpleState {
 
 #[derive(Clone, Copy, Debug)]
 pub struct SimpleOptions<'a> {
+    pub(crate) closure: Option<&'a std::sync::Mutex<crate::turbulence::Closure>>,
+    pub time_step: Option<f64>,
+    pub time_velocity: Option<&'a CellField<Vec3>>,
+    pub time_flux: Option<&'a FaceField<f64>>,
     /// Optional state-dependent slip/free-stream boundary update per outer step.
     pub boundary_case: Option<&'a crate::IncompressibleCase>,
     pub viscosity: Diffusivity<'a>,
@@ -127,6 +131,10 @@ impl<'a> SimpleOptions<'a> {
         pressure_stencil: &'a LeastSquaresGradientStencil,
     ) -> Self {
         Self {
+            closure: None,
+            time_step: None,
+            time_velocity: None,
+            time_flux: None,
             boundary_case: None,
             viscosity,
             velocity_boundary,
@@ -245,6 +253,24 @@ pub fn solve_simple_with_observer(
             value: options.coupling_relative_tolerance,
         });
     }
+    let temporal = options
+        .time_velocity
+        .map(|v| -> Result<_, SimpleError> {
+            Ok([
+                momentum_component_field(mesh, v, MomentumComponent::X)?,
+                momentum_component_field(mesh, v, MomentumComponent::Y)?,
+                momentum_component_field(mesh, v, MomentumComponent::Z)?,
+            ])
+        })
+        .transpose()?;
+    let old_interpolated = options
+        .time_velocity
+        .map(|v| {
+            let mut f = FaceField::filled(mesh, Vec3::ZERO);
+            interpolate_vector_into(mesh, v, ScalarBoundaryValue::OwnerValue, &mut f)?;
+            Ok::<_, SimpleError>(f)
+        })
+        .transpose()?;
     let mut history = vec![initial];
     let mut momentum_history = Vec::new();
     let mut velocity_history = Vec::new();
@@ -337,7 +363,32 @@ pub fn solve_simple_with_observer(
             options.pressure_stencil,
             options.pressure_boundary,
         )?;
-        let pressure_source = current_pressure_gradient.map(|g| -*g);
+        let closure_correction = if let Some(closure) = options.closure {
+            let nu = options
+                .boundary_case
+                .map(|c| c.material.kinematic_viscosity)
+                .unwrap_or(0.0);
+            Some(closure.lock().unwrap().correct(
+                mesh,
+                state,
+                options.velocity_boundary,
+                nu,
+                options.time_step,
+                options.momentum_solver,
+            )?)
+        } else {
+            None
+        };
+        if let Some((viscosity, _)) = &closure_correction {
+            options.viscosity = Diffusivity::Faces(viscosity);
+        }
+        let mut pressure_source = current_pressure_gradient.map(|g| -*g);
+        if let Some((_, source)) = &closure_correction {
+            for (value, extra) in pressure_source.values_mut().iter_mut().zip(source.values()) {
+                *value += *extra;
+            }
+        }
+
         let source_x = momentum_component_field(mesh, &pressure_source, MomentumComponent::X)?;
         let source_y = momentum_component_field(mesh, &pressure_source, MomentumComponent::Y)?;
         let source_z = momentum_component_field(mesh, &pressure_source, MomentumComponent::Z)?;
@@ -353,8 +404,14 @@ pub fn solve_simple_with_observer(
                     viscosity: options.viscosity,
                     boundary: options.velocity_boundary.component(component),
                     flux: &state.face_flux,
-                    old: None,
-                    time_step: None,
+                    old: temporal.as_ref().map(|v| {
+                        &v[match component {
+                            MomentumComponent::X => 0,
+                            MomentumComponent::Y => 1,
+                            MomentumComponent::Z => 2,
+                        }]
+                    }),
+                    time_step: options.time_step,
                     source: Some(source),
                     relaxation_field: relaxed.then_some(current),
                     correction_field: Some(current),
@@ -442,9 +499,26 @@ pub fn solve_simple_with_observer(
                     {
                         let d = face.center - mesh.cells()[face.owner].center;
                         predicted_flux[face_index] -= coefficients[face_index]
-                            * (pressure_source[face.owner].dot(d) + pressure
+                            * (-current_pressure_gradient[face.owner].dot(d) + pressure
                                 - state.pressure[face.owner]);
                     }
+                }
+            }
+        }
+        // Temporal face/cell consistency: retain the previous conservative
+        // face flux instead of replacing it with interpolation of cell U.
+        if let (Some(dt), Some(old_phi), Some(old_uf)) = (
+            options.time_step,
+            options.time_flux,
+            old_interpolated.as_ref(),
+        ) {
+            old_phi.ensure_mesh(mesh)?;
+            for (i, f) in mesh.faces().iter().enumerate() {
+                if let Some(n) = f.neighbour {
+                    let a = (f.center - mesh.cells()[f.owner].center).norm();
+                    let b = (f.center - mesh.cells()[n].center).norm();
+                    let rf = (b * r_au[f.owner] + a * r_au[n]) / (a + b);
+                    predicted_flux[i] += rf / dt * (old_phi[i] - old_uf[i].dot(f.area_vector));
                 }
             }
         }
@@ -523,6 +597,9 @@ pub fn solve_simple_with_observer(
             && (momentum_relative <= options.coupling_relative_tolerance
                 || momentum_initial <= options.momentum_solver.absolute_tolerance)
             && velocity_relative <= options.coupling_relative_tolerance
+            && options.closure.is_none_or(|c| {
+                c.lock().unwrap().relative_change <= options.coupling_relative_tolerance
+            })
         {
             return Ok(SimpleReport {
                 converged: true,

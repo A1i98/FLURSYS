@@ -337,6 +337,11 @@ pub fn write_unstructured_legacy_vtk(
     for value in solution.velocity.values() {
         writeln!(writer, "{:.12e} {:.12e} {:.12e}", value.x, value.y, value.z).map_err(io_err)?;
     }
+    if let Some(t)=&solution.turbulence {
+        write_scalar_cell_field(&mut writer,"turbulent_k",t.k.values())?;
+        if matches!(t.model,crate::turbulence::TurbulenceModel::KOmega|crate::turbulence::TurbulenceModel::KOmegaSst) {write_scalar_cell_field(&mut writer,"specific_dissipation",t.omega.values())?;}
+        write_scalar_cell_field(&mut writer,"turbulent_viscosity",t.nut.values())?;
+    }
     Ok(())
 }
 
