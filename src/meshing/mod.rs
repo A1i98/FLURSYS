@@ -1,5 +1,7 @@
 //! Headless, solver-independent meshing backends.
 
+mod blocks;
+mod planar_merge;
 mod geo;
 mod geometry;
 mod gmsh;

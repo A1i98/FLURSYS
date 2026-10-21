@@ -36,6 +36,11 @@ impl GeometryToGmshMap {
             .unwrap_or_else(|| self.face_tag(id).into_iter().collect())
     }
 
+    pub(crate) fn set_face_tags(&mut self, id: FaceId, tags: Vec<usize>) {
+        if let Some(&first)=tags.first() { self.face_tags.insert(id,first); }
+        self.face_tag_groups.insert(id,tags);
+    }
+
     pub fn body_tag(&self, id: BodyId) -> Option<usize> {
         self.body_tags.get(&id).copied()
     }
@@ -260,6 +265,20 @@ impl GmshGeometryExporter {
         boundary_groups: impl IntoIterator<Item = (impl AsRef<str>, Vec<FaceId>)>,
         fluid_name: impl AsRef<str>,
     ) -> Result<GeometryGmshExport, GeometryError> {
+        Self::extruded_with_layers(geometry, body, boundary_groups, fluid_name, None)
+    }
+
+    /// Layered surface-to-surface sweep; physical faces use the same stable IDs.
+    pub fn extruded_with_layers(
+        geometry: &GeometryTopology,
+        body: BodyId,
+        boundary_groups: impl IntoIterator<Item = (impl AsRef<str>, Vec<FaceId>)>,
+        fluid_name: impl AsRef<str>,
+        layers: Option<u32>,
+    ) -> Result<GeometryGmshExport, GeometryError> {
+        if layers.is_some_and(|n| !(1..=10000).contains(&n)) {
+            return Err(GeometryError::InvalidPrimitive {message:"Sweep layers must be 1–10000".into()});
+        }
         let body_entity = geometry
             .body(body)
             .ok_or_else(|| missing("body", body.get()))?;
@@ -289,8 +308,9 @@ impl GmshGeometryExporter {
             }
         })?;
         source = source.replace("Physical Surface(\"__profile\") = {3000};\n", "");
+        let sweep = layers.map(|n|format!("Layers {{{n}}}; Recombine;")).unwrap_or_default();
         source.push_str(&format!(
-            "out[] = Extrude {{{:.17}, {:.17}, {:.17}}} {{ Surface{{3000}}; }};\n",
+            "out[] = Extrude {{{:.17}, {:.17}, {:.17}}} {{ Surface{{3000}}; {sweep} }};\n",
             extrusion_vector.x, extrusion_vector.y, extrusion_vector.z
         ));
         let mut groups = boundary_groups
