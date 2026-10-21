@@ -5,6 +5,7 @@
 //! designed and validated.
 
 pub mod app;
+pub mod compressible;
 pub mod cases;
 pub mod field;
 pub mod fields;

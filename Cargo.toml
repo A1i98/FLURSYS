@@ -134,6 +134,10 @@ name = "flursys"
 path = "src/bin/flursys.rs"
 
 [[bin]]
+name = "flursys-compressible"
+path = "src/bin/flursys_compressible.rs"
+
+[[bin]]
 name = "flursys-gui"
 path = "src/bin/flursys_gui.rs"
 required-features = ["gui"]

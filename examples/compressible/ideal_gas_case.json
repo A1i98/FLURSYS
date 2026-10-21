@@ -1,0 +1,37 @@
+{
+  "mesh": "mesh.msh",
+  "settings": {
+    "gas": { "gamma": 1.4, "gas_constant": 287.05 },
+    "viscosity": {
+      "type": "sutherland",
+      "mu_ref": 0.00001716,
+      "temperature_ref": 273.15,
+      "sutherland": 110.4,
+      "prandtl": 0.72
+    },
+    "flux": "central-upwind",
+    "courant": 0.3,
+    "max_time_step": 0.0001,
+    "min_time_step": 1e-14,
+    "end_time": 0.01,
+    "max_steps": 100000,
+    "initial": {
+      "density": 1.225,
+      "pressure": 101325.0,
+      "velocity": { "x": 10.0, "y": 0.0, "z": 0.0 }
+    },
+    "regions": [],
+    "boundaries": {
+      "inlet": {
+        "type": "far-field",
+        "state": {
+          "density": 1.225,
+          "pressure": 101325.0,
+          "velocity": { "x": 10.0, "y": 0.0, "z": 0.0 }
+        }
+      },
+      "outlet": { "type": "transmissive" },
+      "walls": { "type": "no-slip-wall", "temperature": null }
+    }
+  }
+}
