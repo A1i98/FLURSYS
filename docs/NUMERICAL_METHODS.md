@@ -1,6 +1,6 @@
 # Numerical Methods
 
-Implementation audit: 2026-10-20, including the current working-tree changes.
+Implementation audit: 2026-10-21, including the current working-tree changes.
 This document describes executable code, not a proposed feature set or evidence
 of numerical validation. A successful build does not establish accuracy, order
 of convergence, stability, or performance.
@@ -14,8 +14,8 @@ residuals and geometry representations must not be interchanged.
 |---|---|---|---|
 | Layout | Cell-centred, collocated finite volumes | Cartesian staggered/MAC | Cartesian staggered/MAC |
 | Geometry | Imported/generated unstructured 2D or 3D mesh | Built-in geometry and Boolean solid masks | Rectangular cavity |
-| Coupling | Steady SIMPLE | Projection, explicit SIMPLE-style, implicit SIMPLE, SIMPLEC, PIMPLE-like | Transient projection |
-| Physical-time integration | None | Forward Euler for explicit predictor; Euler/BDF2 for implicit PIMPLE | Forward Euler |
+| Coupling | SIMPLE; converged implicit-Euler time levels (experimental) | Projection, explicit SIMPLE-style, implicit SIMPLE, SIMPLEC, PIMPLE-like | Transient projection |
+| Physical-time integration | Implicit Euler on fixed meshes (experimental) | Forward Euler for explicit predictor; Euler/BDF2 for implicit PIMPLE | Forward Euler |
 | Momentum convection | Upwind or limited linear upwind | Upwind, central, Van Leer deferred correction in supported implicit modes | Centred advective predictor |
 | Pressure | PCG + IC0 | Matrix-free PCG/SOR or CSR PCG, DIC/IC0, structured MG, GAMG | SOR |
 | Thermal/Boussinesq | Not connected | Optional constant-property temperature/Boussinesq | Not connected |
@@ -23,10 +23,15 @@ residuals and geometry representations must not be interchanged.
 
 The structured PIMPLE, BDF2, GAMG and thermal implementations are **not** selected
 by choosing a 3D mesh or increasing the iteration limit in Workbench. Workbench
-iterations are nonlinear steady iterations, not physical time steps.
+iterations are nonlinear steady iterations in Steady mode; Transient mode advances
+physical time only after the coupled correctors converge.
 
-No backend currently provides a runnable RANS/LES closure, compressible flow,
-VOF, reacting flow, species transport, MRF or moving-mesh flow model.
+The workbench has experimental wall-resolved k-omega/SST and algebraic
+Smagorinsky/WALE closures, documented in [TRANSIENT_TURBULENCE.md](TRANSIENT_TURBULENCE.md).
+These additions have not been benchmark validated. Standard k-epsilon is now
+also available for free-shear cases or an optional experimental smooth equilibrium wall treatment. A separate experimental compressible
+CLI is described below; it is not connected to GUI SIMPLE jobs. VOF, reacting
+flow, species transport, MRF and moving-mesh flow remain unconnected.
 
 ### Implementation map
 
@@ -56,11 +61,13 @@ $$\nabla\cdot\mathbf U=0,$$
 $$\frac{\partial\mathbf U}{\partial t}+\nabla\cdot(\mathbf U\otimes\mathbf U)
 =-\nabla\pi+\nu\nabla^2\mathbf U+\mathbf b,\qquad \pi=p/\rho.$$
 
-The steady Workbench formulation omits the physical-time derivative and has no
-configured thermal/body-force equation. Generic momentum assembly supports a
-source and backward-Euler storage, but the active Workbench SIMPLE caller passes
-`old=None`, `time_step=None`, and a pressure-gradient source only. This generic
-assembly API is not a complete unstructured transient solver.
+The steady Workbench branch omits the physical-time derivative. In transient
+mode, the old physical velocity and conservative face flux are frozen during
+all nonlinear correctors of each implicit Euler step. The generic momentum
+assembler receives the old component field and dt; its relaxation field is the
+current nonlinear iterate. Molecular plus turbulent face viscosity and the
+explicit remainder of the deviatoric stress are supplied when a closure is active.
+See [TRANSIENT_TURBULENCE.md](TRANSIENT_TURBULENCE.md) for the exact scope.
 
 Solver coordinates are metres; velocity is m/s, density kg/m³, and viscosity
 m²/s. Native CAD uses millimetres and its geometry transfer converts to metres.
@@ -76,6 +83,30 @@ Built-in structured cases use $Re=U_{ref}L_{ref}/\nu$ with case-specific scales
 (e.g. cylinder diameter and the configured reference velocity). Workbench instead
 accepts density and viscosity directly. Inlet mean, peak and free-stream speeds
 must be distinguished when constructing a Reynolds number.
+
+### 2.1 Mesh generation and visual inspection
+
+The current Workbench implements global/scoped sizing, Distance/Threshold
+refinement, 3D Box volume refinement and 2D inflation. Geometry scopes may use
+stable named selections or direct boundary edge/surface selections. Controls are
+stored in `mesh_recipe`, including algorithm/optimization choices. Isotropic
+explicit sizing outside global bounds is rejected instead of silently clamped.
+Distance and Box fields are combined by the minimum requested size.
+
+2D inflation requests a geometric layer stack $h_k=h_1r^{k-1}$ and
+$H=\sum_{k=1}^{N}h_k$. For total-thickness input, $h_1$ is derived from this
+sum. Equal growth ($r=1$) is handled by summation. Compatible disjoint scopes are
+merged into one Gmsh BoundaryLayer field. The requested count is not proof of
+N generated layers near corners/collisions. Arbitrary-CAD 3D prism inflation is
+not implemented; isotropic refinement is not a substitute for prism layers.
+
+Mesh quality visualization reports global cell statistics and ten equal-width
+histogram bins, with non-finite values excluded from finite statistics and
+reported separately. Cutaway retains whole cells by centre position and exposes
+their mesh faces; it is not a geometric plane intersection. Both cutaway and
+transparent wireframe change display only, not the finite-volume operators,
+physical boundary groups or mesh used by the solver. See [Meshing](MESHING.md)
+for backend controls and [Workbench](WORKBENCH.md) for UI actions.
 
 ## 3. General-mesh finite-volume operators
 
@@ -100,8 +131,8 @@ $$\nabla q_P=V_P^{-1}\sum_{f\in P}s_{Pf}q_f\mathbf S_f.$$
 The least-squares implementation constructs mesh-bound reconstruction stencils,
 including boundary information and treatment of reduced-dimensional stencils.
 Invalid or unresolved geometry can return a numerical error; least squares is
-not assumed well conditioned on every imported mesh. Pressure and its correction
-use least-squares gradients. The limited convection correction also builds a
+not assumed well conditioned on every imported mesh. Pressure and its correction use least-squares gradients in 2D Workbench;
+3D Workbench uses the Gauss coupling gradient described in section 4. The limited convection correction also builds a
 least-squares stencil for each transported component.
 
 ### 3.1 Momentum matrix and relaxation
@@ -613,3 +644,304 @@ Equal tolerance strings, similar run duration, fewer pressure iterations, or the
 same geometry name do not establish equivalent numerical work. A small algebraic
 residual does not establish small discretization or model error. No relative
 speed, memory or accuracy advantage is asserted by this document.
+
+
+## Experimental unstructured physical time and turbulence (2026-10-21)
+
+Implicit Euler physical-time integration, wall-resolved k-omega/SST and algebraic
+Smagorinsky/WALE closures are now connected to the unstructured momentum path.
+See [TRANSIENT_TURBULENCE.md](TRANSIENT_TURBULENCE.md) for equations, constants,
+boundary semantics, restart behavior and the explicit validation limitations.
+This implementation has not been benchmark validated.
+
+## Conservative compressible equations and k-epsilon extension
+
+The experimental `compressible` module is independent of the GUI SIMPLE jobs.
+It is not compressible RANS, PIMPLE, or a replacement for every OpenFOAM solver.
+The CLI entry is `flursys-compressible CASE.json OUTPUT_DIRECTORY`. The example
+`examples/compressible/ideal_gas_case.json` is an unexecuted input template;
+provide a Gmsh mesh and edit all patch names and physical values explicitly.
+
+### Compressible governing equations
+
+For a fixed mesh the conserved variables are `Q = (rho, rho U, rho E)`, with
+`E = cv T + |U|²/2`, `p = (gamma-1)(rho E-rho |U|²/2) = rho R T`,
+`cv = R/(gamma-1)`, `cp = gamma cv`. Pressure is absolute **Pa**, not the
+incompressible solver's kinematic gauge pressure. Temperature is absolute K.
+The integrated equations are
+
+- `d(rho V)/dt + sum(rho Un A) = 0`;
+- `d(rho U V)/dt + sum((rho U Un + p n - tau.n) A) = 0`;
+- `d(rho E V)/dt + sum(((rho E+p)Un - (tau.n).U - lambda grad(T).n) A) = 0`.
+
+`tau = mu(grad U + grad U^T - 2/3 div(U) I)` and `lambda = mu cp / Pr`.
+Viscosity is either disabled (Euler), a constant, or Sutherland's law
+`mu = mu_ref (T/T_ref)^(3/2) (T_ref+S)/(T+S)`. This is a calorically perfect,
+single-species ideal gas with laminar molecular stress and Fourier conduction;
+there is no compressible turbulence closure, chemistry or real-gas EOS.
+
+### Spatial and temporal discretisation
+
+Convective face states are piecewise constant: **first-order spatial accuracy**.
+Selectable numerical fluxes are local Lax-Friedrichs/Rusanov, a two-sided
+local-speed central-upwind flux, and HLLC. HLLC falls back locally to Rusanov if
+its computed star state is inadmissible; accepted-stage fallback evaluations
+are counted. The central-upwind option uses local wave-speed weights like the
+reviewed `shockFluid` flux path, but does not reproduce its reconstruction,
+implicit treatment, mesh-motion or complete boundary framework.
+
+Gradients for viscous fluxes use Gauss reconstruction and a face-normal
+consistency correction. Interior diffusive fluxes are evaluated once and applied
+with opposite signs to owner/neighbour. Arbitrary highly skewed mesh accuracy
+and stability are not established. The explicit step restriction includes both
+acoustic face speeds and an estimate based on viscous/thermal diffusivity.
+Temporal integration is SSP-RK2; both stages obey the configured CFL restriction
+(allowed target `0 < CFL <= 0.5`). Candidates with nonpositive density/internal
+energy are rejected and retried with halved dt, without clipping conserved
+fields. At most 20 retries are allowed; a remaining invalid candidate, dt below
+the minimum, or a boundary/evaluation error returns an error. Boundary errors
+are not silently treated as successful time-step retries.
+
+Internal face fluxes cancel in the global balance. The report stores initial
+and final integrated Q, RK2-integrated outward boundary fluxes, and the defect
+`Q_final - Q_initial + integral(boundary_outflux dt)` in the order mass, x/y/z
+momentum, total energy. In 2D these quantities are per unit depth. Reaching the
+step limit before the requested physical end time is explicitly incomplete;
+the CLI saves that partial result and returns failure. These fields are runtime
+reports, not evidence of accuracy or benchmark performance.
+
+### Compressible boundary scope and output
+
+- Slip walls reflect normal velocity in the inviscid ghost state and enforce
+  zero tangential viscous traction and heat flux.
+- Stationary no-slip walls use the same impermeable inviscid treatment and a
+  zero-velocity viscous face value. Temperature is optional: missing/null means
+  adiabatic; a positive Kelvin value imposes isothermal conduction. Inviscid
+  no-slip configurations are rejected.
+- Far-field is a prescribed exterior Riemann state, not a nonreflecting or
+  fully characteristic boundary implementation.
+- Supersonic inlet requires inward normal Mach greater than 1 on every inlet
+  face. Transmissive uses the owner state; it is not guaranteed nonreflecting.
+- Pressure outlet is a basic subsonic pressure/isentrope ghost prescription;
+  pressure is extrapolated for supersonic outflow. Backflow without a supplied
+  incoming thermodynamic state is rejected. General characteristic outlets
+  remain future work.
+
+Uniform initialisation and optional axis-aligned initial regions are supported;
+later regions override earlier ones. There is no compressible restart or GUI
+job/result integration yet. `solution.vtu` contains density, velocity, absolute
+pressure, temperature and Mach for external viewers such as ParaView;
+`report.json` contains settings, timing and conservation diagnostics. Neither
+export has been validated interactively in a VTK viewer in this change.
+
+### Standard constant-density k-epsilon
+
+The existing incompressible RANS path now transports epsilon as a distinct
+optional field in addition to k; it is not stored under the omega name.
+`nu_t = 0.09 k²/epsilon`, `Dk = nu + nu_t`, `Depsilon = nu + nu_t/1.3`,
+`Pk = nu_t (2 S:S - 2/3 div(U)²)`. Standard coefficients are
+`Cmu=0.09`, `C1=1.44`, `C2=1.92`, `sigma_k=1`, `sigma_epsilon=1.3`, `C3=0`.
+Transport includes epsilon production `C1 Pk epsilon/k`, implicit epsilon
+loss `C2 epsilon²/k`, k loss `epsilon`, and sign-split dilatation terms. Epsilon
+is solved before k, and its updated bounded value is used in k destruction.
+The dissipation floor also limits turbulent viscosity to `1e5 nu`; this
+numerical bound is not a physical wall model.
+The same ordering correction has been applied to k-omega/SST: the k destruction
+and SST k-production limit now use newly solved bounded omega.
+
+Incoming/backflow k and epsilon use global or patch-specific values. Outgoing
+scalars use zero gradient. Solid walls require the explicit smooth equilibrium
+wall treatment described below; without it, k-epsilon wall cases are rejected.
+This is not a validated cylinder-wall model. Wall-resolved SST remains available.
+Epsilon is included in project settings and full-state checkpoints.
+
+### Sources inspected and validation status
+
+The local source files inspected include OpenFOAM-dev's
+`RAS/kEpsilon/kEpsilon.C`, `Base/kOmegaSST/kOmegaSSTBase.C`,
+`applications/modules/shockFluid/fluxPredictor.C`,
+`shockFluid/thermophysicalPredictor.C`, and `perfectGas/perfectGasI.H`.
+The Rust implementation is independent; it is not a literal C++ source import.
+The reference tree contains GPLv3-or-later terms and the host currently declares
+MIT; no repository license change is made by this work.
+
+Published method references:
+
+- Launder and Spalding (1974), The numerical computation of turbulent flows,
+  https://doi.org/10.1016/0045-7825(74)90029-2 .
+- Toro, Spruce and Speares (1994), Restoration of the contact surface in the
+  HLL-Riemann solver, https://doi.org/10.1007/BF01414629 .
+- Kurganov, Noelle and Petrova (2001), Semidiscrete central-upwind schemes for
+  hyperbolic conservation laws and Hamilton-Jacobi equations,
+  https://doi.org/10.1137/S1064827500373413 .
+- Kurganov and Tadmor (2000), New high-resolution central schemes for nonlinear
+  conservation laws and convection-diffusion equations,
+  https://doi.org/10.1006/jcph.2000.6459 .
+
+Compilation is not validation. No new numerical tests, mesh runs, shock-tube
+comparisons, compressible viscous benchmarks or RANS reference comparisons were
+run in this change. Required follow-up includes constant-state preservation,
+Sod/Lax/contact/shock reflection, viscous Couette/heat conduction, conservation
+and grid/time studies; wall-function and compressible-RANS work is separate.
+
+## Workbench temperature and Boussinesq coupling
+
+The unstructured incompressible path optionally solves constant-property temperature:
+`dT/dt + div(U T) = div((k/(rho cp) + nut/Prt) grad(T)) + Q/(rho cp)`.
+Convection is first-order upwind, diffusion uses harmonic face diffusivity and
+limited non-orthogonal correction. Transient transport uses implicit Euler and
+the previous physical-step temperature; SIMPLE corrections share that old state.
+Temperature has an independent relative-update convergence requirement. Positive
+Kelvin values are required; invalid temperatures fail without clipping.
+
+Thermal patch conditions are explicit: adiabatic, prescribed temperature,
+inlet/outlet temperature (including backflow), inward heat flux in W/m², and
+Robin convection using the wall-to-cell conduction resistance plus `1/h`.
+Boussinesq acceleration is `g [1 - beta (T-Tref)]`; pressure remains full
+kinematic gauge pressure, not hydrostatically reduced pressure. The default
+small-density-variation guard is `abs(beta (T-Tref)) <= 0.1`. This is a
+single-phase constant-property model, not compressible energy or conjugate heat
+transfer. Temperature is saved in complete restart states and final VTK/CSV
+results. Plane-monitor recordings still contain velocity and pressure only.
+The current legacy 3D result exporter supports tetrahedral cells only.
+
+## Material data and two-phase preparation
+
+`src/materials.rs` records coefficient provenance at OpenFOAM-dev commit
+`421b7a1693061ead99502f0e607122e0e57c0513`: H2O and C2H5OH liquid-property
+correlations and the blockedChannel tutorial's idealized air properties.
+Catalog evaluation is deliberately restricted to 280–330 K and 95–105 kPa;
+these are application limits, not a validated full correlation range. Liquid
+pressure dependence is neglected. Properties are evaluated once and frozen
+throughout the solve. The selected evaluation state and source are persisted.
+Air is a tutorial gas model, not a certified experimental database; water is
+not an IAPWS implementation. Liquid/vapour surface tension must not be treated
+as the interfacial tension of an arbitrary fluid pair.
+
+`src/multiphase.rs` supplies validated two-fluid definitions and algebraic
+mixture properties: volume-averaged density, viscosity and volumetric heat
+capacity; arithmetic or harmonic conductivity. It does not implement phase
+fraction transport, VOF reconstruction, surface-tension forcing, phase change,
+or a coupled multiphase solver. Numerical benchmark validation of the new
+thermal and material paths remains outstanding; compilation is not evidence
+of solution accuracy.
+
+### Patch-specific incoming RANS quantities
+
+`TurbulenceOptions.inlets` optionally overrides global incoming values for each
+named open boundary. Direct data specify positive k, omega and epsilon (the
+active RANS model uses its relevant pair). Intensity/length inputs use
+`k = 1.5 (I |U_boundary|)^2`, `omega = sqrt(k)/(Cmu^0.25 L)` and
+`epsilon = Cmu^0.75 k^1.5/L`, with `Cmu=0.09`, intensity as a fraction and
+length in metres. Resolved prescribed velocity is used where available;
+otherwise owner tangential velocity plus flux-derived normal velocity is used.
+Zero-speed intensity conversion fails explicitly instead of inventing a floor.
+Incoming faces use fixed turbulence data, including pressure-outlet backflow;
+outgoing faces retain zero-gradient transport. RANS incoming turbulent viscosity
+and isotropic k stress use the corresponding incoming data. Wall and symmetry
+patches reject these open-boundary overrides. Renaming/deleting a named boundary
+also updates/removes its override. Global values remain the fallback. These
+settings do not themselves select a wall model or implement synthetic LES inflow.
+Numerical validation of this extension remains outstanding.
+
+### Fixed-step backward time integration (BDF2)
+
+Workbench offers `Backward { dt, steps }` / `Transient · BDF2 fixed Δt`.
+After one converged Euler startup step, fixed-mesh time derivatives are
+`(3 q^(n+1) - 4 q^n + q^(n-1))/(2 dt)`. Assembly uses effective Euler storage
+`dt_eff=2 dt/3`, `q_old_eff=(4 q^n-q^(n-1))/3`. The same coefficients are used
+for momentum, conservative face-flux temporal correction, temperature and RANS
+k/omega/epsilon storage. Only accepted physical steps rotate history. Reported
+time and Courant use the physical dt, not dt_eff. Nonlinear convergence remains
+mandatory at every step. This remains SIMPLE-based time integration; it does
+not implement PISO/PIMPLE. There is no adaptive BDF2 option.
+
+Two-level history is retained during one solve invocation, but is not yet
+persisted in restart files. Restart/continue therefore uses one explicitly
+announced Euler startup step before returning to BDF2. Repeated single-step
+invocations consequently remain Euler. BDF2 is not positivity preserving;
+existing temperature failure checks and turbulence bounds remain in force and
+can limit effective accuracy. Temporal order and conservation have not yet
+been demonstrated with numerical benchmarks. The implementation was compared
+against the fixed-step coefficients of the local backwardDdtScheme source.
+
+### Incompressible total-pressure opening
+
+`TotalPressure { pressure }` stores kinematic gauge total pressure (m²/s²).
+For negative outward flux, `p/rho = p0/rho - |U_owner|²/2`; for outflow the
+specified value is static pressure. Velocity uses natural zero-gradient
+extrapolation, with no imposed inflow direction. Pressure is recomputed using
+lagged velocity/flux on each SIMPLE iteration and pressure correction is zero
+on the opening. This is a simple incompressible Bernoulli opening, not a
+compressible characteristic boundary or a non-reflecting wave outlet.
+Inflow temperature and turbulence must be supplied independently. Project
+serialization and Setup expose this condition. It has not been numerically
+validated against a pressure-driven-flow reference.
+
+### Experimental smooth equilibrium k-epsilon wall treatment
+
+Select `EquilibriumKEpsilon` explicitly; the default remains `Resolved` and
+rejects k-epsilon solid-wall cases. The option is restricted to k-epsilon.
+The implementation follows the scientific relations inspected in local
+`nutkWallFunction` and `epsilonWallFunction` sources, with `Cmu=0.09`,
+`kappa=0.41`, `E=9.8`. Let `y` be the projected face-to-cell distance,
+`ykplus=Cmu^0.25 sqrt(k) y/nu`; the crossover solves
+`ykplus=ln(E ykplus)/kappa`. Below crossover wall nut is zero,
+`epsilon=2 nu k/y²` and wall production is zero. Above crossover:
+
+- `nut_wall = nu [kappa ykplus / ln(E ykplus) - 1]`;
+- `epsilon_wall_cell = Cmu^0.75 k^1.5/(kappa y)`;
+- `Pk_wall_cell = (nu+nut_wall) |U_t-Uwall_t|/y × Cmu^0.25 sqrt(k)/(kappa y)`.
+
+Wall-adjacent epsilon rows are constrained in the transport matrix; their
+columns are eliminated from other rows. Wall-cell production overrides bulk
+production, k has zero-gradient wall data, and momentum diffusion uses
+`nu+nut_wall`. Corner-cell constraints and production use face-area averages;
+this is a deliberate approximation and does not reproduce every reference
+implementation's corner blending. Dissipation constraints are not overwritten
+by the bulk numerical viscosity cap. Non-finite data fail explicitly.
+
+Final and completed-step force reports use matching turbulence fields to
+include modeled wall viscosity in first-cell shear estimates. Shear-based y+
+is distinct from the k-based y+ used by the wall model. Incomplete live U/p
+callbacks cannot reconstruct wall-function shear and suppress those reports
+rather than substituting laminar shear. A mesh-review message is issued for
+completed-step wall reports outside a nominal shear-y+ range of 30–300; this
+is diagnostic, not proof of validity or a universal admissibility threshold.
+
+No roughness correction, non-equilibrium/separation treatment, SST/omega wall
+function or thermal wall function has been implemented. Existing turbulent
+heat diffusivity is unchanged and is not a validated thermal wall treatment.
+Flat-plate/channel friction, corner behavior and mesh/y+ sensitivity have not
+been numerically validated. Do not infer accuracy from a successful build.
+
+### Physical-time tabulated boundary data
+
+`IncompressibleSolverOptions.boundary_profiles` maps each patch name to one
+`BoundaryProfile` with a quantity (velocity, inward flow rate or kinematic
+pressure) and 2–10000 `(time, Vec3 value)` samples. Times must be finite,
+nonnegative and strictly increasing. Scalars use x with y=z=0; inward flow
+rates cannot be negative. Linear interpolation is used between samples and
+endpoint values are held outside the table. No periodic extrapolation or
+spatial mapping is implemented. The table semantics were compared with the
+local Function1 Table interpolation/bounds design; this is an independent
+restricted Rust representation, not a parser for reference dictionaries.
+
+Velocity tables support velocity inlets, peak velocities of existing parabolic
+inlets, far-field ambient velocity and explicitly prescribed outlet backflow
+velocity. Moving walls are intentionally not included. Flow-rate tables retain
+the assigned inlet's volumetric/mass-flow units. Pressure tables retain static
+or total kinematic-pressure semantics, including far-field/backflow openings.
+They do not override physical boundary type or introduce new compressible BCs.
+
+Tables require physical transient integration (Euler, adaptive Euler or fixed
+BDF2). They are evaluated at t_(n+1), held fixed during nonlinear correctors,
+and reevaluated on a rejected adaptive step at its new candidate time. Initial
+boundaries use the restart time, or zero for fresh runs. BDF2 startup captures
+initial face flux at that initial time before applying future tables. Tables
+are included in project/run solver settings and checkpoint context; restart
+uses absolute physical time rather than restarting the table at zero. Naming
+changes and boundary deletion update/remove the associated table. Large time
+steps can underresolve ramps or table breakpoints; no automatic knot-aligned
+stepping or temporal-accuracy claim is provided. Numerical validation remains
+outstanding.

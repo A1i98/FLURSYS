@@ -9,8 +9,19 @@ for incompressible fluid flow, with a few standard test cases and multi-core CPU
 
 The project is still under development. It includes structured and unstructured workflows,
 a structured three-dimensional cavity solver, and an optional graphical workbench with
-CAD, Gmsh meshing, steady unstructured flow, and result inspection. Physics and time-integration
+CAD, Gmsh meshing, steady unstructured flow, and result inspection. Experimental
+unstructured implicit-Euler transient flow and k-omega/SST/Smagorinsky/WALE
+closures are also connected; see [scope and validation limits](docs/TRANSIENT_TURBULENCE.md). Physics and time-integration
 support differ between backends; see the implementation-backed documentation below.
+
+### Current mesh workflow
+
+The Mesh workspace supports direct edge/surface scoping, local and distance
+refinement, 3D volume sizing boxes, and 2D inflation controls. Inspection includes
+transparent wireframe, 3D whole-cell cutaway and quantitative quality histograms.
+Arbitrary-CAD 3D prismatic inflation remains unavailable. See
+[Meshing](docs/MESHING.md), [Workbench](docs/WORKBENCH.md) and
+[Numerical Methods](docs/NUMERICAL_METHODS.md) for exact capability boundaries.
 
 ## Documentation
 
