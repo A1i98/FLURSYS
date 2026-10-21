@@ -1,6 +1,6 @@
 //! Scoped mesh-control editing; physical boundary names remain independent.
 use super::*;
-use flursys::workbench::{BoxRefinement, MeshRecipe};
+use flursys::workbench::{BoxRefinement, EdgeDivisionControl, MeshRecipe};
 
 fn number(value: SharedString, label: &str) -> Result<f64, String> {
     value
@@ -64,12 +64,14 @@ fn id(ui: &MainWindow, recipe: &MeshRecipe) -> u32 {
             .chain(recipe.refinements.iter().map(|c| c.id))
             .chain(recipe.boundary_layers.iter().map(|c| c.id))
             .chain(recipe.regions.iter().map(|c| c.id))
+            .chain(recipe.edge_divisions.iter().map(|c| c.id))
             .max()
             .unwrap_or(0)
             + 1
     })
 }
 fn erase(recipe: &mut MeshRecipe, id: u32) {
+    recipe.edge_divisions.retain(|c| c.id != id);
     recipe.local_sizes.retain(|c| c.id != id);
     recipe.refinements.retain(|c| c.id != id);
     recipe.boundary_layers.retain(|c| c.id != id);
@@ -114,6 +116,10 @@ fn apply(ui: &MainWindow, state: &mut AppState, kind: i32) -> Result<(), String>
     }
     let targets = if kind == 3 { vec![] } else { scope(ui, state)? };
     let mut recipe = state.workbench.mesh_recipe().clone();
+    if kind==1 {
+        recipe.tuning.max_size_growth=if ui.get_mesh_size_growth().trim().is_empty(){None}else{Some(number(ui.get_mesh_size_growth(),"Distance-field growth limit")?)};
+        recipe.tuning.validate()?;
+    }
     let id = id(ui, &recipe);
     let name = ui.get_mesh_control_name().trim().to_string();
     let name = if name.is_empty() {
@@ -123,6 +129,7 @@ fn apply(ui: &MainWindow, state: &mut AppState, kind: i32) -> Result<(), String>
                 0 => "Sizing",
                 1 => "Refinement",
                 2 => "Inflation",
+                4 => "Edge divisions",
                 _ => "Region",
             }
         )
@@ -143,6 +150,13 @@ fn apply(ui: &MainWindow, state: &mut AppState, kind: i32) -> Result<(), String>
         }
     };
     match kind {
+        4 => {
+            if ui.get_mesh_dimension_index()!=0 {return Err("Exact edge divisions currently support analytic 2D boundaries".into());}
+            let c=EdgeDivisionControl{id,name,targets,cells:ui.get_mesh_edge_cells().max(1) as u32,progression:number(ui.get_mesh_edge_growth(),"Edge growth")?,reverse:ui.get_mesh_edge_reverse(),symmetric:ui.get_mesh_edge_symmetric(),enabled:true};
+            c.validate()?;
+            recipe.edge_divisions.retain(|old|old.targets!=c.targets);
+            recipe.edge_divisions.push(c);
+        }
         0 => {
             let size = number(ui.get_wb_local_size(), "Local size")?;
             check_size(size)?;
@@ -255,6 +269,7 @@ fn controls(recipe: &MeshRecipe) -> Vec<(u32, String, Vec<MeshControlTarget>)> {
                 .iter()
                 .map(|c| (c.id, c.name.clone(), vec![])),
         )
+        .chain(recipe.edge_divisions.iter().map(|c|(c.id,c.name.clone(),c.targets.clone())))
         .collect()
 }
 pub(super) fn edit(ui: &MainWindow, state: &mut AppState, index: i32, action: i32) -> Result<(), String> {
@@ -272,6 +287,7 @@ pub(super) fn edit(ui: &MainWindow, state: &mut AppState, index: i32, action: i3
         .cloned()
         .ok_or("Select a mesh control")?;
     if action == 1 {
+        for c in &mut recipe.edge_divisions {if c.id==id {c.enabled=!c.enabled;}}
         for c in &mut recipe.local_sizes {
             if c.id == id {
                 c.enabled = !c.enabled;
@@ -332,6 +348,9 @@ pub(super) fn edit(ui: &MainWindow, state: &mut AppState, index: i32, action: i3
     state.geometry_editor.selection = geometry;
     state.show_geometry_3d = true;
     state.show_mesh = false;
+    if let Some(c)=recipe.edge_divisions.iter().find(|c|c.id==id) {
+        ui.set_mesh_control_kind(4);ui.set_mesh_edge_cells(c.cells as i32);ui.set_mesh_edge_growth(c.progression.to_string().into());ui.set_mesh_edge_reverse(c.reverse);ui.set_mesh_edge_symmetric(c.symmetric);
+    }
     if let Some(c) = recipe.local_sizes.iter().find(|c| c.id == id) {
         ui.set_mesh_control_kind(0);
         ui.set_wb_local_size(c.size.to_string().into());
@@ -362,6 +381,23 @@ pub(super) fn edit(ui: &MainWindow, state: &mut AppState, index: i32, action: i3
     Ok(())
 }
 pub(super) fn bind(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
+    let weak=ui.as_weak();let shared=state.clone();
+    ui.on_mesh_add_edges(move ||{
+        let Some(ui)=weak.upgrade() else{return};let mut state=shared.borrow_mut();
+        if let Err(e)=apply(&ui,&mut state,4){state.log(format!("Edge control not applied: {e}"));}
+        ui.set_wb_flow_feedback(state.logs.back().cloned().unwrap_or_default().into());refresh_ui(&ui,&state);
+    });
+    let weak=ui.as_weak();let shared=state.clone();
+    ui.on_mesh_calculate_transition(move ||{
+        let Some(ui)=weak.upgrade() else{return};
+        let result=(||->Result<f64,String>{
+            let near=number(ui.get_wb_refine_min(),"Near size")?;let far=number(ui.get_wb_refine_max(),"Far size")?;
+            let start=number(ui.get_mesh_refine_start(),"Fine-region distance")?;let g=number(ui.get_mesh_size_growth(),"Distance-field growth limit")?;
+            if near<=0.0 || far<near || start<0.0 || !(1.01..=2.0).contains(&g){return Err("Require 0 < near ≤ far, start ≥ 0 and growth 1.01–2".into());}
+            Ok(start+((far-near)/g.ln()).max(near))
+        })();
+        match result {Ok(end)=>ui.set_wb_refine_distance(format!("{end:.12e}").into()),Err(e)=>{let mut state=shared.borrow_mut();state.log(e.clone());ui.set_wb_flow_feedback(e.into());}}
+    });
     let weak = ui.as_weak();
     ui.on_mesh_layer_preview(move || {
         if let Some(ui) = weak.upgrade() {

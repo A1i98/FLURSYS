@@ -61,6 +61,8 @@ export component SolutionWorkspace inherits Rectangle {
     in-out property <string> time-step;
     in-out property <int> time-steps;
     in-out property <int> turbulence-model;
+    in-out property <int> wall-treatment;
+    in-out property <string> turbulence-epsilon;
     in-out property <string> turbulence-k;
     in-out property <string> turbulence-omega;
     callback control(int);
@@ -113,7 +115,7 @@ if root.properties-section==0 : VerticalLayout {spacing:6px;vertical-stretch:0;
                             Label {text:root.material;}
                             Tool {text:"Fluid material…";enabled:!root.busy;clicked=>{root.edit-material();}}
 Label {text:"Momentum transport model · experimental";}
-                        ComboBox {model:["Laminar","RANS · k–ω (wall resolved)","RANS · k–ω SST (wall resolved)","LES · Smagorinsky","LES · WALE"];current-index <=> root.turbulence-model;enabled:!root.busy;min-width:0px;}
+                        ComboBox {model:["Laminar","RANS · k–ω (wall resolved)","RANS · k–ω SST (wall resolved)","LES · Smagorinsky","LES · WALE","RANS · k–ε (experimental)"];current-index <=> root.turbulence-model;enabled:!root.busy;min-width:0px;}
                         if root.turbulence-model==1 || root.turbulence-model==2 : VerticalLayout {spacing:6px;vertical-stretch:0;
                             Label {text:"Initial / inlet k (m²/s²)";}
                             LineEdit {text <=> root.turbulence-k;enabled:!root.busy;min-width:0px;}
@@ -121,13 +123,21 @@ Label {text:"Momentum transport model · experimental";}
                             LineEdit {text <=> root.turbulence-omega;enabled:!root.busy;min-width:0px;}
                             Label {text:"Resolve the viscous sublayer (target y+ ≈ 1). High-Re wall functions are not implemented. Incoming/backflow turbulence uses these values.";}
                         }
-                        if root.turbulence-model>=3 : Label {text:"LES requires transient flow and a sufficiently resolved 3D mesh. Filter width is cube root of cell volume. No dynamic SGS model.";}
+                        if root.turbulence-model==5 : VerticalLayout {spacing:6px;vertical-stretch:0;
+                            Label {text:"Initial / inlet k (m²/s²)";}LineEdit {text <=> root.turbulence-k;min-width:0px;}
+                            Label {text:"Initial / inlet ε (m²/s³)";}LineEdit {text <=> root.turbulence-epsilon;min-width:0px;}
+                            Label {text:"Wall treatment";}
+                            ComboBox {model:["Free shear / no wall model","Smooth equilibrium wall functions"];current-index <=> root.wall-treatment;enabled:!root.busy;min-height:32px;max-height:32px;min-width:0px;}
+                            Label {text:"Equilibrium smooth-wall model: inspect y+. Target log-layer cells (typically y+ > 30); buffer-layer, separation and heat-transfer accuracy are not validated. No rough-wall model.";}
+
+                        }
+                        if root.turbulence-model==3 || root.turbulence-model==4 : Label {text:"LES requires transient flow and a sufficiently resolved 3D mesh. Filter width is cube root of cell volume. No dynamic SGS model.";}
 
 
                         }
                         if root.properties-section==2 : VerticalLayout {spacing:8px;vertical-stretch:0;
 Label {text:"Time integration";}
-                        ComboBox {model:["Steady","Transient · fixed Euler Δt","Transient · adaptive Euler Δt"];current-index <=> root.time-mode;enabled:!root.busy;min-width:0px;}
+                        ComboBox {model:["Steady","Transient · fixed Euler Δt","Transient · adaptive Euler Δt","Transient · BDF2 fixed Δt"];current-index <=> root.time-mode;enabled:!root.busy;min-width:0px;}
                         if root.time-mode>0 : VerticalLayout {spacing:6px;vertical-stretch:0;
                             Label {text:root.time-mode==2 ? "Initial time step Δt (s)" : "Physical time step Δt (s)";}
                             LineEdit {text <=> root.time-step;enabled:!root.busy;min-width:0px;}

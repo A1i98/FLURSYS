@@ -194,9 +194,9 @@ export component ResultsWorkspace inherits Rectangle {
                 spacing:7px;
                 HorizontalLayout {
                     height:34px;spacing:6px;
-                    if root.tab!=5 : ComboBox {model:["Speed |U|","Pressure p/ρ","Velocity X","Velocity Y","Velocity Z","Vorticity |curl U|","Divergence div U","Turbulent k","Specific dissipation ω","Turbulent viscosity νt"];min-width:0px;preferred-width:210px;enabled:root.has-result;
-                        current-index:root.field-index>=8 ? root.field-index - 1 : root.field-index==1 ? 1 : root.field-index==4 ? 2 : root.field-index==5 ? 3 : root.field-index==6 ? 4 : root.field-index==2 ? 5 : root.field-index==7 ? 6 : 0;
-                        selected(value)=>{root.select-field([0,1,4,5,6,2,7,8,9,10][self.current-index]);}
+                    if root.tab!=5 : ComboBox {model:["Speed |U|","Pressure p/ρ","Velocity X","Velocity Y","Velocity Z","Vorticity |curl U|","Divergence div U","Turbulent k","Specific dissipation ω","Turbulent viscosity νt","Temperature K"];min-width:0px;preferred-width:210px;enabled:root.has-result;
+                        current-index:root.field-index==3 ? 10 : root.field-index>=8 ? root.field-index - 1 : root.field-index==1 ? 1 : root.field-index==4 ? 2 : root.field-index==5 ? 3 : root.field-index==6 ? 4 : root.field-index==2 ? 5 : root.field-index==7 ? 6 : 0;
+                        selected(value)=>{root.select-field([0,1,4,5,6,2,7,8,9,10,3][self.current-index]);}
                     }
                     if root.tab!=5 : Tool {text:"▦ Mesh / field";enabled:root.has-result;clicked=>{root.action(6);}}
                     Tool {text:root.tab==5 ? "● CAD section" : "CAD section";enabled:root.plane-names.length>0;clicked=>{root.tab=5;root.view-plane();}}

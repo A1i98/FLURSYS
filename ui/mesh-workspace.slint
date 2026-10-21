@@ -42,6 +42,21 @@ export component MeshWorkspace inherits Rectangle {
     in property <string> readiness;
     in property <string> summary;
     in property <string> gmsh;
+    in property <string> plan;
+    in property <string> cad-route;
+    in-out property <string> size-growth;
+    in-out property <int> edge-cells;
+    in-out property <string> edge-growth;
+    in-out property <bool> edge-reverse;
+    in-out property <bool> edge-symmetric;
+    callback add-edges();
+    callback calculate-transition();
+    in-out property <int> method;
+    in-out property <int> divisions-i;
+    in-out property <int> divisions-j;
+    in-out property <int> divisions-k;
+    in-out property <string> progression-i;
+    in-out property <string> progression-j;
     in-out property <int> algorithm2d;
     in-out property <int> algorithm3d;
     in-out property <int> curvature;
@@ -118,7 +133,7 @@ export component MeshWorkspace inherits Rectangle {
     background:UiTheme.background;
     VerticalLayout {
         padding:12px;spacing:10px;
-        WorkspaceSections {model:["Boundaries","Sizing","Quality","Refinement","View"];current-index <=> root.task;selected(i)=>{root.task-changed(i);}}
+        WorkspaceSections {model:["Boundaries","Sizing","Quality","Refinement","View","Method"];current-index <=> root.task;selected(i)=>{root.task-changed(i);}}
         HorizontalLayout {
             spacing:10px;
             PropertiesPanel {
@@ -188,6 +203,32 @@ export component MeshWorkspace inherits Rectangle {
                             Text {vertical-stretch:0;text:root.domain;color:UiTheme.text;font-size:11px;wrap:word-wrap;}
                             ToolButton {text:"Use selected face as 2D domain";enabled:!root.busy && root.dimension==0;clicked=>{root.use-face();}}
                         }
+                        if root.task==5 : VerticalLayout {vertical-stretch:0;spacing:8px;
+                            Label {text:"MESH TOPOLOGY";color:UiTheme.accent;font-weight:700;}
+                            ComboBox {min-height:32px;max-height:32px;model:["Automatic triangles / tetrahedra","Quad-dominant · 2D","Mapped quadrilateral · 2D","O-grid · 2D circular hole","Hexahedral block · 3D box","Surface sweep · prisms · 3D","Mapped surface sweep · hex · 3D"];current-index <=> root.method;enabled:!root.busy;}
+                            if root.method==1 : Label {text:"Recombines triangles into quads. Some triangles can remain; this is not a structured mesh.";}
+                            if root.method>=2 : VerticalLayout {vertical-stretch:0;spacing:6px;
+                                Label {text:root.method==3 ? "Four conformal blocks around one exact circular hole. Outer boundary: four straight edges. Circumference cells = 4 × I." : root.method>=5 ? "Analytic extrusion only. Sweeps the source profile to its opposite face using K layers. Faceted CAD solids are not supported." : root.method==4 ? "Six-face axis-aligned box (including CAD). I/J/K follow global X/Y/Z. Boundary names are preserved." : "One convex four-edge face, no holes. Opposite edges share matching cell counts.";}
+                                if root.method!=5 : VerticalLayout {vertical-stretch:0;spacing:6px;
+                                Label {text:root.method==3 ? "Cells per arc (I)" : "Cells in I";}
+                                SpinBox {value <=> root.divisions-i;minimum:1;maximum:10000;min-height:32px;max-height:32px;}
+                                Label {text:root.method==3 ? "Radial cells (J)" : "Cells in J";}
+                                SpinBox {value <=> root.divisions-j;minimum:1;maximum:10000;min-height:32px;max-height:32px;}
+                                }
+                                if root.method>=4 : VerticalLayout {vertical-stretch:0;spacing:4px;
+                                    Label {text:root.method>=5 ? "Sweep layers (K)" : "Cells in K";}
+                                    SpinBox {value <=> root.divisions-k;minimum:1;maximum:10000;min-height:32px;max-height:32px;}
+                                }
+                                if root.method==2 || root.method==6 : Field {label:"I cell growth · 1 = uniform";value <=> root.progression-i;}
+                                if root.method!=4 && root.method!=5 : Field {label:root.method==3 ? "Radial growth · >1 grows away from cylinder" : "J cell growth · 1 = uniform";value <=> root.progression-j;}
+                                Label {text:"Explicit divisions determine cell sizes; global min/max do not clamp mapped cells. Disable other refinement/inflation controls. Excessive grading is rejected.";}
+                                Label {text:root.method==3 ? "Estimated cells: "+(4.0*root.divisions-i*root.divisions-j) : root.method==5 ? "Prisms = source triangles × K" : root.method>=4 ? "Estimated cells: "+(1.0*root.divisions-i*root.divisions-j*root.divisions-k) : "Estimated cells: "+(1.0*root.divisions-i*root.divisions-j);}
+                            }
+                            Label {text:root.cad-route;}
+                            Label {text:root.plan;}
+                            ToolButton {text:"Validate mesh plan";enabled:!root.busy;clicked=>{root.check();}}
+                            ToolButton {text:"Apply topology method";enabled:!root.busy;clicked=>{root.apply-settings();}}
+                        }
                         if root.task==1 : VerticalLayout {vertical-stretch:0;
                             spacing:9px;
                             Text {vertical-stretch:0;text:"EXECUTION";color:UiTheme.accent;font-size:12px;font-weight:700;}
@@ -254,7 +295,16 @@ export component MeshWorkspace inherits Rectangle {
                             if root.scope-mode==0 && root.control-kind!=3 : ComboBox {min-height:32px;max-height:32px;vertical-stretch:0;model:root.group-names;current-index <=> root.local-group-index;enabled:!root.busy && root.group-names.length>0;selected(value)=>{root.local-target=value;}}
                             if root.scope-mode==1 && root.control-kind!=3 : Label {text:root.selection;}
                             Label {text:"Control type";}
-                            ComboBox {min-height:32px;max-height:32px;vertical-stretch:0;model:["Edge / surface sizing","Distance refinement","Inflation (2D)","Volume refinement box"];current-index <=> root.control-kind;enabled:!root.busy;selected(value)=>{root.layer-preview();}}
+                            ComboBox {min-height:32px;max-height:32px;vertical-stretch:0;model:["Edge / surface sizing","Distance refinement","Inflation (2D)","Volume refinement box","Exact edge divisions · 2D"];current-index <=> root.control-kind;enabled:!root.busy;selected(value)=>{root.layer-preview();}}
+                            if root.control-kind==4 : VerticalLayout {vertical-stretch:0;spacing:7px;
+                                Label {text:"Exact cells on each analytic boundary edge in the scope. Uses the curve's stored start → end direction.";}
+                                SpinBox {minimum:1;maximum:10000;value <=> root.edge-cells;min-height:32px;max-height:32px;}
+                                CheckBox {text:"Refine both ends (Bump)";checked <=> root.edge-symmetric;}
+                                Field {label:root.edge-symmetric ? "Bump coefficient · 0.01–1 (not a growth ratio)" : "Cell growth · 1 = uniform";value <=> root.edge-growth;}
+                                if !root.edge-symmetric : CheckBox {text:"Reverse direction";checked <=> root.edge-reverse;}
+                                Label {text:"Use Automatic or Quad-dominant. Mapped methods use their I/J counts. Overlapping enabled scopes are rejected.";}
+                                ToolButton {text:root.edit-id=="" ? "Apply edge divisions" : "Update edge divisions";enabled:!root.busy && root.dimension==0;clicked=>{root.add-edges();}}
+                            }
                             if root.control-kind==0 : VerticalLayout {vertical-stretch:0;spacing:7px;
                                 Field {label:"Element size (m)";value <=> root.local-size;}
                                 ToolButton {text:root.edit-id=="" ? "Apply sizing to scope" : "Update sizing";enabled:!root.busy;clicked=>{root.add-local();}}
@@ -263,6 +313,9 @@ export component MeshWorkspace inherits Rectangle {
                                 HorizontalLayout {vertical-stretch:0;Field {label:"Near size (m)";value <=> root.refine-min;} Field {label:"Far size (m)";value <=> root.refine-max;}}
                                 Field {label:"Fine region distance (m)";value <=> root.refine-start;}
                                 Field {label:"Transition end distance (m)";value <=> root.refine-distance;}
+                                Field {label:"Distance-field growth limit · empty = off";value <=> root.size-growth;}
+                                ToolButton {text:"Calculate minimum transition";enabled:!root.busy;clicked=>{root.calculate-transition();}}
+                                Label {text:"Growth 1.01–2 checks the linear size-field slope. This is not a guarantee of adjacent cell-volume ratios. Apply mesh settings to save the limit.";}
                                 Label {text:"A wider transition interval gives gentler refinement around the selected edges or surfaces.";}
                                 HorizontalLayout {vertical-stretch:0;
                                     Label {text:"Distance sampling";horizontal-stretch:1;}
@@ -317,7 +370,7 @@ export component MeshWorkspace inherits Rectangle {
                             Label {text:root.summary;}
                             Label {text:"Wireframe colours the edges. Choose Surface + edges to inspect filled quality colours.";}
                             Label {text:"Metric";}
-                            ComboBox {min-height:32px;max-height:32px;vertical-stretch:0;model:["Aspect ratio","Skewness","Non-orthogonality","Cell measure"];current-index <=> root.quality-mode;selected(value)=>{root.quality(self.current-index);}}
+                            ComboBox {min-height:32px;max-height:32px;vertical-stretch:0;model:["Aspect ratio","Skewness","Non-orthogonality","Cell measure","Adjacent cell-size ratio"];current-index <=> root.quality-mode;selected(value)=>{root.quality(self.current-index);}}
                             Label {text:root.quality-stats;}
                             Rectangle {height:12px;background:root.display-mode==0 ? @linear-gradient(90deg, rgb(115,206,171) 0%,rgb(255,112,112) 100%) : @linear-gradient(90deg,rgb(40,180,125) 0%,rgb(255,35,35) 100%);}
                             HorizontalLayout {vertical-stretch:0;
@@ -330,9 +383,20 @@ export component MeshWorkspace inherits Rectangle {
                                     Rectangle {x:0px;y:parent.height*(1-value);width:parent.width;height:parent.height*value;background:UiTheme.accent;}
                                 }
                             }
-                            Label {text:"Histogram height = relative bin count. Range and counts include all cells, including those hidden by cutaway.";}
-                            Field {label:"Highlight cells above threshold";value <=> root.quality-threshold;}
+                            Label {text:"Histogram height = relative bin count; bins follow the legend left → right. Cell measure uses descending values. Counts include hidden cells.";}
+                            Field {label:root.quality-mode==3 ? "Highlight cells below measure" : "Highlight cells above threshold";value <=> root.quality-threshold;}
                             ToolButton {text:"Apply threshold";clicked=>{root.threshold();}}
+                            Label {text:root.quality-mode==4 ? "For each cell: largest max(Vowner/Vneighbour, Vneighbour/Vowner) across internal faces. In 2D, V is area." : root.quality-mode==3 ? "Small cell measures can indicate a restrictive time step. Units: m² in 2D, m³ in 3D." : "Metrics are implementation-specific; they are not interchangeable with similarly named metrics in other meshers.";}
+                            HorizontalLayout {vertical-stretch:0;
+                                ToolButton {text:"Isolate poor cells · 3D";enabled:root.dimension==1;clicked=>{root.inspect(2);}}
+                                ToolButton {text:"Show all";clicked=>{root.inspect(1);}}
+                            }
+                            HorizontalLayout {vertical-stretch:0;
+                                ToolButton {text:"Cell quality CSV…";clicked=>{root.inspect(4);}}
+                                ToolButton {text:"Mesh report JSON…";clicked=>{root.inspect(5);}}
+                            }
+                            ToolButton {text:"Focus worst cell";clicked=>{root.inspect(6);}}
+                            Label {text:"Focusing a 3D cell isolates that cell. Show all restores the complete mesh; topology is unchanged.";}
                             Label {text:root.inspection;}
                             if root.bad-cells.length>0 : VerticalLayout {spacing:3px;vertical-stretch:0;
                                 for cell[index] in root.bad-cells : ToolButton {text:cell;clicked=>{root.select-bad(index);}}

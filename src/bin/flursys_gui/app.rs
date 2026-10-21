@@ -57,6 +57,10 @@ mod cad_tools;
 mod cad_tree;
 #[path = "cad_units.rs"]
 mod cad_units;
+#[path = "thermal_setup.rs"]
+mod thermal_setup;
+#[path="time_boundary_setup.rs"]
+mod time_boundary_setup;
 #[path = "flow_setup.rs"]
 mod flow_setup;
 #[path = "measure.rs"]
@@ -1940,7 +1944,7 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
         }
         let density = parse_number(density.as_str(), f64::NAN);
         let viscosity = parse_number(viscosity.as_str(), f64::NAN);
-        if let Err(error) = state.workbench.set_material(density, viscosity) {
+        if let Err(error) = thermal_setup::apply(&ui,&mut state.workbench,density,viscosity) {
             ui.set_material_dialog_feedback(error.to_string().into());
             return false;
         }
@@ -1952,6 +1956,8 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
         refresh_ui(&ui, &state);
         true
     });
+    thermal_setup::bind(ui,state);
+    time_boundary_setup::bind(ui,state);
     post_processing::bind(ui, state);
     convergence_plot::bind(ui,state);
     plane_monitors::bind(ui,state);
@@ -4207,7 +4213,7 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
                             state.mesh_progress = 0.0;
                             state.mesh_stage = "Starting Gmsh".into();
                             state.mesh_pan_anchor = None;
-                            state.log(format!("Gmsh generation started ({dimension:?}, target {global_size}, bounds [{min_size}, {max_size}], algorithms {}/{}, curvature {}, smoothing {}, optimize {}/{}, up to {effective_threads} CPU threads).", tuning.algorithm_2d, tuning.algorithm_3d, tuning.curvature_points, tuning.smoothing_steps, tuning.optimize, tuning.optimize_netgen));
+                            state.log(format!("Gmsh generation started ({dimension:?}, target {global_size}, bounds [{min_size}, {max_size}], method {:?}, divisions {:?}, algorithms {}/{}, curvature {}, smoothing {}, optimize {}/{}, up to {effective_threads} CPU threads).", tuning.method, tuning.divisions, tuning.algorithm_2d, tuning.algorithm_3d, tuning.curvature_points, tuning.smoothing_steps, tuning.optimize, tuning.optimize_netgen));
                         }
                     }
                     Err(error) => state.log(format!("Cannot start meshing: {error}")),
@@ -4511,19 +4517,23 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
             1 => MeshQualityMetric::Skewness,
             2 => MeshQualityMetric::NonOrthogonality,
             3 => MeshQualityMetric::CellMeasure,
+            4 => MeshQualityMetric::AdjacentVolumeRatio,
             _ => MeshQualityMetric::AspectRatio,
         };
         state.mesh_quality_threshold = match state.mesh_quality_metric {
             MeshQualityMetric::AspectRatio => 10.0,
+            MeshQualityMetric::AdjacentVolumeRatio => 10.0,
             MeshQualityMetric::Skewness => 0.85,
             MeshQualityMetric::NonOrthogonality => 70.0,
             MeshQualityMetric::CellMeasure => state
                 .workbench
                 .mesh_render_cache()
                 .and_then(|c| c.quality().color_range(MeshQualityMetric::CellMeasure))
-                .map(|(_, max)| max * 0.9)
+                .map(|(min, _)| min * 1.1)
                 .unwrap_or(1.0),
         };
+        let filter=(state.mesh_quality_metric,state.mesh_quality_threshold);
+        if let Some(clip)=state.mesh_clip.as_mut(){if clip.quality.is_some(){clip.quality=Some(filter);}}
         ui.set_mesh_quality_threshold(state.mesh_quality_threshold.to_string().into());
         state.mesh_color_mode = MeshColorMode::Quality;
         refresh_ui(&ui, &state);
@@ -4535,10 +4545,10 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
             return;
         };
         let mut state = mesh_threshold_state.borrow_mut();
-        state.mesh_quality_threshold = parse_number(
-            ui.get_mesh_quality_threshold().as_str(),
-            state.mesh_quality_threshold,
-        );
+        let value=ui.get_mesh_quality_threshold().trim().parse::<f64>();
+        match value {Ok(v) if v.is_finite() && v>=0.0 =>state.mesh_quality_threshold=v,_=>{state.log("Quality threshold must be a finite nonnegative number");refresh_ui(&ui,&state);return;}}
+        let filter=(state.mesh_quality_metric,state.mesh_quality_threshold);
+        if let Some(clip)=state.mesh_clip.as_mut(){if clip.quality.is_some(){clip.quality=Some(filter);}}
         refresh_ui(&ui, &state);
     });
     let weak_ui = ui.as_weak();
@@ -4563,6 +4573,7 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
                 .workbench
                 .set_mesh_selection(Some(MeshSelection::cell(mesh_id, cell_index)));
             state.mesh_pick_mode = MeshPickMode::Cell;
+            mesh_inspection::focus_cell(&ui,&mut state,cell_index);
             refresh_ui(&ui, &state);
         }
     });
@@ -4896,6 +4907,7 @@ fn rebuild_tree_rows(state: &mut AppState) {
             .chain(recipe.refinements.iter().map(|c|(&c.name,c.enabled,"Distance")))
             .chain(recipe.boundary_layers.iter().map(|c|(&c.name,c.enabled,"Inflation")))
             .chain(recipe.regions.iter().map(|c|(&c.name,c.enabled,"Volume box")))
+            .chain(recipe.edge_divisions.iter().map(|c|(&c.name,c.enabled,"Edge divisions")))
             .enumerate().map(|(index,(name,enabled,kind))|ProjectTreeRowData {
                 icon:0,label:name.clone(),note:format!("{} · {kind}",if enabled {"Enabled"}else{"Suppressed"}),
                 depth:2,kind:TREE_KIND_MESH_CONTROL,payload:index as i32,
@@ -5236,6 +5248,7 @@ fn status_label(session: &WorkbenchSession) -> String {
 
 fn bc_kind_label(condition: IncompressibleBoundaryCondition) -> &'static str {
     match condition {
+        IncompressibleBoundaryCondition::TotalPressure {..}=>"Total-pressure opening",
         IncompressibleBoundaryCondition::Slip => "Slip",
         IncompressibleBoundaryCondition::Symmetry => "Symmetry",
         IncompressibleBoundaryCondition::ParabolicInlet {..} => "Parabolic inlet",
@@ -5255,6 +5268,10 @@ fn push_workbench_defaults(ui: &MainWindow, session: &WorkbenchSession) {
     ui.set_mesh_clip_enabled(false);
     let (global_size, min_size, max_size) = session.mesh_sizes();
     let t = &session.mesh_recipe().tuning;
+    ui.set_mesh_size_growth(t.max_size_growth.map(|v|v.to_string()).unwrap_or_default().into());
+    ui.set_mesh_method(match t.method { flursys::workbench::MeshMethod::Unstructured=>0,flursys::workbench::MeshMethod::QuadDominant=>1,flursys::workbench::MeshMethod::MappedQuad=>2,flursys::workbench::MeshMethod::OGrid=>3,flursys::workbench::MeshMethod::HexBlock=>4,flursys::workbench::MeshMethod::SweepPrism=>5,flursys::workbench::MeshMethod::SweepHex=>6 });
+    ui.set_mesh_divisions_i(t.divisions[0] as i32);ui.set_mesh_divisions_j(t.divisions[1] as i32);ui.set_mesh_divisions_k(t.divisions[2] as i32);
+    ui.set_mesh_progression_i(t.progression[0].to_string().into());ui.set_mesh_progression_j(t.progression[1].to_string().into());
     ui.set_mesh_algorithm2d(match t.algorithm_2d { 6=>0, 5=>1, _=>2 });
     ui.set_mesh_algorithm3d(match t.algorithm_3d { 1=>0, 4=>1, _=>2 });
     ui.set_mesh_curvature(t.curvature_points as i32);
@@ -5280,12 +5297,14 @@ fn push_workbench_defaults(ui: &MainWindow, session: &WorkbenchSession) {
     )));
     let solver = session.solver_options();
     use flursys::unstructured_incompressible::TimeIntegration;
-    ui.set_wb_time_mode(match solver.time {TimeIntegration::Steady=>0,TimeIntegration::Euler{..}=>1,TimeIntegration::AdaptiveEuler{..}=>2});
+    ui.set_wb_time_mode(match solver.time {TimeIntegration::Steady=>0,TimeIntegration::Euler{..}=>1,TimeIntegration::AdaptiveEuler{..}=>2,TimeIntegration::Backward{..}=>3});
     let (dt,steps)=solver.time.parameters().unwrap_or((0.001,100));ui.set_wb_time_step(dt.to_string().into());ui.set_wb_time_steps(steps as i32);
     let adaptive=solver.time.adaptive().unwrap_or_default();
     ui.set_wb_target_courant(adaptive.target_courant.to_string().into());ui.set_wb_min_time_step(adaptive.min_dt.to_string().into());ui.set_wb_max_time_step(adaptive.max_dt.to_string().into());ui.set_wb_time_growth(adaptive.max_growth.to_string().into());
     use flursys::turbulence::TurbulenceModel;
-    ui.set_wb_turbulence_model(match solver.turbulence.model {TurbulenceModel::Laminar=>0,TurbulenceModel::KOmega=>1,TurbulenceModel::KOmegaSst=>2,TurbulenceModel::Smagorinsky=>3,TurbulenceModel::Wale=>4});
+    ui.set_wb_wall_treatment(if solver.turbulence.wall_treatment==flursys::turbulence::WallTreatment::EquilibriumKEpsilon {1}else{0});
+    ui.set_wb_turbulence_epsilon(solver.turbulence.epsilon.to_string().into());
+    ui.set_wb_turbulence_model(match solver.turbulence.model {TurbulenceModel::Laminar=>0,TurbulenceModel::KOmega=>1,TurbulenceModel::KOmegaSst=>2,TurbulenceModel::Smagorinsky=>3,TurbulenceModel::Wale=>4,TurbulenceModel::KEpsilon=>5});
     ui.set_wb_turbulence_k(solver.turbulence.k.to_string().into());ui.set_wb_turbulence_omega(solver.turbulence.omega.to_string().into());
     ui.set_wb_coupling_tolerance(SharedString::from(format!(
         "{:e}",
@@ -5315,6 +5334,8 @@ fn push_workbench_defaults(ui: &MainWindow, session: &WorkbenchSession) {
 }
 
 fn push_boundary_fields(ui: &MainWindow, session: &WorkbenchSession, patch: &str) {
+    thermal_setup::push_boundary(ui,session,patch);
+    time_boundary_setup::push(ui,session,patch);
     match session.boundary_assignment(patch).copied() {
         None => {
             ui.set_bc_kind_index(-1);
@@ -5333,6 +5354,7 @@ fn push_boundary_fields(ui: &MainWindow, session: &WorkbenchSession, patch: &str
         Some(IncompressibleBoundaryCondition::PressureOutletBackflow {pressure,velocity}) => {
             ui.set_bc_kind_index(9);set_velocity_fields(ui,velocity);ui.set_bc_pressure(pressure.to_string().into());ui.set_bc_assigned("Assigned: pressure outlet with backflow".into());
         }
+        Some(IncompressibleBoundaryCondition::TotalPressure{pressure})=>{ui.set_bc_kind_index(11);ui.set_bc_pressure(pressure.to_string().into());ui.set_bc_assigned("Assigned: kinematic total-pressure opening".into());}
         Some(IncompressibleBoundaryCondition::Slip) => {
             ui.set_bc_kind_index(4);
             ui.set_bc_assigned("Assigned: slip".into());
@@ -5396,12 +5418,13 @@ fn sync_solver_panel(ui: &MainWindow, session: &mut WorkbenchSession) -> Result<
     use flursys::unstructured_incompressible::TimeIntegration;
     use flursys::turbulence::{TurbulenceModel,TurbulenceOptions};
     let time=match ui.get_wb_time_mode() {
+        3=>TimeIntegration::Backward {dt:parse_number(ui.get_wb_time_step().as_str(),f64::NAN),steps:ui.get_wb_time_steps().max(0) as usize},
         1=>TimeIntegration::Euler {dt:parse_number(ui.get_wb_time_step().as_str(),f64::NAN),steps:ui.get_wb_time_steps().max(0) as usize},
         2=>TimeIntegration::AdaptiveEuler {dt:parse_number(ui.get_wb_time_step().as_str(),f64::NAN),steps:ui.get_wb_time_steps().max(0) as usize,controls:flursys::unstructured_incompressible::AdaptiveTimeStep {target_courant:parse_number(ui.get_wb_target_courant().as_str(),f64::NAN),min_dt:parse_number(ui.get_wb_min_time_step().as_str(),f64::NAN),max_dt:parse_number(ui.get_wb_max_time_step().as_str(),f64::NAN),max_growth:parse_number(ui.get_wb_time_growth().as_str(),f64::NAN)}},
         _=>TimeIntegration::Steady,
     };
-    let model=match ui.get_wb_turbulence_model(){1=>TurbulenceModel::KOmega,2=>TurbulenceModel::KOmegaSst,3=>TurbulenceModel::Smagorinsky,4=>TurbulenceModel::Wale,_=>TurbulenceModel::Laminar};
-    let turbulence=TurbulenceOptions {model,k:if matches!(model,TurbulenceModel::KOmega|TurbulenceModel::KOmegaSst){parse_number(ui.get_wb_turbulence_k().as_str(),f64::NAN)}else{session.solver_options().turbulence.k},omega:if matches!(model,TurbulenceModel::KOmega|TurbulenceModel::KOmegaSst){parse_number(ui.get_wb_turbulence_omega().as_str(),f64::NAN)}else{session.solver_options().turbulence.omega},..session.solver_options().turbulence.clone()};
+    let model=match ui.get_wb_turbulence_model(){1=>TurbulenceModel::KOmega,2=>TurbulenceModel::KOmegaSst,3=>TurbulenceModel::Smagorinsky,4=>TurbulenceModel::Wale,5=>TurbulenceModel::KEpsilon,_=>TurbulenceModel::Laminar};
+    let turbulence=TurbulenceOptions {model,wall_treatment:if model==TurbulenceModel::KEpsilon && ui.get_wb_wall_treatment()==1{flursys::turbulence::WallTreatment::EquilibriumKEpsilon}else{flursys::turbulence::WallTreatment::Resolved},epsilon:if model==TurbulenceModel::KEpsilon {parse_number(ui.get_wb_turbulence_epsilon().as_str(),f64::NAN)}else{session.solver_options().turbulence.epsilon},k:if matches!(model,TurbulenceModel::KOmega|TurbulenceModel::KOmegaSst|TurbulenceModel::KEpsilon){parse_number(ui.get_wb_turbulence_k().as_str(),f64::NAN)}else{session.solver_options().turbulence.k},omega:if matches!(model,TurbulenceModel::KOmega|TurbulenceModel::KOmegaSst){parse_number(ui.get_wb_turbulence_omega().as_str(),f64::NAN)}else{session.solver_options().turbulence.omega},..session.solver_options().turbulence.clone()};
     // Validate the complete form before invalidating an existing solution.
     let mut draft = WorkbenchSession::from_project(&session.to_project("Solver validation"))
         .map_err(|e| e.to_string())?;
@@ -6022,11 +6045,12 @@ fn refresh_ui(ui: &MainWindow, state: &AppState) {
     ui.set_wb_mesh_summary(SharedString::from(mesh_summary));
     let recipe = state.workbench.mesh_recipe();
     ui.set_wb_mesh_recipe_summary(SharedString::from(format!(
-        "local={} · distance/threshold={} · boundary layers={} · volume boxes={}",
+        "local={} · distance/threshold={} · boundary layers={} · volume boxes={} · edge divisions={}",
         recipe.local_sizes.iter().filter(|control| control.enabled).count(),
         recipe.refinements.iter().filter(|control| control.enabled).count(),
         recipe.boundary_layers.iter().filter(|control| control.enabled).count(),
         recipe.regions.iter().filter(|control| control.enabled).count(),
+        recipe.edge_divisions.iter().filter(|control|control.enabled).count(),
     )));
     let bad_cell_indices = state
         .workbench
@@ -6058,6 +6082,7 @@ fn refresh_ui(ui: &MainWindow, state: &AppState) {
         MeshQualityMetric::Skewness => 1,
         MeshQualityMetric::NonOrthogonality => 2,
         MeshQualityMetric::CellMeasure => 3,
+        MeshQualityMetric::AdjacentVolumeRatio => 4,
     });
     ui.set_mesh_selection_index(match state.mesh_pick_mode {
         MeshPickMode::Face => 0,

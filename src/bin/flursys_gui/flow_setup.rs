@@ -46,6 +46,9 @@ pub(super) fn boundary_condition(
                 mass: ui.get_bc_kind_index() == 8,
             })
         }
+        11 => Ok(IncompressibleBoundaryCondition::TotalPressure {
+            pressure: number(ui.get_bc_pressure().as_str(), "Total kinematic pressure")?,
+        }),
         9 => Ok(IncompressibleBoundaryCondition::PressureOutletBackflow {
             pressure: number(ui.get_bc_pressure().as_str(), "Outlet pressure")?,
             velocity: velocity()?,

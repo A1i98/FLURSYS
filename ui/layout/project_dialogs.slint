@@ -1,5 +1,5 @@
 import { Button, LineEdit, CheckBox, ComboBox } from "std-widgets.slint";
-import { UiTheme } from "../components.slint";
+import { UiTheme, PropertyScroll, WorkspaceSections } from "../components.slint";
 
 // Window-sized modal scrim; dialogs never participate in workspace layout.
 component ModalFrame inherits Rectangle {
@@ -58,23 +58,63 @@ export component LegacyImportDialog inherits ModalFrame {
     HorizontalLayout {spacing:8px;Rectangle {horizontal-stretch:1;}Button {text:"Cancel";clicked=>{root.cancel();}}Button {text:"Import";clicked=>{root.import-project();}}}
 }
 
+component MaterialField inherits VerticalLayout {
+    in property <string> label;in-out property <string> value;
+    vertical-stretch:0;spacing:4px;min-width:0px;
+    Text {text:root.label;color:UiTheme.text-muted;font-size:11px;wrap:word-wrap;vertical-stretch:0;}
+    LineEdit {text <=> root.value;min-height:32px;max-height:32px;min-width:0px;}
+}
 export component FluidMaterialDialog inherits ModalFrame {
     close-requested=>{root.cancel();}
-    in-out property <string> density;
-    in-out property <string> viscosity;
-    in property <string> feedback;
-    in property <bool> busy;
-    callback apply();callback cancel();
-    panel-width:420px;panel-height:350px;
-    Text {text:"Fluid material";color:UiTheme.text-title;font-size:17px;font-weight:700;}
-    Text {text:"Density ρ";color:UiTheme.text-muted;font-size:11px;}
-    LineEdit {text <=> root.density;enabled:!root.busy;}
-    Text {text:"Kinematic viscosity ν";color:UiTheme.text-muted;font-size:11px;}
-    LineEdit {text <=> root.viscosity;enabled:!root.busy;}
-    Text {text:"Re = U L / ν. Use consistent length and velocity units for the geometry and boundary conditions.";color:UiTheme.text-muted;font-size:11px;wrap:word-wrap;}
-    Text {text:root.feedback;color:UiTheme.accent;font-size:11px;wrap:word-wrap;}
-    Rectangle {vertical-stretch:1;}
-    HorizontalLayout {spacing:8px;Rectangle {horizontal-stretch:1;}Button {text:"Cancel";clicked=>{root.cancel();}}Button {text:"Apply";enabled:!root.busy;clicked=>{root.apply();}}}
+    in-out property <string> density;in-out property <string> viscosity;
+    in property <string> feedback;in property <bool> busy;
+    in-out property <int> catalog-index;
+    in-out property <string> eval-temperature;in-out property <string> eval-pressure;
+    in property <string> source;
+    in-out property <bool> enabled-energy;in-out property <bool> buoyancy;
+    in-out property <string> initial;in-out property <string> cp;in-out property <string> kappa;in-out property <string> heat-source;in-out property <string> prt;
+    in-out property <string> reference;in-out property <string> beta;in-out property <string> gx;in-out property <string> gy;in-out property <string> gz;
+    private property <int> section:0;
+    callback apply();callback cancel();callback load-catalog();
+    panel-width:560px;panel-height:690px;
+    Text {text:"Fluid material & thermal physics";color:UiTheme.text-title;font-size:17px;font-weight:700;vertical-stretch:0;}
+    WorkspaceSections {model:["Material","Heat transfer","Buoyancy"];current-index <=> root.section;}
+    PropertyScroll {section:root.section;
+        if root.section==0 : VerticalLayout {spacing:8px;vertical-stretch:0;
+            ComboBox {model:["User-defined","Air · idealized tutorial model","Water · liquid correlation","Ethanol · liquid correlation"];current-index <=> root.catalog-index;min-width:0px;max-height:32px;enabled:!root.busy;selected(value)=>{root.load-catalog();}}
+            if root.catalog-index>0 : VerticalLayout {spacing:6px;vertical-stretch:0;
+                MaterialField {label:"Evaluate at T (K) · restricted 280–330 K";value <=> root.eval-temperature;}
+                MaterialField {label:"Reference pressure (Pa) · 95000–105000 Pa";value <=> root.eval-pressure;}
+                Button {text:"Load property values";enabled:!root.busy;clicked=>{root.load-catalog();}}
+            }
+            MaterialField {label:"Density ρ (kg/m³)";value <=> root.density;}
+            MaterialField {label:"Kinematic viscosity ν (m²/s)";value <=> root.viscosity;}
+            Text {text:root.source;color:UiTheme.text-muted;font-size:10px;wrap:word-wrap;vertical-stretch:0;}
+            Text {text:"Catalog properties are evaluated once and remain constant during this solve. Select User-defined before overriding a preset.";color:UiTheme.text-secondary;wrap:word-wrap;vertical-stretch:0;}
+        }
+        if root.section==1 : VerticalLayout {spacing:8px;vertical-stretch:0;
+            CheckBox {text:"Enable temperature transport";checked <=> root.enabled-energy;toggled=>{if !self.checked {root.buoyancy=false;}}}
+            MaterialField {label:"Initial temperature (K)";value <=> root.initial;}
+            MaterialField {label:"Specific heat cp (J/kg/K)";value <=> root.cp;}
+            MaterialField {label:"Thermal conductivity k (W/m/K)";value <=> root.kappa;}
+            MaterialField {label:"Volumetric heat source (W/m³)";value <=> root.heat-source;}
+            MaterialField {label:"Turbulent Prandtl number";value <=> root.prt;}
+            Text {text:"Set temperature/heat-flux conditions for each patch in Setup → Boundaries. Upwind temperature transport; turbulent diffusivity νt/Prt when RANS/LES is active.";color:UiTheme.text-secondary;wrap:word-wrap;vertical-stretch:0;}
+        }
+        if root.section==2 : VerticalLayout {spacing:8px;vertical-stretch:0;
+            CheckBox {text:"Boussinesq buoyancy";checked <=> root.buoyancy;enabled:root.enabled-energy;}
+            MaterialField {label:"Reference temperature (K)";value <=> root.reference;}
+            MaterialField {label:"Volumetric expansion β (1/K)";value <=> root.beta;}
+            HorizontalLayout {spacing:6px;vertical-stretch:0;
+                MaterialField {label:"gx (m/s²)";value <=> root.gx;}
+                MaterialField {label:"gy (m/s²)";value <=> root.gy;}
+                MaterialField {label:"gz (m/s²)";value <=> root.gz;}
+            }
+            Text {text:"Adds g[1 − β(T − Tref)], including reference gravity. Pressure remains kinematic gauge pressure. |βΔT| above 0.1 is rejected. This is not a compressible density or phase-change model.";color:UiTheme.text-secondary;wrap:word-wrap;vertical-stretch:0;}
+        }
+    }
+    Text {text:root.feedback;color:UiTheme.accent;font-size:11px;wrap:word-wrap;vertical-stretch:0;}
+    HorizontalLayout {spacing:8px;vertical-stretch:0;Rectangle {horizontal-stretch:1;}Button {text:"Cancel";clicked=>{root.cancel();}}Button {text:"Apply";enabled:!root.busy;clicked=>{root.apply();}}}
 }
 
 export component SketchPlaneDialog inherits ModalFrame {

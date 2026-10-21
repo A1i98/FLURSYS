@@ -125,6 +125,7 @@ fn field(index: i32) -> ResultFieldKind {
     match index {
         1 => ResultFieldKind::Pressure,
         2 => ResultFieldKind::VorticityMagnitude,
+        3 => ResultFieldKind::Temperature,
         4 => ResultFieldKind::VelocityX,
         5 => ResultFieldKind::VelocityY,
         6 => ResultFieldKind::VelocityZ,

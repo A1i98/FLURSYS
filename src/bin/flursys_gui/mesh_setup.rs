@@ -18,6 +18,20 @@ pub(super) fn mesh_threads(ui: &MainWindow, session: &mut WorkbenchSession) -> R
 pub(super) fn mesh_tuning(ui: &MainWindow, session: &mut WorkbenchSession) -> Result<(), String> {
     let mut recipe = session.mesh_recipe().clone();
     let t = &mut recipe.tuning;
+    t.max_size_growth=if ui.get_mesh_size_growth().trim().is_empty(){None}else{Some(ui.get_mesh_size_growth().trim().parse().map_err(|_|"Distance-field growth limit must be a number or empty")?)};
+    t.method = match ui.get_mesh_method() {
+        0=>flursys::workbench::MeshMethod::Unstructured,
+        1=>flursys::workbench::MeshMethod::QuadDominant,
+        2=>flursys::workbench::MeshMethod::MappedQuad,
+        3=>flursys::workbench::MeshMethod::OGrid,
+        4=>flursys::workbench::MeshMethod::HexBlock,
+        5=>flursys::workbench::MeshMethod::SweepPrism,
+        _=>flursys::workbench::MeshMethod::SweepHex,
+    };
+    t.divisions = [ui.get_mesh_divisions_i().max(1) as u32,ui.get_mesh_divisions_j().max(1) as u32,ui.get_mesh_divisions_k().max(1) as u32];
+    t.progression = if !matches!(ui.get_mesh_method(),2|3|6) {[1.0,1.0]} else {
+        [if ui.get_mesh_method()==3 {1.0} else {ui.get_mesh_progression_i().trim().parse().map_err(|_|"I growth must be a number")?},ui.get_mesh_progression_j().trim().parse().map_err(|_|"J/radial growth must be a number")?]
+    };
     t.algorithm_2d = match ui.get_mesh_algorithm2d() { 0=>6, 1=>5, _=>1 };
     t.algorithm_3d = match ui.get_mesh_algorithm3d() { 0=>1, 1=>4, _=>10 };
     t.curvature_points = ui.get_mesh_curvature().max(0) as u32;
@@ -145,7 +159,7 @@ fn bind_grouping(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
     ui.on_mesh_task_changed(move |task| {
         let Some(ui) = weak.upgrade() else { return };
         let mut state = shared.borrow_mut();
-        let geometry = task == 0 || task == 3 || !state.workbench.has_mesh();
+        let geometry = task == 0 || task == 3 || task == 5 || !state.workbench.has_mesh();
         show_geometry(&ui, &mut state, geometry);
         if task == 2 {
             state.mesh_color_mode = MeshColorMode::Quality;
@@ -432,9 +446,10 @@ pub(super) fn bind(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
             let mut draft=WorkbenchSession::from_project(&state.workbench.to_project("Mesh preflight")).map_err(|e|e.to_string())?;
             mesh_configuration(&ui,&mut draft)?;
             draft.mesh_generation_inputs().map_err(|e|e.to_string())?;
-            Ok::<_,String>("Geometry, boundary coverage, element sizes and refinement recipe are valid. Generate Mesh to run Gmsh.".to_string())
+            let plan=flursys::workbench::mesh_report::plan(draft.mesh_recipe())?;
+            Ok::<_,String>(("Geometry, boundary coverage, element sizes and refinement recipe are valid. Generate Mesh to run Gmsh.".to_string(),plan))
         })();
-        let message=result.unwrap_or_else(|e|format!("Mesh blocked: {e}"));
+        let message=match result {Ok((message,plan))=>{ui.set_mesh_plan(plan.into());message},Err(e)=>{ui.set_mesh_plan("No valid mesh plan. Correct the reported inputs.".into());format!("Mesh blocked: {e}")}};
         ui.set_wb_flow_feedback(message.clone().into());
         shared.borrow_mut().log(message);
         refresh_ui(&ui,&shared.borrow());
@@ -473,6 +488,9 @@ pub(super) fn bind(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
 
 pub(super) fn refresh(ui: &MainWindow, state: &AppState) {
     super::mesh_inspection::refresh(ui,state);
+    ui.set_mesh_cad_route(if state.workbench.geometry().cad_bodies().any(|(_,b)|b.visible) {
+        "CAD route: recognized axis-aligned boxes can use Hex Block. Other solids use planar-face recovery and faceted curved surfaces; direct STEP/OCC meshing is not connected."
+    }else{"Geometry route: analytic primitives/profiles. Mapped and sweep methods require compatible topology."}.into());
     ui.set_mesh_show_geometry(state.show_geometry_3d);
     ui.set_mesh_spatial_view(if state.show_geometry_3d {state.workbench.geometry().bodies().next().is_some()} else {state.workbench.mesh_dimension()==MeshDimension::ThreeD});
     let local_index = state
@@ -561,6 +579,7 @@ pub(super) fn refresh(ui: &MainWindow, state: &AppState) {
             ))
         }))
         .chain(r.regions.iter().map(|c|SharedString::from(format!("{} {} · box h={:.2e}",if c.enabled {"●"}else{"○"},c.name,c.size))))
+        .chain(r.edge_divisions.iter().map(|c|SharedString::from(format!("{} {} · {} cells · {} {}",if c.enabled {"●"}else{"○"},c.name,c.cells,if c.symmetric {"Bump"}else{"growth"},c.progression))))
         .collect::<Vec<_>>();
     ui.set_mesh_control_model(ModelRc::new(VecModel::from(controls)));
     let names = state.workbench.patch_names();
@@ -576,6 +595,7 @@ pub(super) fn refresh(ui: &MainWindow, state: &AppState) {
                     match bc {
                         IncompressibleBoundaryCondition::ParabolicInlet {..} => "Parabolic inlet".into(),
                         IncompressibleBoundaryCondition::FlowRateInlet {mass,..} => (if *mass {"Mass-flow inlet"}else{"Volume-flow inlet"}).into(),
+                        IncompressibleBoundaryCondition::TotalPressure{..}=>"Total-pressure opening".into(),
                         IncompressibleBoundaryCondition::PressureOutletBackflow {..} => "Pressure outlet / backflow".into(),
                         IncompressibleBoundaryCondition::Slip => "Slip".to_string(),
                         IncompressibleBoundaryCondition::Symmetry => "Symmetry".to_string(),

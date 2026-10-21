@@ -154,10 +154,11 @@ pub(super) fn render_workbench_mesh(
     // Empty wireframe pixels reveal the actual viewport, not opaque cell faces.
     if !wireframe { fill(&mut pixels, [46, 52, 64, 255]); }
     let visible_cells = clip.filter(|_|mesh.dimension()==MeshDimension::ThreeD)
-        .map(|c|c.mask(mesh,cache.bounds())).unwrap_or_else(||vec![true;mesh.cell_count()]);
+        .map(|c|c.mask(mesh,cache)).unwrap_or_else(||vec![true;mesh.cell_count()]);
     let visible_cell = |i|super::mesh_inspection::face_cell(mesh,i,&visible_cells);
     let values = cache.quality().values(metric);
     let (minimum, maximum) = cache.quality().color_range(metric).unwrap_or((0.0, 0.0));
+    let metric_color=|value:f64| if metric==MeshQualityMetric::CellMeasure {quality_color(-value,-maximum,-minimum)}else{quality_color(value,minimum,maximum)};
     let face_color = |face_index: usize| {
         let face = &mesh.faces()[face_index];
         let matches = |entry: MeshSelection| match entry.target() {
@@ -178,7 +179,7 @@ pub(super) fn render_workbench_mesh(
             match color_mode {
                 MeshColorMode::Neutral => [70, 109, 128, 255],
                 MeshColorMode::Patches => patch_color(cache.face_patch_indices()[face_index]),
-                MeshColorMode::Quality => quality_color(values[visible_cell(face_index).unwrap_or(face.owner)], minimum, maximum),
+                MeshColorMode::Quality => metric_color(values[visible_cell(face_index).unwrap_or(face.owner)]),
             }
         }
     };
@@ -187,7 +188,7 @@ pub(super) fn render_workbench_mesh(
             for (cell_index, &value) in values.iter().enumerate().take(mesh.cell_count()) {
                 let mut color = match color_mode {
                     MeshColorMode::Neutral | MeshColorMode::Patches => [48, 79, 96, 255],
-                    MeshColorMode::Quality => quality_color(value, minimum, maximum),
+                    MeshColorMode::Quality => metric_color(value),
                 };
                 if selected
                     .is_some_and(|entry| entry.target() == MeshSelectionTarget::Cell(cell_index))
