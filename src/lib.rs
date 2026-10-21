@@ -21,6 +21,8 @@ pub mod momentum;
 pub mod numerics;
 pub mod output;
 pub mod physics;
+pub mod materials;
+pub mod multiphase;
 pub mod poisson;
 pub mod preprocess;
 pub mod project;
