@@ -17,7 +17,7 @@ fn main() {
 fn run() -> Result<(), String> {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
     if args.is_empty() || args[0] == "--help" {
-        println!("Usage: flursys-compressible CASE.json OUTPUT_DIRECTORY\nExperimental ideal-gas Euler / laminar Navier–Stokes; Gmsh mesh input, SI units.\nNot coupled to GUI SIMPLE or RANS. Produces solution.vtu and report.json.");
+        println!("Usage: flursys-compressible CASE.json OUTPUT_DIRECTORY\nExperimental ideal-gas Euler / laminar Navier–Stokes; Gmsh mesh input, SI units.\nSupports conformal translational cyclic_pairs in settings; not coupled to GUI SIMPLE or RANS. Produces solution.vtu and report.json.");
         return Ok(());
     }
     if args.len() != 2 {
@@ -41,6 +41,10 @@ fn run() -> Result<(), String> {
     let start = std::time::Instant::now();
     let solution = compressible::solve(&mesh, &input.settings)?;
     let elapsed = start.elapsed().as_secs_f64();
+    if solution.report.cyclic_face_pairs > 0 {
+        eprintln!("Cyclic interfaces: {} matched face pairs; single conservative flux per pair; excluded from external boundary outflow.",solution.report.cyclic_face_pairs);
+    }
+
     let directory = Path::new(&args[1]);
     std::fs::create_dir_all(directory).map_err(|e| e.to_string())?;
     compressible::write_vtu(

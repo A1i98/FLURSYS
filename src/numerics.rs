@@ -28,6 +28,7 @@ pub enum ScalarBoundaryCondition {
 pub struct ResolvedScalarBoundaryConditions {
     mesh_id: MeshId,
     conditions: Vec<Option<ScalarBoundaryCondition>>,
+    cyclic:Option<std::sync::Arc<crate::periodic::CyclicMap>>,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DiffusivityInterpolation {
@@ -132,6 +133,8 @@ impl LeastSquaresGradientStencil {
                         mesh.cells()[neighbour].center - cell.center,
                         LeastSquaresSource::Neighbour(neighbour),
                     )
+                } else if let Some((neighbour,center))=boundary.cyclic_neighbour(mesh,face_index){
+                    (center-cell.center,LeastSquaresSource::Neighbour(neighbour))
                 } else {
                     match boundary
                         .condition(face_index)
@@ -371,7 +374,7 @@ impl ResolvedScalarBoundaryConditions {
             if f.neighbour.is_some() && conditions[i].is_some() {return Err(NumericsError::BoundaryConditionOnInternalFace {face:i});}
             if matches!(conditions[i],Some(ScalarBoundaryCondition::FixedValue(v)) if !v.is_finite()) {return Err(NumericsError::MissingBoundaryCondition {face:i});}
         }
-        Ok(Self {mesh_id:mesh.id(),conditions})
+        Ok(Self {mesh_id:mesh.id(),conditions,cyclic:None})
     }
 
     pub fn strict(
@@ -410,9 +413,18 @@ impl ResolvedScalarBoundaryConditions {
         Ok(Self {
             mesh_id: mesh.id(),
             conditions,
+            cyclic:None,
         })
     }
 
+    pub(crate) fn set_cyclic(&mut self,map:std::sync::Arc<crate::periodic::CyclicMap>){self.cyclic=Some(map);}
+    pub fn cyclic_link(&self,face:usize)->Option<crate::periodic::CyclicLink>{self.cyclic.as_ref().and_then(|m|m.link(face))}
+    pub fn cyclic_neighbour(&self,mesh:&UnstructuredMesh,face:usize)->Option<(usize,Vec3)>{
+        if self.mesh_id!=mesh.id(){return None}
+        let link=self.cyclic_link(face)?;
+        let n=mesh.faces().get(link.peer_face)?.owner;
+        Some((n,mesh.cells().get(n)?.center-link.translation))
+    }
     pub fn ensure_mesh(&self, mesh: &UnstructuredMesh) -> Result<(), NumericsError> {
         if self.mesh_id == mesh.id() {
             Ok(())
@@ -820,6 +832,10 @@ pub fn integrated_diffusion_with_stencil_into(
     let gamma = interpolate_diffusivity(mesh, diffusivity, options.diffusivity_interpolation)?;
     let mut face_values = FaceField::filled(mesh, 0.0);
     for (index, face) in mesh.faces().iter().enumerate() {
+        if let Some((n,center))=boundary.cyclic_neighbour(mesh,index){
+            let a=(face.center-mesh.cells()[face.owner].center).norm();let b=(face.center-center).norm();
+            face_values[index]=(values[face.owner]*b+values[n]*a)/(a+b);continue;
+        }
         face_values[index] = match face.neighbour {
             Some(neighbour) => {
                 let lambda = weight(mesh, index)?;
@@ -875,6 +891,20 @@ pub fn integrated_diffusion_with_stencil_into(
             }
             output[face.owner] += contribution;
             output[neighbour] -= contribution;
+        } else if let Some((n,center))=boundary.cyclic_neighbour(mesh,index){
+            if boundary.cyclic_link(index).is_some_and(|link|index>link.peer_face){continue}
+            let d=center-mesh.cells()[face.owner].center;let d2=d.norm_squared();
+            if d2<=f64::EPSILON{return Err(NumericsError::DegenerateOwnerNeighbourDistance{face:index})}
+            let orth=gamma[index]*face.area_vector.dot(d)/d2*(values[n]-values[face.owner]);
+            let mut contribution=orth;
+            if let Some(g)=&gradients {
+                let a=(face.center-mesh.cells()[face.owner].center).norm();let b=(face.center-center).norm();
+                let gradient=(g[face.owner]*b+g[n]*a)/(a+b);
+                let extra=gamma[index]*gradient.dot(face.area_vector-d*(face.area_vector.dot(d)/d2));
+                contribution+=if options.non_orthogonal_correction==NonOrthogonalCorrection::Limited{extra.clamp(-orth.abs(),orth.abs())}else{extra};
+            }
+            output[face.owner]+=contribution;
+            output[n]-=contribution;
         } else if let ScalarBoundaryCondition::FixedValue(value) = boundary
             .condition(index)
             .ok_or(NumericsError::MissingBoundaryCondition { face: index })?

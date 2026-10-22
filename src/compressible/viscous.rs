@@ -31,13 +31,21 @@ pub(super) fn gradients(
     p: &[Primitive],
     ghost: &[Option<Primitive>],
     bc: &[Option<Boundary>],
+    cyclic: &crate::periodic::CyclicMap,
     gas: IdealGas,
 ) -> Vec<[Vec3; 4]> {
     let mut g = vec![[Vec3::ZERO; 4]; mesh.cell_count()];
     for (i, f) in mesh.faces().iter().enumerate() {
+        let link = cyclic.link(i);
+        if link.is_some_and(|link| i > link.peer_face) {
+            continue;
+        }
+        let neighbour = f
+            .neighbour
+            .or_else(|| link.map(|link| mesh.faces()[link.peer_face].owner));
         let n = f.area_vector / f.area;
         let a = values(p[f.owner], gas);
-        let value = if let Some(j) = f.neighbour {
+        let value = if let Some(j) = neighbour {
             let b = values(p[j], gas);
             std::array::from_fn(|k| 0.5 * (a[k] + b[k]))
         } else {
@@ -45,7 +53,7 @@ pub(super) fn gradients(
         };
         for k in 0..4 {
             g[f.owner][k] += f.area_vector * (value[k] / mesh.cells()[f.owner].volume);
-            if let Some(j) = f.neighbour {
+            if let Some(j) = neighbour {
                 g[j][k] = g[j][k] - f.area_vector * (value[k] / mesh.cells()[j].volume);
             }
         }
@@ -58,6 +66,7 @@ pub(super) fn evaluate(
     p: &[Primitive],
     ghost: Option<Primitive>,
     bc: Option<Boundary>,
+    periodic_neighbor: Option<(usize, Vec3)>,
     g: &[[Vec3; 4]],
     settings: &Settings,
 ) -> Result<Conservative, String> {
@@ -65,10 +74,13 @@ pub(super) fn evaluate(
     let n = f.area_vector / f.area;
     let o = f.owner;
     let a = values(p[o], settings.gas);
-    let (d, b, mut gradient, face) = if let Some(j) = f.neighbour {
+    let neighbour = f.neighbour.or_else(|| periodic_neighbor.map(|p| p.0));
+    let (d, b, mut gradient, face) = if let Some(j) = neighbour {
         let b = values(p[j], settings.gas);
         (
-            mesh.cells()[j].center - mesh.cells()[o].center,
+            periodic_neighbor
+                .map(|(_, d)| d)
+                .unwrap_or(mesh.cells()[j].center - mesh.cells()[o].center),
             b,
             std::array::from_fn(|k| (g[o][k] + g[j][k]) * 0.5),
             std::array::from_fn(|k| 0.5 * (a[k] + b[k])),

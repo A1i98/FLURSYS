@@ -126,6 +126,17 @@ pub(super) fn solve_time_loop(
     case: &IncompressibleCase,
     control: Option<&SolveControl<'_>>,
 ) -> Result<IncompressibleSolution, IncompressibleSolveError> {
+    case.solver.volume_models.validate_case(case).map_err(SimpleError::PhysicalBoundary)?;
+    if let Some(cb)=control.and_then(|c|c.on_message.as_ref()){
+        if let Some(p)=case.solver.volume_models.resistance{
+            let count=case.mesh.cells().iter().filter(|c|p.region.contains(c.center)).count();
+            cb(format!("Isotropic momentum resistance: {count} cells; Darcy {} 1/m², Forchheimer {} 1/m; implicit lagged-speed sink.",p.darcy,p.forchheimer));
+        }
+        if let Some(r)=case.solver.volume_models.rotating_frame{
+            cb(format!("Global rotating frame: omega={:?} rad/s; origin={:?} m. All velocity fields, boundary velocities and face fluxes are relative. No multi-zone MRF interface or mesh motion.",r.angular_velocity,r.origin));
+        }
+    }
+    case.solver.pressure_coupling.validate(case.solver.time.is_transient()).map_err(SimpleError::PhysicalBoundary)?;
     case.solver
         .time
         .validate()
@@ -155,6 +166,11 @@ pub(super) fn solve_time_loop(
         }
         return Ok(result);
     };
+    if let Some(cb)=control.and_then(|c|c.on_message.as_ref()){
+        let coupling=case.solver.pressure_coupling;
+        cb(format!("Transient coupling {:?}: up to {} outer iterations per time step, {} inner pressure corrector(s), {} extra non-orthogonal pass(es), limiter {}. Physical history is frozen until acceptance.",
+            coupling.algorithm,case.solver.max_outer_iterations,coupling.pressure_correctors,coupling.non_orthogonal_correctors,coupling.non_orthogonal_limiter));
+    }
     let backward = matches!(case.solver.time, TimeIntegration::Backward { .. });
     if backward {
         if let Some(cb) = control.and_then(|c| c.on_message.as_ref()) {

@@ -87,6 +87,9 @@ impl ResolvedVelocityBoundaryConditions {
         })
     }
 
+    pub(crate) fn set_cyclic(&mut self,map:std::sync::Arc<crate::periodic::CyclicMap>){
+        self.x.set_cyclic(map.clone());self.y.set_cyclic(map.clone());self.z.set_cyclic(map);
+    }
     pub(crate) fn set_face_velocity(&mut self, face: usize, velocity: Option<Vec3>) {
         for (boundary, value) in [
             (&mut self.x, velocity.map(|v| v.x)),
@@ -223,6 +226,13 @@ pub fn assemble_momentum_component(
     mesh: &UnstructuredMesh,
     options: MomentumOptions<'_>,
 ) -> Result<MomentumSystem, MomentumError> {
+    assemble_momentum_component_with_sink(mesh, options, None)
+}
+/// Positive implicit reaction coefficient, in inverse seconds, before relaxation.
+pub(crate) fn assemble_momentum_component_with_sink(
+    mesh:&UnstructuredMesh, options:MomentumOptions<'_>, sink:Option<&CellField<f64>>,
+)->Result<MomentumSystem,MomentumError>{
+    if let Some(s)=sink{s.ensure_mesh(mesh)?;}
     options.boundary.ensure_mesh(mesh)?;
     options.flux.ensure_mesh(mesh)?;
     if let Some(old) = options.old {
@@ -264,6 +274,11 @@ pub fn assemble_momentum_component(
     let mut entries = Vec::with_capacity(mesh.face_count() * 4 + mesh.cell_count());
     let mut rhs = vec![0.0; mesh.cell_count()];
     for (cell_index, cell) in mesh.cells().iter().enumerate() {
+        if let Some(s)=sink {
+            let coefficient=s[cell_index]*cell.volume;
+            if !coefficient.is_finite()||coefficient<0.0{return Err(MomentumError::NonFiniteSource{cell:cell_index,value:coefficient})}
+            entries.push((cell_index,cell_index,coefficient));
+        }
         if let Some(source) = options.source {
             if !source[cell_index].is_finite() {
                 return Err(MomentumError::NonFiniteSource {
@@ -311,6 +326,15 @@ pub fn assemble_momentum_component(
                 (neighbour, face.owner, -diffusion - phi.max(0.0)),
                 (neighbour, neighbour, diffusion - phi.min(0.0)),
             ]);
+        } else if let Some((n,_))=options.boundary.cyclic_neighbour(mesh,face_index){
+            let canonical=options.boundary.cyclic_link(face_index).map(|l|face_index.min(l.peer_face)).unwrap_or(face_index);
+            let canonical_face=&mesh.faces()[canonical];
+            let (_,image)=options.boundary.cyclic_neighbour(mesh,canonical).ok_or(NumericsError::InvalidNonOrthogonalGeometry{face:canonical})?;
+            let d=image-mesh.cells()[canonical_face.owner].center;
+            let diffusion=viscosity[canonical]*canonical_face.area_vector.dot(d)/d.norm_squared();
+            if !diffusion.is_finite()||diffusion<0.0{return Err(NumericsError::InvalidNonOrthogonalGeometry{face:face_index}.into())}
+            entries.push((face.owner,face.owner,diffusion+phi.max(0.0)));
+            entries.push((face.owner,n,-diffusion+phi.min(0.0)));
         } else {
             let condition = options
                 .boundary

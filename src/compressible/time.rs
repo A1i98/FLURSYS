@@ -4,6 +4,8 @@ use super::*;
 pub struct Report {
     pub time: f64,
     pub accepted_steps: usize,
+    #[serde(default)]
+    pub cyclic_face_pairs: usize,
     pub rejected_steps: usize,
     pub hllc_fallback_evaluations: usize,
     pub reached_end_time: bool,
@@ -40,6 +42,7 @@ fn evaluate(
     mesh: &UnstructuredMesh,
     q: &[Conservative],
     bc: &[Option<Boundary>],
+    cyclic: &crate::periodic::CyclicMap,
     s: &Settings,
 ) -> Result<Evaluation, String> {
     let p = q
@@ -56,9 +59,15 @@ fn evaluate(
     let mut ghost = vec![None; mesh.face_count()];
     for (i, f) in mesh.faces().iter().enumerate() {
         if f.neighbour.is_none() {
-            let g = bc[i]
-                .unwrap()
-                .ghost(p[f.owner], f.area_vector / f.area, s.gas)?;
+            let g = if let Some(link) = cyclic.link(i) {
+                p[mesh.faces()[link.peer_face].owner]
+            } else {
+                bc[i].ok_or("Missing exterior boundary condition")?.ghost(
+                    p[f.owner],
+                    f.area_vector / f.area,
+                    s.gas,
+                )?
+            };
             g.validate()?;
             ghost[i] = Some(g);
         }
@@ -66,13 +75,26 @@ fn evaluate(
     let gradients = if matches!(s.viscosity, Viscosity::Inviscid) {
         None
     } else {
-        Some(viscous::gradients(mesh, &p, &ghost, bc, s.gas))
+        Some(viscous::gradients(mesh, &p, &ghost, bc, cyclic, s.gas))
     };
     let mut rhs = vec![Conservative([0.0; 5]); mesh.cell_count()];
     let mut rates = vec![0.0; mesh.cell_count()];
     let mut boundary = Conservative([0.0; 5]);
     let mut fallbacks = 0;
     for (i, f) in mesh.faces().iter().enumerate() {
+        let link = cyclic.link(i);
+        if link.is_some_and(|link| i > link.peer_face) {
+            continue;
+        }
+        let periodic_neighbor = link.map(|link| {
+            (
+                mesh.faces()[link.peer_face].owner,
+                mesh.cells()[mesh.faces()[link.peer_face].owner].center
+                    - link.translation
+                    - mesh.cells()[f.owner].center,
+            )
+        });
+        let neighbour = f.neighbour.or_else(|| periodic_neighbor.map(|p| p.0));
         let o = f.owner;
         let l = p[o];
         let r = f
@@ -86,8 +108,19 @@ fn evaluate(
             .max(r.velocity.dot(n).abs() + s.gas.sound_speed(r));
         let mut rate = f.area * speed;
         if let Some(g) = &gradients {
-            value = value.sub(viscous::evaluate(mesh, i, &p, ghost[i], bc[i], g, s)?);
-            let distance = if let Some(j) = f.neighbour {
+            value = value.sub(viscous::evaluate(
+                mesh,
+                i,
+                &p,
+                ghost[i],
+                bc[i],
+                periodic_neighbor,
+                g,
+                s,
+            )?);
+            let distance = if let Some((_, d)) = periodic_neighbor {
+                d.dot(n)
+            } else if let Some(j) = f.neighbour {
                 (mesh.cells()[j].center - mesh.cells()[o].center).dot(n)
             } else {
                 (f.center - mesh.cells()[o].center).dot(n)
@@ -105,7 +138,7 @@ fn evaluate(
         let integrated = value.scale(f.area);
         rhs[o] = rhs[o].sub(integrated.scale(1.0 / mesh.cells()[o].volume));
         rates[o] += rate;
-        if let Some(j) = f.neighbour {
+        if let Some(j) = neighbour {
             rhs[j] = rhs[j].add(integrated.scale(1.0 / mesh.cells()[j].volume));
             rates[j] += rate;
         } else {
@@ -130,7 +163,7 @@ fn evaluate(
     })
 }
 pub fn solve(mesh: &UnstructuredMesh, s: &Settings) -> Result<Solution, String> {
-    let bc = s.validate(mesh)?;
+    let (bc, cyclic) = s.validate(mesh)?;
     let mut q = Vec::with_capacity(mesh.cell_count());
     for c in mesh.cells() {
         let mut p = s.initial;
@@ -155,7 +188,7 @@ pub fn solve(mesh: &UnstructuredMesh, s: &Settings) -> Result<Solution, String> 
     let mut last_dt = 0.0;
     let mut boundary = Conservative([0.0; 5]);
     while time < s.end_time && steps < s.max_steps {
-        let first = evaluate(mesh, &q, &bc, s)?;
+        let first = evaluate(mesh, &q, &bc, &cyclic, s)?;
         let remaining = s.end_time - time;
         let mut dt = first.dt.min(remaining);
         let mut accepted = None;
@@ -176,7 +209,7 @@ pub fn solve(mesh: &UnstructuredMesh, s: &Settings) -> Result<Solution, String> 
                 .collect::<Vec<_>>();
             // Reject unphysical candidates without clipping density or energy.
             if stage.iter().all(|v| v.primitive(s.gas).is_ok()) {
-                let second = evaluate(mesh, &stage, &bc, s)?;
+                let second = evaluate(mesh, &stage, &bc, &cyclic, s)?;
                 if dt <= second.dt * (1.0 + 1e-10) {
                     let next = q
                         .iter()
@@ -215,6 +248,7 @@ pub fn solve(mesh: &UnstructuredMesh, s: &Settings) -> Result<Solution, String> 
     let report = Report {
         time,
         accepted_steps: steps,
+        cyclic_face_pairs: cyclic.pair_count(),
         rejected_steps: rejected,
         hllc_fallback_evaluations: fallbacks,
         reached_end_time: time >= s.end_time,

@@ -5,6 +5,7 @@
 //! remains in `crate::simple`.
 
 use crate::{
+    NumericsError,
     initial_face_flux, CellField, Diffusivity, FaceField, FieldError, LeastSquaresGradientStencil,
     LinearSolverOptions, ResolvedScalarBoundaryConditions, ResolvedVelocityBoundaryConditions,
     ScalarBoundaryCondition, SimpleError, SimpleOptions, SimpleReport, SimpleState,
@@ -68,6 +69,9 @@ pub struct IncompressibleMaterial {
 #[derive(Clone, Debug, PartialEq)]
 pub struct IncompressibleSolverOptions {
     pub time: TimeIntegration,
+    pub pressure_coupling:crate::simple::PressureCoupling,
+    pub volume_models:crate::volume_models::VolumeModels,
+    pub cyclic_pairs:Vec<crate::periodic::TranslationalCyclicPair>,
     pub equations:Option<crate::equations::EquationSolvers>,
     pub boundary_profiles:BoundaryProfiles,
     pub turbulence: crate::turbulence::TurbulenceOptions,
@@ -85,10 +89,29 @@ pub struct IncompressibleSolverOptions {
     pub pressure_solver: LinearSolverOptions,
 }
 
+impl IncompressibleSolverOptions {
+    pub fn resolve_cyclic(&self,mesh:&UnstructuredMesh)->Result<crate::periodic::CyclicMap,String>{
+        if !self.cyclic_pairs.is_empty(){
+            if self.turbulence.model!=crate::turbulence::TurbulenceModel::Laminar||self.thermal.enabled
+                ||self.convection!=crate::momentum::MomentumConvection::Upwind||self.volume_models.rotating_frame.is_some(){
+                return Err("Workbench cyclic currently requires laminar, isothermal, first-order upwind flow in an inertial frame".into())
+            }
+            for pair in &self.cyclic_pairs{
+                if self.boundary_profiles.contains_key(&pair.first)||self.boundary_profiles.contains_key(&pair.second){
+                    return Err("Cyclic patches cannot also have physical boundary time tables".into())
+                }
+            }
+        }
+        crate::periodic::resolve(mesh,&self.cyclic_pairs)
+    }
+}
 impl Default for IncompressibleSolverOptions {
     fn default() -> Self {
         Self {
             time: TimeIntegration::Steady,
+            pressure_coupling:Default::default(),
+            volume_models:Default::default(),
+            cyclic_pairs:Vec::new(),
             equations:None,
             boundary_profiles:Default::default(),
             turbulence: crate::turbulence::TurbulenceOptions::default(),
@@ -332,6 +355,14 @@ impl IncompressibleCase {
                 }
             }
         }
+        for pair in &self.solver.cyclic_pairs{
+            for name in [&pair.first,&pair.second]{
+                if self.boundaries.iter().any(|(n,_)|n==name){return Err(IncompressibleCaseError::Numerics(NumericsError::DuplicateBoundaryPatchCondition{patch:name.clone()}))}
+                velocity_assignments.push((name.as_str(),VelocityBoundaryCondition::ZeroGradient));
+                pressure_assignments.push((name.as_str(),ScalarBoundaryCondition::ZeroGradient));
+                correction_assignments.push((name.as_str(),ScalarBoundaryCondition::ZeroGradient));
+            }
+        }
         let mut velocity_boundary =
             ResolvedVelocityBoundaryConditions::strict(&self.mesh, &velocity_assignments)?;
         let mut pressure_boundary =
@@ -471,6 +502,24 @@ impl IncompressibleCase {
                 }
             }
         }
+        if !self.solver.cyclic_pairs.is_empty(){
+            let cyclic=std::sync::Arc::new(self.solver.resolve_cyclic(&self.mesh).map_err(|message|IncompressibleCaseError::InvalidCyclic{message})?);
+            velocity_boundary.set_cyclic(cyclic.clone());pressure_boundary.set_cyclic(cyclic.clone());pressure_correction_boundary.set_cyclic(cyclic.clone());
+            let u=|cell:usize|->Vec3{if let Some(u)=velocity{return u[cell]}
+                match &self.initial_conditions{
+                    IncompressibleInitialConditions::Uniform{velocity,..}=>*velocity,
+                    IncompressibleInitialConditions::Fields{velocity,..}|IncompressibleInitialConditions::Restart{velocity,..}=>velocity.values().get(cell).copied().unwrap_or(Vec3::ZERO),
+                }};
+            for (i,face) in self.mesh.faces().iter().enumerate(){
+                if let Some(link)=cyclic.link(i){
+                    if i>link.peer_face{continue}
+                    let peer=&self.mesh.faces()[link.peer_face];let image=self.mesh.cells()[peer.owner].center-link.translation;
+                    let a=(face.center-self.mesh.cells()[face.owner].center).norm();let b=(face.center-image).norm();
+                    let phi=((u(face.owner)*b+u(peer.owner)*a)/(a+b)).dot(face.area_vector);
+                    boundary_flux[i]=phi;boundary_flux[link.peer_face]=-phi;
+                }
+            }
+        }
         Ok(ResolvedIncompressibleBoundaries {
             velocity_boundary,
             pressure_boundary,
@@ -544,6 +593,7 @@ impl ResolvedIncompressibleBoundaries {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum IncompressibleCaseError {
+    InvalidCyclic {message:String},
     Field(FieldError),
     Numerics(crate::NumericsError),
     UnknownBoundaryPatch { patch: String },
@@ -974,6 +1024,9 @@ fn solve_incompressible_on_pool(
     options.coupling_relative_tolerance = case.solver.coupling_relative_tolerance;
     options.velocity_relaxation = case.solver.velocity_relaxation;
     options.pressure_relaxation = case.solver.pressure_relaxation;
+    options.pressure_coupling=case.solver.pressure_coupling;
+    options.volume_models=case.solver.volume_models;
+    if !case.solver.cyclic_pairs.is_empty(){options.pressure_boundary=Some(resolved.pressure_boundary());options.pressure_correction_boundary=Some(resolved.pressure_correction_boundary());}
     options.equations=case.solver.equations.as_ref();
     options.momentum_solver = case.solver.equations.as_ref().map_or(case.solver.momentum_solver,|e|e.velocity.options());
     options.pressure_solver = case.solver.equations.as_ref().map_or(case.solver.pressure_solver,|e|e.pressure.options());
@@ -1143,7 +1196,7 @@ fn solve_incompressible_on_pool(
         .faces()
         .iter()
         .enumerate()
-        .filter(|(_, face)| face.neighbour.is_none())
+        .filter(|(i, face)| face.neighbour.is_none() && resolved.pressure_boundary().cyclic_link(*i).is_none())
         .map(|(face, _)| state.face_flux[face])
         .fold((0.0, 0.0), |(inflow, outflow), flux| {
             if flux < 0.0 {

@@ -8,6 +8,8 @@ pub mod app;
 pub mod compressible;
 pub mod cases;
 pub mod equations;
+pub mod volume_models;
+pub mod periodic;
 pub mod field;
 pub mod fields;
 pub mod geometry;

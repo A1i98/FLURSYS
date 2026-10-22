@@ -255,6 +255,7 @@ pub struct Settings {
     pub initial: Primitive,
     pub regions: Vec<InitialRegion>,
     pub boundaries: BTreeMap<String, Boundary>,
+    pub cyclic_pairs: Vec<crate::periodic::TranslationalCyclicPair>,
 }
 impl Default for Settings {
     fn default() -> Self {
@@ -274,11 +275,15 @@ impl Default for Settings {
             },
             regions: vec![],
             boundaries: BTreeMap::new(),
+            cyclic_pairs: Vec::new(),
         }
     }
 }
 impl Settings {
-    fn validate(&self, mesh: &UnstructuredMesh) -> Result<Vec<Option<Boundary>>, String> {
+    fn validate(
+        &self,
+        mesh: &UnstructuredMesh,
+    ) -> Result<(Vec<Option<Boundary>>, crate::periodic::CyclicMap), String> {
         self.gas.validate()?;
         self.initial.validate()?;
         self.viscosity
@@ -316,8 +321,22 @@ impl Settings {
                 }
             }
         }
+        let cyclic = crate::periodic::resolve(mesh, &self.cyclic_pairs)?;
         let mut bc = vec![None; mesh.face_count()];
         for patch in mesh.boundary_patches() {
+            if patch
+                .face_indices
+                .first()
+                .is_some_and(|&i| cyclic.link(i).is_some())
+            {
+                if self.boundaries.contains_key(&patch.name) {
+                    return Err(format!(
+                        "Cyclic patch {} also has a physical boundary; remove that assignment",
+                        patch.name
+                    ));
+                }
+                continue;
+            }
             let b = *self
                 .boundaries
                 .get(&patch.name)
@@ -360,10 +379,10 @@ impl Settings {
             .faces()
             .iter()
             .enumerate()
-            .any(|(i, f)| f.neighbour.is_none() && bc[i].is_none())
+            .any(|(i, f)| f.neighbour.is_none() && bc[i].is_none() && cyclic.link(i).is_none())
         {
             return Err("Unassigned exterior face".into());
         }
-        Ok(bc)
+        Ok((bc, cyclic))
     }
 }
