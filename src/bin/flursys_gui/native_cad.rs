@@ -61,6 +61,12 @@ impl Gpu {
         renderer
             .callback_resources
             .insert(cad_workbench::gpu::Renderer::new(&device, target, None));
+        let ctx = egui::Context::default();
+        // Font installation takes effect at the next frame boundary. Register
+        // named CAD families before run_ui; installing inside ui() is too late
+        // for ui-bold/ui-semibold on the first frame of an embedded context.
+        cad_workbench::fonts::setup_bundled_fonts(&ctx);
+        cad_workbench::fonts::load_system_fonts_in_background(&ctx);
         let mut app = cad_workbench::SolveApp::new(cad_engine::Session::default(), services());
         app.home.open = false;
         app.custom_titlebar = false;
@@ -71,7 +77,7 @@ impl Gpu {
             device,
             queue,
             renderer,
-            ctx: egui::Context::default(),
+            ctx,
             app,
             start: Instant::now(),
             modifiers: Default::default(),
