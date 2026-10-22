@@ -6,9 +6,11 @@ mod boundary;
 mod transport;
 pub use boundary::TurbulenceInlet;
 mod k_epsilon;
+mod realizable;
+mod spalart_allmaras;
 mod wall_distance;
 mod wall_functions;
-pub use wall_functions::{smooth_wall, WallTreatment};
+pub use wall_functions::{WallTreatment, smooth_wall};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -20,6 +22,24 @@ pub enum TurbulenceModel {
     Smagorinsky,
     Wale,
     KEpsilon,
+    RngKEpsilon,
+    RealizableKEpsilon,
+    SpalartAllmaras,
+}
+impl TurbulenceModel {
+    pub fn uses_epsilon(self) -> bool {
+        matches!(
+            self,
+            Self::KEpsilon | Self::RngKEpsilon | Self::RealizableKEpsilon
+        )
+    }
+    pub(crate) fn epsilon_cmu(self) -> f64 {
+        if self == Self::RngKEpsilon {
+            0.0845
+        } else {
+            0.09
+        }
+    }
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -32,6 +52,7 @@ pub struct TurbulenceOptions {
     pub omega: f64,
     /// k-epsilon incoming dissipation, m²/s³.
     pub epsilon: f64,
+    pub nu_tilda: f64,
     pub relaxation: f64,
     pub relative_tolerance: f64,
     pub ck: f64,
@@ -47,6 +68,7 @@ impl Default for TurbulenceOptions {
             k: 1e-4,
             omega: 1.0,
             epsilon: 1e-5,
+            nu_tilda: 1e-5,
             relaxation: 0.5,
             relative_tolerance: 1e-6,
             ck: 0.094,
@@ -57,25 +79,33 @@ impl Default for TurbulenceOptions {
 }
 impl TurbulenceOptions {
     pub fn validate(&self) -> Result<(), String> {
-        if self.wall_treatment == WallTreatment::EquilibriumKEpsilon
-            && self.model != TurbulenceModel::KEpsilon
-        {
+        if self.wall_treatment == WallTreatment::EquilibriumKEpsilon && !self.model.uses_epsilon() {
             return Err("Equilibrium wall treatment requires k-epsilon".into());
+        }
+        if self.wall_treatment == WallTreatment::EquilibriumKOmega
+            && !matches!(
+                self.model,
+                TurbulenceModel::KOmega | TurbulenceModel::KOmegaSst
+            )
+        {
+            return Err("Omega wall functions require k-omega or SST".into());
         }
         for b in self.inlets.values() {
             b.validate()?;
+            if matches!(b, TurbulenceInlet::ModifiedViscosity { .. })
+                != (self.model == TurbulenceModel::SpalartAllmaras)
+            {
+                return Err("SA requires modified-viscosity incoming data; other RANS models require k/omega/epsilon or intensity/length".into());
+            }
         }
-        if [
-            self.k,
-            self.omega,
-            self.epsilon,
-            self.ck,
-            self.ce,
-            self.cw,
-            self.relative_tolerance,
-        ]
-        .iter()
-        .any(|x| !x.is_finite() || *x <= 0.0)
+        if !self.nu_tilda.is_finite() || self.nu_tilda < 0.0 {
+            return Err("SA modified viscosity must be finite and nonnegative".into());
+        }
+        let constants = [self.k, self.omega, self.epsilon, self.ck, self.ce, self.cw];
+        if (self.model != TurbulenceModel::SpalartAllmaras
+            && constants.iter().any(|x| !x.is_finite() || *x <= 0.0))
+            || !self.relative_tolerance.is_finite()
+            || self.relative_tolerance <= 0.0
             || !self.relaxation.is_finite()
             || self.relaxation <= 0.0
             || self.relaxation > 1.0
@@ -87,7 +117,12 @@ impl TurbulenceOptions {
     pub fn is_rans(&self) -> bool {
         matches!(
             self.model,
-            TurbulenceModel::KOmega | TurbulenceModel::KOmegaSst | TurbulenceModel::KEpsilon
+            TurbulenceModel::KOmega
+                | TurbulenceModel::KOmegaSst
+                | TurbulenceModel::KEpsilon
+                | TurbulenceModel::RngKEpsilon
+                | TurbulenceModel::RealizableKEpsilon
+                | TurbulenceModel::SpalartAllmaras
         )
     }
 }
@@ -98,15 +133,32 @@ pub struct TurbulenceFields {
     pub omega: CellField<f64>,
     pub nut: CellField<f64>,
     pub epsilon: Option<CellField<f64>>,
+    pub nu_tilda: Option<CellField<f64>>,
 }
 impl TurbulenceFields {
     pub fn new(mesh: &UnstructuredMesh, options: &TurbulenceOptions) -> Self {
         Self {
             model: options.model,
-            k: CellField::filled(mesh, options.k),
-            omega: CellField::filled(mesh, options.omega),
+            k: CellField::filled(
+                mesh,
+                if options.model == TurbulenceModel::SpalartAllmaras {
+                    0.0
+                } else {
+                    options.k
+                },
+            ),
+            omega: CellField::filled(
+                mesh,
+                if options.model == TurbulenceModel::SpalartAllmaras {
+                    0.0
+                } else {
+                    options.omega
+                },
+            ),
             nut: CellField::filled(mesh, 0.0),
-            epsilon: (options.model == TurbulenceModel::KEpsilon)
+            nu_tilda: (options.model == TurbulenceModel::SpalartAllmaras)
+                .then(|| CellField::filled(mesh, options.nu_tilda)),
+            epsilon: (options.model.uses_epsilon())
                 .then(|| CellField::filled(mesh, options.epsilon)),
         }
     }
@@ -193,7 +245,7 @@ impl Closure {
                 }
             }
         }
-        if config.model == TurbulenceModel::KEpsilon
+        if config.model.uses_epsilon()
             && config.wall_treatment != WallTreatment::EquilibriumKEpsilon
             && walls.iter().any(|w| *w)
         {
@@ -201,16 +253,33 @@ impl Closure {
         }
         let distance = if matches!(
             config.model,
-            TurbulenceModel::KOmega | TurbulenceModel::KOmegaSst
+            TurbulenceModel::KOmega | TurbulenceModel::KOmegaSst | TurbulenceModel::SpalartAllmaras
         ) {
             wall_distance::distances(mesh, &walls)?
         } else {
             vec![1.0; mesh.cell_count()]
         };
-        let fields = old
+        let mut fields = old
             .clone()
             .filter(|f| f.model == config.model)
             .unwrap_or_else(|| TurbulenceFields::new(mesh, &config));
+        if let Some(v) = &fields.nu_tilda {
+            v.ensure_mesh(mesh)?;
+            if v.values().iter().any(|x| !x.is_finite() || *x < 0.0) {
+                return Err(SimpleError::PhysicalBoundary(
+                    "Invalid SA restart field".into(),
+                ));
+            }
+        }
+        if config.model == TurbulenceModel::SpalartAllmaras && fields.nu_tilda.is_none() {
+            return Err(SimpleError::PhysicalBoundary(
+                "SA restart requires nu_tilda".into(),
+            ));
+        }
+        if config.model == TurbulenceModel::SpalartAllmaras {
+            fields.k.fill(0.0);
+            fields.omega.fill(0.0);
+        }
         fields.k.ensure_mesh(mesh)?;
         fields.omega.ensure_mesh(mesh)?;
         fields.nut.ensure_mesh(mesh)?;
@@ -222,7 +291,7 @@ impl Closure {
                 ));
             }
         }
-        if config.model == TurbulenceModel::KEpsilon && fields.epsilon.is_none() {
+        if config.model.uses_epsilon() && fields.epsilon.is_none() {
             return Err(SimpleError::PhysicalBoundary(
                 "k-epsilon restart requires an epsilon field".into(),
             ));
@@ -285,6 +354,13 @@ impl Closure {
                 old.k[i] = (4.0 * old.k[i] - older.map_or(self.config.k, |v| v.k[i])) / 3.0;
                 old.omega[i] =
                     (4.0 * old.omega[i] - older.map_or(self.config.omega, |v| v.omega[i])) / 3.0;
+                if let Some(nt) = &mut old.nu_tilda {
+                    nt[i] = (4.0 * nt[i]
+                        - older
+                            .and_then(|v| v.nu_tilda.as_ref())
+                            .map_or(self.config.nu_tilda, |v| v[i]))
+                        / 3.0;
+                }
                 if let Some(e) = &mut old.epsilon {
                     e[i] = (4.0 * e[i]
                         - older
@@ -327,7 +403,9 @@ impl Closure {
     ) -> Result<(FaceField<f64>, CellField<Vec3>), SimpleError> {
         let gradient = velocity_gradient(mesh, &state.velocity, bc)?;
         let previous = self.fields.clone();
-        if self.config.model == TurbulenceModel::KEpsilon {
+        if self.config.model == TurbulenceModel::SpalartAllmaras {
+            self.advance_sa(mesh, state, &gradient, nu, dt, linear)?;
+        } else if self.config.model.uses_epsilon() {
             self.advance_epsilon(mesh, state, bc, &gradient, nu, dt, linear)?;
         } else if self.config.is_rans() {
             self.advance_rans(mesh, state, bc, &gradient, nu, dt, linear)?;
@@ -357,9 +435,18 @@ impl Closure {
             let w = self.fields.omega[i].max(1e-12);
             self.fields.nut[i] = match self.config.model {
                 TurbulenceModel::Laminar => 0.0,
+                TurbulenceModel::SpalartAllmaras => spalart_allmaras::eddy_viscosity(
+                    self.fields.nu_tilda.as_ref().map_or(0.0, |v| v[i]),
+                    nu,
+                ),
                 TurbulenceModel::KOmega => k / w,
-                TurbulenceModel::KEpsilon => {
-                    0.09 * k * k / self.fields.epsilon.as_ref().unwrap()[i].max(1e-16)
+                TurbulenceModel::KEpsilon | TurbulenceModel::RngKEpsilon => {
+                    self.config.model.epsilon_cmu() * k * k
+                        / self.fields.epsilon.as_ref().unwrap()[i].max(1e-16)
+                }
+                TurbulenceModel::RealizableKEpsilon => {
+                    let e = self.fields.epsilon.as_ref().unwrap()[i].max(1e-16);
+                    realizable::cmu(g, k, e) * k * k / e
                 }
                 TurbulenceModel::KOmegaSst => {
                     let y = self.distance[i];
@@ -376,11 +463,7 @@ impl Closure {
                     let c = 2.0 * self.config.ck * delta * (s2 - trace * trace / 3.0).max(0.0);
                     let disc = (b * b + 4.0 * a * c).sqrt();
                     let sqrt_k = if b >= 0.0 {
-                        if c == 0.0 {
-                            0.0
-                        } else {
-                            2.0 * c / (b + disc)
-                        }
+                        if c == 0.0 { 0.0 } else { 2.0 * c / (b + disc) }
                     } else {
                         (-b + disc) / (2.0 * a)
                     };
@@ -407,6 +490,9 @@ impl Closure {
         self.relative_change = relative_change(&previous.k, &self.fields.k)
             .max(relative_change(&previous.omega, &self.fields.omega))
             .max(relative_change(&previous.nut, &self.fields.nut));
+        if let (Some(a), Some(b)) = (&previous.nu_tilda, &self.fields.nu_tilda) {
+            self.relative_change = self.relative_change.max(relative_change(a, b));
+        }
         if let (Some(a), Some(b)) = (&previous.epsilon, &self.fields.epsilon) {
             self.relative_change = self.relative_change.max(relative_change(a, b));
         }
@@ -431,6 +517,7 @@ impl Closure {
                 (1.0 - l) * self.fields.nut[o] + l * self.fields.nut[n]
             };
             let inlet = if self.config.is_rans()
+                && self.config.model != TurbulenceModel::SpalartAllmaras
                 && f.neighbour.is_none()
                 && !self.walls[i]
                 && state.face_flux[i] < 0.0
@@ -439,9 +526,18 @@ impl Closure {
             } else {
                 None
             };
-            let nut = if let Some((k, w, e)) = inlet {
-                if self.config.model == TurbulenceModel::KEpsilon {
-                    0.09 * k * k / e
+            let nut = if self.config.model == TurbulenceModel::SpalartAllmaras
+                && f.neighbour.is_none()
+                && !self.walls[i]
+                && state.face_flux[i] < 0.0
+            {
+                spalart_allmaras::eddy_viscosity(self.incoming_sa(i)?, nu)
+            } else if let Some((k, w, e)) = inlet {
+                if self.config.model == TurbulenceModel::RealizableKEpsilon {
+                    // Incoming k/epsilon are prescribed; use the owner velocity gradient.
+                    realizable::cmu(&gradient[o], k, e) * k * k / e
+                } else if self.config.model.uses_epsilon() {
+                    self.config.model.epsilon_cmu() * k * k / e
                 } else {
                     k / w
                 }

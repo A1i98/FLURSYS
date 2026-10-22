@@ -3,6 +3,9 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "kebab-case")]
 pub enum TurbulenceInlet {
+    ModifiedViscosity {
+        nu_tilda: f64,
+    },
     Direct {
         k: f64,
         omega: f64,
@@ -17,6 +20,7 @@ pub enum TurbulenceInlet {
 impl TurbulenceInlet {
     pub fn validate(&self) -> Result<(), String> {
         let valid = match *self {
+            Self::ModifiedViscosity { nu_tilda } => nu_tilda.is_finite() && nu_tilda >= 0.0,
             Self::Direct { k, omega, epsilon } => [k, omega, epsilon]
                 .iter()
                 .all(|v| v.is_finite() && *v > 0.0),
@@ -40,6 +44,11 @@ impl TurbulenceInlet {
             return Err("Invalid incoming speed".into());
         }
         let values = match *self {
+            Self::ModifiedViscosity { .. } => {
+                return Err(
+                    "Modified viscosity belongs to SA, not k/omega/epsilon conversion".into(),
+                )
+            }
             Self::Direct { k, omega, epsilon } => (k, omega, epsilon),
             Self::IntensityLength { intensity, length } => {
                 let k = 1.5 * (intensity * speed).powi(2);

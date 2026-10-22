@@ -12,6 +12,8 @@ impl Closure {
         linear: LinearSolverOptions,
     ) -> Result<(), SimpleError> {
         let n = mesh.cell_count();
+        let wall = self.wall_values(mesh, state, bc, nu)?;
+        let omega_walls = self.config.wall_treatment == WallTreatment::EquilibriumKOmega;
         let mut kb = vec![None; mesh.face_count()];
         let mut wb = kb.clone();
         for (i, f) in mesh.faces().iter().enumerate() {
@@ -23,13 +25,19 @@ impl Closure {
                     (self.config.k, self.config.omega, self.config.epsilon)
                 };
                 kb[i] = Some(if self.walls[i] {
-                    ScalarBoundaryCondition::FixedValue(0.0)
+                    if omega_walls {
+                        ScalarBoundaryCondition::ZeroGradient
+                    } else {
+                        ScalarBoundaryCondition::FixedValue(0.0)
+                    }
                 } else if incoming {
                     ScalarBoundaryCondition::FixedValue(in_k)
                 } else {
                     ScalarBoundaryCondition::ZeroGradient
                 });
-                wb[i] = Some(if self.walls[i] {
+                wb[i] = Some(if self.walls[i] && omega_walls {
+                    ScalarBoundaryCondition::ZeroGradient
+                } else if self.walls[i] {
                     let y = (f.center - mesh.cells()[f.owner].center)
                         .dot(f.area_vector / f.area_vector.norm())
                         .abs();
@@ -64,7 +72,7 @@ impl Closure {
                 }
             }
             let gnu = (s2 - 2.0 / 3.0 * tr * tr).max(0.0);
-            let production = nut * gnu;
+            let production = wall.production[i].unwrap_or(nut * gnu);
             let (ak, aw, beta, gamma, cross) = if self.config.model == TurbulenceModel::KOmegaSst {
                 let cd = 2.0 * 0.856 * gradk[i].dot(gradw[i]) / w;
                 let arg = (k.sqrt() / (0.09 * w * y))
@@ -128,7 +136,7 @@ impl Closure {
             ),
             &self.walls,
             nu,
-            None,
+            if omega_walls { Some(&wall.omega) } else { None },
         )?;
         self.last_linear.insert("omega".into(), report);
         // Use the newly solved bounded omega in k destruction and SST limiter.
@@ -146,7 +154,8 @@ impl Closure {
                     }
                 }
                 let production = self.fields.nut[i] * (strain - 2.0 / 3.0 * tr * tr).max(0.0);
-                sk[i] = production.min(10.0 * 0.09 * k * w) + (-2.0 / 3.0 * tr).max(0.0) * k;
+                sk[i] = wall.production[i].unwrap_or(production.min(10.0 * 0.09 * k * w))
+                    + (-2.0 / 3.0 * tr).max(0.0) * k;
             }
         }
         let report = scalar_solve(

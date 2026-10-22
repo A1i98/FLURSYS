@@ -112,6 +112,7 @@ pub struct EquationSolvers {
     pub k: EquationControl,
     pub omega: EquationControl,
     pub epsilon: EquationControl,
+    pub nu_tilda: EquationControl,
 }
 impl Default for EquationSolvers {
     fn default() -> Self {
@@ -125,6 +126,7 @@ impl Default for EquationSolvers {
             k: Default::default(),
             omega: Default::default(),
             epsilon: Default::default(),
+            nu_tilda: Default::default(),
         }
     }
 }
@@ -137,6 +139,7 @@ impl EquationSolvers {
             self.k,
             self.omega,
             self.epsilon,
+            self.nu_tilda,
         ] {
             c.validate(false)?;
         }

@@ -1,4 +1,4 @@
-//! Independent finite-volume implementation of the standard constant-density
+//! Independent finite-volume implementation of the standard and RNG constant-density
 //! k-epsilon equations (Launder & Spalding, 1974). Optional smooth equilibrium wall treatment.
 use super::*;
 impl Closure {
@@ -12,6 +12,16 @@ impl Closure {
         dt: Option<f64>,
         linear: LinearSolverOptions,
     ) -> Result<(), SimpleError> {
+        let realizable = self.config.model == TurbulenceModel::RealizableKEpsilon;
+        let rng = self.config.model == TurbulenceModel::RngKEpsilon;
+        let (c1, c2, sigma_k, sigma_e) = if rng {
+            (1.42, 1.68, 0.71942, 0.71942)
+        } else if realizable {
+            (0.0, 1.9, 1.0, 1.2)
+        } else {
+            (1.44, 1.92, 1.0, 1.3)
+        };
+        let cmu = self.config.model.epsilon_cmu();
         let n = mesh.cell_count();
         let wall = self.wall_values(mesh, state, bc, nu)?;
         let mut kb = vec![None; mesh.face_count()];
@@ -58,12 +68,34 @@ impl Closure {
             }
             let production =
                 wall.production[i].unwrap_or(nut * (strain - 2.0 / 3.0 * tr * tr).max(0.0));
-            dk[i] += nut;
-            de[i] += nut / 1.3;
+            dk[i] += nut / sigma_k;
+            de[i] += nut / sigma_e;
             sk[i] = production + (-2.0 / 3.0 * tr).max(0.0) * k;
             sinkk[i] = e / k + (2.0 / 3.0 * tr).max(0.0);
-            se[i] = 1.44 * production * e / k + (-2.0 / 3.0 * 1.44 * tr).max(0.0) * e;
-            sinke[i] = 1.92 * e / k + (2.0 / 3.0 * 1.44 * tr).max(0.0);
+            // RNG strain correction. Split signed production to preserve a positive sink.
+            let eta = (strain - 2.0 / 3.0 * tr * tr).max(0.0).sqrt() * k / e;
+            let r = if rng {
+                // Algebraically equivalent form avoids cubing very large eta.
+                if eta > 1.0 {
+                    let inv = eta.recip();
+                    (inv * inv - inv / 4.38) / (inv.powi(3) + 0.012)
+                } else {
+                    eta * (1.0 - eta / 4.38) / (1.0 + 0.012 * eta.powi(3))
+                }
+            } else {
+                0.0
+            };
+            if realizable {
+                let mag_s = (strain - 2.0 / 3.0 * tr * tr).max(0.0).sqrt();
+                let c1_local = (1.0 / (1.0 + 5.0 / eta.max(1e-300))).max(0.43);
+                se[i] = c1_local * mag_s * e;
+                sinke[i] = c2 * e / (k + (nu * e).sqrt());
+                continue;
+            }
+            let epsilon_production = (c1 - r) * production * e / k;
+            se[i] = epsilon_production.max(0.0) + (-2.0 / 3.0 * c1 * tr).max(0.0) * e;
+            sinke[i] =
+                c2 * e / k + (2.0 / 3.0 * c1 * tr).max(0.0) + (-epsilon_production).max(0.0) / e;
         }
         let old = self.old.as_ref();
         let report = transport::scalar_solve(
@@ -92,7 +124,7 @@ impl Closure {
             if wall.epsilon[i].is_none() {
                 e[i] = e[i]
                     .max(1e-16)
-                    .max(0.09 * self.fields.k[i].max(1e-14).powi(2) / (1e5 * nu));
+                    .max(cmu * self.fields.k[i].max(1e-14).powi(2) / (1e5 * nu));
             }
             let tr = (0..3).map(|a| g[i][a][a]).sum::<f64>();
             sinkk[i] = e[i] / self.fields.k[i].max(1e-14) + (2.0 / 3.0 * tr).max(0.0);
@@ -125,7 +157,7 @@ impl Closure {
             }
             e[i] = e[i]
                 .max(1e-16)
-                .max(0.09 * self.fields.k[i].powi(2) / (1e5 * nu));
+                .max(cmu * self.fields.k[i].powi(2) / (1e5 * nu));
         }
         Ok(())
     }

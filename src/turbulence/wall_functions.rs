@@ -8,6 +8,7 @@ pub enum WallTreatment {
     #[default]
     Resolved,
     EquilibriumKEpsilon,
+    EquilibriumKOmega,
 }
 const KAPPA: f64 = 0.41;
 const E: f64 = 9.8;
@@ -36,11 +37,15 @@ pub fn smooth_wall(k: f64, y: f64, nu: f64) -> Result<(f64, f64), String> {
 }
 pub(super) struct WallValues {
     pub epsilon: Vec<Option<f64>>,
+    pub omega: Vec<Option<f64>>,
     pub production: Vec<Option<f64>>,
 }
 impl Closure {
     pub(super) fn equilibrium_wall(&self) -> bool {
-        self.config.wall_treatment == WallTreatment::EquilibriumKEpsilon
+        matches!(
+            self.config.wall_treatment,
+            WallTreatment::EquilibriumKEpsilon | WallTreatment::EquilibriumKOmega
+        )
     }
     pub(super) fn wall_nut(
         &self,
@@ -70,6 +75,7 @@ impl Closure {
         let mut weight = vec![0.0; n];
         let mut eps = vec![0.0; n];
         let mut prod = vec![0.0; n];
+        let mut omega = vec![0.0; n];
         if self.equilibrium_wall() {
             for (i, f) in mesh.faces().iter().enumerate() {
                 if !self.walls[i] {
@@ -103,12 +109,23 @@ impl Closure {
                         "Non-finite wall epsilon or production".into(),
                     ));
                 }
+                let omega_value = (6.0 * nu / (0.075 * y * y))
+                    .hypot(k.sqrt() / (0.09_f64.powf(0.25) * KAPPA * y));
+                if !omega_value.is_finite() {
+                    return Err(SimpleError::PhysicalBoundary(
+                        "Non-finite omega wall function".into(),
+                    ));
+                }
+                omega[o] += f.area * omega_value;
                 weight[o] += f.area;
                 eps[o] += f.area * e;
                 prod[o] += f.area * g;
             }
         }
         Ok(WallValues {
+            omega: (0..n)
+                .map(|i| (weight[i] > 0.0).then(|| omega[i] / weight[i]))
+                .collect(),
             epsilon: (0..n)
                 .map(|i| (weight[i] > 0.0).then(|| eps[i] / weight[i]))
                 .collect(),

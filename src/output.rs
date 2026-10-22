@@ -338,7 +338,9 @@ pub fn write_unstructured_legacy_vtk(
         writeln!(writer, "{:.12e} {:.12e} {:.12e}", value.x, value.y, value.z).map_err(io_err)?;
     }
     if let Some(t)=&solution.turbulence {
-        write_scalar_cell_field(&mut writer,"turbulent_k",t.k.values())?;
+        if t.model!=crate::turbulence::TurbulenceModel::SpalartAllmaras{write_scalar_cell_field(&mut writer,"turbulent_k",t.k.values())?;}
+        if let Some(v)=&t.nu_tilda{v.ensure_mesh(mesh).map_err(|e|format!("{e:?}"))?;write_scalar_cell_field(&mut writer,"modified_turbulent_viscosity",v.values())?;}
+        if let Some(v)=&t.epsilon{v.ensure_mesh(mesh).map_err(|e|format!("{e:?}"))?;write_scalar_cell_field(&mut writer,"turbulent_dissipation",v.values())?;}
         if matches!(t.model,crate::turbulence::TurbulenceModel::KOmega|crate::turbulence::TurbulenceModel::KOmegaSst) {write_scalar_cell_field(&mut writer,"specific_dissipation",t.omega.values())?;}
         write_scalar_cell_field(&mut writer,"turbulent_viscosity",t.nut.values())?;
     }
