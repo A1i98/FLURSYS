@@ -146,7 +146,7 @@ required-features = ["gui"]
 
 [features]
 default = ["gui"]
-gui = ["dep:rfd", "dep:slint", "dep:png", "dep:gif", "dep:cad-workbench", "dep:cad-engine", "dep:cad-kernel", "dep:cad-render", "dep:egui", "dep:egui-wgpu", "dep:pollster", "dep:arboard"]
+gui = ["dep:rfd", "dep:slint", "dep:png", "dep:gif", "dep:cad-workbench", "dep:cad-engine", "dep:cad-kernel", "dep:cad-render", "dep:cad-gpu", "dep:egui", "dep:egui-wgpu", "dep:pollster", "dep:arboard"]
 gui-live-preview = ["gui", "slint/live-preview"]
 
 # Slint and its rendering dependencies make full debug info and incremental
@@ -170,6 +170,7 @@ sha2 = { workspace = true }
 arboard = { version = "3.6", default-features = false, optional = true }
 cad-workbench = { package = "solidcraft-ui-egui", path = "vendor/cad-workbench/crates/ui-egui", features = ["host-integration"], optional = true }
 cad-engine = { package = "solidcraft-engine", path = "vendor/cad-workbench/crates/engine", optional = true }
+cad-gpu = { package = "solidcraft-gpu", path = "vendor/cad-workbench/crates/gpu", optional = true }
 cad-render = { package = "solidcraft-render", path = "vendor/cad-workbench/crates/render", optional = true }
 cad-kernel = { package = "solidcraft-kernel", path = "vendor/cad-workbench/crates/kernel", optional = true }
 egui = { version = "0.36", optional = true }

@@ -1890,6 +1890,7 @@ dependencies = [
  "slint-build",
  "solidcraft-engine",
  "solidcraft-geom",
+ "solidcraft-gpu",
  "solidcraft-kernel",
  "solidcraft-render",
  "solidcraft-sketch",

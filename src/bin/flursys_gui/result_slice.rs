@@ -34,34 +34,39 @@ pub(crate) fn render_result_slice(
         return render_empty_image();
     };
     let (width, height) = (PREVIEW_WIDTH, PREVIEW_HEIGHT);
-    let mut pixels = vec![0u8; (width * height * 4) as usize];
-    fill(&mut pixels, [9, 16, 22, 255]);
     let span_x = (hi[axes.0] - lo[axes.0]).max(1e-12);
     let span_y = (hi[axes.1] - lo[axes.1]).max(1e-12);
     let scale = (f64::from(width) * 0.85 / span_x).min(f64::from(height) * 0.8 / span_y);
     let (minimum, maximum) = display_range
         .or_else(|| dataset.scalar_range(field).ok())
         .unwrap_or((0.0, 1.0));
+    let view = ViewTransform {
+        center_x: (lo[axes.0] + hi[axes.0]) * 0.5,
+        center_y: (lo[axes.1] + hi[axes.1]) * 0.5,
+        pixels_per_unit: scale,
+        viewport_width: f64::from(width),
+        viewport_height: f64::from(height),
+    };
+    let mut scene = super::super::scene_view::SceneView::planar(&view, span_x.hypot(span_y) * 0.5);
+    let values = dataset.scalar_values(field);
     for (cell, polygon) in polygons {
-        let value = dataset.scalar_values(field)[cell];
+        let Some(&value) = values.get(cell) else {
+            continue;
+        };
         let points = polygon
             .iter()
             .map(|p| {
                 let v = xyz(*p);
-                (
-                    f64::from(width) * 0.5 + (v[axes.0] - (lo[axes.0] + hi[axes.0]) * 0.5) * scale,
-                    f64::from(height) * 0.5 - (v[axes.1] - (lo[axes.1] + hi[axes.1]) * 0.5) * scale,
-                )
+                Vec3::new(v[axes.0], v[axes.1], 0.0)
             })
             .collect::<Vec<_>>();
-        draw_filled_polygon(
-            &mut pixels,
-            width,
-            height,
+        scene.polygon(
             &points,
+            &[],
             scalar_color(normalize(value, minimum, maximum), colormap),
         );
     }
+    let mut pixels = scene.pixels(width, height, true, false);
     draw_colormap_legend(&mut pixels, width, height, colormap);
     image_from_rgba(width, height, pixels)
 }

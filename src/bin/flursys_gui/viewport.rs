@@ -115,6 +115,12 @@ impl Camera3d {
         }
     }
 
+    /// Same camera used by native CAD rendering and CPU-side entity picking.
+    pub fn scene_camera(&self) -> (cad_camera::Camera, f64) {
+        let mut camera=self.camera;
+        camera.pan(self.pan.0,self.pan.1,f64::from(self.raster.1));
+        (camera,self.radius)
+    }
     /// Supersampling keeps navigation and selection in logical preview pixels.
     pub fn at_resolution(mut self, width: u32, height: u32) -> Self {
         let factor = (f64::from(width) / f64::from(self.raster.0))

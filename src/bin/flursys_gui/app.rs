@@ -6629,6 +6629,8 @@ fn refresh_ui(ui: &MainWindow, state: &AppState) {
 const PREVIEW_WIDTH: u32 = 520;
 const PREVIEW_HEIGHT: u32 = 320;
 
+#[path = "scene_view.rs"]
+mod scene_view;
 #[path = "render.rs"]
 mod render;
 #[path = "viewport.rs"]

@@ -8,7 +8,7 @@ use super::{residual_level, MeshColorMode, ResidualSample, PREVIEW_HEIGHT, PREVI
 use flursys::{
     BoundaryConditionKind, BoundaryFace, ExtrudedMesh3D, FieldUpdate,
     GeometryPart, GeometryPartKind, GeometrySelectionTarget, GeometrySketch, GeometryTopology,
-    MeshDimension, MeshQualityMetric, MeshRenderCache, MeshSelection, MeshSelectionTarget,
+    MeshDimension, MeshQualityMetric, MeshRenderCache, MeshSelection,
     Project, ProjectCase, ResultFieldKind, ResultRenderCache, SketchAxis,
     SketchEntityKind, StreamlinePath, StructuredMesh2D, UnstructuredMesh, Vec3, ViewTransform,
 };
@@ -16,7 +16,7 @@ use slint::{Image, Rgba8Pixel, SharedPixelBuffer};
 use std::collections::VecDeque;
 
 #[cfg(test)]
-use flursys::EnergyModel;
+use flursys::{EnergyModel, MeshSelectionTarget};
 
 type MeshNode = (usize, usize, usize);
 type BoundaryFaceNodes = (BoundaryFace, [MeshNode; 4]);
@@ -143,137 +143,7 @@ pub(super) fn render_workbench_mesh(
     view_3d: View3d,
     clip: Option<super::mesh_inspection::MeshClip>,
 ) -> Image {
-    // Keep picking/navigation in logical pixels while drawing a sharper mesh.
-    let raster_scale = 2_u32;
-    let (width, height) = (PREVIEW_WIDTH * raster_scale, PREVIEW_HEIGHT * raster_scale);
-    let camera = Camera3d::fit(cache.positions().iter().copied(), view_3d)
-        .at_resolution(width, height);
-    let mut pixels = vec![0_u8; (width * height * 4) as usize];
-    let mut depth_buffer = vec![f64::INFINITY; (width * height) as usize];
-    let wireframe = !display_mode.draws_surface();
-    // Empty wireframe pixels reveal the actual viewport, not opaque cell faces.
-    if !wireframe { fill(&mut pixels, [46, 52, 64, 255]); }
-    let visible_cells = clip.filter(|_|mesh.dimension()==MeshDimension::ThreeD)
-        .map(|c|c.mask(mesh,cache)).unwrap_or_else(||vec![true;mesh.cell_count()]);
-    let visible_cell = |i|super::mesh_inspection::face_cell(mesh,i,&visible_cells);
-    let values = cache.quality().values(metric);
-    let (minimum, maximum) = cache.quality().color_range(metric).unwrap_or((0.0, 0.0));
-    let metric_color=|value:f64| if metric==MeshQualityMetric::CellMeasure {quality_color(-value,-maximum,-minimum)}else{quality_color(value,minimum,maximum)};
-    let face_color = |face_index: usize| {
-        let face = &mesh.faces()[face_index];
-        let matches = |entry: MeshSelection| match entry.target() {
-            MeshSelectionTarget::Face(i) => i == face_index,
-            MeshSelectionTarget::Cell(i) => i == face.owner || face.neighbour == Some(i),
-        };
-        let selected_face = selected.is_some_and(matches);
-        let hovered_face = hovered.is_some_and(matches);
-        let patch_selected = highlighted_patch.is_some()
-            && highlighted_patch == cache.face_patch_indices()[face_index];
-        if selected_face {
-            [255, 214, 95, 255]
-        } else if hovered_face {
-            [127, 234, 188, 255]
-        } else if patch_selected {
-            [255, 214, 95, 255]
-        } else {
-            match color_mode {
-                MeshColorMode::Neutral => [70, 109, 128, 255],
-                MeshColorMode::Patches => patch_color(cache.face_patch_indices()[face_index]),
-                MeshColorMode::Quality => metric_color(values[visible_cell(face_index).unwrap_or(face.owner)]),
-            }
-        }
-    };
-    if display_mode.draws_surface() {
-        if mesh.dimension() == MeshDimension::TwoD {
-            for (cell_index, &value) in values.iter().enumerate().take(mesh.cell_count()) {
-                let mut color = match color_mode {
-                    MeshColorMode::Neutral | MeshColorMode::Patches => [48, 79, 96, 255],
-                    MeshColorMode::Quality => metric_color(value),
-                };
-                if selected
-                    .is_some_and(|entry| entry.target() == MeshSelectionTarget::Cell(cell_index))
-                {
-                    color = [255, 214, 95, 255];
-                } else if hovered
-                    .is_some_and(|entry| entry.target() == MeshSelectionTarget::Cell(cell_index))
-                {
-                    color = [127, 234, 188, 255];
-                }
-                if let Some(polygon) = cache.cell_polygon(cell_index) {
-                    let points: Vec<_> = polygon
-                        .iter()
-                        .map(|&point| { let (x,y)=view.world_to_screen(point); (x * f64::from(raster_scale), y * f64::from(raster_scale)) })
-                        .collect();
-                    draw_filled_polygon(&mut pixels, width, height, &points, color);
-                }
-            }
-        } else {
-            for (face_index, face) in mesh.faces().iter().enumerate() {
-                if visible_cell(face_index).is_none() {continue;}
-                for k in 1..face.vertices.len().saturating_sub(1) {
-                    let triangle=[face.vertices[0],face.vertices[k],face.vertices[k+1]];
-                    let projected=triangle.map(|index| {
-                        let p=cache.positions()[index];let (x,y)=camera.screen(p);(x,y,camera.depth(&[p]))
-                    });
-                    draw_cad_triangle(&mut pixels,&mut depth_buffer,width,height,projected,face_color(face_index));
-                }
-            }
-        }
-    }
-    if display_mode.draws_edges() {
-        for (face_index, face) in mesh.faces().iter().enumerate() {
-            if mesh.dimension() == MeshDimension::ThreeD && visible_cell(face_index).is_none() {
-                continue;
-            }
-            let face_tint = face_color(face_index);
-            let emphasized = face_tint == [255, 214, 95, 255] || face_tint == [127, 234, 188, 255];
-            let color = if emphasized { face_tint } else if wireframe {
-                if color_mode == MeshColorMode::Neutral { [225, 235, 248, 255] }
-                else { face_tint.map(|v| (f64::from(v) * 0.65 + 255.0 * 0.35).round() as u8) }
-            } else {
-                // Edges must differ from the fill, including quality colours.
-                let luminance = 0.2126*f64::from(face_tint[0]) + 0.7152*f64::from(face_tint[1]) + 0.0722*f64::from(face_tint[2]);
-                if luminance > 110.0 { [12, 18, 26, 255] } else { [222, 235, 248, 255] }
-            };
-            for (&a, &b) in face
-                .vertices
-                .iter()
-                .zip(face.vertices.iter().cycle().skip(1))
-                .take(face.vertices.len())
-            {
-                let project = |point: flursys::Vec3| {
-                    if mesh.dimension() == MeshDimension::TwoD {
-                        let (x,y)=view.world_to_screen((point.x, point.y));
-                        (x*f64::from(raster_scale),y*f64::from(raster_scale))
-                    } else {
-                        camera.screen(point)
-                    }
-                };
-                if mesh.dimension() == MeshDimension::ThreeD {
-                    draw_cad_curve(
-                        &mut pixels,
-                        &depth_buffer,
-                        width,
-                        height,
-                        &camera,
-                        &[mesh.points()[a].position, mesh.points()[b].position],
-                        color,
-                    );
-                    continue;
-                }
-                let a = project(mesh.points()[a].position);
-                let b = project(mesh.points()[b].position);
-                for oy in 0..raster_scale as i32 {
-                    for ox in 0..raster_scale as i32 {
-                        draw_line(&mut pixels, width, height,
-                            (a.0 as i32 + ox, a.1 as i32 + oy),
-                            (b.0 as i32 + ox, b.1 as i32 + oy), color);
-                    }
-                }
-            }
-        }
-    }
-    image_from_rgba(width, height, pixels)
+    super::scene_view::mesh(mesh, cache, view, display_mode, color_mode, metric, selected, hovered, highlighted_patch, view_3d, clip)
 }
 
 /// Renders immutable archived or live unstructured result data. Surface values
@@ -295,20 +165,7 @@ pub(super) fn render_persisted_result(
     view_3d: View3d,
 ) -> Image {
     let (width, height) = (PREVIEW_WIDTH, PREVIEW_HEIGHT);
-    let mut pixels = render_persisted_pixels(
-        width,
-        height,
-        cache,
-        field,
-        colormap,
-        plot,
-        vector_density,
-        vector_scale,
-        display_range,
-        view,
-        streamlines,
-        view_3d,
-    );
+    let mut pixels = super::scene_view::results(cache, field, colormap, plot, vector_density, vector_scale, display_range, view, streamlines, view_3d, edges, width, height);
     if cache.mesh_cache().dimension() == MeshDimension::TwoD {
         if matches!(plot, 1 | 2) {
             draw_result_contours(
@@ -322,27 +179,13 @@ pub(super) fn render_persisted_result(
                 levels,
             );
         }
-        if edges {
-            for edge in cache.mesh_cache().edges() {
-                let a = cache.mesh_cache().positions()[edge[0]];
-                let b = cache.mesh_cache().positions()[edge[1]];
-                let a = view.world_to_screen((a.x, a.y));
-                let b = view.world_to_screen((b.x, b.y));
-                draw_line(
-                    &mut pixels,
-                    width,
-                    height,
-                    (a.0 as i32, a.1 as i32),
-                    (b.0 as i32, b.1 as i32),
-                    [62, 91, 106, 255],
-                );
-            }
-        }
+
     }
     draw_colormap_legend(&mut pixels, width, height, colormap);
     image_from_rgba(width, height, pixels)
 }
 
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 fn render_persisted_pixels(
     width: u32,
@@ -358,90 +201,7 @@ fn render_persisted_pixels(
     streamlines: &[StreamlinePath],
     view_3d: View3d,
 ) -> Vec<u8> {
-    let camera = Camera3d::fit(cache.mesh_cache().positions().iter().copied(), view_3d);
-    let mut pixels = vec![0_u8; (width * height * 4) as usize];
-    fill(&mut pixels, [46, 52, 64, 255]);
-    let mesh_cache = cache.mesh_cache();
-    let values: Vec<f64> = (0..cache.cell_count())
-        .filter_map(|cell| cache.scalar_for_cell(field, cell))
-        .collect();
-    let mut depth_buffer = if mesh_cache.dimension() == MeshDimension::ThreeD {
-        vec![f64::INFINITY; (width * height) as usize]
-    } else {
-        Vec::new()
-    };
-    let (minimum, maximum) = display_range.unwrap_or_else(|| scalar_range(&values, false));
-    if mesh_cache.dimension() == MeshDimension::TwoD && plot != 3 {
-        for (cell, value) in values.iter().copied().enumerate() {
-            if let Some(polygon) = mesh_cache.cell_polygon(cell) {
-                let points: Vec<_> = polygon
-                    .iter()
-                    .map(|&point| view.world_to_screen(point))
-                    .collect();
-                draw_filled_polygon(
-                    &mut pixels,
-                    width,
-                    height,
-                    &points,
-                    scalar_color(normalize(value, minimum, maximum), colormap),
-                );
-            }
-        }
-    } else if mesh_cache.dimension() == MeshDimension::ThreeD {
-        for (triangle, &face) in mesh_cache
-            .surface_triangles()
-            .iter()
-            .zip(mesh_cache.triangle_faces())
-        {
-            let Some(value) = cache.scalar_for_face(field, face) else {
-                continue;
-            };
-            let projected = triangle.map(|index| {
-                let p = mesh_cache.positions()[index];
-                let (x, y) = camera.screen(p);
-                (x, y, camera.depth(&[p]))
-            });
-            draw_cad_triangle(
-                &mut pixels,
-                &mut depth_buffer,
-                width,
-                height,
-                projected,
-                if plot == 3 {
-                    [9, 16, 22, 255]
-                } else {
-                    scalar_color(normalize(value, minimum, maximum), colormap)
-                },
-            );
-        }
-    }
-
-    if matches!(plot, 2 | 3) {
-        match mesh_cache.dimension() {
-            MeshDimension::TwoD => draw_result_vectors(
-                &mut pixels,
-                width,
-                height,
-                cache,
-                view,
-                vector_density,
-                vector_scale,
-            ),
-            MeshDimension::ThreeD => draw_result_vectors_3d(
-                &mut pixels,
-                width,
-                height,
-                cache,
-                vector_density,
-                vector_scale,
-                view_3d,
-                &depth_buffer,
-            ),
-        }
-    }
-    draw_streamlines(&mut pixels, width, height, streamlines, view);
-    draw_colormap_legend(&mut pixels, width, height, colormap);
-    pixels
+    super::scene_view::results(cache, field, colormap, plot, vector_density, vector_scale, display_range, view, streamlines, view_3d, false, width, height)
 }
 
 fn draw_streamlines(
@@ -619,7 +379,7 @@ fn draw_result_vectors_3d(
     }
 }
 
-fn vector_sample_stride(cell_count: usize, density: i32) -> usize {
+pub(super) fn vector_sample_stride(cell_count: usize, density: i32) -> usize {
     let target = match density.clamp(0, 2) {
         0 => 48,
         1 => 96,
@@ -628,7 +388,7 @@ fn vector_sample_stride(cell_count: usize, density: i32) -> usize {
     cell_count.div_ceil(target).max(1)
 }
 
-fn vector_scale_multiplier(text: &str) -> f64 {
+pub(super) fn vector_scale_multiplier(text: &str) -> f64 {
     match text.trim() {
         "" => 1.0,
         value => value
@@ -699,7 +459,7 @@ fn draw_filled_polygon(
     }
 }
 
-fn patch_color(index: Option<usize>) -> [u8; 4] {
+pub(super) fn patch_color(index: Option<usize>) -> [u8; 4] {
     const COLORS: [[u8; 4]; 6] = [
         [72, 166, 190, 255],
         [235, 177, 86, 255],
@@ -710,7 +470,7 @@ fn patch_color(index: Option<usize>) -> [u8; 4] {
     ];
     index.map_or([70, 109, 128, 255], |value| COLORS[value % COLORS.len()])
 }
-fn quality_color(value: f64, minimum: f64, maximum: f64) -> [u8; 4] {
+pub(super) fn quality_color(value: f64, minimum: f64, maximum: f64) -> [u8; 4] {
     let t = if maximum > minimum {
         ((value - minimum) / (maximum - minimum)).clamp(0.0, 1.0)
     } else {
@@ -975,298 +735,7 @@ pub(super) fn render_canonical_geometry_3d(
     hovered_target: Option<GeometrySelectionTarget>,
     display_mode: i32,
 ) -> Image {
-    // Supersample the CAD surface; picking remains in logical preview pixels.
-    let (width, height) = (PREVIEW_WIDTH * 2, PREVIEW_HEIGHT * 2);
-    let mut pixels = vec![0_u8; (width * height * 4) as usize];
-    fill(&mut pixels, [46, 52, 64, 255]);
-    let mut surfaces = topology.renderable_faces();
-    let Some(camera)=canonical_camera(topology,view) else {return image_from_rgba(width,height,pixels);};
-    let camera=camera.at_resolution(width,height);
-    surfaces.sort_by(|left, right| {
-        camera
-            .depth(&right.vertices)
-            .total_cmp(&camera.depth(&left.vertices))
-    });
-    let sketch_ids = topology
-        .sketches()
-        .filter_map(|s| s.profile_face)
-        .collect::<std::collections::BTreeSet<_>>();
-    let sketch_surfaces = surfaces
-        .iter()
-        .filter(|s| s.body.is_none() && sketch_ids.contains(&s.face))
-        .cloned()
-        .collect::<Vec<_>>();
-    let mut cad_depth = vec![f64::INFINITY; (width * height) as usize];
-    for surface in surfaces {
-        if surface.body.is_none() && sketch_ids.contains(&surface.face) {
-            continue;
-        }
-        let selected = selected_targets.contains(&GeometrySelectionTarget::Face(surface.face))
-            || surface.body.is_some_and(|body| {
-                selected_targets.contains(&GeometrySelectionTarget::Body(body))
-            });
-        let hovered = hovered_target == Some(GeometrySelectionTarget::Face(surface.face))
-            || surface
-                .body
-                .is_some_and(|body| hovered_target == Some(GeometrySelectionTarget::Body(body)));
-        let fill_color = if selected {
-            [58, 136, 238, 255]
-        } else if hovered {
-            [103, 150, 209, 255]
-        } else if surface.body.is_some() {
-            [165, 174, 190, 255]
-        } else {
-            [42, 76, 94, 255]
-        };
-        let edge_color = if selected {
-            [255, 232, 164, 255]
-        } else if hovered {
-            [142, 232, 176, 255]
-        } else {
-            [67, 76, 92, 255]
-        };
-        let kernel_surface = surface
-            .body
-            .is_some_and(|id| topology.cad_body(id).is_some());
-        let fill_color = if kernel_surface && surface.vertices.len() >= 3 {
-            let normal = (surface.vertices[1] - surface.vertices[0])
-                .cross(surface.vertices[2] - surface.vertices[0]);
-            let illumination = 0.55
-                + 0.45
-                    * (normal.dot(Vec3::new(0.35, -0.45, 0.82)) / normal.norm().max(1e-20)).abs();
-            [
-                (fill_color[0] as f64 * illumination) as u8,
-                (fill_color[1] as f64 * illumination) as u8,
-                (fill_color[2] as f64 * illumination) as u8,
-                255,
-            ]
-        } else {
-            fill_color
-        };
-        let polygon = surface
-            .vertices
-            .iter()
-            .copied()
-            .map(|point| camera.project(point))
-            .collect::<Vec<_>>();
-        let fill_polygon = polygon
-            .iter()
-            .map(|&(x, y)| (f64::from(x), f64::from(y)))
-            .collect::<Vec<_>>();
-        // Wireframe keeps every topological edge, including rear boundaries.
-        if display_mode == 2 {
-            if !kernel_surface {
-                for loop_points in std::iter::once(&surface.vertices).chain(surface.holes.iter()) {
-                    for i in 0..loop_points.len() {
-                        draw_line(
-                            &mut pixels,
-                            width,
-                            height,
-                            camera.project(loop_points[i]),
-                            camera.project(loop_points[(i + 1) % loop_points.len()]),
-                            edge_color,
-                        );
-                    }
-                }
-            }
-            continue;
-        }
-        let before = (!surface.holes.is_empty()).then(|| pixels.clone());
-        if kernel_surface && surface.vertices.len() == 3 {
-            let projected = [0, 1, 2].map(|i| {
-                let (x, y) = camera.screen(surface.vertices[i]);
-                (x, y, camera.depth(&surface.vertices[i..i + 1]))
-            });
-            draw_cad_triangle(
-                &mut pixels,
-                &mut cad_depth,
-                width,
-                height,
-                projected,
-                fill_color,
-            );
-            continue;
-        }
-        draw_filled_polygon(&mut pixels, width, height, &fill_polygon, fill_color);
-        if let Some(before) = before {
-            let mut mask = vec![0_u8; pixels.len()];
-            for hole in &surface.holes {
-                let projected: Vec<_> = hole.iter().map(|point| camera.project(*point)).collect();
-                let polygon: Vec<_> = projected
-                    .iter()
-                    .map(|&(x, y)| (f64::from(x), f64::from(y)))
-                    .collect();
-                draw_filled_polygon(&mut mask, width, height, &polygon, [255, 255, 255, 255]);
-            }
-            for (index, pixel) in pixels.chunks_exact_mut(4).enumerate() {
-                if mask[index * 4 + 3] != 0 {
-                    pixel.copy_from_slice(&before[index * 4..index * 4 + 4]);
-                }
-            }
-            for hole in &surface.holes {
-                let projected: Vec<_> = hole.iter().map(|point| camera.project(*point)).collect();
-                for (start, end) in projected
-                    .iter()
-                    .copied()
-                    .zip(projected.iter().copied().cycle().skip(1))
-                    .take(projected.len())
-                {
-                    draw_line(&mut pixels, width, height, start, end, edge_color);
-                }
-            }
-        }
-        if kernel_surface {
-            continue;
-        }
-        for (start, end) in polygon
-            .iter()
-            .copied()
-            .zip(polygon.iter().copied().cycle().skip(1))
-            .take(polygon.len())
-        {
-            draw_line(&mut pixels, width, height, start, end, edge_color);
-        }
-    }
-    // Sketches are wire overlays; filling their profiles would visually cap holes.
-    for surface in sketch_surfaces {
-        let color = if selected_targets.contains(&GeometrySelectionTarget::Face(surface.face)) {
-            [255, 224, 140, 255]
-        } else if hovered_target == Some(GeometrySelectionTarget::Face(surface.face)) {
-            [142, 232, 176, 255]
-        } else {
-            [104, 222, 237, 255]
-        };
-        for polygon in std::iter::once(&surface.vertices).chain(surface.holes.iter()) {
-            for i in 0..polygon.len() {
-                sketch_visual::line(
-                    &mut pixels,
-                    width,
-                    height,
-                    camera.project(polygon[i]),
-                    camera.project(polygon[(i + 1) % polygon.len()]),
-                    color,
-                );
-            }
-        }
-    }
-    for path in topology.cad_open_drawing_paths() {
-        draw_cad_curve(&mut pixels,&cad_depth,width,height,&camera,&path,[101,191,235,255]);
-    }
-    // Exact topological boundaries, independent of triangle edges. Visibility
-    // follows the same depth buffer as the shaded solid.
-    for (_, body) in topology
-        .cad_bodies()
-        .filter(|(_, b)| b.visible && display_mode != 1)
-    {
-        for edge in body.edges.iter() {
-            draw_cad_curve(
-                &mut pixels,
-                &cad_depth,
-                width,
-                height,
-                &camera,
-                &edge.path,
-                if display_mode == 2 {
-                    [67, 76, 92, 255]
-                } else {
-                    [62, 105, 121, 255]
-                },
-            );
-        }
-    }
-    if pick_mode == 2 {
-        for (_, body) in topology.cad_bodies().filter(|(_, b)| b.visible) {
-            for vertex in body.vertices.iter() {
-                let Some(v) = topology.vertex(vertex.id) else {
-                    continue;
-                };
-                let (x, y) = camera.project(v.position);
-                if x < 0 || y < 0 || x >= width as i32 || y >= height as i32 {
-                    continue;
-                }
-                if camera.depth(&[v.position])
-                    <= cad_depth[y as usize * width as usize + x as usize] + 2.0 / camera.scale
-                {
-                    draw_ellipse(
-                        &mut pixels,
-                        width,
-                        height,
-                        (x, y),
-                        6,
-                        6,
-                        [104, 222, 237, 255],
-                    );
-                }
-            }
-        }
-    }
-    // Entity picks use the same stable IDs and camera as the geometry tree.
-    for (target, color) in std::iter::once((hovered_target, [142, 232, 176, 255])).chain(
-        selected_targets
-            .iter()
-            .copied()
-            .map(|target| (Some(target), [255, 226, 143, 255])),
-    ) {
-        match target {
-            Some(GeometrySelectionTarget::Vertex(id)) => {
-                if let Some(vertex) = topology.vertex(id) {
-                    let center = camera.project(vertex.position);
-                    if topology.cad_vertex_owner(id).is_some() {
-                        if center.0 < 0
-                            || center.1 < 0
-                            || center.0 >= width as i32
-                            || center.1 >= height as i32
-                        {
-                            continue;
-                        }
-                        if camera.depth(&[vertex.position])
-                            > cad_depth[center.1 as usize * width as usize + center.0 as usize]
-                                + 2.0 / camera.scale
-                        {
-                            continue;
-                        }
-                    }
-                    draw_ellipse(&mut pixels, width, height, center, 12, 12, color);
-                    draw_marker(&mut pixels, width, height, center, color);
-                }
-            }
-            Some(GeometrySelectionTarget::Edge(id)) => {
-                if let Some(path) = topology
-                    .edge(id)
-                    .and_then(|edge| canonical_edge_path(topology, &edge.geometry))
-                {
-                    if topology.cad_edge(id).is_some() {
-                        draw_cad_curve(
-                            &mut pixels,
-                            &cad_depth,
-                            width,
-                            height,
-                            &camera,
-                            &path,
-                            color,
-                        );
-                        continue;
-                    }
-                    for segment in path.windows(2) {
-                        let (a, b) = (camera.project(segment[0]), camera.project(segment[1]));
-                        for offset in -1..=1 {
-                            draw_line(
-                                &mut pixels,
-                                width,
-                                height,
-                                (a.0 + offset, a.1),
-                                (b.0 + offset, b.1),
-                                color,
-                            );
-                        }
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-
-    image_from_rgba(width, height, pixels)
+    super::scene_view::geometry(topology, view, pick_mode, selected_targets, hovered_target, display_mode)
 }
 
 fn draw_cad_curve(
@@ -1556,7 +1025,7 @@ pub(super) fn pick_canonical_geometry_target(
         .map(|(_, _, target)| target)
 }
 
-fn canonical_edge_path(
+pub(super) fn canonical_edge_path(
     topology: &GeometryTopology,
     edge: &flursys::EdgeGeometry,
 ) -> Option<Vec<Vec3>> {
@@ -3122,7 +2591,7 @@ pub(super) fn render_scalar_field(
     image_from_rgba(width, height, pixels)
 }
 
-fn scalar_range(values: &[f64], symmetric: bool) -> (f64, f64) {
+pub(super) fn scalar_range(values: &[f64], symmetric: bool) -> (f64, f64) {
     let (mut min_value, mut max_value) = values
         .iter()
         .copied()
@@ -3145,7 +2614,7 @@ fn scalar_range(values: &[f64], symmetric: bool) -> (f64, f64) {
     (min_value, max_value)
 }
 
-fn normalize(value: f64, min_value: f64, max_value: f64) -> f32 {
+pub(super) fn normalize(value: f64, min_value: f64, max_value: f64) -> f32 {
     ((value - min_value) / (max_value - min_value)).clamp(0.0, 1.0) as f32
 }
 
@@ -3523,7 +2992,7 @@ pub(super) fn draw_line(
     }
 }
 
-fn scalar_color(value: f32, colormap: i32) -> [u8; 4] {
+pub(super) fn scalar_color(value: f32, colormap: i32) -> [u8; 4] {
     const TURBO: [[u8; 3]; 5] = [
         [48, 18, 59],
         [46, 91, 195],
