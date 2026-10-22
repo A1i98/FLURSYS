@@ -125,7 +125,15 @@ impl MeshQualityValues {
         self.values(metric)
             .iter()
             .enumerate()
-            .filter_map(|(index, &value)| (!value.is_finite() || if metric==MeshQualityMetric::CellMeasure {value<threshold}else{value>threshold}).then_some(index))
+            .filter_map(|(index, &value)| {
+                (!value.is_finite()
+                    || if metric == MeshQualityMetric::CellMeasure {
+                        value < threshold
+                    } else {
+                        value > threshold
+                    })
+                .then_some(index)
+            })
             .collect()
     }
 }
@@ -413,13 +421,18 @@ fn calculate_quality(mesh: &UnstructuredMesh) -> MeshQualityValues {
         .collect();
     let mut non_orthogonality = vec![0.0_f64; mesh.cell_count()];
     let mut skewness = vec![0.0_f64; mesh.cell_count()];
-    let mut adjacent_volume_ratio=vec![1.0_f64;mesh.cell_count()];
+    let mut adjacent_volume_ratio = vec![1.0_f64; mesh.cell_count()];
     for face in mesh.faces().iter().filter(|face| face.neighbour.is_some()) {
         let neighbour = face.neighbour.expect("filtered");
-        let a=mesh.cells()[face.owner].volume;let b=mesh.cells()[neighbour].volume;
-        let ratio=if a>0.0 && b>0.0 {(a/b).max(b/a)}else{f64::INFINITY};
-        adjacent_volume_ratio[face.owner]=adjacent_volume_ratio[face.owner].max(ratio);
-        adjacent_volume_ratio[neighbour]=adjacent_volume_ratio[neighbour].max(ratio);
+        let a = mesh.cells()[face.owner].volume;
+        let b = mesh.cells()[neighbour].volume;
+        let ratio = if a > 0.0 && b > 0.0 {
+            (a / b).max(b / a)
+        } else {
+            f64::INFINITY
+        };
+        adjacent_volume_ratio[face.owner] = adjacent_volume_ratio[face.owner].max(ratio);
+        adjacent_volume_ratio[neighbour] = adjacent_volume_ratio[neighbour].max(ratio);
         let delta = mesh.cells()[neighbour].center - mesh.cells()[face.owner].center;
         let distance = delta.norm();
         if distance <= 1.0e-12 {

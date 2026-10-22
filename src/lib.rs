@@ -5,35 +5,35 @@
 //! designed and validated.
 
 pub mod app;
-pub mod compressible;
 pub mod cases;
+pub mod compressible;
 pub mod equations;
-pub mod volume_models;
-pub mod periodic;
 pub mod field;
 pub mod fields;
 pub mod geometry;
-pub mod sketching;
 pub mod grid;
 pub mod io;
 pub mod linear;
+pub mod materials;
 pub mod mesh;
 pub mod mesh_artifact;
 pub mod meshing;
 pub mod momentum;
+pub mod multiphase;
 pub mod numerics;
 pub mod output;
+pub mod periodic;
 pub mod physics;
-pub mod materials;
-pub mod multiphase;
-pub mod thermal;
 pub mod poisson;
 pub mod preprocess;
 pub mod project;
 pub mod runtime;
 pub mod simple;
+pub mod sketching;
 pub mod solver;
+pub mod thermal;
 pub mod unstructured_incompressible;
+pub mod volume_models;
 pub mod workbench;
 
 pub use cases::{Case, CaseKind};

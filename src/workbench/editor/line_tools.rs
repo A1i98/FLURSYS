@@ -111,7 +111,7 @@ pub(super) fn apply(
         GeometryTool::Extend => {
             let start = cursor < 0.5;
             let t = if start {
-                cuts.into_iter().filter(|t| *t < -epsilon).next_back()
+                cuts.into_iter().rfind(|t| *t < -epsilon)
             } else {
                 cuts.into_iter().find(|t| *t > 1.0 + epsilon)
             }
@@ -132,12 +132,7 @@ pub(super) fn apply(
             if cuts.iter().any(|t| (t - cursor).abs() <= epsilon) {
                 return Err(error("Click the part to remove, beside the intersection"));
             }
-            let lower = cuts
-                .iter()
-                .copied()
-                .filter(|t| *t < cursor)
-                .next_back()
-                .unwrap_or(0.0);
+            let lower = cuts.iter().copied().rfind(|t| *t < cursor).unwrap_or(0.0);
             let upper = cuts.iter().copied().find(|t| *t > cursor).unwrap_or(1.0);
             let mut retained = Vec::new();
             if lower > epsilon {

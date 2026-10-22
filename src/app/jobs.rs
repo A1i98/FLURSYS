@@ -61,6 +61,7 @@ pub enum JobLifecycle {
 }
 
 #[derive(Debug)]
+#[allow(clippy::large_enum_variant)] // Preserve the public value-based API.
 pub enum WorkbenchJobEvent {
     MeshProgress(JobProgress),
     MeshCompleted(Result<GeneratedMesh, MeshingError>),
@@ -301,7 +302,7 @@ impl WorkbenchJobExecutor {
                             velocity.values(),
                             pressure.values(),
                         )?;
-                        snapshot.physical_time=*sample_time.lock().unwrap();
+                        snapshot.physical_time = *sample_time.lock().unwrap();
                         snapshot.path = Some(crate::workbench::plane_monitor::write_csv(
                             &snapshot,
                             &recording_folder,

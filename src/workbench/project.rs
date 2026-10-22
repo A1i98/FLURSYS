@@ -59,7 +59,9 @@ impl RecentProjects {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum PhysicalBoundaryCondition {
-    TotalPressure { pressure:f64 },
+    TotalPressure {
+        pressure: f64,
+    },
     ParabolicInlet {
         velocity: Vec3,
         axis: usize,
@@ -144,16 +146,24 @@ pub struct EdgeDivisionControl {
     pub cells: u32,
     pub progression: f64,
     pub reverse: bool,
-    #[serde(default)] pub symmetric: bool,
+    #[serde(default)]
+    pub symmetric: bool,
     pub enabled: bool,
 }
 impl EdgeDivisionControl {
-    pub fn validate(&self)->Result<(),String> {
-        if self.name.trim().is_empty() || self.targets.is_empty() || !(1..=10000).contains(&self.cells)
+    pub fn validate(&self) -> Result<(), String> {
+        if self.name.trim().is_empty()
+            || self.targets.is_empty()
+            || !(1..=10000).contains(&self.cells)
             || !self.progression.is_finite()
-            || if self.symmetric {!(0.01..=1.0).contains(&self.progression)} else {
-                !(0.5..=2.0).contains(&self.progression) || self.progression.ln().abs()*f64::from(self.cells.saturating_sub(1))>1000.0_f64.ln()
-            } {
+            || if self.symmetric {
+                !(0.01..=1.0).contains(&self.progression)
+            } else {
+                !(0.5..=2.0).contains(&self.progression)
+                    || self.progression.ln().abs() * f64::from(self.cells.saturating_sub(1))
+                        > 1000.0_f64.ln()
+            }
+        {
             return Err("Edge divisions require a scope, 1–10000 cells; progression 0.5–2 with end ratio ≤1000, or symmetric Bump coefficient 0.01–1".into());
         }
         Ok(())
@@ -173,9 +183,18 @@ pub struct BoxRefinement {
 }
 impl BoxRefinement {
     pub fn validate(&self) -> Result<(), String> {
-        let a = self.minimum; let b = self.maximum;
-        if ![a.x,a.y,a.z,b.x,b.y,b.z,self.size,self.transition].iter().all(|v|v.is_finite())
-            || a.x>=b.x || a.y>=b.y || a.z>=b.z || self.size<=0.0 || self.transition<0.0 || self.name.trim().is_empty() {
+        let a = self.minimum;
+        let b = self.maximum;
+        if ![a.x, a.y, a.z, b.x, b.y, b.z, self.size, self.transition]
+            .iter()
+            .all(|v| v.is_finite())
+            || a.x >= b.x
+            || a.y >= b.y
+            || a.z >= b.z
+            || self.size <= 0.0
+            || self.transition < 0.0
+            || self.name.trim().is_empty()
+        {
             return Err("Box refinement requires finite min < max on every axis, positive size and nonnegative transition".into());
         }
         Ok(())
@@ -217,31 +236,70 @@ pub struct MeshTuning {
 }
 impl Default for MeshTuning {
     fn default() -> Self {
-        Self { max_size_growth: None, method: MeshMethod::Unstructured, divisions: [40, 40, 10], progression: [1.0, 1.0], algorithm_2d: 6, algorithm_3d: 1, curvature_points: 32,
-            smoothing_steps: 10, optimize: true, optimize_netgen: false,
-            optimize_threshold: 0.3, extend_boundary_sizes: true }
+        Self {
+            max_size_growth: None,
+            method: MeshMethod::Unstructured,
+            divisions: [40, 40, 10],
+            progression: [1.0, 1.0],
+            algorithm_2d: 6,
+            algorithm_3d: 1,
+            curvature_points: 32,
+            smoothing_steps: 10,
+            optimize: true,
+            optimize_netgen: false,
+            optimize_threshold: 0.3,
+            extend_boundary_sizes: true,
+        }
     }
 }
 impl MeshTuning {
     pub fn validate(&self) -> Result<(), String> {
-        if self.max_size_growth.is_some_and(|g| !g.is_finite() || !(1.01..=2.0).contains(&g)) {
+        if self
+            .max_size_growth
+            .is_some_and(|g| !g.is_finite() || !(1.01..=2.0).contains(&g))
+        {
             return Err("Distance-field growth limit must be 1.01–2, or left empty".into());
         }
         if self.divisions.iter().any(|n| !(1..=10000).contains(n))
-            || self.progression.iter().any(|r| !r.is_finite() || !(0.5..=2.0).contains(r)) {
-            return Err("Mapped divisions must be 1–10000; progression must be finite and 0.5–2".into());
+            || self
+                .progression
+                .iter()
+                .any(|r| !r.is_finite() || !(0.5..=2.0).contains(r))
+        {
+            return Err(
+                "Mapped divisions must be 1–10000; progression must be finite and 0.5–2".into(),
+            );
         }
-        let cells = self.divisions.iter().map(|n| u64::from(*n)).product::<u64>();
-        let estimate = match self.method { MeshMethod::HexBlock|MeshMethod::SweepHex=>cells, MeshMethod::OGrid=>4*u64::from(self.divisions[0])*u64::from(self.divisions[1]), _=>u64::from(self.divisions[0])*u64::from(self.divisions[1]) };
-        if matches!(self.method,MeshMethod::MappedQuad|MeshMethod::OGrid|MeshMethod::HexBlock|MeshMethod::SweepHex) && estimate > 20_000_000 {
-            return Err("Requested structured mesh exceeds 20 million cells; reduce divisions".into());
+        let cells = self
+            .divisions
+            .iter()
+            .map(|n| u64::from(*n))
+            .product::<u64>();
+        let estimate = match self.method {
+            MeshMethod::HexBlock | MeshMethod::SweepHex => cells,
+            MeshMethod::OGrid => 4 * u64::from(self.divisions[0]) * u64::from(self.divisions[1]),
+            _ => u64::from(self.divisions[0]) * u64::from(self.divisions[1]),
+        };
+        if matches!(
+            self.method,
+            MeshMethod::MappedQuad
+                | MeshMethod::OGrid
+                | MeshMethod::HexBlock
+                | MeshMethod::SweepHex
+        ) && estimate > 20_000_000
+        {
+            return Err(
+                "Requested structured mesh exceeds 20 million cells; reduce divisions".into(),
+            );
         }
         for axis in 0..2 {
-            if self.progression[axis].ln().abs() * f64::from(self.divisions[axis].saturating_sub(1)) > 1000.0_f64.ln() {
+            if self.progression[axis].ln().abs() * f64::from(self.divisions[axis].saturating_sub(1))
+                > 1000.0_f64.ln()
+            {
                 return Err("Mapped progression creates an end-to-end size ratio above 1000; reduce growth or divisions".into());
             }
         }
-        if ![1,5,6].contains(&self.algorithm_2d) || ![1,4,10].contains(&self.algorithm_3d) {
+        if ![1, 5, 6].contains(&self.algorithm_2d) || ![1, 4, 10].contains(&self.algorithm_3d) {
             return Err("Unsupported triangle/tetrahedron meshing algorithm".into());
         }
         if self.curvature_points > 1000 || self.smoothing_steps > 100 {
@@ -299,17 +357,28 @@ pub struct BoundaryLayerControl {
 impl BoundaryLayerControl {
     /// Requested geometric stack; Gmsh may truncate layers near collisions.
     pub fn layer_dimensions(&self) -> Result<(f64, f64), String> {
-        if !self.first_layer_height.is_finite() || self.first_layer_height <= 0.0
-            || !self.growth_ratio.is_finite() || !(1.0..=3.0).contains(&self.growth_ratio)
-            || !(1..=64).contains(&self.layer_count) {
-            return Err("Inflation requires positive first height, growth 1–3 and 1–64 target layers".into());
+        if !self.first_layer_height.is_finite()
+            || self.first_layer_height <= 0.0
+            || !self.growth_ratio.is_finite()
+            || !(1.0..=3.0).contains(&self.growth_ratio)
+            || !(1..=64).contains(&self.layer_count)
+        {
+            return Err(
+                "Inflation requires positive first height, growth 1–3 and 1–64 target layers"
+                    .into(),
+            );
         }
         let mut height = self.first_layer_height;
         let mut total = 0.0;
-        for _ in 0..self.layer_count { total += height; height *= self.growth_ratio; }
+        for _ in 0..self.layer_count {
+            total += height;
+            height *= self.growth_ratio;
+        }
         let last = height / self.growth_ratio;
         if !total.is_finite() || !last.is_finite() {
-            return Err("Inflation thickness overflow; reduce height, growth or layer count".into());
+            return Err(
+                "Inflation thickness overflow; reduce height, growth or layer count".into(),
+            );
         }
         Ok((total, last))
     }
@@ -317,7 +386,8 @@ impl BoundaryLayerControl {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct WorkbenchMaterial {
-    #[serde(default)] pub catalog:Option<crate::materials::MaterialSnapshot>,
+    #[serde(default)]
+    pub catalog: Option<crate::materials::MaterialSnapshot>,
     pub density: f64,
     pub kinematic_viscosity: f64,
 }
@@ -325,7 +395,7 @@ pub struct WorkbenchMaterial {
 impl Default for WorkbenchMaterial {
     fn default() -> Self {
         Self {
-            catalog:None,
+            catalog: None,
             density: 1.0,
             kinematic_viscosity: 0.01,
         }
@@ -334,14 +404,22 @@ impl Default for WorkbenchMaterial {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct WorkbenchSolverSettings {
-    #[serde(default)] pub pressure_coupling:crate::simple::PressureCoupling,
-    #[serde(default)] pub volume_models:crate::volume_models::VolumeModels,
-    #[serde(default)] pub cyclic_pairs:Vec<crate::periodic::TranslationalCyclicPair>,
-    #[serde(default)] pub equations:Option<crate::equations::EquationSolvers>,
-    #[serde(default)] pub boundary_profiles:crate::unstructured_incompressible::BoundaryProfiles,
-    #[serde(default)] pub thermal:crate::thermal::Options,
-    #[serde(default)] pub time:crate::unstructured_incompressible::TimeIntegration,
-    #[serde(default)] pub turbulence:crate::turbulence::TurbulenceOptions,
+    #[serde(default)]
+    pub pressure_coupling: crate::simple::PressureCoupling,
+    #[serde(default)]
+    pub volume_models: crate::volume_models::VolumeModels,
+    #[serde(default)]
+    pub cyclic_pairs: Vec<crate::periodic::TranslationalCyclicPair>,
+    #[serde(default)]
+    pub equations: Option<crate::equations::EquationSolvers>,
+    #[serde(default)]
+    pub boundary_profiles: crate::unstructured_incompressible::BoundaryProfiles,
+    #[serde(default)]
+    pub thermal: crate::thermal::Options,
+    #[serde(default)]
+    pub time: crate::unstructured_incompressible::TimeIntegration,
+    #[serde(default)]
+    pub turbulence: crate::turbulence::TurbulenceOptions,
     #[serde(default)]
     pub convection: crate::momentum::MomentumConvection,
     #[serde(default = "default_cpu_threads")]
@@ -357,13 +435,14 @@ pub struct WorkbenchSolverSettings {
 impl Default for WorkbenchSolverSettings {
     fn default() -> Self {
         Self {
-            equations:None,
-            pressure_coupling:Default::default(),
-            volume_models:Default::default(),
-            cyclic_pairs:Vec::new(),
-            boundary_profiles:Default::default(),
-            thermal:crate::thermal::Options::default(),
-            time:Default::default(),turbulence:Default::default(),
+            equations: None,
+            pressure_coupling: Default::default(),
+            volume_models: Default::default(),
+            cyclic_pairs: Vec::new(),
+            boundary_profiles: Default::default(),
+            thermal: crate::thermal::Options::default(),
+            time: Default::default(),
+            turbulence: Default::default(),
             convection: crate::momentum::MomentumConvection::Upwind,
             threads: 1,
             max_outer_iterations: 1000,
@@ -393,8 +472,10 @@ pub enum RunStatus {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct RunRecord {
-    #[serde(default)] pub physical_time:Option<f64>,
-    #[serde(default)] pub time_steps:usize,
+    #[serde(default)]
+    pub physical_time: Option<f64>,
+    #[serde(default)]
+    pub time_steps: usize,
     pub id: String,
     pub ordinal: u32,
     pub created_unix_ms: u128,
@@ -468,12 +549,30 @@ impl WorkbenchProject {
     }
 
     pub fn validate(&self) -> Result<(), ProjectDocumentError> {
-        self.solver.time.validate().map_err(ProjectDocumentError::Invalid)?;
-        self.solver.volume_models.validate().map_err(ProjectDocumentError::Invalid)?;
-        self.solver.pressure_coupling.validate(self.solver.time.is_transient()).map_err(ProjectDocumentError::Invalid)?;
-        self.solver.turbulence.validate().map_err(ProjectDocumentError::Invalid)?;
-        if self.mesh_asset.as_ref().is_some_and(|s|s.len()!=64 || !s.bytes().all(|b|b.is_ascii_hexdigit())) {
-            return Err(ProjectDocumentError::Invalid("Invalid mesh asset identifier".into()));
+        self.solver
+            .time
+            .validate()
+            .map_err(ProjectDocumentError::Invalid)?;
+        self.solver
+            .volume_models
+            .validate()
+            .map_err(ProjectDocumentError::Invalid)?;
+        self.solver
+            .pressure_coupling
+            .validate(self.solver.time.is_transient())
+            .map_err(ProjectDocumentError::Invalid)?;
+        self.solver
+            .turbulence
+            .validate()
+            .map_err(ProjectDocumentError::Invalid)?;
+        if self
+            .mesh_asset
+            .as_ref()
+            .is_some_and(|s| s.len() != 64 || !s.bytes().all(|b| b.is_ascii_hexdigit()))
+        {
+            return Err(ProjectDocumentError::Invalid(
+                "Invalid mesh asset identifier".into(),
+            ));
         }
 
         let mut plane_ids = BTreeSet::new();
@@ -544,11 +643,23 @@ impl WorkbenchProject {
                 "invalid SIMPLE settings".into(),
             ));
         }
-        for p in self.solver.boundary_profiles.values(){p.validate().map_err(ProjectDocumentError::Invalid)?;}
-        if let Some(e)=&self.solver.equations{e.validate().map_err(ProjectDocumentError::Invalid)?;}
-        self.solver.thermal.validate().map_err(ProjectDocumentError::Invalid)?;
-        if let Some(material)=&self.material.catalog {material.validate().map_err(ProjectDocumentError::Invalid)?;}
-        self.mesh_recipe.tuning.validate().map_err(ProjectDocumentError::Invalid)?;
+        for p in self.solver.boundary_profiles.values() {
+            p.validate().map_err(ProjectDocumentError::Invalid)?;
+        }
+        if let Some(e) = &self.solver.equations {
+            e.validate().map_err(ProjectDocumentError::Invalid)?;
+        }
+        self.solver
+            .thermal
+            .validate()
+            .map_err(ProjectDocumentError::Invalid)?;
+        if let Some(material) = &self.material.catalog {
+            material.validate().map_err(ProjectDocumentError::Invalid)?;
+        }
+        self.mesh_recipe
+            .tuning
+            .validate()
+            .map_err(ProjectDocumentError::Invalid)?;
         let mut names = BTreeSet::new();
         for selection in &self.named_selections {
             if selection.name.trim().is_empty()
@@ -590,7 +701,8 @@ impl WorkbenchProject {
         let ordinal = self.runs.iter().map(|run| run.ordinal).max().unwrap_or(0) + 1;
         let directory = format!("runs/run-{ordinal:04}");
         RunRecord {
-            physical_time:None,time_steps:0,
+            physical_time: None,
+            time_steps: 0,
             id: format!("run-{ordinal:04}"),
             ordinal,
             created_unix_ms: now_ms(),
@@ -790,7 +902,8 @@ pub fn finalize_workspace_run(
     let run_directory = workspace.join(format!("runs/run-{:04}", record.ordinal));
     fs::create_dir_all(&run_directory).map_err(io_error)?;
     if let (Some(mesh), Some(solution)) = (session.mesh(), session.solution()) {
-        record.physical_time=solution.physical_time;record.time_steps=solution.completed_time_steps;
+        record.physical_time = solution.physical_time;
+        record.time_steps = solution.completed_time_steps;
         record.mesh_identity = Some(mesh.mesh.id().get());
         record.iterations = Some(solution.report.outer_iterations);
         record.continuity_residual = Some(solution.report.final_continuity_rms);
@@ -975,7 +1088,7 @@ pub fn save_case_template(
     // Keep the caller's document intact while enforcing that storage boundary.
     let mut portable_manifest = manifest.clone();
     portable_manifest.project_template.runs.clear();
-    portable_manifest.project_template.mesh_asset=None;
+    portable_manifest.project_template.mesh_asset = None;
     atomic_json_write(&destination, &portable_manifest)?;
     Ok(destination)
 }
@@ -1125,12 +1238,20 @@ fn validate_mesh_recipe(
 ) -> Result<(), ProjectDocumentError> {
     let mut ids = BTreeSet::new();
     for control in &recipe.edge_divisions {
-        if !ids.insert(control.id) {return Err(ProjectDocumentError::Invalid("Duplicate mesh-control ID".into()));}
+        if !ids.insert(control.id) {
+            return Err(ProjectDocumentError::Invalid(
+                "Duplicate mesh-control ID".into(),
+            ));
+        }
         control.validate().map_err(ProjectDocumentError::Invalid)?;
-        validate_mesh_control_targets(&control.targets,geometry,named_selections)?;
+        validate_mesh_control_targets(&control.targets, geometry, named_selections)?;
     }
     for control in &recipe.regions {
-        if !ids.insert(control.id) { return Err(ProjectDocumentError::Invalid("Duplicate mesh-control ID".into())); }
+        if !ids.insert(control.id) {
+            return Err(ProjectDocumentError::Invalid(
+                "Duplicate mesh-control ID".into(),
+            ));
+        }
         control.validate().map_err(ProjectDocumentError::Invalid)?;
     }
 
@@ -1181,7 +1302,9 @@ fn validate_mesh_recipe(
                 "invalid boundary layer control".into(),
             ));
         }
-        control.layer_dimensions().map_err(ProjectDocumentError::Invalid)?;
+        control
+            .layer_dimensions()
+            .map_err(ProjectDocumentError::Invalid)?;
         validate_mesh_control_targets(&control.targets, geometry, named_selections)?;
     }
     Ok(())
@@ -1241,7 +1364,8 @@ fn validate_boundary(condition: &PhysicalBoundaryCondition) -> Result<(), Projec
         | PhysicalBoundaryCondition::VelocityInlet { velocity } => {
             &[velocity.x, velocity.y, velocity.z]
         }
-        PhysicalBoundaryCondition::TotalPressure {pressure} | PhysicalBoundaryCondition::PressureOutlet { pressure } => std::slice::from_ref(pressure),
+        PhysicalBoundaryCondition::TotalPressure { pressure }
+        | PhysicalBoundaryCondition::PressureOutlet { pressure } => std::slice::from_ref(pressure),
     };
     values
         .iter()
@@ -1410,6 +1534,9 @@ mod tests {
                     .map(GeometrySelectionTarget::Edge)
                     .collect(),
             )
+            .unwrap();
+        session
+            .set_mesh_configuration(MeshDimension::TwoD, 0.1, 0.01, 0.2, 1)
             .unwrap();
         session.set_mesh_recipe(MeshRecipe {
             local_sizes: vec![LocalMeshSize {

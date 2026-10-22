@@ -111,7 +111,7 @@ pub struct WorkbenchSession {
     mesh_hover: Option<MeshSelection>,
     boundaries: BTreeMap<String, IncompressibleBoundaryCondition>,
     material: IncompressibleMaterial,
-    catalog_material:Option<crate::materials::MaterialSnapshot>,
+    catalog_material: Option<crate::materials::MaterialSnapshot>,
     solver: IncompressibleSolverOptions,
     solution: Option<IncompressibleSolution>,
     status: SolveStatus,
@@ -144,7 +144,7 @@ impl WorkbenchSession {
             mesh_selection: None,
             mesh_hover: None,
             boundaries: BTreeMap::new(),
-            catalog_material:None,
+            catalog_material: None,
             material: IncompressibleMaterial {
                 density: 1.0,
                 kinematic_viscosity: 0.01,
@@ -166,13 +166,14 @@ impl WorkbenchSession {
         let mut session = Self::new();
         session.geometry = project.geometry.clone();
         session.fluid_face_selection = project.fluid_face;
-        session.solver.equations=project.solver.equations.clone();
-        session.solver.pressure_coupling=project.solver.pressure_coupling;
-        session.solver.volume_models=project.solver.volume_models;
-        session.solver.cyclic_pairs=project.solver.cyclic_pairs.clone();
-        session.solver.boundary_profiles=project.solver.boundary_profiles.clone();
-        session.solver.thermal=project.solver.thermal.clone();
-        session.solver.time=project.solver.time;session.solver.turbulence=project.solver.turbulence.clone();
+        session.solver.equations = project.solver.equations.clone();
+        session.solver.pressure_coupling = project.solver.pressure_coupling;
+        session.solver.volume_models = project.solver.volume_models;
+        session.solver.cyclic_pairs = project.solver.cyclic_pairs.clone();
+        session.solver.boundary_profiles = project.solver.boundary_profiles.clone();
+        session.solver.thermal = project.solver.thermal.clone();
+        session.solver.time = project.solver.time;
+        session.solver.turbulence = project.solver.turbulence.clone();
         session.solver.coupling_relative_tolerance = project.solver.coupling_relative_tolerance;
         session.geometry.ensure_extrusion_edges()?;
         session.geometry.ensure_cad_subelements()?;
@@ -192,7 +193,7 @@ impl WorkbenchSession {
             project.material.density,
             project.material.kinematic_viscosity,
         )?;
-        session.catalog_material=project.material.catalog.clone();
+        session.catalog_material = project.material.catalog.clone();
         session.set_solver_controls(
             project.solver.max_outer_iterations,
             project.solver.velocity_relaxation,
@@ -241,16 +242,17 @@ impl WorkbenchSession {
         project.mesh.max_size = self.max_size;
         project.mesh.element_order = self.element_order;
         project.mesh_recipe = self.mesh_recipe.clone();
-        project.material.catalog=self.catalog_material.clone();
-        project.solver.equations=self.solver.equations.clone();
-        project.solver.pressure_coupling=self.solver.pressure_coupling;
-        project.solver.volume_models=self.solver.volume_models;
-        project.solver.cyclic_pairs=self.solver.cyclic_pairs.clone();
-        project.solver.boundary_profiles=self.solver.boundary_profiles.clone();
-        project.solver.thermal=self.solver.thermal.clone();
+        project.material.catalog = self.catalog_material.clone();
+        project.solver.equations = self.solver.equations.clone();
+        project.solver.pressure_coupling = self.solver.pressure_coupling;
+        project.solver.volume_models = self.solver.volume_models;
+        project.solver.cyclic_pairs = self.solver.cyclic_pairs.clone();
+        project.solver.boundary_profiles = self.solver.boundary_profiles.clone();
+        project.solver.thermal = self.solver.thermal.clone();
         project.material.density = self.material.density;
         project.material.kinematic_viscosity = self.material.kinematic_viscosity;
-        project.solver.time=self.solver.time;project.solver.turbulence=self.solver.turbulence.clone();
+        project.solver.time = self.solver.time;
+        project.solver.turbulence = self.solver.turbulence.clone();
         project.solver.max_outer_iterations = self.solver.max_outer_iterations;
         project.solver.continuity_absolute_tolerance = self.solver.continuity_absolute_tolerance;
         project.solver.coupling_relative_tolerance = self.solver.coupling_relative_tolerance;
@@ -561,13 +563,31 @@ impl WorkbenchSession {
         new_name: &str,
     ) -> Result<(), WorkbenchError> {
         self.named_selections.rename(old_name, new_name)?;
-        for pair in &mut self.solver.cyclic_pairs{
-            if pair.first==old_name{pair.first=new_name.trim().into();}
-            if pair.second==old_name{pair.second=new_name.trim().into();}
+        for pair in &mut self.solver.cyclic_pairs {
+            if pair.first == old_name {
+                pair.first = new_name.trim().into();
+            }
+            if pair.second == old_name {
+                pair.second = new_name.trim().into();
+            }
         }
-        if let Some(b)=self.solver.boundary_profiles.remove(old_name){self.solver.boundary_profiles.insert(new_name.trim().into(),b);}
-        if let Some(b)=self.solver.turbulence.inlets.remove(old_name){self.solver.turbulence.inlets.insert(new_name.trim().into(),b);}
-        if let Some(bc)=self.solver.thermal.boundaries.remove(old_name){self.solver.thermal.boundaries.insert(new_name.trim().into(),bc);}
+        if let Some(b) = self.solver.boundary_profiles.remove(old_name) {
+            self.solver
+                .boundary_profiles
+                .insert(new_name.trim().into(), b);
+        }
+        if let Some(b) = self.solver.turbulence.inlets.remove(old_name) {
+            self.solver
+                .turbulence
+                .inlets
+                .insert(new_name.trim().into(), b);
+        }
+        if let Some(bc) = self.solver.thermal.boundaries.remove(old_name) {
+            self.solver
+                .thermal
+                .boundaries
+                .insert(new_name.trim().into(), bc);
+        }
         if let Some(condition) = self.boundaries.remove(old_name) {
             self.boundaries.insert(new_name.trim().into(), condition);
         }
@@ -578,7 +598,11 @@ impl WorkbenchSession {
                 }
             }
         };
-        for control in &mut self.mesh_recipe.edge_divisions {for target in &mut control.targets {rename_target(target);}}
+        for control in &mut self.mesh_recipe.edge_divisions {
+            for target in &mut control.targets {
+                rename_target(target);
+            }
+        }
         for control in &mut self.mesh_recipe.local_sizes {
             control.targets.iter_mut().for_each(rename_target);
         }
@@ -657,7 +681,8 @@ impl WorkbenchSession {
         export = self.apply_topology_method(export)?;
         let mut source = String::from("\n// FLURSYS persisted advanced mesh recipe.\n");
         let t = &self.mesh_recipe.tuning;
-        t.validate().map_err(|message| WorkbenchError::InvalidGrouping { message })?;
+        t.validate()
+            .map_err(|message| WorkbenchError::InvalidGrouping { message })?;
         source.push_str(&format!(
             "Mesh.Algorithm = {};\nMesh.Algorithm3D = {};\nMesh.MeshSizeFromCurvature = {};\nMesh.Smoothing = {};\nMesh.Optimize = {};\nMesh.OptimizeNetgen = {};\nMesh.OptimizeThreshold = {};\nMesh.MeshSizeExtendFromBoundary = {};\nMesh.MeshSizeFromPoints = 1;\nMeshSize {{ PointsOf{{ Surface{{:}}; }} }} = {};\n",
             t.algorithm_2d, t.algorithm_3d, t.curvature_points, t.smoothing_steps,
@@ -673,9 +698,12 @@ impl WorkbenchSession {
         }
         for control in self.mesh_recipe.refinements.iter().filter(|c| c.enabled) {
             if control.size_min < self.min_size || control.size_max > self.max_size {
-                return Err(WorkbenchError::InvalidGrouping { message: format!(
-                    "Distance refinement '{}' sizes must lie inside global bounds [{}, {}]",
-                    control.name, self.min_size, self.max_size) });
+                return Err(WorkbenchError::InvalidGrouping {
+                    message: format!(
+                        "Distance refinement '{}' sizes must lie inside global bounds [{}, {}]",
+                        control.name, self.min_size, self.max_size
+                    ),
+                });
             }
         }
         let entity_kind = match self.mesh_dimension {
@@ -702,15 +730,40 @@ impl WorkbenchSession {
             ));
         }
 
-        let mut divided=std::collections::BTreeSet::new();
-        for control in self.mesh_recipe.edge_divisions.iter().filter(|c|c.enabled) {
-            control.validate().map_err(|message|WorkbenchError::InvalidGrouping{message})?;
-            if self.mesh_dimension!=MeshDimension::TwoD {return Err(WorkbenchError::InvalidGrouping{message:"Exact edge divisions currently require analytic 2D boundary edges".into()});}
-            for tag in self.recipe_target_tags(&export,&control.targets)? {
-                if !divided.insert(tag) {return Err(WorkbenchError::InvalidGrouping{message:"Enabled edge division scopes overlap; remove the duplicate control".into()});}
-                let signed=if control.reverse {-(tag as i64)}else{tag as i64};
-                let distribution=if control.symmetric {"Bump"} else {"Progression"};
-                source.push_str(&format!("Transfinite Curve {{{signed}}} = {} Using {distribution} {:.17};\n",control.cells+1,control.progression));
+        let mut divided = std::collections::BTreeSet::new();
+        for control in self.mesh_recipe.edge_divisions.iter().filter(|c| c.enabled) {
+            control
+                .validate()
+                .map_err(|message| WorkbenchError::InvalidGrouping { message })?;
+            if self.mesh_dimension != MeshDimension::TwoD {
+                return Err(WorkbenchError::InvalidGrouping {
+                    message: "Exact edge divisions currently require analytic 2D boundary edges"
+                        .into(),
+                });
+            }
+            for tag in self.recipe_target_tags(&export, &control.targets)? {
+                if !divided.insert(tag) {
+                    return Err(WorkbenchError::InvalidGrouping {
+                        message:
+                            "Enabled edge division scopes overlap; remove the duplicate control"
+                                .into(),
+                    });
+                }
+                let signed = if control.reverse {
+                    -(tag as i64)
+                } else {
+                    tag as i64
+                };
+                let distribution = if control.symmetric {
+                    "Bump"
+                } else {
+                    "Progression"
+                };
+                source.push_str(&format!(
+                    "Transfinite Curve {{{signed}}} = {} Using {distribution} {:.17};\n",
+                    control.cells + 1,
+                    control.progression
+                ));
             }
         }
 
@@ -731,10 +784,15 @@ impl WorkbenchSession {
             }
             let mut tags = std::collections::BTreeSet::new();
             for control in &boundary_layers {
-                control.layer_dimensions().map_err(|message| WorkbenchError::InvalidGrouping {message})?;
-                let equal = |a: f64, b: f64| (a-b).abs() <= 64.0*f64::EPSILON*a.abs().max(b.abs());
+                control
+                    .layer_dimensions()
+                    .map_err(|message| WorkbenchError::InvalidGrouping { message })?;
+                let equal =
+                    |a: f64, b: f64| (a - b).abs() <= 64.0 * f64::EPSILON * a.abs().max(b.abs());
                 if !equal(control.first_layer_height, first.first_layer_height)
-                    || !equal(control.growth_ratio, first.growth_ratio) || control.layer_count != first.layer_count {
+                    || !equal(control.growth_ratio, first.growth_ratio)
+                    || control.layer_count != first.layer_count
+                {
                     return Err(WorkbenchError::InvalidGrouping {message:
                         "Enabled 2D inflation controls must share first height, growth and target layers; combine compatible walls in one scope or disable conflicting controls".into()});
                 }
@@ -745,7 +803,9 @@ impl WorkbenchSession {
                     }
                 }
             }
-            let (thickness, _) = first.layer_dimensions().map_err(|message| WorkbenchError::InvalidGrouping {message})?;
+            let (thickness, _) = first
+                .layer_dimensions()
+                .map_err(|message| WorkbenchError::InvalidGrouping { message })?;
             source.push_str(&format!(
                 "Field[{field_id}] = BoundaryLayer;\nField[{field_id}].CurvesList = {{{}}};\nField[{field_id}].Size = {};\nField[{field_id}].Ratio = {};\nField[{field_id}].Thickness = {thickness};\nField[{field_id}].SizeFar = {};\nField[{field_id}].Quads = 1;\nField[{field_id}].IntersectMetrics = 1;\nBoundaryLayer Field = {field_id};\n",
                 join_tags(&tags.into_iter().collect::<Vec<_>>()), first.first_layer_height,
@@ -763,9 +823,9 @@ impl WorkbenchSession {
         let mut threshold_fields = Vec::new();
         for control in refinements {
             let tags = self.recipe_target_tags(&export, &control.targets)?;
-            if let Some(g)=self.mesh_recipe.tuning.max_size_growth {
-                let required=(control.size_max-control.size_min)/g.ln();
-                if control.distance_max-control.distance_min < required*(1.0-1e-10) {
+            if let Some(g) = self.mesh_recipe.tuning.max_size_growth {
+                let required = (control.size_max - control.size_min) / g.ln();
+                if control.distance_max - control.distance_min < required * (1.0 - 1e-10) {
                     return Err(WorkbenchError::InvalidGrouping {message:format!("Distance control '{}' transition is too short for growth {g}: require width ≥ {required:.6e} m (end ≥ {:.6e} m). Use Calculate transition or increase the end distance.",control.name,control.distance_min+required)});
                 }
             }
@@ -784,13 +844,22 @@ impl WorkbenchSession {
             threshold_fields.push(threshold_field);
         }
         for control in self.mesh_recipe.regions.iter().filter(|c| c.enabled) {
-            control.validate().map_err(|message| WorkbenchError::InvalidGrouping {message})?;
+            control
+                .validate()
+                .map_err(|message| WorkbenchError::InvalidGrouping { message })?;
             if control.size < self.min_size || control.size > self.max_size {
-                return Err(WorkbenchError::InvalidGrouping {message:format!("Region '{}' size is outside global bounds [{}, {}]", control.name, self.min_size, self.max_size)});
+                return Err(WorkbenchError::InvalidGrouping {
+                    message: format!(
+                        "Region '{}' size is outside global bounds [{}, {}]",
+                        control.name, self.min_size, self.max_size
+                    ),
+                });
             }
-            let a=control.minimum; let b=control.maximum;
+            let a = control.minimum;
+            let b = control.maximum;
             source.push_str(&format!("Field[{field_id}] = Box;\nField[{field_id}].VIn = {};\nField[{field_id}].VOut = {};\nField[{field_id}].XMin = {};\nField[{field_id}].XMax = {};\nField[{field_id}].YMin = {};\nField[{field_id}].YMax = {};\nField[{field_id}].ZMin = {};\nField[{field_id}].ZMax = {};\nField[{field_id}].Thickness = {};\n",control.size,self.global_size,a.x,b.x,a.y,b.y,a.z,b.z,control.transition));
-            threshold_fields.push(field_id); field_id+=1;
+            threshold_fields.push(field_id);
+            field_id += 1;
         }
         match threshold_fields.as_slice() {
             [] => {}
@@ -915,8 +984,13 @@ impl WorkbenchSession {
                     if cad_bodies.len() != 1 {
                         return Err(WorkbenchError::InvalidGrouping { message: "Meshing requires one visible CAD fluid body; hide other bodies or combine them first".into() });
                     }
-                    if self.mesh_recipe.tuning.method==super::MeshMethod::HexBlock {
-                        return Ok(GmshGeometryExporter::cad_hex_box(&self.geometry,cad_bodies[0].0,groups,"fluid")?);
+                    if self.mesh_recipe.tuning.method == super::MeshMethod::HexBlock {
+                        return Ok(GmshGeometryExporter::cad_hex_box(
+                            &self.geometry,
+                            cad_bodies[0].0,
+                            groups,
+                            "fluid",
+                        )?);
                     }
                     return Ok(GmshGeometryExporter::cad_faceted(
                         &self.geometry,
@@ -943,7 +1017,11 @@ impl WorkbenchSession {
                         body.id,
                         groups,
                         "fluid",
-                        matches!(self.mesh_recipe.tuning.method,super::MeshMethod::SweepPrism|super::MeshMethod::SweepHex).then_some(self.mesh_recipe.tuning.divisions[2]),
+                        matches!(
+                            self.mesh_recipe.tuning.method,
+                            super::MeshMethod::SweepPrism | super::MeshMethod::SweepHex
+                        )
+                        .then_some(self.mesh_recipe.tuning.divisions[2]),
                     )?)
                 } else {
                     Err(WorkbenchError::NoGeometry {
@@ -1141,7 +1219,13 @@ impl WorkbenchSession {
         patch: &str,
         condition: IncompressibleBoundaryCondition,
     ) -> Result<(), WorkbenchError> {
-        if self.cyclic_partner(patch).is_some(){return Err(WorkbenchError::InvalidGrouping{message:"Remove the cyclic pair before assigning a physical condition to this patch".into()})}
+        if self.cyclic_partner(patch).is_some() {
+            return Err(WorkbenchError::InvalidGrouping {
+                message:
+                    "Remove the cyclic pair before assigning a physical condition to this patch"
+                        .into(),
+            });
+        }
         if self.mesh.is_none() {
             return self.configure_named_boundary(patch, condition);
         }
@@ -1171,7 +1255,11 @@ impl WorkbenchSession {
         selection: &str,
         condition: IncompressibleBoundaryCondition,
     ) -> Result<(), WorkbenchError> {
-        if self.cyclic_partner(selection).is_some(){return Err(WorkbenchError::InvalidGrouping{message:"Remove the cyclic pair before assigning a physical condition".into()})}
+        if self.cyclic_partner(selection).is_some() {
+            return Err(WorkbenchError::InvalidGrouping {
+                message: "Remove the cyclic pair before assigning a physical condition".into(),
+            });
+        }
         if self.named_selections.get(selection).is_none() {
             return Err(WorkbenchError::InvalidGrouping {
                 message: format!("Named Selection {selection:?} does not exist"),
@@ -1204,50 +1292,153 @@ impl WorkbenchSession {
         self.boundaries.get(patch)
     }
 
-    pub fn cyclic_partner(&self,name:&str)->Option<&str>{
-        self.solver.cyclic_pairs.iter().find_map(|p|if p.first==name{Some(p.second.as_str())}else if p.second==name{Some(p.first.as_str())}else{None})
+    pub fn cyclic_partner(&self, name: &str) -> Option<&str> {
+        self.solver.cyclic_pairs.iter().find_map(|p| {
+            if p.first == name {
+                Some(p.second.as_str())
+            } else if p.second == name {
+                Some(p.first.as_str())
+            } else {
+                None
+            }
+        })
     }
-    pub fn set_cyclic_pairs(&mut self,pairs:Vec<crate::periodic::TranslationalCyclicPair>)->Result<(),WorkbenchError>{
-        let mesh=self.mesh.as_ref().ok_or_else(||WorkbenchError::InvalidGrouping{message:"Generate the mesh before pairing cyclic patches".into()})?;
-        let mut settings=self.solver.clone();settings.cyclic_pairs=pairs.clone();
-        settings.resolve_cyclic(&mesh.mesh).map_err(|message|WorkbenchError::InvalidGrouping{message})?;
-        for p in &pairs {self.boundaries.remove(&p.first);self.boundaries.remove(&p.second);}
-        self.solver.cyclic_pairs=pairs;self.solution=None;self.status=SolveStatus::Idle;Ok(())
+    pub fn set_cyclic_pairs(
+        &mut self,
+        pairs: Vec<crate::periodic::TranslationalCyclicPair>,
+    ) -> Result<(), WorkbenchError> {
+        let mesh = self
+            .mesh
+            .as_ref()
+            .ok_or_else(|| WorkbenchError::InvalidGrouping {
+                message: "Generate the mesh before pairing cyclic patches".into(),
+            })?;
+        let mut settings = self.solver.clone();
+        settings.cyclic_pairs = pairs.clone();
+        settings
+            .resolve_cyclic(&mesh.mesh)
+            .map_err(|message| WorkbenchError::InvalidGrouping { message })?;
+        for p in &pairs {
+            self.boundaries.remove(&p.first);
+            self.boundaries.remove(&p.second);
+        }
+        self.solver.cyclic_pairs = pairs;
+        self.solution = None;
+        self.status = SolveStatus::Idle;
+        Ok(())
     }
-    pub fn set_volume_models(&mut self,models:crate::volume_models::VolumeModels)->Result<(),WorkbenchError>{
-        models.validate().map_err(|message|WorkbenchError::InvalidGrouping{message})?;
-        if self.solver.volume_models!=models{self.solution=None;self.status=SolveStatus::Idle;self.solver.volume_models=models;}Ok(())
+    pub fn set_volume_models(
+        &mut self,
+        models: crate::volume_models::VolumeModels,
+    ) -> Result<(), WorkbenchError> {
+        models
+            .validate()
+            .map_err(|message| WorkbenchError::InvalidGrouping { message })?;
+        if self.solver.volume_models != models {
+            self.solution = None;
+            self.status = SolveStatus::Idle;
+            self.solver.volume_models = models;
+        }
+        Ok(())
     }
-    pub fn set_pressure_coupling(&mut self,c:crate::simple::PressureCoupling)->Result<(),WorkbenchError>{
-        c.validate(self.solver.time.is_transient()).map_err(|message|WorkbenchError::InvalidGrouping{message})?;
-        if self.solver.pressure_coupling!=c{self.solution=None;self.status=SolveStatus::Idle;self.solver.pressure_coupling=c;}Ok(())
+    pub fn set_pressure_coupling(
+        &mut self,
+        c: crate::simple::PressureCoupling,
+    ) -> Result<(), WorkbenchError> {
+        c.validate(self.solver.time.is_transient())
+            .map_err(|message| WorkbenchError::InvalidGrouping { message })?;
+        if self.solver.pressure_coupling != c {
+            self.solution = None;
+            self.status = SolveStatus::Idle;
+            self.solver.pressure_coupling = c;
+        }
+        Ok(())
     }
-    pub fn set_equation_solvers(&mut self,e:crate::equations::EquationSolvers)->Result<(),WorkbenchError>{
-        e.validate().map_err(|message|WorkbenchError::InvalidGrouping{message})?;
-        if self.solver.equations.as_ref()!=Some(&e){self.solution=None;self.status=SolveStatus::Idle;self.solver.equations=Some(e);}Ok(())
+    pub fn set_equation_solvers(
+        &mut self,
+        e: crate::equations::EquationSolvers,
+    ) -> Result<(), WorkbenchError> {
+        e.validate()
+            .map_err(|message| WorkbenchError::InvalidGrouping { message })?;
+        if self.solver.equations.as_ref() != Some(&e) {
+            self.solution = None;
+            self.status = SolveStatus::Idle;
+            self.solver.equations = Some(e);
+        }
+        Ok(())
     }
-    pub fn set_boundary_profile(&mut self,name:&str,profile:Option<crate::unstructured_incompressible::BoundaryProfile>)->Result<(),WorkbenchError>{
-        if let Some(p)=&profile{let bc=*self.boundaries.get(name).ok_or_else(||WorkbenchError::InvalidGrouping{message:"Assign a physical boundary first".into()})?;if p.quantity.is_thermal(){let thermal=*self.solver.thermal.boundaries.get(name).ok_or_else(||WorkbenchError::InvalidGrouping{message:"Assign the thermal boundary before its time table".into()})?;p.apply_thermal(thermal,0.0).map_err(|message|WorkbenchError::InvalidGrouping{message})?;}else{p.apply(bc,0.0).map_err(|message|WorkbenchError::InvalidGrouping{message})?;}}
-        if self.solver.boundary_profiles.get(name)!=profile.as_ref(){
-            if let Some(p)=profile{self.solver.boundary_profiles.insert(name.into(),p);}else{self.solver.boundary_profiles.remove(name);}
-            self.solution=None;self.status=SolveStatus::Idle;
-        }Ok(())
+    pub fn set_boundary_profile(
+        &mut self,
+        name: &str,
+        profile: Option<crate::unstructured_incompressible::BoundaryProfile>,
+    ) -> Result<(), WorkbenchError> {
+        if let Some(p) = &profile {
+            let bc = *self
+                .boundaries
+                .get(name)
+                .ok_or_else(|| WorkbenchError::InvalidGrouping {
+                    message: "Assign a physical boundary first".into(),
+                })?;
+            if p.quantity.is_thermal() {
+                let thermal = *self.solver.thermal.boundaries.get(name).ok_or_else(|| {
+                    WorkbenchError::InvalidGrouping {
+                        message: "Assign the thermal boundary before its time table".into(),
+                    }
+                })?;
+                p.apply_thermal(thermal, 0.0)
+                    .map_err(|message| WorkbenchError::InvalidGrouping { message })?;
+            } else {
+                p.apply(bc, 0.0)
+                    .map_err(|message| WorkbenchError::InvalidGrouping { message })?;
+            }
+        }
+        if self.solver.boundary_profiles.get(name) != profile.as_ref() {
+            if let Some(p) = profile {
+                self.solver.boundary_profiles.insert(name.into(), p);
+            } else {
+                self.solver.boundary_profiles.remove(name);
+            }
+            self.solution = None;
+            self.status = SolveStatus::Idle;
+        }
+        Ok(())
     }
     pub fn material(&self) -> &IncompressibleMaterial {
         &self.material
     }
 
-    pub fn set_user_material(&mut self,rho:f64,nu:f64)->Result<(),WorkbenchError>{self.set_material(rho,nu)?;self.catalog_material=None;Ok(())}
-    pub fn set_thermal(&mut self,options:crate::thermal::Options)->Result<(),WorkbenchError>{
-        options.validate().map_err(|message|WorkbenchError::InvalidGrouping{message})?;
-        if options!=self.solver.thermal {self.solution=None;self.status=SolveStatus::Idle;self.solver.thermal=options;}
+    pub fn set_user_material(&mut self, rho: f64, nu: f64) -> Result<(), WorkbenchError> {
+        self.set_material(rho, nu)?;
+        self.catalog_material = None;
         Ok(())
     }
-    pub fn apply_catalog_material(&mut self,material:crate::materials::MaterialSnapshot)->Result<(),WorkbenchError>{
-        material.validate().map_err(|message|WorkbenchError::InvalidGrouping{message})?;
-        self.set_material(material.density,material.kinematic_viscosity())?;
-        let mut thermal=self.solver.thermal.clone();thermal.specific_heat=material.specific_heat;thermal.conductivity=material.conductivity;thermal.expansion=material.expansion;thermal.reference_temperature=material.temperature;
-        self.set_thermal(thermal)?;self.catalog_material=Some(material);Ok(())
+    pub fn set_thermal(&mut self, options: crate::thermal::Options) -> Result<(), WorkbenchError> {
+        options
+            .validate()
+            .map_err(|message| WorkbenchError::InvalidGrouping { message })?;
+        if options != self.solver.thermal {
+            self.solution = None;
+            self.status = SolveStatus::Idle;
+            self.solver.thermal = options;
+        }
+        Ok(())
+    }
+    pub fn apply_catalog_material(
+        &mut self,
+        material: crate::materials::MaterialSnapshot,
+    ) -> Result<(), WorkbenchError> {
+        material
+            .validate()
+            .map_err(|message| WorkbenchError::InvalidGrouping { message })?;
+        self.set_material(material.density, material.kinematic_viscosity())?;
+        let mut thermal = self.solver.thermal.clone();
+        thermal.specific_heat = material.specific_heat;
+        thermal.conductivity = material.conductivity;
+        thermal.expansion = material.expansion;
+        thermal.reference_temperature = material.temperature;
+        self.set_thermal(thermal)?;
+        self.catalog_material = Some(material);
+        Ok(())
     }
     pub fn set_material(
         &mut self,
@@ -1271,7 +1462,7 @@ impl WorkbenchSession {
         {
             self.solution = None;
             self.status = SolveStatus::Idle;
-            self.catalog_material=None;
+            self.catalog_material = None;
         }
         self.material = IncompressibleMaterial {
             density,
@@ -1293,20 +1484,70 @@ impl WorkbenchSession {
         self.solver.convection = convection;
     }
 
-    pub fn set_flow_models(&mut self,time:crate::unstructured_incompressible::TimeIntegration,turbulence:crate::turbulence::TurbulenceOptions)->Result<(),WorkbenchError> {
-        time.validate().and_then(|_|turbulence.validate()).map_err(|message|WorkbenchError::InvalidGrouping {message})?;
-        for name in turbulence.inlets.keys(){
-            if self.named_selections.get(name).is_none(){return Err(WorkbenchError::InvalidGrouping{message:format!("Unknown turbulence boundary {name}")});}
-            if matches!(self.boundaries.get(name),Some(IncompressibleBoundaryCondition::NoSlipWall|IncompressibleBoundaryCondition::MovingWall{..}|IncompressibleBoundaryCondition::Slip|IncompressibleBoundaryCondition::Symmetry)){return Err(WorkbenchError::InvalidGrouping{message:format!("Incoming turbulence requires an open boundary, not {name}")});}
+    pub fn set_flow_models(
+        &mut self,
+        time: crate::unstructured_incompressible::TimeIntegration,
+        turbulence: crate::turbulence::TurbulenceOptions,
+    ) -> Result<(), WorkbenchError> {
+        time.validate()
+            .and_then(|_| turbulence.validate())
+            .map_err(|message| WorkbenchError::InvalidGrouping { message })?;
+        for name in turbulence.inlets.keys() {
+            if self.named_selections.get(name).is_none() {
+                return Err(WorkbenchError::InvalidGrouping {
+                    message: format!("Unknown turbulence boundary {name}"),
+                });
+            }
+            if matches!(
+                self.boundaries.get(name),
+                Some(
+                    IncompressibleBoundaryCondition::NoSlipWall
+                        | IncompressibleBoundaryCondition::MovingWall { .. }
+                        | IncompressibleBoundaryCondition::Slip
+                        | IncompressibleBoundaryCondition::Symmetry
+                )
+            ) {
+                return Err(WorkbenchError::InvalidGrouping {
+                    message: format!("Incoming turbulence requires an open boundary, not {name}"),
+                });
+            }
         }
-        if matches!(turbulence.model,crate::turbulence::TurbulenceModel::Smagorinsky|crate::turbulence::TurbulenceModel::Wale) && (matches!(time,crate::unstructured_incompressible::TimeIntegration::Steady) || self.mesh_dimension!=MeshDimension::ThreeD) {
-            return Err(WorkbenchError::InvalidGrouping {message:"LES requires transient integration and a 3D mesh".into()});
+        if matches!(
+            turbulence.model,
+            crate::turbulence::TurbulenceModel::Smagorinsky
+                | crate::turbulence::TurbulenceModel::Wale
+        ) && (matches!(
+            time,
+            crate::unstructured_incompressible::TimeIntegration::Steady
+        ) || self.mesh_dimension != MeshDimension::ThreeD)
+        {
+            return Err(WorkbenchError::InvalidGrouping {
+                message: "LES requires transient integration and a 3D mesh".into(),
+            });
         }
-        if turbulence.model.uses_epsilon() && turbulence.wall_treatment!=crate::turbulence::WallTreatment::EquilibriumKEpsilon && self.boundaries.values().any(|b|matches!(b,IncompressibleBoundaryCondition::NoSlipWall|IncompressibleBoundaryCondition::MovingWall{..})) {
-            return Err(WorkbenchError::InvalidGrouping{message:"Select equilibrium wall treatment for k-epsilon walls, or use resolved SST".into()});
+        if turbulence.model.uses_epsilon()
+            && turbulence.wall_treatment != crate::turbulence::WallTreatment::EquilibriumKEpsilon
+            && self.boundaries.values().any(|b| {
+                matches!(
+                    b,
+                    IncompressibleBoundaryCondition::NoSlipWall
+                        | IncompressibleBoundaryCondition::MovingWall { .. }
+                )
+            })
+        {
+            return Err(WorkbenchError::InvalidGrouping {
+                message:
+                    "Select equilibrium wall treatment for k-epsilon walls, or use resolved SST"
+                        .into(),
+            });
         }
-        if self.solver.time!=time || self.solver.turbulence!=turbulence {self.solution=None;self.status=SolveStatus::Idle;}
-        self.solver.time=time;self.solver.turbulence=turbulence;Ok(())
+        if self.solver.time != time || self.solver.turbulence != turbulence {
+            self.solution = None;
+            self.status = SolveStatus::Idle;
+        }
+        self.solver.time = time;
+        self.solver.turbulence = turbulence;
+        Ok(())
     }
     pub fn solver_options(&self) -> &IncompressibleSolverOptions {
         &self.solver
@@ -1361,25 +1602,96 @@ impl WorkbenchSession {
         let Some(generated) = &self.mesh else {
             return Err("generate a mesh first (Mesh stage)".to_string());
         };
-        if !self.solver.cyclic_pairs.is_empty(){self.solver.resolve_cyclic(&generated.mesh)?;}
-        if !self.solver.boundary_profiles.is_empty() && !self.solver.time.is_transient(){return Err("Time-dependent boundaries require transient integration".into());}
-        for (name,p) in &self.solver.boundary_profiles {let bc=*self.boundaries.get(name).ok_or_else(||format!("Missing physical boundary for time table: {name}"))?;if p.quantity.is_thermal(){if !self.solver.thermal.enabled{return Err("Enable temperature transport for thermal time tables".into())}let t=*self.solver.thermal.boundaries.get(name).ok_or_else(||format!("Assign thermal boundary {name}"))?;p.apply_thermal(t,0.0)?;}else{p.apply(bc,0.0)?;}}
-        if let Some(e)=&self.solver.equations{e.validate()?;}
+        if !self.solver.cyclic_pairs.is_empty() {
+            self.solver.resolve_cyclic(&generated.mesh)?;
+        }
+        if !self.solver.boundary_profiles.is_empty() && !self.solver.time.is_transient() {
+            return Err("Time-dependent boundaries require transient integration".into());
+        }
+        for (name, p) in &self.solver.boundary_profiles {
+            let bc = *self
+                .boundaries
+                .get(name)
+                .ok_or_else(|| format!("Missing physical boundary for time table: {name}"))?;
+            if p.quantity.is_thermal() {
+                if !self.solver.thermal.enabled {
+                    return Err("Enable temperature transport for thermal time tables".into());
+                }
+                let t = *self
+                    .solver
+                    .thermal
+                    .boundaries
+                    .get(name)
+                    .ok_or_else(|| format!("Assign thermal boundary {name}"))?;
+                p.apply_thermal(t, 0.0)?;
+            } else {
+                p.apply(bc, 0.0)?;
+            }
+        }
+        if let Some(e) = &self.solver.equations {
+            e.validate()?;
+        }
         self.solver.volume_models.validate()?;
-        self.solver.pressure_coupling.validate(self.solver.time.is_transient())?;
+        self.solver
+            .pressure_coupling
+            .validate(self.solver.time.is_transient())?;
         self.solver.turbulence.validate()?;
-        for name in self.solver.turbulence.inlets.keys(){
-            if !generated.mesh.boundary_patches().iter().any(|p|&p.name==name){return Err(format!("Unknown turbulence boundary {name}"));}
-            if matches!(self.boundaries.get(name),Some(IncompressibleBoundaryCondition::NoSlipWall|IncompressibleBoundaryCondition::MovingWall{..}|IncompressibleBoundaryCondition::Slip|IncompressibleBoundaryCondition::Symmetry)){return Err(format!("Clear incoming turbulence on impermeable boundary {name}"));}
+        for name in self.solver.turbulence.inlets.keys() {
+            if !generated
+                .mesh
+                .boundary_patches()
+                .iter()
+                .any(|p| &p.name == name)
+            {
+                return Err(format!("Unknown turbulence boundary {name}"));
+            }
+            if matches!(
+                self.boundaries.get(name),
+                Some(
+                    IncompressibleBoundaryCondition::NoSlipWall
+                        | IncompressibleBoundaryCondition::MovingWall { .. }
+                        | IncompressibleBoundaryCondition::Slip
+                        | IncompressibleBoundaryCondition::Symmetry
+                )
+            ) {
+                return Err(format!(
+                    "Clear incoming turbulence on impermeable boundary {name}"
+                ));
+            }
         }
         self.solver.thermal.validate()?;
-        if self.solver.thermal.enabled && self.solver.thermal.wall_treatment==crate::thermal::ThermalWallTreatment::EquilibriumPrt && (self.solver.turbulence.model!=crate::turbulence::TurbulenceModel::KEpsilon || self.solver.turbulence.wall_treatment!=crate::turbulence::WallTreatment::EquilibriumKEpsilon){return Err("Equilibrium Prt thermal walls require equilibrium k-epsilon momentum walls".into());}
-        if self.solver.thermal.enabled {
-            let missing=generated.mesh.boundary_patches().iter().filter(|p|!self.solver.thermal.boundaries.contains_key(&p.name)).map(|p|p.name.clone()).collect::<Vec<_>>();
-            if !missing.is_empty(){return Err(format!("Assign thermal boundary conditions: {}",missing.join(", ")))}
+        if self.solver.thermal.enabled
+            && self.solver.thermal.wall_treatment
+                == crate::thermal::ThermalWallTreatment::EquilibriumPrt
+            && (self.solver.turbulence.model != crate::turbulence::TurbulenceModel::KEpsilon
+                || self.solver.turbulence.wall_treatment
+                    != crate::turbulence::WallTreatment::EquilibriumKEpsilon)
+        {
+            return Err(
+                "Equilibrium Prt thermal walls require equilibrium k-epsilon momentum walls".into(),
+            );
         }
-        let quality=generated.mesh.quality();
-        if !quality.min_cell_volume.is_finite() || quality.min_cell_volume<=0.0 || !quality.max_non_orthogonality_degrees.is_finite() || quality.max_non_orthogonality_degrees>=90.0 {
+        if self.solver.thermal.enabled {
+            let missing = generated
+                .mesh
+                .boundary_patches()
+                .iter()
+                .filter(|p| !self.solver.thermal.boundaries.contains_key(&p.name))
+                .map(|p| p.name.clone())
+                .collect::<Vec<_>>();
+            if !missing.is_empty() {
+                return Err(format!(
+                    "Assign thermal boundary conditions: {}",
+                    missing.join(", ")
+                ));
+            }
+        }
+        let quality = generated.mesh.quality();
+        if !quality.min_cell_volume.is_finite()
+            || quality.min_cell_volume <= 0.0
+            || !quality.max_non_orthogonality_degrees.is_finite()
+            || quality.max_non_orthogonality_degrees >= 90.0
+        {
             return Err("Invalid mesh geometry: check positive cell measures and owner-to-neighbour face orientation before solving.".into());
         }
         let mut uncovered = 0_usize;
@@ -1404,7 +1716,9 @@ impl WorkbenchSession {
             .boundary_patches()
             .iter()
             .map(|patch| patch.name.as_str())
-            .filter(|name| !self.boundaries.contains_key(*name) && self.cyclic_partner(name).is_none())
+            .filter(|name| {
+                !self.boundaries.contains_key(*name) && self.cyclic_partner(name).is_none()
+            })
             .collect();
         if !missing.is_empty() {
             return Err(format!(
@@ -1429,8 +1743,12 @@ impl WorkbenchSession {
             return Err(WorkbenchError::InvalidGrouping { message: reason });
         }
         let generated = self.mesh.as_ref().expect("readiness verified the mesh");
-        let preflight=super::diagnostics::mesh_preflight(&generated.mesh);
-        if preflight.blocked() {return Err(WorkbenchError::InvalidGrouping {message:preflight.summary()});}
+        let preflight = super::diagnostics::mesh_preflight(&generated.mesh);
+        if preflight.blocked() {
+            return Err(WorkbenchError::InvalidGrouping {
+                message: preflight.summary(),
+            });
+        }
         let boundaries = generated
             .mesh
             .boundary_patches()
@@ -1441,10 +1759,16 @@ impl WorkbenchSession {
                     .map(|condition| (patch.name.clone(), *condition))
             })
             .collect();
-        let case=IncompressibleCase::steady(
-            generated.mesh.clone(), boundaries, self.material, self.solver.clone(),
+        let case = IncompressibleCase::steady(
+            generated.mesh.clone(),
+            boundaries,
+            self.material,
+            self.solver.clone(),
         );
-        case.solver.volume_models.validate_case(&case).map_err(|message|WorkbenchError::InvalidGrouping{message})?;
+        case.solver
+            .volume_models
+            .validate_case(&case)
+            .map_err(|message| WorkbenchError::InvalidGrouping { message })?;
         Ok(case)
     }
 
@@ -1476,7 +1800,7 @@ impl WorkbenchSession {
                 self.solution = Some(solution);
             }
             Err(error) => {
-                self.solution=None;
+                self.solution = None;
                 self.status = SolveStatus::Failed(error.to_string());
             }
         }
@@ -1544,7 +1868,8 @@ fn condition_values(condition: IncompressibleBoundaryCondition) -> Vec<f64> {
         | IncompressibleBoundaryCondition::VelocityInlet { velocity } => {
             [velocity.x, velocity.y, velocity.z, 0.0]
         }
-        IncompressibleBoundaryCondition::TotalPressure {pressure} | IncompressibleBoundaryCondition::PressureOutlet { pressure } => [pressure, 0.0, 0.0, 0.0],
+        IncompressibleBoundaryCondition::TotalPressure { pressure }
+        | IncompressibleBoundaryCondition::PressureOutlet { pressure } => [pressure, 0.0, 0.0, 0.0],
     };
     values.to_vec()
 }
@@ -1553,7 +1878,9 @@ fn boundary_condition_to_document(
     condition: IncompressibleBoundaryCondition,
 ) -> PhysicalBoundaryCondition {
     match condition {
-        IncompressibleBoundaryCondition::TotalPressure {pressure}=>PhysicalBoundaryCondition::TotalPressure{pressure},
+        IncompressibleBoundaryCondition::TotalPressure { pressure } => {
+            PhysicalBoundaryCondition::TotalPressure { pressure }
+        }
         IncompressibleBoundaryCondition::ParabolicInlet {
             velocity,
             axis,
@@ -1593,7 +1920,9 @@ fn boundary_condition_from_document(
     condition: &PhysicalBoundaryCondition,
 ) -> IncompressibleBoundaryCondition {
     match *condition {
-        PhysicalBoundaryCondition::TotalPressure {pressure}=>IncompressibleBoundaryCondition::TotalPressure{pressure},
+        PhysicalBoundaryCondition::TotalPressure { pressure } => {
+            IncompressibleBoundaryCondition::TotalPressure { pressure }
+        }
         PhysicalBoundaryCondition::ParabolicInlet {
             velocity,
             axis,

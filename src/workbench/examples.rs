@@ -293,6 +293,7 @@ fn build_cylinder(skewed: bool) -> Result<WorkbenchSession, ExampleProjectError>
     session.create_named_selection("cylinder", edge_targets(&hole.boundary))?;
     session.configure_named_boundary("cylinder", IncompressibleBoundaryCondition::NoSlipWall)?;
     configure_2d(&mut session, size)?;
+    session.set_mesh_configuration(MeshDimension::TwoD, size, size * 0.35, size, 1)?;
     session.set_mesh_recipe(MeshRecipe {
         refinements: vec![ThresholdRefinement {
             id: 1,

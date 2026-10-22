@@ -87,7 +87,7 @@ pub struct PlaneSample {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PlaneSnapshot {
     #[serde(default)]
-    pub physical_time:Option<f64>,
+    pub physical_time: Option<f64>,
     pub plane: FlowPlaneMonitor,
     pub iteration: usize,
     pub samples: Vec<PlaneSample>,
@@ -206,7 +206,7 @@ pub fn sample(
         })
         .collect::<Result<Vec<_>, String>>()?;
     Ok(PlaneSnapshot {
-        physical_time:None,
+        physical_time: None,
         plane: plane.clone(),
         iteration,
         samples,
@@ -260,7 +260,10 @@ pub fn vector_svg(snapshot: &PlaneSnapshot) -> String {
 
 /// Filled cell sections: no smoothing or invented point interpolation.
 pub fn section_svg(snapshot: &PlaneSnapshot, style: &PlaneDisplay) -> String {
-    let time_caption=snapshot.physical_time.map(|t|format!("Physical time: {t:.6e} s")).unwrap_or_else(||"Steady iteration, not physical time".into());
+    let time_caption = snapshot
+        .physical_time
+        .map(|t| format!("Physical time: {t:.6e} s"))
+        .unwrap_or_else(|| "Steady iteration, not physical time".into());
     let p = &snapshot.plane;
     let field = style.field.min(5);
     let (label, unit) = match field {
@@ -469,7 +472,13 @@ pub fn csv_text(snapshot: &PlaneSnapshot) -> String {
         let p = s.geometry.point;
         let v = s.velocity;
         let _=writeln!(csv,"{},{},{:.16e},{:.16e},{:.16e},{:.16e},{:.16e},{:.16e},{:.16e},{:.16e},{:.16e},{:.16e},{:.16e}",snapshot.iteration,s.geometry.cell,p.x,p.y,p.z,v.x,v.y,v.z,v.dot(snapshot.plane.u),v.dot(snapshot.plane.v),v.dot(snapshot.plane.normal()),v.norm(),s.pressure);
-        if let Some(time)=snapshot.physical_time {csv.pop();let _=writeln!(csv,",{time:.16e}");}else{csv.pop();csv.push_str(",\n");}
+        if let Some(time) = snapshot.physical_time {
+            csv.pop();
+            let _ = writeln!(csv, ",{time:.16e}");
+        } else {
+            csv.pop();
+            csv.push_str(",\n");
+        }
     }
     csv
 }
@@ -491,7 +500,7 @@ mod recording_tests {
             display: PlaneDisplay::default(),
         };
         let snapshot = PlaneSnapshot {
-            physical_time:None,
+            physical_time: None,
             plane,
             iteration: 20,
             path: None,

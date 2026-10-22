@@ -39,7 +39,8 @@ struct FieldCheckpoint {
     face_flux: Option<Vec<f64>>,
     #[serde(default)]
     turbulence: Option<StoredTurbulence>,
-    #[serde(default)] temperature:Option<Vec<f64>>,
+    #[serde(default)]
+    temperature: Option<Vec<f64>>,
 }
 #[derive(Serialize, Deserialize)]
 struct StoredTurbulence {
@@ -48,8 +49,10 @@ struct StoredTurbulence {
     k: Vec<f64>,
     omega: Vec<f64>,
     nut: Vec<f64>,
-    #[serde(default)] epsilon:Option<Vec<f64>>,
-    #[serde(default)] nu_tilda:Option<Vec<f64>>,
+    #[serde(default)]
+    epsilon: Option<Vec<f64>>,
+    #[serde(default)]
+    nu_tilda: Option<Vec<f64>>,
 }
 /// Complete time-level restart, including conservative flux and RANS state.
 pub fn write_solution(
@@ -88,11 +91,17 @@ pub fn write_restart(
     else {
         return Err("A complete restart state is required".into());
     };
-    if let Some(t)=turbulence{
-        if let Some(v)=&t.nu_tilda{
-            if v.values().len()!=mesh.cells.len()||v.values().iter().any(|v|!v.is_finite()||*v<0.0){return Err("Invalid SA restart field".into())}
+    if let Some(t) = turbulence {
+        if let Some(v) = &t.nu_tilda {
+            if v.values().len() != mesh.cells.len()
+                || v.values().iter().any(|v| !v.is_finite() || *v < 0.0)
+            {
+                return Err("Invalid SA restart field".into());
+            }
         }
-        if t.model==crate::turbulence::TurbulenceModel::SpalartAllmaras&&t.nu_tilda.is_none(){return Err("SA restart requires nu_tilda".into())}
+        if t.model == crate::turbulence::TurbulenceModel::SpalartAllmaras && t.nu_tilda.is_none() {
+            return Err("SA restart requires nu_tilda".into());
+        }
     }
     if !time.is_finite()
         || *time < 0.0
@@ -115,7 +124,9 @@ pub fn write_restart(
         return Err("Restart field sizes do not match mesh".into());
     }
     if let Some(t) = temperature {
-        if t.values().len() != mesh.cells.len() || t.values().iter().any(|v| !v.is_finite() || *v <= 0.0) {
+        if t.values().len() != mesh.cells.len()
+            || t.values().iter().any(|v| !v.is_finite() || *v <= 0.0)
+        {
             return Err("Invalid restart temperature field".into());
         }
     }
@@ -129,14 +140,14 @@ pub fn write_restart(
         time: physical.then_some(*time),
         last_dt: if physical { *last_dt } else { None },
         face_flux: Some(face_flux.values().to_vec()),
-        temperature:temperature.as_ref().map(|t|t.values().to_vec()),
+        temperature: temperature.as_ref().map(|t| t.values().to_vec()),
         turbulence: turbulence.as_ref().map(|t| StoredTurbulence {
             model: t.model,
             k: t.k.values().to_vec(),
             omega: t.omega.values().to_vec(),
             nut: t.nut.values().to_vec(),
-            epsilon:t.epsilon.as_ref().map(|e|e.values().to_vec()),
-            nu_tilda:t.nu_tilda.as_ref().map(|v|v.values().to_vec()),
+            epsilon: t.epsilon.as_ref().map(|e| e.values().to_vec()),
+            nu_tilda: t.nu_tilda.as_ref().map(|v| v.values().to_vec()),
         }),
     };
     let parent = path.parent().unwrap_or(Path::new("."));
@@ -226,9 +237,22 @@ pub fn load(
         let turbulence = saved
             .turbulence
             .map(|t| -> Result<crate::turbulence::TurbulenceFields, String> {
-                if t.nu_tilda.as_ref().is_some_and(|v|v.len()!=mesh.cell_count()||v.iter().any(|v|!v.is_finite()||*v<0.0)){return Err("Invalid SA checkpoint field".into())}
-                if t.model==crate::turbulence::TurbulenceModel::SpalartAllmaras&&t.nu_tilda.is_none(){return Err("SA checkpoint is missing nu_tilda".into())}
-                if t.epsilon.as_ref().is_some_and(|e|e.iter().any(|v|!v.is_finite()||*v<=0.0)) {return Err("Invalid restart epsilon field".into());}
+                if t.nu_tilda.as_ref().is_some_and(|v| {
+                    v.len() != mesh.cell_count() || v.iter().any(|v| !v.is_finite() || *v < 0.0)
+                }) {
+                    return Err("Invalid SA checkpoint field".into());
+                }
+                if t.model == crate::turbulence::TurbulenceModel::SpalartAllmaras
+                    && t.nu_tilda.is_none()
+                {
+                    return Err("SA checkpoint is missing nu_tilda".into());
+                }
+                if t.epsilon
+                    .as_ref()
+                    .is_some_and(|e| e.iter().any(|v| !v.is_finite() || *v <= 0.0))
+                {
+                    return Err("Invalid restart epsilon field".into());
+                }
                 if t.k
                     .iter()
                     .chain(&t.omega)
@@ -239,11 +263,17 @@ pub fn load(
                 }
                 Ok(crate::turbulence::TurbulenceFields {
                     model: t.model,
-                    nu_tilda:t.nu_tilda.map(|v|CellField::from_values(mesh,v).map_err(|e|format!("{e:?}"))).transpose()?,
+                    nu_tilda: t
+                        .nu_tilda
+                        .map(|v| CellField::from_values(mesh, v).map_err(|e| format!("{e:?}")))
+                        .transpose()?,
                     k: CellField::from_values(mesh, t.k).map_err(|e| format!("{e:?}"))?,
                     omega: CellField::from_values(mesh, t.omega).map_err(|e| format!("{e:?}"))?,
                     nut: CellField::from_values(mesh, t.nut).map_err(|e| format!("{e:?}"))?,
-                    epsilon:t.epsilon.map(|e|CellField::from_values(mesh,e).map_err(|e|format!("{e:?}"))).transpose()?,
+                    epsilon: t
+                        .epsilon
+                        .map(|e| CellField::from_values(mesh, e).map_err(|e| format!("{e:?}")))
+                        .transpose()?,
                 })
             })
             .transpose()?;
@@ -253,7 +283,15 @@ pub fn load(
             face_flux: crate::FaceField::from_values(mesh, phi).map_err(|e| format!("{e:?}"))?,
             time: saved.time.unwrap_or(0.0),
             last_dt: saved.last_dt,
-            temperature:saved.temperature.map(|v|{if v.iter().any(|v|!v.is_finite()||*v<=0.0){return Err("Invalid checkpoint temperature".into())}CellField::from_values(mesh,v).map_err(|e|format!("{e:?}"))}).transpose()?,
+            temperature: saved
+                .temperature
+                .map(|v| {
+                    if v.iter().any(|v| !v.is_finite() || *v <= 0.0) {
+                        return Err("Invalid checkpoint temperature".into());
+                    }
+                    CellField::from_values(mesh, v).map_err(|e| format!("{e:?}"))
+                })
+                .transpose()?,
             turbulence,
         }
     } else {

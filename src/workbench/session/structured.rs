@@ -67,7 +67,7 @@ impl WorkbenchSession {
                 | MeshMethod::SweepPrism
                 | MeshMethod::SweepHex
         );
-        if structured && self.mesh_recipe.edge_divisions.iter().any(|c|c.enabled) {
+        if structured && self.mesh_recipe.edge_divisions.iter().any(|c| c.enabled) {
             return Err(invalid("Mapped/block/sweep methods use their I/J/K counts. Disable scoped edge division controls first."));
         }
         if structured
@@ -140,9 +140,9 @@ impl WorkbenchSession {
                     return Err(invalid("Hex sweep source must be convex"));
                 }
                 let mut source = String::new();
-                for i in 0..4 {
+                for (i, edge) in edges.iter().enumerate().take(4) {
                     let (n, r) = if i % 2 == 0 { (ni, ri) } else { (nj, rj) };
-                    let tag = if i >= 2 { -edges[i].0 } else { edges[i].0 };
+                    let tag = if i >= 2 { -edge.0 } else { edge.0 };
                     source.push_str(&format!(
                         "Transfinite Curve {{{tag}}} = {} Using Progression {r:.17};\n",
                         n + 1
@@ -234,10 +234,10 @@ impl WorkbenchSession {
             if !inner_loops.is_empty() {
                 return Err(invalid("A mapped quad face cannot contain holes. Choose O-grid for a single circular hole."));
             }
-            for i in 0..4 {
+            for (i, edge) in outer.iter().enumerate().take(4) {
                 let (n, r) = if i % 2 == 0 { (ni, ri) } else { (nj, rj) };
                 // Opposite edges use the same physical grading direction.
-                let tag = if i >= 2 { -outer[i].0 } else { outer[i].0 };
+                let tag = if i >= 2 { -edge.0 } else { edge.0 };
                 source.push_str(&format!(
                     "Transfinite Curve {{{tag}}} = {} Using Progression {r:.17};\n",
                     n + 1

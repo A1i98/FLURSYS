@@ -5,22 +5,22 @@
 //! of a concrete numerical backend.
 
 pub mod boundary_reports;
-pub mod wall_reports;
-pub mod diagnostics;
 pub mod checkpoint;
-pub mod mesh_storage;
-pub mod mesh_report;
+pub mod diagnostics;
 pub mod editor;
 pub mod examples;
 pub mod legacy_import;
+pub mod mesh_report;
+pub mod mesh_storage;
 pub mod mesh_viewport;
 pub mod picking;
-pub mod project;
 pub mod plane_monitor;
+pub mod project;
 mod result_slice;
 pub mod results;
 pub mod selection;
 pub mod session;
+pub mod wall_reports;
 
 pub use editor::{GeometryEditorState, GeometryTool, PreviewPrimitive, ViewTransform};
 pub use examples::{
@@ -41,11 +41,11 @@ pub use project::{
     autosave_workspace, delete_workspace_run, discard_workspace_recovery, discover_templates,
     discover_templates_from_roots, finalize_workspace_run, load_recent_projects, load_workspace,
     load_workspace_result, recovery_is_newer, save_case_template, save_recent_projects,
-    save_workspace, BoundaryAssignment, BoundaryLayerControl, CaseTemplateManifest, LocalMeshSize,
-    EdgeDivisionControl, MeshControlTarget, MeshRecipe, MeshTuning, MeshMethod, BoxRefinement, PhysicalBoundaryCondition, ProjectDocumentError,
-    RecentProjectEntry, RecentProjects, RunRecord, RunStatus, TemplateExpectations,
-    ThresholdRefinement, WorkbenchMaterial, WorkbenchMeshSettings, WorkbenchProject,
-    WorkbenchSolverSettings, PROJECT_DOCUMENT_FILE, RECENT_PROJECTS_FILE,
+    save_workspace, BoundaryAssignment, BoundaryLayerControl, BoxRefinement, CaseTemplateManifest,
+    EdgeDivisionControl, LocalMeshSize, MeshControlTarget, MeshMethod, MeshRecipe, MeshTuning,
+    PhysicalBoundaryCondition, ProjectDocumentError, RecentProjectEntry, RecentProjects, RunRecord,
+    RunStatus, TemplateExpectations, ThresholdRefinement, WorkbenchMaterial, WorkbenchMeshSettings,
+    WorkbenchProject, WorkbenchSolverSettings, PROJECT_DOCUMENT_FILE, RECENT_PROJECTS_FILE,
     WORKBENCH_PROJECT_FORMAT_VERSION,
 };
 pub use results::streamlines::{
