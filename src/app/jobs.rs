@@ -319,7 +319,7 @@ impl WorkbenchJobExecutor {
                     *iteration_retained.lock().unwrap()=Some((retained_mesh,initial));Ok(())
                 });
                 let control=control.with_completed_step(move |index,solution| {
-                    if completed_case.solver.turbulence.wall_treatment==crate::turbulence::WallTreatment::EquilibriumKEpsilon {
+                    if matches!(completed_case.solver.turbulence.wall_treatment,crate::turbulence::WallTreatment::EquilibriumKEpsilon|crate::turbulence::WallTreatment::EquilibriumKOmega) {
                         match crate::workbench::wall_reports::reports_with_turbulence(&completed_case,&solution.velocity,&solution.pressure,solution.turbulence.as_ref(),false){
                             Ok(reports)=>{
                                 if solution.physical_time.is_none()||index==1||index%10==0 {for r in &reports {if r.y_plus_min.is_some_and(|v|v<30.0)||r.y_plus_max.is_some_and(|v|v>300.0){let _=completed_sender.send(WorkbenchJobEvent::SolveProgress(JobProgress::Message(format!("Wall-function mesh review: patch {}, shear-based y+ min={:?}, max={:?}. Equilibrium log-layer accuracy is not established outside the target range; inspect local resolution and separation.",r.patch,r.y_plus_min,r.y_plus_max))));}}}

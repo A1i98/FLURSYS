@@ -334,6 +334,9 @@ impl Default for WorkbenchMaterial {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct WorkbenchSolverSettings {
+    #[serde(default)] pub pressure_coupling:crate::simple::PressureCoupling,
+    #[serde(default)] pub volume_models:crate::volume_models::VolumeModels,
+    #[serde(default)] pub cyclic_pairs:Vec<crate::periodic::TranslationalCyclicPair>,
     #[serde(default)] pub equations:Option<crate::equations::EquationSolvers>,
     #[serde(default)] pub boundary_profiles:crate::unstructured_incompressible::BoundaryProfiles,
     #[serde(default)] pub thermal:crate::thermal::Options,
@@ -355,6 +358,9 @@ impl Default for WorkbenchSolverSettings {
     fn default() -> Self {
         Self {
             equations:None,
+            pressure_coupling:Default::default(),
+            volume_models:Default::default(),
+            cyclic_pairs:Vec::new(),
             boundary_profiles:Default::default(),
             thermal:crate::thermal::Options::default(),
             time:Default::default(),turbulence:Default::default(),
@@ -463,6 +469,8 @@ impl WorkbenchProject {
 
     pub fn validate(&self) -> Result<(), ProjectDocumentError> {
         self.solver.time.validate().map_err(ProjectDocumentError::Invalid)?;
+        self.solver.volume_models.validate().map_err(ProjectDocumentError::Invalid)?;
+        self.solver.pressure_coupling.validate(self.solver.time.is_transient()).map_err(ProjectDocumentError::Invalid)?;
         self.solver.turbulence.validate().map_err(ProjectDocumentError::Invalid)?;
         if self.mesh_asset.as_ref().is_some_and(|s|s.len()!=64 || !s.bytes().all(|b|b.is_ascii_hexdigit())) {
             return Err(ProjectDocumentError::Invalid("Invalid mesh asset identifier".into()));
@@ -814,7 +822,16 @@ pub fn finalize_workspace_run(
         "last_time_step_s":session.solution().and_then(|s|s.last_time_step),
         "rejected_time_steps":session.solution().map(|s|s.rejected_time_steps),
         "wall_reports":session.solution().and_then(|s|session.prepare_case().ok().and_then(|c|super::wall_reports::reports_with_turbulence(&c,&s.velocity,&s.pressure,s.turbulence.as_ref(),true).ok())),
-        "turbulence":session.solution().and_then(|s|s.turbulence.as_ref()).map(|t|serde_json::json!({"nut_max":t.nut.values().iter().copied().fold(0.0,f64::max),"k_max":t.k.values().iter().copied().fold(0.0,f64::max),"omega_max":(t.model!=crate::turbulence::TurbulenceModel::KEpsilon).then(||t.omega.values().iter().copied().fold(0.0,f64::max)),"epsilon_max":t.epsilon.as_ref().map(|e|e.values().iter().copied().fold(0.0,f64::max)),"wall_treatment":if t.model==crate::turbulence::TurbulenceModel::KEpsilon {if session.solver_options().turbulence.wall_treatment==crate::turbulence::WallTreatment::EquilibriumKEpsilon {"experimental smooth equilibrium wall functions"}else{"free shear; solid walls rejected"}}else{"wall-resolved; no high-Re wall functions"},"validation":"experimental; not benchmark validated"})),
+        "turbulence":session.solution().and_then(|s|s.turbulence.as_ref()).map(|t|serde_json::json!({
+            "model":t.model,
+            "nut_max":t.nut.values().iter().copied().fold(0.0,f64::max),
+            "nu_tilda_max":t.nu_tilda.as_ref().map(|v|v.values().iter().copied().fold(0.0,f64::max)),
+            "k_max":(t.model!=crate::turbulence::TurbulenceModel::SpalartAllmaras).then(||t.k.values().iter().copied().fold(0.0,f64::max)),
+            "omega_max":matches!(t.model,crate::turbulence::TurbulenceModel::KOmega|crate::turbulence::TurbulenceModel::KOmegaSst).then(||t.omega.values().iter().copied().fold(0.0,f64::max)),
+            "epsilon_max":t.epsilon.as_ref().map(|e|e.values().iter().copied().fold(0.0,f64::max)),
+            "wall_treatment":session.solver_options().turbulence.wall_treatment,
+            "validation":"experimental; not benchmark validated"
+        })),
         "cpu_worker_threads": session.solution().map(|s| s.report.cpu_threads),
         "boundaries": &project.boundaries,
         "spatial_methods": session.mesh().map(|m| if m.mesh.dimension()==MeshDimension::ThreeD {serde_json::json!({"pressure_gradient":"Gauss with bounded face-pressure interpolation","momentum_nonorthogonal":"limited correction: abs(explicit flux) <= abs(two-point flux)","rhie_chow":"interpolated cell pressure response; response-gradient covariance retained"})}else{serde_json::json!({"pressure_gradient":"least squares","momentum_nonorthogonal":"explicit Gauss correction","rhie_chow":"interpolated cell pressure response; response-gradient covariance retained"})}),

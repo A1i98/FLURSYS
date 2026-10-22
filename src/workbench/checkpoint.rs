@@ -49,6 +49,7 @@ struct StoredTurbulence {
     omega: Vec<f64>,
     nut: Vec<f64>,
     #[serde(default)] epsilon:Option<Vec<f64>>,
+    #[serde(default)] nu_tilda:Option<Vec<f64>>,
 }
 /// Complete time-level restart, including conservative flux and RANS state.
 pub fn write_solution(
@@ -87,6 +88,12 @@ pub fn write_restart(
     else {
         return Err("A complete restart state is required".into());
     };
+    if let Some(t)=turbulence{
+        if let Some(v)=&t.nu_tilda{
+            if v.values().len()!=mesh.cells.len()||v.values().iter().any(|v|!v.is_finite()||*v<0.0){return Err("Invalid SA restart field".into())}
+        }
+        if t.model==crate::turbulence::TurbulenceModel::SpalartAllmaras&&t.nu_tilda.is_none(){return Err("SA restart requires nu_tilda".into())}
+    }
     if !time.is_finite()
         || *time < 0.0
         || velocity
@@ -129,6 +136,7 @@ pub fn write_restart(
             omega: t.omega.values().to_vec(),
             nut: t.nut.values().to_vec(),
             epsilon:t.epsilon.as_ref().map(|e|e.values().to_vec()),
+            nu_tilda:t.nu_tilda.as_ref().map(|v|v.values().to_vec()),
         }),
     };
     let parent = path.parent().unwrap_or(Path::new("."));
@@ -218,6 +226,8 @@ pub fn load(
         let turbulence = saved
             .turbulence
             .map(|t| -> Result<crate::turbulence::TurbulenceFields, String> {
+                if t.nu_tilda.as_ref().is_some_and(|v|v.len()!=mesh.cell_count()||v.iter().any(|v|!v.is_finite()||*v<0.0)){return Err("Invalid SA checkpoint field".into())}
+                if t.model==crate::turbulence::TurbulenceModel::SpalartAllmaras&&t.nu_tilda.is_none(){return Err("SA checkpoint is missing nu_tilda".into())}
                 if t.epsilon.as_ref().is_some_and(|e|e.iter().any(|v|!v.is_finite()||*v<=0.0)) {return Err("Invalid restart epsilon field".into());}
                 if t.k
                     .iter()
@@ -229,6 +239,7 @@ pub fn load(
                 }
                 Ok(crate::turbulence::TurbulenceFields {
                     model: t.model,
+                    nu_tilda:t.nu_tilda.map(|v|CellField::from_values(mesh,v).map_err(|e|format!("{e:?}"))).transpose()?,
                     k: CellField::from_values(mesh, t.k).map_err(|e| format!("{e:?}"))?,
                     omega: CellField::from_values(mesh, t.omega).map_err(|e| format!("{e:?}"))?,
                     nut: CellField::from_values(mesh, t.nut).map_err(|e| format!("{e:?}"))?,

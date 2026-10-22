@@ -167,6 +167,9 @@ impl WorkbenchSession {
         session.geometry = project.geometry.clone();
         session.fluid_face_selection = project.fluid_face;
         session.solver.equations=project.solver.equations.clone();
+        session.solver.pressure_coupling=project.solver.pressure_coupling;
+        session.solver.volume_models=project.solver.volume_models;
+        session.solver.cyclic_pairs=project.solver.cyclic_pairs.clone();
         session.solver.boundary_profiles=project.solver.boundary_profiles.clone();
         session.solver.thermal=project.solver.thermal.clone();
         session.solver.time=project.solver.time;session.solver.turbulence=project.solver.turbulence.clone();
@@ -240,6 +243,9 @@ impl WorkbenchSession {
         project.mesh_recipe = self.mesh_recipe.clone();
         project.material.catalog=self.catalog_material.clone();
         project.solver.equations=self.solver.equations.clone();
+        project.solver.pressure_coupling=self.solver.pressure_coupling;
+        project.solver.volume_models=self.solver.volume_models;
+        project.solver.cyclic_pairs=self.solver.cyclic_pairs.clone();
         project.solver.boundary_profiles=self.solver.boundary_profiles.clone();
         project.solver.thermal=self.solver.thermal.clone();
         project.material.density = self.material.density;
@@ -555,6 +561,10 @@ impl WorkbenchSession {
         new_name: &str,
     ) -> Result<(), WorkbenchError> {
         self.named_selections.rename(old_name, new_name)?;
+        for pair in &mut self.solver.cyclic_pairs{
+            if pair.first==old_name{pair.first=new_name.trim().into();}
+            if pair.second==old_name{pair.second=new_name.trim().into();}
+        }
         if let Some(b)=self.solver.boundary_profiles.remove(old_name){self.solver.boundary_profiles.insert(new_name.trim().into(),b);}
         if let Some(b)=self.solver.turbulence.inlets.remove(old_name){self.solver.turbulence.inlets.insert(new_name.trim().into(),b);}
         if let Some(bc)=self.solver.thermal.boundaries.remove(old_name){self.solver.thermal.boundaries.insert(new_name.trim().into(),bc);}
@@ -1131,6 +1141,7 @@ impl WorkbenchSession {
         patch: &str,
         condition: IncompressibleBoundaryCondition,
     ) -> Result<(), WorkbenchError> {
+        if self.cyclic_partner(patch).is_some(){return Err(WorkbenchError::InvalidGrouping{message:"Remove the cyclic pair before assigning a physical condition to this patch".into()})}
         if self.mesh.is_none() {
             return self.configure_named_boundary(patch, condition);
         }
@@ -1160,6 +1171,7 @@ impl WorkbenchSession {
         selection: &str,
         condition: IncompressibleBoundaryCondition,
     ) -> Result<(), WorkbenchError> {
+        if self.cyclic_partner(selection).is_some(){return Err(WorkbenchError::InvalidGrouping{message:"Remove the cyclic pair before assigning a physical condition".into()})}
         if self.named_selections.get(selection).is_none() {
             return Err(WorkbenchError::InvalidGrouping {
                 message: format!("Named Selection {selection:?} does not exist"),
@@ -1192,6 +1204,24 @@ impl WorkbenchSession {
         self.boundaries.get(patch)
     }
 
+    pub fn cyclic_partner(&self,name:&str)->Option<&str>{
+        self.solver.cyclic_pairs.iter().find_map(|p|if p.first==name{Some(p.second.as_str())}else if p.second==name{Some(p.first.as_str())}else{None})
+    }
+    pub fn set_cyclic_pairs(&mut self,pairs:Vec<crate::periodic::TranslationalCyclicPair>)->Result<(),WorkbenchError>{
+        let mesh=self.mesh.as_ref().ok_or_else(||WorkbenchError::InvalidGrouping{message:"Generate the mesh before pairing cyclic patches".into()})?;
+        let mut settings=self.solver.clone();settings.cyclic_pairs=pairs.clone();
+        settings.resolve_cyclic(&mesh.mesh).map_err(|message|WorkbenchError::InvalidGrouping{message})?;
+        for p in &pairs {self.boundaries.remove(&p.first);self.boundaries.remove(&p.second);}
+        self.solver.cyclic_pairs=pairs;self.solution=None;self.status=SolveStatus::Idle;Ok(())
+    }
+    pub fn set_volume_models(&mut self,models:crate::volume_models::VolumeModels)->Result<(),WorkbenchError>{
+        models.validate().map_err(|message|WorkbenchError::InvalidGrouping{message})?;
+        if self.solver.volume_models!=models{self.solution=None;self.status=SolveStatus::Idle;self.solver.volume_models=models;}Ok(())
+    }
+    pub fn set_pressure_coupling(&mut self,c:crate::simple::PressureCoupling)->Result<(),WorkbenchError>{
+        c.validate(self.solver.time.is_transient()).map_err(|message|WorkbenchError::InvalidGrouping{message})?;
+        if self.solver.pressure_coupling!=c{self.solution=None;self.status=SolveStatus::Idle;self.solver.pressure_coupling=c;}Ok(())
+    }
     pub fn set_equation_solvers(&mut self,e:crate::equations::EquationSolvers)->Result<(),WorkbenchError>{
         e.validate().map_err(|message|WorkbenchError::InvalidGrouping{message})?;
         if self.solver.equations.as_ref()!=Some(&e){self.solution=None;self.status=SolveStatus::Idle;self.solver.equations=Some(e);}Ok(())
@@ -1272,7 +1302,7 @@ impl WorkbenchSession {
         if matches!(turbulence.model,crate::turbulence::TurbulenceModel::Smagorinsky|crate::turbulence::TurbulenceModel::Wale) && (matches!(time,crate::unstructured_incompressible::TimeIntegration::Steady) || self.mesh_dimension!=MeshDimension::ThreeD) {
             return Err(WorkbenchError::InvalidGrouping {message:"LES requires transient integration and a 3D mesh".into()});
         }
-        if turbulence.model==crate::turbulence::TurbulenceModel::KEpsilon && turbulence.wall_treatment!=crate::turbulence::WallTreatment::EquilibriumKEpsilon && self.boundaries.values().any(|b|matches!(b,IncompressibleBoundaryCondition::NoSlipWall|IncompressibleBoundaryCondition::MovingWall{..})) {
+        if turbulence.model.uses_epsilon() && turbulence.wall_treatment!=crate::turbulence::WallTreatment::EquilibriumKEpsilon && self.boundaries.values().any(|b|matches!(b,IncompressibleBoundaryCondition::NoSlipWall|IncompressibleBoundaryCondition::MovingWall{..})) {
             return Err(WorkbenchError::InvalidGrouping{message:"Select equilibrium wall treatment for k-epsilon walls, or use resolved SST".into()});
         }
         if self.solver.time!=time || self.solver.turbulence!=turbulence {self.solution=None;self.status=SolveStatus::Idle;}
@@ -1331,9 +1361,12 @@ impl WorkbenchSession {
         let Some(generated) = &self.mesh else {
             return Err("generate a mesh first (Mesh stage)".to_string());
         };
+        if !self.solver.cyclic_pairs.is_empty(){self.solver.resolve_cyclic(&generated.mesh)?;}
         if !self.solver.boundary_profiles.is_empty() && !self.solver.time.is_transient(){return Err("Time-dependent boundaries require transient integration".into());}
         for (name,p) in &self.solver.boundary_profiles {let bc=*self.boundaries.get(name).ok_or_else(||format!("Missing physical boundary for time table: {name}"))?;if p.quantity.is_thermal(){if !self.solver.thermal.enabled{return Err("Enable temperature transport for thermal time tables".into())}let t=*self.solver.thermal.boundaries.get(name).ok_or_else(||format!("Assign thermal boundary {name}"))?;p.apply_thermal(t,0.0)?;}else{p.apply(bc,0.0)?;}}
         if let Some(e)=&self.solver.equations{e.validate()?;}
+        self.solver.volume_models.validate()?;
+        self.solver.pressure_coupling.validate(self.solver.time.is_transient())?;
         self.solver.turbulence.validate()?;
         for name in self.solver.turbulence.inlets.keys(){
             if !generated.mesh.boundary_patches().iter().any(|p|&p.name==name){return Err(format!("Unknown turbulence boundary {name}"));}
@@ -1371,7 +1404,7 @@ impl WorkbenchSession {
             .boundary_patches()
             .iter()
             .map(|patch| patch.name.as_str())
-            .filter(|name| !self.boundaries.contains_key(*name))
+            .filter(|name| !self.boundaries.contains_key(*name) && self.cyclic_partner(name).is_none())
             .collect();
         if !missing.is_empty() {
             return Err(format!(
@@ -1408,12 +1441,11 @@ impl WorkbenchSession {
                     .map(|condition| (patch.name.clone(), *condition))
             })
             .collect();
-        Ok(IncompressibleCase::steady(
-            generated.mesh.clone(),
-            boundaries,
-            self.material,
-            self.solver.clone(),
-        ))
+        let case=IncompressibleCase::steady(
+            generated.mesh.clone(), boundaries, self.material, self.solver.clone(),
+        );
+        case.solver.volume_models.validate_case(&case).map_err(|message|WorkbenchError::InvalidGrouping{message})?;
+        Ok(case)
     }
 
     // ---------------------------------------------------------------

@@ -49,8 +49,8 @@ pub fn reports_with_turbulence(
     turbulence: Option<&crate::turbulence::TurbulenceFields>,
     detailed: bool,
 ) -> Result<Vec<WallPatchReport>, String> {
-    let equilibrium = case.solver.turbulence.wall_treatment
-        == crate::turbulence::WallTreatment::EquilibriumKEpsilon;
+    let equilibrium = matches!(case.solver.turbulence.wall_treatment,
+        crate::turbulence::WallTreatment::EquilibriumKEpsilon|crate::turbulence::WallTreatment::EquilibriumKOmega);
     if equilibrium && turbulence.is_none() {
         return Err("Wall-function reports require the matching turbulence fields".into());
     }
