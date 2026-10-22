@@ -282,7 +282,7 @@ pub(super) fn mesh(
     };
     if display.draws_surface() {
         if mesh.dimension() == MeshDimension::TwoD {
-            for i in 0..mesh.cell_count() {
+            for (i, value) in values.iter().enumerate().take(mesh.cell_count()) {
                 if let Some(p) = cache.cell_polygon(i) {
                     let p = p
                         .iter()
@@ -294,7 +294,7 @@ pub(super) fn mesh(
                     } else if hovered.is_some_and(|s| s.target() == MeshSelectionTarget::Cell(i)) {
                         [127, 234, 188, 255]
                     } else if mode == MeshColorMode::Quality {
-                        quality(values[i])
+                        quality(*value)
                     } else {
                         [48, 79, 96, 255]
                     };

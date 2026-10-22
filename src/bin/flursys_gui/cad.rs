@@ -188,12 +188,25 @@ pub(super) fn bind(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
     super::cad_units::bind(ui, state);
     super::cad_properties::bind(ui, state);
     super::cad_tree::bind(ui, state);
-    let hover_ui=ui.as_weak();let hover_state=state.clone();
-    ui.on_cad_hover(move |x,y,w,h|{
-        let Some(ui)=hover_ui.upgrade()else{return;};let state=hover_state.borrow();
-        let text=super::render::preview_image_point(x,y,w,h).and_then(|p|super::render::canonical_geometry_ray(state.workbench.geometry(),state.view_3d,p))
-            .and_then(|ray|state.workbench.geometry().pick_face(ray)).map(|hit|format!("X {:.5}   Y {:.5}   Z {:.5} · world / model units",hit.position.x,hit.position.y,hit.position.z))
-            .unwrap_or_else(||"World coordinates · point to a model surface".into());
+    let hover_ui = ui.as_weak();
+    let hover_state = state.clone();
+    ui.on_cad_hover(move |x, y, w, h| {
+        let Some(ui) = hover_ui.upgrade() else {
+            return;
+        };
+        let state = hover_state.borrow();
+        let text = super::render::preview_image_point(x, y, w, h)
+            .and_then(|p| {
+                super::render::canonical_geometry_ray(state.workbench.geometry(), state.view_3d, p)
+            })
+            .and_then(|ray| state.workbench.geometry().pick_face(ray))
+            .map(|hit| {
+                format!(
+                    "X {:.5}   Y {:.5}   Z {:.5} · world / model units",
+                    hit.position.x, hit.position.y, hit.position.z
+                )
+            })
+            .unwrap_or_else(|| "World coordinates · point to a model surface".into());
         ui.set_cad_cursor_coordinates(text.into());
     });
     let weak = ui.as_weak();
@@ -204,7 +217,19 @@ pub(super) fn bind(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
         if let Some(axis) =
             super::render::pick_orientation_overlay(state.view_3d.yaw, state.view_3d.pitch, x, y)
         {
-            let axis=if state.geometry_view_axis==axis {match axis{0=>4,1=>5,2=>6,4=>0,5=>1,6=>2,_=>axis}}else{axis};
+            let axis = if state.geometry_view_axis == axis {
+                match axis {
+                    0 => 4,
+                    1 => 5,
+                    2 => 6,
+                    4 => 0,
+                    5 => 1,
+                    6 => 2,
+                    _ => axis,
+                }
+            } else {
+                axis
+            };
             let (yaw, pitch) = geometry_view_angles(axis);
             state.view_3d.yaw = yaw;
             state.view_3d.pitch = pitch;
@@ -1620,120 +1645,6 @@ pub(super) fn refresh(ui: &MainWindow, state: &AppState) {
     );
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use slint::platform::{
-        software_renderer::{MinimalSoftwareWindow, RepaintBufferType},
-        Platform, WindowAdapter,
-    };
-    struct SoftwarePlatform(Rc<MinimalSoftwareWindow>);
-    impl Platform for SoftwarePlatform {
-        fn create_window_adapter(&self) -> Result<Rc<dyn WindowAdapter>, slint::PlatformError> {
-            Ok(self.0.clone())
-        }
-        fn duration_since_start(&self) -> Duration {
-            Duration::from_secs(1)
-        }
-    }
-    #[test]
-    fn cad_ui_builds_real_brep_and_restores_it_through_undo_redo() {
-        let window = MinimalSoftwareWindow::new(RepaintBufferType::NewBuffer);
-        slint::platform::set_platform(Box::new(SoftwarePlatform(window.clone()))).unwrap();
-        let ui = MainWindow::new().unwrap();
-        window.set_size(slint::PhysicalSize::new(1440, 1000));
-        let state = Rc::new(RefCell::new(AppState::new()));
-        super::super::bind_callbacks(&ui, &state);
-        bind(&ui, &state);
-        ui.set_cad_name("CAD verification".into());
-        ui.set_cad_size_x("10".into());
-        ui.set_cad_size_y("8".into());
-        ui.set_cad_size_z("6".into());
-        ui.invoke_cad_command(0);
-        assert!(state.borrow().cad_job.is_some());
-        let deadline = std::time::Instant::now() + Duration::from_secs(15);
-        while state.borrow().cad_job.is_some() {
-            poll(&ui, &mut state.borrow_mut());
-            assert!(std::time::Instant::now() < deadline, "CAD worker timeout");
-            std::thread::sleep(Duration::from_millis(1));
-        }
-        assert_eq!(state.borrow().workbench.geometry().cad_bodies().count(), 1);
-        assert_eq!(
-            state.borrow().workbench.mesh_dimension(),
-            MeshDimension::ThreeD
-        );
-        super::super::refresh_ui(&ui, &state.borrow());
-        ui.show().unwrap();
-        // Real software-rendered snapshots also exercise the Slint layout bindings.
-        for (tab, label) in [
-            (1, "solid"),
-            (2, "transform"),
-            (3, "boolean"),
-            (4, "exchange"),
-        ] {
-            ui.set_cad_workbench(tab);
-            window.request_redraw();
-            let mut pixels = vec![slint::Rgb8Pixel::default(); 1440 * 1000];
-            window.draw_if_needed(|renderer| {
-                renderer.render(&mut pixels, 1440);
-            });
-            let mut ppm = format!("P6\n1440 1000\n255\n").into_bytes();
-            for p in pixels {
-                ppm.extend([p.r, p.g, p.b]);
-            }
-            std::fs::write(format!("/tmp/flursys-cad-{label}.ppm"), ppm).unwrap();
-        }
-        // A concurrent document edit must never be overwritten by a stale worker.
-        let id = state
-            .borrow()
-            .workbench
-            .geometry()
-            .cad_bodies()
-            .next()
-            .unwrap()
-            .0;
-        ui.invoke_cad_command(0);
-        state
-            .borrow_mut()
-            .workbench
-            .geometry_mut()
-            .cad_rename(id, "Concurrent edit")
-            .unwrap();
-        let deadline = std::time::Instant::now() + Duration::from_secs(15);
-        while state.borrow().cad_job.is_some() {
-            poll(&ui, &mut state.borrow_mut());
-            assert!(std::time::Instant::now() < deadline);
-            std::thread::sleep(Duration::from_millis(1));
-        }
-        assert_eq!(state.borrow().workbench.geometry().cad_bodies().count(), 1);
-        assert_eq!(
-            state
-                .borrow()
-                .workbench
-                .geometry()
-                .cad_body(id)
-                .unwrap()
-                .name,
-            "Concurrent edit"
-        );
-        ui.invoke_cad_command(0);
-        ui.invoke_cad_command(-1);
-        assert!(state.borrow().cad_job.as_ref().unwrap().cancelled);
-        let deadline = std::time::Instant::now() + Duration::from_secs(15);
-        while state.borrow().cad_job.is_some() {
-            poll(&ui, &mut state.borrow_mut());
-            assert!(std::time::Instant::now() < deadline);
-            std::thread::sleep(Duration::from_millis(1));
-        }
-        assert_eq!(state.borrow().workbench.geometry().cad_bodies().count(), 1);
-        ui.invoke_geometry_undo();
-        assert_eq!(state.borrow().workbench.geometry().cad_bodies().count(), 0);
-        ui.invoke_geometry_redo();
-        assert_eq!(state.borrow().workbench.geometry().cad_bodies().count(), 1);
-        ui.hide().unwrap();
-    }
-}
-
 fn sketch_command(ui: &MainWindow, state: &mut AppState, action: i32) -> Result<String, String> {
     let length = |value, label| super::cad_units::length(ui, value, label);
     if action == 92 {
@@ -1761,7 +1672,7 @@ fn sketch_command(ui: &MainWindow, state: &mut AppState, action: i32) -> Result<
         select_tree_geometry_target(state, GeometrySelectionTarget::Body(parent), false);
         return Ok("Input body selected. Its visibility is unchanged.".into());
     }
-    if matches!(action, 63 | 64 | 65) {
+    if matches!(action, 63..=65) {
         let g = state.workbench.geometry();
         let body = g
             .cad_bodies()
@@ -2131,19 +2042,167 @@ pub(super) fn measure_selection(state: &AppState) -> Result<String, String> {
 }
 
 /// Exact drawing publication shares the CAD worker's undo and stale-result guard.
-pub(super) fn submit_drawing(ui:&MainWindow,state:&mut AppState,id:Option<CadSketchId>,plane:CadSketchPlane,host:Option<FaceId>,drawing:flursys::sketching::core::Sketch)->Result<(),String>{
-    if state.cad_job.is_some(){return Err("CAD worker is busy".into());}
-    let source=state.workbench.geometry().clone();let mut candidate=source.clone();
-    let id=if let Some(id)=id{id}else if let Some(face)=host{candidate.create_sketch_on_face(face).map_err(|e|e.to_string())?.id}else{candidate.create_sketch_on_plane(plane).map_err(|e|e.to_string())?.id};
+pub(super) fn submit_drawing(
+    ui: &MainWindow,
+    state: &mut AppState,
+    id: Option<CadSketchId>,
+    plane: CadSketchPlane,
+    host: Option<FaceId>,
+    drawing: flursys::sketching::core::Sketch,
+) -> Result<(), String> {
+    if state.cad_job.is_some() {
+        return Err("CAD worker is busy".into());
+    }
+    let source = state.workbench.geometry().clone();
+    let mut candidate = source.clone();
+    let id = if let Some(id) = id {
+        id
+    } else if let Some(face) = host {
+        candidate
+            .create_sketch_on_face(face)
+            .map_err(|e| e.to_string())?
+            .id
+    } else {
+        candidate
+            .create_sketch_on_plane(plane)
+            .map_err(|e| e.to_string())?
+            .id
+    };
     ui.set_cad_edit_sketch_id(id.get() as i32);
-    let workspace=state.workspace_path.clone();let project_id=state.workbench_project.project_id.clone();let (tx,rx)=mpsc::channel();
-    std::thread::spawn(move||{
+    let workspace = state.workspace_path.clone();
+    let project_id = state.workbench_project.project_id.clone();
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
         let result=std::panic::catch_unwind(std::panic::AssertUnwindSafe(||{
             let faces=candidate.cad_set_drawing(id,drawing).map_err(|e|e.to_string())?;
             Ok((candidate,Vec::new(),true,format!("Sketch {} saved with {} closed region(s). Select a region for Pad, Revolve, Pocket or Loft.",id.get(),faces.len())))
         })).unwrap_or_else(|_|Err("The sketch kernel rejected the operation; the source document was preserved.".into()));
-        let _=tx.send(result);
+        let _ = tx.send(result);
     });
-    state.cad_job=Some(CadJob{generation:ui.get_cad_preview_generation(),preview:false,cancelled:false,source,workspace,project_id,result:rx});
-    ui.set_cad_busy(true);ui.set_cad_feedback("Publishing sketch and rebuilding dependent features…".into());Ok(())
+    state.cad_job = Some(CadJob {
+        generation: ui.get_cad_preview_generation(),
+        preview: false,
+        cancelled: false,
+        source,
+        workspace,
+        project_id,
+        result: rx,
+    });
+    ui.set_cad_busy(true);
+    ui.set_cad_feedback("Publishing sketch and rebuilding dependent features…".into());
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use slint::platform::{
+        software_renderer::{MinimalSoftwareWindow, RepaintBufferType},
+        Platform, WindowAdapter,
+    };
+    struct SoftwarePlatform(Rc<MinimalSoftwareWindow>);
+    impl Platform for SoftwarePlatform {
+        fn create_window_adapter(&self) -> Result<Rc<dyn WindowAdapter>, slint::PlatformError> {
+            Ok(self.0.clone())
+        }
+        fn duration_since_start(&self) -> Duration {
+            Duration::from_secs(1)
+        }
+    }
+    #[test]
+    fn cad_ui_builds_real_brep_and_restores_it_through_undo_redo() {
+        let window = MinimalSoftwareWindow::new(RepaintBufferType::NewBuffer);
+        slint::platform::set_platform(Box::new(SoftwarePlatform(window.clone()))).unwrap();
+        let ui = MainWindow::new().unwrap();
+        window.set_size(slint::PhysicalSize::new(1440, 1000));
+        let state = Rc::new(RefCell::new(AppState::new()));
+        super::super::bind_callbacks(&ui, &state);
+        bind(&ui, &state);
+        ui.set_cad_name("CAD verification".into());
+        ui.set_cad_size_x("10".into());
+        ui.set_cad_size_y("8".into());
+        ui.set_cad_size_z("6".into());
+        ui.invoke_cad_command(0);
+        assert!(state.borrow().cad_job.is_some());
+        let deadline = std::time::Instant::now() + Duration::from_secs(15);
+        while state.borrow().cad_job.is_some() {
+            poll(&ui, &mut state.borrow_mut());
+            assert!(std::time::Instant::now() < deadline, "CAD worker timeout");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert_eq!(state.borrow().workbench.geometry().cad_bodies().count(), 1);
+        assert_eq!(
+            state.borrow().workbench.mesh_dimension(),
+            MeshDimension::ThreeD
+        );
+        super::super::refresh_ui(&ui, &state.borrow());
+        ui.show().unwrap();
+        // Real software-rendered snapshots also exercise the Slint layout bindings.
+        for (tab, label) in [
+            (1, "solid"),
+            (2, "transform"),
+            (3, "boolean"),
+            (4, "exchange"),
+        ] {
+            ui.set_cad_workbench(tab);
+            window.request_redraw();
+            let mut pixels = vec![slint::Rgb8Pixel::default(); 1440 * 1000];
+            window.draw_if_needed(|renderer| {
+                renderer.render(&mut pixels, 1440);
+            });
+            let mut ppm = "P6\n1440 1000\n255\n".to_string().into_bytes();
+            for p in pixels {
+                ppm.extend([p.r, p.g, p.b]);
+            }
+            std::fs::write(format!("/tmp/flursys-cad-{label}.ppm"), ppm).unwrap();
+        }
+        // A concurrent document edit must never be overwritten by a stale worker.
+        let id = state
+            .borrow()
+            .workbench
+            .geometry()
+            .cad_bodies()
+            .next()
+            .unwrap()
+            .0;
+        ui.invoke_cad_command(0);
+        state
+            .borrow_mut()
+            .workbench
+            .geometry_mut()
+            .cad_rename(id, "Concurrent edit")
+            .unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(15);
+        while state.borrow().cad_job.is_some() {
+            poll(&ui, &mut state.borrow_mut());
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert_eq!(state.borrow().workbench.geometry().cad_bodies().count(), 1);
+        assert_eq!(
+            state
+                .borrow()
+                .workbench
+                .geometry()
+                .cad_body(id)
+                .unwrap()
+                .name,
+            "Concurrent edit"
+        );
+        ui.invoke_cad_command(0);
+        ui.invoke_cad_command(-1);
+        assert!(state.borrow().cad_job.as_ref().unwrap().cancelled);
+        let deadline = std::time::Instant::now() + Duration::from_secs(15);
+        while state.borrow().cad_job.is_some() {
+            poll(&ui, &mut state.borrow_mut());
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert_eq!(state.borrow().workbench.geometry().cad_bodies().count(), 1);
+        ui.invoke_geometry_undo();
+        assert_eq!(state.borrow().workbench.geometry().cad_bodies().count(), 0);
+        ui.invoke_geometry_redo();
+        assert_eq!(state.borrow().workbench.geometry().cad_bodies().count(), 1);
+        ui.hide().unwrap();
+    }
 }

@@ -18,28 +18,68 @@ pub(super) fn mesh_threads(ui: &MainWindow, session: &mut WorkbenchSession) -> R
 pub(super) fn mesh_tuning(ui: &MainWindow, session: &mut WorkbenchSession) -> Result<(), String> {
     let mut recipe = session.mesh_recipe().clone();
     let t = &mut recipe.tuning;
-    t.max_size_growth=if ui.get_mesh_size_growth().trim().is_empty(){None}else{Some(ui.get_mesh_size_growth().trim().parse().map_err(|_|"Distance-field growth limit must be a number or empty")?)};
+    t.max_size_growth = if ui.get_mesh_size_growth().trim().is_empty() {
+        None
+    } else {
+        Some(
+            ui.get_mesh_size_growth()
+                .trim()
+                .parse()
+                .map_err(|_| "Distance-field growth limit must be a number or empty")?,
+        )
+    };
     t.method = match ui.get_mesh_method() {
-        0=>flursys::workbench::MeshMethod::Unstructured,
-        1=>flursys::workbench::MeshMethod::QuadDominant,
-        2=>flursys::workbench::MeshMethod::MappedQuad,
-        3=>flursys::workbench::MeshMethod::OGrid,
-        4=>flursys::workbench::MeshMethod::HexBlock,
-        5=>flursys::workbench::MeshMethod::SweepPrism,
-        _=>flursys::workbench::MeshMethod::SweepHex,
+        0 => flursys::workbench::MeshMethod::Unstructured,
+        1 => flursys::workbench::MeshMethod::QuadDominant,
+        2 => flursys::workbench::MeshMethod::MappedQuad,
+        3 => flursys::workbench::MeshMethod::OGrid,
+        4 => flursys::workbench::MeshMethod::HexBlock,
+        5 => flursys::workbench::MeshMethod::SweepPrism,
+        _ => flursys::workbench::MeshMethod::SweepHex,
     };
-    t.divisions = [ui.get_mesh_divisions_i().max(1) as u32,ui.get_mesh_divisions_j().max(1) as u32,ui.get_mesh_divisions_k().max(1) as u32];
-    t.progression = if !matches!(ui.get_mesh_method(),2|3|6) {[1.0,1.0]} else {
-        [if ui.get_mesh_method()==3 {1.0} else {ui.get_mesh_progression_i().trim().parse().map_err(|_|"I growth must be a number")?},ui.get_mesh_progression_j().trim().parse().map_err(|_|"J/radial growth must be a number")?]
+    t.divisions = [
+        ui.get_mesh_divisions_i().max(1) as u32,
+        ui.get_mesh_divisions_j().max(1) as u32,
+        ui.get_mesh_divisions_k().max(1) as u32,
+    ];
+    t.progression = if !matches!(ui.get_mesh_method(), 2 | 3 | 6) {
+        [1.0, 1.0]
+    } else {
+        [
+            if ui.get_mesh_method() == 3 {
+                1.0
+            } else {
+                ui.get_mesh_progression_i()
+                    .trim()
+                    .parse()
+                    .map_err(|_| "I growth must be a number")?
+            },
+            ui.get_mesh_progression_j()
+                .trim()
+                .parse()
+                .map_err(|_| "J/radial growth must be a number")?,
+        ]
     };
-    t.algorithm_2d = match ui.get_mesh_algorithm2d() { 0=>6, 1=>5, _=>1 };
-    t.algorithm_3d = match ui.get_mesh_algorithm3d() { 0=>1, 1=>4, _=>10 };
+    t.algorithm_2d = match ui.get_mesh_algorithm2d() {
+        0 => 6,
+        1 => 5,
+        _ => 1,
+    };
+    t.algorithm_3d = match ui.get_mesh_algorithm3d() {
+        0 => 1,
+        1 => 4,
+        _ => 10,
+    };
     t.curvature_points = ui.get_mesh_curvature().max(0) as u32;
     t.smoothing_steps = ui.get_mesh_smoothing().max(0) as u32;
     t.optimize = ui.get_mesh_optimize();
     t.optimize_netgen = ui.get_mesh_netgen();
     t.extend_boundary_sizes = ui.get_mesh_extend();
-    t.optimize_threshold = ui.get_mesh_optimize_threshold().trim().parse().map_err(|_| "Optimization threshold must be a number")?;
+    t.optimize_threshold = ui
+        .get_mesh_optimize_threshold()
+        .trim()
+        .parse()
+        .map_err(|_| "Optimization threshold must be a number")?;
     t.validate()?;
     session.set_mesh_recipe(recipe);
     Ok(())
@@ -93,22 +133,34 @@ fn bind_grouping(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
     let weak_apply = ui.as_weak();
     let apply_state = state.clone();
     ui.on_mesh_apply_settings(move || {
-        let Some(ui) = weak_apply.upgrade() else { return };
+        let Some(ui) = weak_apply.upgrade() else {
+            return;
+        };
         let mut state = apply_state.borrow_mut();
-        if state.meshing || state.solving { return; }
+        if state.meshing || state.solving {
+            return;
+        }
         let result = (|| -> Result<_, String> {
-            let mut draft = WorkbenchSession::from_project(&state.workbench.to_project("Mesh settings")).map_err(|e|e.to_string())?;
+            let mut draft =
+                WorkbenchSession::from_project(&state.workbench.to_project("Mesh settings"))
+                    .map_err(|e| e.to_string())?;
             mesh_configuration(&ui, &mut draft)?;
-            draft.mesh_generation_inputs().map_err(|e|e.to_string())?;
+            draft.mesh_generation_inputs().map_err(|e| e.to_string())?;
             Ok(draft)
         })();
         match result {
             Ok(draft) => {
-                let (a,b,c) = draft.mesh_sizes();
-                if let Err(e) = state.workbench.set_mesh_configuration(draft.mesh_dimension(),a,b,c,1) {
+                let (a, b, c) = draft.mesh_sizes();
+                if let Err(e) =
+                    state
+                        .workbench
+                        .set_mesh_configuration(draft.mesh_dimension(), a, b, c, 1)
+                {
                     state.log(e.to_string());
                 } else {
-                    state.workbench.set_mesh_cpu_threads(ui.get_wb_mesh_threads().max(0) as usize);
+                    state
+                        .workbench
+                        .set_mesh_cpu_threads(ui.get_wb_mesh_threads().max(0) as usize);
                     state.workbench.set_mesh_recipe(draft.mesh_recipe().clone());
                     state.mark_workbench_dirty();
                     state.log("Applied meshing controls; regenerate the mesh to use them.");
@@ -117,7 +169,7 @@ fn bind_grouping(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
             Err(e) => state.log(format!("Mesh settings not applied: {e}")),
         }
         ui.set_wb_flow_feedback(state.logs.back().cloned().unwrap_or_default().into());
-        refresh_ui(&ui,&state);
+        refresh_ui(&ui, &state);
     });
 
     let weak = ui.as_weak();
@@ -198,7 +250,7 @@ fn bind_grouping(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
             }
             state.mark_workbench_dirty();
         }
-        ui.set_mesh_entity_mode(mode.clamp(0,3));
+        ui.set_mesh_entity_mode(mode.clamp(0, 3));
         state.wb_selected_targets.clear();
         state.geometry_editor.selection.clear();
         show_geometry(&ui, &mut state, true);
@@ -223,12 +275,21 @@ fn bind_grouping(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
         );
         if let Some(target) = target {
             select_tree_geometry_target(&mut state, target, additive);
-            if state.current_step==2 {
-                let name=state.workbench.named_selections().iter().find(|g|g.targets.contains(&target)).map(|g|g.name.clone());
-                if let Some(name)=name {
-                    if let Some(index)=state.patch_names.iter().position(|p|p==&name) {
-                        ui.set_patch_index(index as i32);push_boundary_fields(&ui,&state.workbench,&name);
-                        state.selected_tree=Some(TreeSelection {kind:TREE_KIND_PATCH,payload:index as i32});
+            if state.current_step == 2 {
+                let name = state
+                    .workbench
+                    .named_selections()
+                    .iter()
+                    .find(|g| g.targets.contains(&target))
+                    .map(|g| g.name.clone());
+                if let Some(name) = name {
+                    if let Some(index) = state.patch_names.iter().position(|p| p == &name) {
+                        ui.set_patch_index(index as i32);
+                        push_boundary_fields(&ui, &state.workbench, &name);
+                        state.selected_tree = Some(TreeSelection {
+                            kind: TREE_KIND_PATCH,
+                            payload: index as i32,
+                        });
                     }
                 }
             }
@@ -339,7 +400,9 @@ pub(super) fn bind(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
         if state.show_geometry_3d
             || (state.show_mesh && state.workbench.mesh_dimension() == MeshDimension::ThreeD)
         {
-            if state.workbench.mesh_dimension() == MeshDimension::ThreeD || state.workbench.geometry().bodies().next().is_some() {
+            if state.workbench.mesh_dimension() == MeshDimension::ThreeD
+                || state.workbench.geometry().bodies().next().is_some()
+            {
                 if state.geometry_drag_anchor.is_none() {
                     state.geometry_drag_anchor =
                         Some((px, py, state.view_3d.yaw, state.view_3d.pitch));
@@ -353,14 +416,18 @@ pub(super) fn bind(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
                 }
                 refresh_ui(&ui, &state);
             } else {
-                if state.mesh_pan_anchor.is_none_or(|a|a.0!=px || a.1!=py) {
-                    state.mesh_pan_anchor=Some((px,py,state.view_3d.pan.0,state.view_3d.pan.1));
+                if state.mesh_pan_anchor.is_none_or(|a| a.0 != px || a.1 != py) {
+                    state.mesh_pan_anchor =
+                        Some((px, py, state.view_3d.pan.0, state.view_3d.pan.1));
                 }
-                if let Some((_,_,cx,cy))=state.mesh_pan_anchor {
-                    let scale=f64::from(viewport::preview_scale(w,h));
-                    state.view_3d.pan=(cx+f64::from(x-px)/scale,cy+f64::from(y-py)/scale);
+                if let Some((_, _, cx, cy)) = state.mesh_pan_anchor {
+                    let scale = f64::from(viewport::preview_scale(w, h));
+                    state.view_3d.pan = (
+                        cx + f64::from(x - px) / scale,
+                        cy + f64::from(y - py) / scale,
+                    );
                 }
-                refresh_ui(&ui,&state);
+                refresh_ui(&ui, &state);
             }
             return;
         }
@@ -487,12 +554,16 @@ pub(super) fn bind(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
 }
 
 pub(super) fn refresh(ui: &MainWindow, state: &AppState) {
-    super::mesh_inspection::refresh(ui,state);
+    super::mesh_inspection::refresh(ui, state);
     ui.set_mesh_cad_route(if state.workbench.geometry().cad_bodies().any(|(_,b)|b.visible) {
         "CAD route: recognized axis-aligned boxes can use Hex Block. Other solids use planar-face recovery and faceted curved surfaces; direct STEP/OCC meshing is not connected."
     }else{"Geometry route: analytic primitives/profiles. Mapped and sweep methods require compatible topology."}.into());
     ui.set_mesh_show_geometry(state.show_geometry_3d);
-    ui.set_mesh_spatial_view(if state.show_geometry_3d {state.workbench.geometry().bodies().next().is_some()} else {state.workbench.mesh_dimension()==MeshDimension::ThreeD});
+    ui.set_mesh_spatial_view(if state.show_geometry_3d {
+        state.workbench.geometry().bodies().next().is_some()
+    } else {
+        state.workbench.mesh_dimension() == MeshDimension::ThreeD
+    });
     let local_index = state
         .workbench
         .patch_names()
@@ -566,20 +637,49 @@ pub(super) fn refresh(ui: &MainWindow, state: &AppState) {
     let controls = r
         .local_sizes
         .iter()
-        .map(|c| SharedString::from(format!("{} {} · h={:.3e}", if c.enabled {"●"}else{"○"}, c.name, c.size)))
-        .chain(
-            r.refinements
-                .iter()
-                .map(|c| SharedString::from(format!("{} {} · {:.2e}→{:.2e}",if c.enabled {"●"}else{"○"},c.name,c.size_min,c.size_max))),
-        )
+        .map(|c| {
+            SharedString::from(format!(
+                "{} {} · h={:.3e}",
+                if c.enabled { "●" } else { "○" },
+                c.name,
+                c.size
+            ))
+        })
+        .chain(r.refinements.iter().map(|c| {
+            SharedString::from(format!(
+                "{} {} · {:.2e}→{:.2e}",
+                if c.enabled { "●" } else { "○" },
+                c.name,
+                c.size_min,
+                c.size_max
+            ))
+        }))
         .chain(r.boundary_layers.iter().map(|c| {
             SharedString::from(format!(
                 "{} {} · layers={}",
-                if c.enabled {"●"}else{"○"}, c.name, c.layer_count
+                if c.enabled { "●" } else { "○" },
+                c.name,
+                c.layer_count
             ))
         }))
-        .chain(r.regions.iter().map(|c|SharedString::from(format!("{} {} · box h={:.2e}",if c.enabled {"●"}else{"○"},c.name,c.size))))
-        .chain(r.edge_divisions.iter().map(|c|SharedString::from(format!("{} {} · {} cells · {} {}",if c.enabled {"●"}else{"○"},c.name,c.cells,if c.symmetric {"Bump"}else{"growth"},c.progression))))
+        .chain(r.regions.iter().map(|c| {
+            SharedString::from(format!(
+                "{} {} · box h={:.2e}",
+                if c.enabled { "●" } else { "○" },
+                c.name,
+                c.size
+            ))
+        }))
+        .chain(r.edge_divisions.iter().map(|c| {
+            SharedString::from(format!(
+                "{} {} · {} cells · {} {}",
+                if c.enabled { "●" } else { "○" },
+                c.name,
+                c.cells,
+                if c.symmetric { "Bump" } else { "growth" },
+                c.progression
+            ))
+        }))
         .collect::<Vec<_>>();
     ui.set_mesh_control_model(ModelRc::new(VecModel::from(controls)));
     let names = state.workbench.patch_names();
@@ -587,32 +687,54 @@ pub(super) fn refresh(ui: &MainWindow, state: &AppState) {
     let rows = names
         .iter()
         .map(|name| {
-            let description = if let Some(peer)=state.workbench.cyclic_partner(name){assigned+=1;format!("Cyclic ↔ {peer}")}else{state
-                .workbench
-                .boundary_assignment(name)
-                .map(|bc| {
-                    assigned += 1;
-                    match bc {
-                        IncompressibleBoundaryCondition::ParabolicInlet {..} => "Parabolic inlet".into(),
-                        IncompressibleBoundaryCondition::FlowRateInlet {mass,..} => (if *mass {"Mass-flow inlet"}else{"Volume-flow inlet"}).into(),
-                        IncompressibleBoundaryCondition::TotalPressure{..}=>"Total-pressure opening".into(),
-                        IncompressibleBoundaryCondition::PressureOutletBackflow {..} => "Pressure outlet / backflow".into(),
-                        IncompressibleBoundaryCondition::Slip => "Slip".to_string(),
-                        IncompressibleBoundaryCondition::Symmetry => "Symmetry".to_string(),
-                        IncompressibleBoundaryCondition::FarField { .. } => "Far-field".to_string(),
-                        IncompressibleBoundaryCondition::NoSlipWall => "No-slip wall".to_string(),
-                        IncompressibleBoundaryCondition::MovingWall { .. } => {
-                            "Moving wall".to_string()
+            let description = if let Some(peer) = state.workbench.cyclic_partner(name) {
+                assigned += 1;
+                format!("Cyclic ↔ {peer}")
+            } else {
+                state
+                    .workbench
+                    .boundary_assignment(name)
+                    .map(|bc| {
+                        assigned += 1;
+                        match bc {
+                            IncompressibleBoundaryCondition::ParabolicInlet { .. } => {
+                                "Parabolic inlet".into()
+                            }
+                            IncompressibleBoundaryCondition::FlowRateInlet { mass, .. } => {
+                                (if *mass {
+                                    "Mass-flow inlet"
+                                } else {
+                                    "Volume-flow inlet"
+                                })
+                                .into()
+                            }
+                            IncompressibleBoundaryCondition::TotalPressure { .. } => {
+                                "Total-pressure opening".into()
+                            }
+                            IncompressibleBoundaryCondition::PressureOutletBackflow { .. } => {
+                                "Pressure outlet / backflow".into()
+                            }
+                            IncompressibleBoundaryCondition::Slip => "Slip".to_string(),
+                            IncompressibleBoundaryCondition::Symmetry => "Symmetry".to_string(),
+                            IncompressibleBoundaryCondition::FarField { .. } => {
+                                "Far-field".to_string()
+                            }
+                            IncompressibleBoundaryCondition::NoSlipWall => {
+                                "No-slip wall".to_string()
+                            }
+                            IncompressibleBoundaryCondition::MovingWall { .. } => {
+                                "Moving wall".to_string()
+                            }
+                            IncompressibleBoundaryCondition::VelocityInlet { .. } => {
+                                "Velocity inlet".to_string()
+                            }
+                            IncompressibleBoundaryCondition::PressureOutlet { .. } => {
+                                "Pressure outlet".to_string()
+                            }
                         }
-                        IncompressibleBoundaryCondition::VelocityInlet { .. } => {
-                            "Velocity inlet".to_string()
-                        }
-                        IncompressibleBoundaryCondition::PressureOutlet { .. } => {
-                            "Pressure outlet".to_string()
-                        }
-                    }
-                })
-                .unwrap_or_else(|| "UNASSIGNED".into())};
+                    })
+                    .unwrap_or_else(|| "UNASSIGNED".into())
+            };
             let count = state.workbench.mesh().and_then(|m| {
                 m.mesh
                     .boundary_patches()
@@ -814,65 +936,148 @@ mod tests {
     }
     #[test]
     fn mesh_and_setup_pointer_navigation_and_entity_filters() {
-        use slint::platform::{PointerEventButton,WindowEvent};
-        let window=MinimalSoftwareWindow::new(RepaintBufferType::NewBuffer);
+        use slint::platform::{PointerEventButton, WindowEvent};
+        let window = MinimalSoftwareWindow::new(RepaintBufferType::NewBuffer);
         slint::platform::set_platform(Box::new(SoftwarePlatform(window.clone()))).unwrap();
-        let ui=MainWindow::new().unwrap();
-        let state=Rc::new(RefCell::new(AppState::new()));
-        state.borrow_mut().project_loaded=true;
-        state.borrow_mut().workbench.add_rectangle(1.0,1.0).unwrap();
-        super::super::bind_callbacks(&ui,&state);
-        super::super::flow_setup::bind(&ui,&state);
-        cad::bind(&ui,&state);
-        ui.show().unwrap();window.set_size(slint::PhysicalSize::new(1440,1000));
-        let drag=|button| {
-            let from=slint::LogicalPosition::new(600.,420.);
-            let to=slint::LogicalPosition::new(645.,445.);
-            ui.window().dispatch_event(WindowEvent::PointerPressed {position:from,button});
-            ui.window().dispatch_event(WindowEvent::PointerMoved {position:to});
-            ui.window().dispatch_event(WindowEvent::PointerReleased {position:to,button});
+        let ui = MainWindow::new().unwrap();
+        let state = Rc::new(RefCell::new(AppState::new()));
+        state.borrow_mut().project_loaded = true;
+        state
+            .borrow_mut()
+            .workbench
+            .add_rectangle(1.0, 1.0)
+            .unwrap();
+        super::super::bind_callbacks(&ui, &state);
+        super::super::flow_setup::bind(&ui, &state);
+        cad::bind(&ui, &state);
+        ui.show().unwrap();
+        window.set_size(slint::PhysicalSize::new(1440, 1000));
+        let drag = |button| {
+            let from = slint::LogicalPosition::new(600., 420.);
+            let to = slint::LogicalPosition::new(645., 445.);
+            ui.window().dispatch_event(WindowEvent::PointerPressed {
+                position: from,
+                button,
+            });
+            ui.window()
+                .dispatch_event(WindowEvent::PointerMoved { position: to });
+            ui.window().dispatch_event(WindowEvent::PointerReleased {
+                position: to,
+                button,
+            });
         };
-        for step in [1,2] {
-            apply_workflow_step(&ui,&mut state.borrow_mut(),step);
+        for step in [1, 2] {
+            apply_workflow_step(&ui, &mut state.borrow_mut(), step);
             window.request_redraw();
-            let mut pixels=vec![slint::Rgb8Pixel::default();1440*1000];
-            window.draw_if_needed(|renderer|{renderer.render(&mut pixels,1440);});
-            let before=state.borrow().view_3d.pan;
+            let mut pixels = vec![slint::Rgb8Pixel::default(); 1440 * 1000];
+            window.draw_if_needed(|renderer| {
+                renderer.render(&mut pixels, 1440);
+            });
+            let before = state.borrow().view_3d.pan;
             drag(PointerEventButton::Left);
-            assert_ne!(state.borrow().view_3d.pan,before,"2D left drag must pan in stage {step}");
-            let before=state.borrow().view_3d.zoom;ui.invoke_mesh_view_zoom(80.);
-            assert_ne!(state.borrow().view_3d.zoom,before);
-            ui.invoke_mesh_view_fit();assert_eq!(state.borrow().view_3d.pan,(0.,0.));
-            assert!(ui.get_cad_orientation_image().size().width>0);
-            let file=std::fs::File::create(format!("/tmp/flursys-navigation-stage-{step}.png")).unwrap();
-            let mut png=png::Encoder::new(file,1440,1000);png.set_color(png::ColorType::Rgb);
-            png.write_header().unwrap().write_image_data(&pixels.iter().flat_map(|p|[p.r,p.g,p.b]).collect::<Vec<_>>()).unwrap();
+            assert_ne!(
+                state.borrow().view_3d.pan,
+                before,
+                "2D left drag must pan in stage {step}"
+            );
+            let before = state.borrow().view_3d.zoom;
+            ui.invoke_mesh_view_zoom(80.);
+            assert_ne!(state.borrow().view_3d.zoom, before);
+            ui.invoke_mesh_view_fit();
+            assert_eq!(state.borrow().view_3d.pan, (0., 0.));
+            assert!(ui.get_cad_orientation_image().size().width > 0);
+            let file =
+                std::fs::File::create(format!("/tmp/flursys-navigation-stage-{step}.png")).unwrap();
+            let mut png = png::Encoder::new(file, 1440, 1000);
+            png.set_color(png::ColorType::Rgb);
+            png.write_header()
+                .unwrap()
+                .write_image_data(
+                    &pixels
+                        .iter()
+                        .flat_map(|p| [p.r, p.g, p.b])
+                        .collect::<Vec<_>>(),
+                )
+                .unwrap();
         }
-        state.borrow_mut().workbench=WorkbenchSession::new();
-        let body=state.borrow_mut().workbench.geometry_mut().cad_add_primitive(
-            flursys::CadPrimitive::Box {length:1.,width:1.,height:1.},Vec3::new(0.,0.,0.),"Fluid").unwrap();
-        let original=state.borrow().workbench.geometry().clone();
-        ui.set_mesh_dimension_index(1);ui.invoke_mesh_entity_filter(0);
-        for step in [1,2] {
-            apply_workflow_step(&ui,&mut state.borrow_mut(),step);
-            window.request_redraw();let mut pixels=vec![slint::Rgb8Pixel::default();1440*1000];
-            window.draw_if_needed(|renderer|{renderer.render(&mut pixels,1440);});
-            let before=state.borrow().view_3d;
+        state.borrow_mut().workbench = WorkbenchSession::new();
+        let body = state
+            .borrow_mut()
+            .workbench
+            .geometry_mut()
+            .cad_add_primitive(
+                flursys::CadPrimitive::Box {
+                    length: 1.,
+                    width: 1.,
+                    height: 1.,
+                },
+                Vec3::new(0., 0., 0.),
+                "Fluid",
+            )
+            .unwrap();
+        let original = state.borrow().workbench.geometry().clone();
+        ui.set_mesh_dimension_index(1);
+        ui.invoke_mesh_entity_filter(0);
+        for step in [1, 2] {
+            apply_workflow_step(&ui, &mut state.borrow_mut(), step);
+            window.request_redraw();
+            let mut pixels = vec![slint::Rgb8Pixel::default(); 1440 * 1000];
+            window.draw_if_needed(|renderer| {
+                renderer.render(&mut pixels, 1440);
+            });
+            let before = state.borrow().view_3d;
             drag(PointerEventButton::Left);
-            assert_ne!(state.borrow().view_3d.yaw,before.yaw,"3D drag must orbit in stage {step}");
-            let pan=state.borrow().view_3d.pan;drag(PointerEventButton::Middle);
-            assert_ne!(state.borrow().view_3d.pan,pan);
-            for (mode,point) in [(0,Vec3::new(0.5,0.5,1.)),(1,Vec3::new(0.5,0.,1.)),(2,Vec3::new(1.,1.,1.)),(3,Vec3::new(0.5,0.5,1.))] {
-                ui.invoke_mesh_entity_filter(mode);ui.invoke_mesh_view_fit();ui.invoke_select_geometry_view_axis(2);
-                let screen={let s=state.borrow();render::project_measurement(s.workbench.geometry(),s.view_3d,&[point])[0]};
-                ui.invoke_mesh_pick_geometry(screen.0 as f32,screen.1 as f32,PREVIEW_WIDTH as f32,PREVIEW_HEIGHT as f32,false);
-                let target=state.borrow().wb_selected_targets.first().copied().expect("filter should pick the requested entity");
-                assert!(matches!((mode,target),(0,GeometrySelectionTarget::Face(_))|(1,GeometrySelectionTarget::Edge(_))|(2,GeometrySelectionTarget::Vertex(_))|(3,GeometrySelectionTarget::Body(_))));
-                if mode==3 {assert_eq!(target,GeometrySelectionTarget::Body(body));}
+            assert_ne!(
+                state.borrow().view_3d.yaw,
+                before.yaw,
+                "3D drag must orbit in stage {step}"
+            );
+            let pan = state.borrow().view_3d.pan;
+            drag(PointerEventButton::Middle);
+            assert_ne!(state.borrow().view_3d.pan, pan);
+            for (mode, point) in [
+                (0, Vec3::new(0.5, 0.5, 1.)),
+                (1, Vec3::new(0.5, 0., 1.)),
+                (2, Vec3::new(1., 1., 1.)),
+                (3, Vec3::new(0.5, 0.5, 1.)),
+            ] {
+                ui.invoke_mesh_entity_filter(mode);
+                ui.invoke_mesh_view_fit();
+                ui.invoke_select_geometry_view_axis(2);
+                let screen = {
+                    let s = state.borrow();
+                    render::project_measurement(s.workbench.geometry(), s.view_3d, &[point])[0]
+                };
+                ui.invoke_mesh_pick_geometry(
+                    screen.0 as f32,
+                    screen.1 as f32,
+                    PREVIEW_WIDTH as f32,
+                    PREVIEW_HEIGHT as f32,
+                    false,
+                );
+                let target = state
+                    .borrow()
+                    .wb_selected_targets
+                    .first()
+                    .copied()
+                    .expect("filter should pick the requested entity");
+                assert!(matches!(
+                    (mode, target),
+                    (0, GeometrySelectionTarget::Face(_))
+                        | (1, GeometrySelectionTarget::Edge(_))
+                        | (2, GeometrySelectionTarget::Vertex(_))
+                        | (3, GeometrySelectionTarget::Body(_))
+                ));
+                if mode == 3 {
+                    assert_eq!(target, GeometrySelectionTarget::Body(body));
+                }
             }
         }
-        assert_eq!(state.borrow().workbench.geometry(),&original,"navigation and filters must never edit geometry");
+        assert_eq!(
+            state.borrow().workbench.geometry(),
+            &original,
+            "navigation and filters must never edit geometry"
+        );
         ui.hide().unwrap();
     }
-
 }

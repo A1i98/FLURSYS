@@ -33,7 +33,10 @@ impl AppState {
             solution.pressure.values().to_vec(),
             solution.velocity.values().to_vec(),
         )
-        .map_err(|e| e.to_string())?.with_turbulence(solution.turbulence.as_ref()).with_temperature(solution.temperature.as_ref().map(|t|t.values().to_vec())).map_err(|e|e.to_string())?;
+        .map_err(|e| e.to_string())?
+        .with_turbulence(solution.turbulence.as_ref())
+        .with_temperature(solution.temperature.as_ref().map(|t| t.values().to_vec()))
+        .map_err(|e| e.to_string())?;
         self.wb_residual_history = solution
             .report
             .continuity_history
@@ -61,10 +64,25 @@ impl AppState {
                 solution,
                 self.workbench.material().density,
             );
-            self.post.wall_report_index=Some(solution.report.outer_iterations);self.post.wall_report_time=solution.physical_time;
-            if let Ok(case)=self.workbench.prepare_case() {self.post.wall_reports=flursys::workbench::wall_reports::reports_with_turbulence(&case,&solution.velocity,&solution.pressure,solution.turbulence.as_ref(),true).unwrap_or_default();}
-            let balance=flursys::workbench::boundary_reports::conservation_report(&mesh.mesh,solution,self.workbench.material().density);
-            self.post.boundary_summary = balance.summary()+"\n\n"+&result_analysis::boundary_summary(&reports);
+            self.post.wall_report_index = Some(solution.report.outer_iterations);
+            self.post.wall_report_time = solution.physical_time;
+            if let Ok(case) = self.workbench.prepare_case() {
+                self.post.wall_reports = flursys::workbench::wall_reports::reports_with_turbulence(
+                    &case,
+                    &solution.velocity,
+                    &solution.pressure,
+                    solution.turbulence.as_ref(),
+                    true,
+                )
+                .unwrap_or_default();
+            }
+            let balance = flursys::workbench::boundary_reports::conservation_report(
+                &mesh.mesh,
+                solution,
+                self.workbench.material().density,
+            );
+            self.post.boundary_summary =
+                balance.summary() + "\n\n" + &result_analysis::boundary_summary(&reports);
             self.post.boundary_reports = reports;
         }
         Ok(())
@@ -104,11 +122,20 @@ pub(super) fn refresh(ui: &MainWindow, state: &AppState) {
                 format!(
                     "Run {} · {}\nIterations / steps {}\nFinal continuity {}{}",
                     r.id,
-                    if r.physical_time.is_some(){"Time interval complete"}else{run_status_label(&r.status)},
+                    if r.physical_time.is_some() {
+                        "Time interval complete"
+                    } else {
+                        run_status_label(&r.status)
+                    },
                     r.iterations.map_or("—".into(), |i| i.to_string()),
                     r.continuity_residual
                         .map_or("—".into(), |v| format!("{v:.3e}")),
-                    r.physical_time.map(|t|format!("\nPhysical time {t:.9e} s\nAccepted steps {}",r.time_steps)).unwrap_or_default()
+                    r.physical_time
+                        .map(|t| format!(
+                            "\nPhysical time {t:.9e} s\nAccepted steps {}",
+                            r.time_steps
+                        ))
+                        .unwrap_or_default()
                 )
             })
             .unwrap_or_else(|| solution_summary_text(&state.workbench));

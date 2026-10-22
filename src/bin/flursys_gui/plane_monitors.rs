@@ -221,8 +221,13 @@ fn sample_selected(ui: &MainWindow, state: &mut AppState) -> Result<(), String> 
         .unwrap_or(state.post.iteration);
     let mut sample =
         plane_monitor::sample(&plane, &cells, iteration, data.velocity(), data.pressure())?;
-    sample.physical_time=state.workbench_project.runs.iter().find(|r|r.id==data.run_id()).and_then(|r|r.physical_time)
-        .or_else(||state.workbench.solution().and_then(|s|s.physical_time));
+    sample.physical_time = state
+        .workbench_project
+        .runs
+        .iter()
+        .find(|r| r.id == data.run_id())
+        .and_then(|r| r.physical_time)
+        .or_else(|| state.workbench.solution().and_then(|s| s.physical_time));
     state.post.plane_samples.insert(plane.id.clone(), sample);
     Ok(())
 }

@@ -49,7 +49,10 @@ impl View3d {
                 distance: 1.0 / f64::from(self.zoom.clamp(0.05, 50.0)),
                 ..cad_camera::Camera::default()
             };
-            camera.zoom_at((f64::from(delta.clamp(-2000.0, 2000.0)) * 0.0015).exp(), None);
+            camera.zoom_at(
+                (f64::from(delta.clamp(-2000.0, 2000.0)) * 0.0015).exp(),
+                None,
+            );
             self.zoom = ((1.0 / camera.distance) as f32).clamp(0.05, 50.0);
         }
     }
@@ -66,7 +69,6 @@ pub(super) struct Camera3d {
     projection: cad_camera::Mat4,
     pub centre: Vec3,
     pub scale: f64,
-    forward: Vec3,
     pan: (f64, f64),
     radius: f64,
     raster: (u32, u32),
@@ -91,25 +93,41 @@ impl Camera3d {
             bounds.add(cad_geom::Vec3::new(0.5, 0.5, 0.5));
         }
         let radius = (bounds.diagonal() * 0.5).max(1e-12);
-        let zoom = if view.zoom.is_finite() { view.zoom.clamp(0.05, 50.0) } else { 1.0 };
+        let zoom = if view.zoom.is_finite() {
+            view.zoom.clamp(0.05, 50.0)
+        } else {
+            1.0
+        };
         // Normalize framing to the actual scene size. The upstream camera's
         // interactive fit assumes millimetres; CFD geometry can be sub-metre.
-        let scale = f64::from(PREVIEW_WIDTH.min(PREVIEW_HEIGHT)) * 0.84
-            / (2.0 * radius) * f64::from(zoom);
+        let scale =
+            f64::from(PREVIEW_WIDTH.min(PREVIEW_HEIGHT)) * 0.84 / (2.0 * radius) * f64::from(zoom);
         let camera = cad_camera::Camera {
             target: bounds.center(),
-            yaw: if view.yaw.is_finite() { f64::from(view.yaw) } else { 0.65 },
-            pitch: if view.pitch.is_finite() { f64::from(view.pitch) } else { 0.48 },
+            yaw: if view.yaw.is_finite() {
+                f64::from(view.yaw)
+            } else {
+                0.65
+            },
+            pitch: if view.pitch.is_finite() {
+                f64::from(view.pitch)
+            } else {
+                0.48
+            },
             distance: f64::from(PREVIEW_HEIGHT) / (0.8 * scale),
             ..cad_camera::Camera::default()
         };
         Self {
-            projection: camera.view_proj(f64::from(PREVIEW_WIDTH) / f64::from(PREVIEW_HEIGHT), radius),
+            projection: camera
+                .view_proj(f64::from(PREVIEW_WIDTH) / f64::from(PREVIEW_HEIGHT), radius),
             centre: model_point(camera.target),
-            forward: model_point(-camera.basis().2),
             camera,
             scale,
-            pan: if view.pan.0.is_finite() && view.pan.1.is_finite() { view.pan } else { (0.0, 0.0) },
+            pan: if view.pan.0.is_finite() && view.pan.1.is_finite() {
+                view.pan
+            } else {
+                (0.0, 0.0)
+            },
             radius,
             raster: (PREVIEW_WIDTH, PREVIEW_HEIGHT),
         }
@@ -117,25 +135,10 @@ impl Camera3d {
 
     /// Same camera used by native CAD rendering and CPU-side entity picking.
     pub fn scene_camera(&self) -> (cad_camera::Camera, f64) {
-        let mut camera=self.camera;
-        camera.pan(self.pan.0,self.pan.1,f64::from(self.raster.1));
-        (camera,self.radius)
+        let mut camera = self.camera;
+        camera.pan(self.pan.0, self.pan.1, f64::from(self.raster.1));
+        (camera, self.radius)
     }
-    /// Supersampling keeps navigation and selection in logical preview pixels.
-    pub fn at_resolution(mut self, width: u32, height: u32) -> Self {
-        let factor = (f64::from(width) / f64::from(self.raster.0))
-            .min(f64::from(height) / f64::from(self.raster.1));
-        self.scale *= factor;
-        self.pan = (self.pan.0 * factor, self.pan.1 * factor);
-        self.raster = (width, height);
-        self.projection = self.camera.view_proj(f64::from(width) / f64::from(height.max(1)), self.radius);
-        self
-    }
-
-    pub fn pixel_ratio(&self) -> usize {
-        (self.raster.0 / PREVIEW_WIDTH).clamp(1, 4) as usize
-    }
-
     pub fn screen(&self, p: Vec3) -> (f64, f64) {
         let c = self.projection.apply(camera_point(p));
         (
@@ -149,16 +152,15 @@ impl Camera3d {
         (x.round() as i32, y.round() as i32)
     }
 
-    pub fn depth(&self, points: &[Vec3]) -> f64 {
-        points.iter().map(|p| (*p - self.centre).dot(self.forward)).sum::<f64>()
-            / points.len().max(1) as f64
-    }
-
     pub fn ray(&self, point: (f64, f64)) -> Option<Ray3> {
-        if !point.0.is_finite() || !point.1.is_finite() { return None; }
+        if !point.0.is_finite() || !point.1.is_finite() {
+            return None;
+        }
         let (origin, direction) = self.camera.ray(
-            point.0 - self.pan.0, point.1 - self.pan.1,
-            f64::from(self.raster.0), f64::from(self.raster.1),
+            point.0 - self.pan.0,
+            point.1 - self.pan.1,
+            f64::from(self.raster.0),
+            f64::from(self.raster.1),
         );
         Ray3::new(model_point(origin), model_point(direction))
     }
@@ -434,13 +436,13 @@ pub(super) fn bind(
 
 #[cfg(test)]
 mod integration_tests {
-    use slint::Model;
     use super::super::*;
     use super::*;
     use slint::platform::{
         software_renderer::{MinimalSoftwareWindow, RepaintBufferType},
         Platform, WindowAdapter,
     };
+    use slint::Model;
     struct SoftwarePlatform(Rc<MinimalSoftwareWindow>);
     impl Platform for SoftwarePlatform {
         fn create_window_adapter(&self) -> Result<Rc<dyn WindowAdapter>, slint::PlatformError> {
@@ -608,10 +610,16 @@ mod integration_tests {
         assert_ne!(rendered_modes[1], rendered_modes[2]);
         assert_eq!(state.borrow().workbench.geometry(), &original);
         // Topology is opt-in; hiding it never changes persistent geometry IDs.
-        assert!(!ui.get_project_tree_model().iter().any(|row| row.label == "Topology"));
+        assert!(!ui
+            .get_project_tree_model()
+            .iter()
+            .any(|row| row.label == "Topology"));
         ui.set_show_topology(true);
         ui.invoke_refresh_browser();
-        assert!(ui.get_project_tree_model().iter().any(|row| row.label == "Topology"));
+        assert!(ui
+            .get_project_tree_model()
+            .iter()
+            .any(|row| row.label == "Topology"));
         ui.set_show_topology(false);
         ui.invoke_refresh_browser();
         let old_density = state.borrow().workbench.material().density;
@@ -620,28 +628,42 @@ mod integration_tests {
         assert!(!ui.get_material_dialog_feedback().is_empty());
         assert!(ui.invoke_apply_fluid_material("1.25".into(), "0.005".into()));
         assert_eq!(state.borrow().workbench.material().density, 1.25);
-        assert_eq!(state.borrow().workbench.material().kinematic_viscosity, 0.005);
+        assert_eq!(
+            state.borrow().workbench.material().kinematic_viscosity,
+            0.005
+        );
         let out = std::path::Path::new("/tmp/flursys-workbench-preview");
         std::fs::create_dir_all(out).unwrap();
         let capture = |name: &str, width: u32, height: u32| {
             window.set_size(slint::PhysicalSize::new(width, height));
             window.request_redraw();
             let mut pixels = vec![slint::Rgb8Pixel::default(); (width * height) as usize];
-            window.draw_if_needed(|renderer| { renderer.render(&mut pixels, width as usize); });
+            window.draw_if_needed(|renderer| {
+                renderer.render(&mut pixels, width as usize);
+            });
             let file = std::fs::File::create(out.join(format!("{name}-{width}.png"))).unwrap();
             let mut encoder = png::Encoder::new(file, width, height);
             encoder.set_color(png::ColorType::Rgb);
-            let bytes = pixels.iter().flat_map(|p| [p.r, p.g, p.b]).collect::<Vec<_>>();
-            encoder.write_header().unwrap().write_image_data(&bytes).unwrap();
+            let bytes = pixels
+                .iter()
+                .flat_map(|p| [p.r, p.g, p.b])
+                .collect::<Vec<_>>();
+            encoder
+                .write_header()
+                .unwrap()
+                .write_image_data(&bytes)
+                .unwrap();
         };
         for step in 0..=4 {
             ui.invoke_select_step(step);
-            for (w,h) in [(1440,900), (1100,760)] { capture(&format!("workspace-{step}"),w,h); }
+            for (w, h) in [(1440, 900), (1100, 760)] {
+                capture(&format!("workspace-{step}"), w, h);
+            }
         }
         ui.invoke_select_step(0);
         ui.invoke_new_project();
         assert!(ui.get_unsaved_replacement_pending());
-        capture("unsaved-dialog",1440,900);
+        capture("unsaved-dialog", 1440, 900);
         ui.invoke_cancel_project_replacement();
         assert!(!ui.get_unsaved_replacement_pending());
         assert_eq!(state.borrow().workbench.geometry(), &original);
@@ -649,7 +671,7 @@ mod integration_tests {
         ui.set_material_draft_viscosity("0.005".into());
         ui.set_material_dialog_feedback("".into());
         ui.set_material_dialog_open(true);
-        capture("fluid-dialog",1440,900);
+        capture("fluid-dialog", 1440, 900);
         ui.set_material_dialog_open(false);
         ui.hide().unwrap();
     }

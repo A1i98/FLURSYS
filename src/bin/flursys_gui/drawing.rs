@@ -593,7 +593,13 @@ pub(super) fn sync(ui: &MainWindow, state: &AppState) {
         CadSketchPlane::Zx => ("ZX", "Z", "X"),
         CadSketchPlane::Face => ("Face sketch", "u", "v"),
     };
-    ui.set_drawing_coordinates(format!("{horizontal}  {:.3}    {vertical}  {:.3}    mm",d.cursor.x,d.cursor.y).into());
+    ui.set_drawing_coordinates(
+        format!(
+            "{horizontal}  {:.3}    {vertical}  {:.3}    mm",
+            d.cursor.x, d.cursor.y
+        )
+        .into(),
+    );
     ui.set_drawing_active(true);
     ui.set_drawing_busy(state.cad_job.is_some());
     ui.set_drawing_tool(d.tool);
@@ -617,7 +623,14 @@ pub(super) fn sync(ui: &MainWindow, state: &AppState) {
         _ => 0,
     });
     ui.set_drawing_can_change_support(d.id.is_none() && d.host.is_none());
-    ui.set_drawing_selection(format!("{} curves · {} points selected",d.curves.len(),d.points.len()).into());
+    ui.set_drawing_selection(
+        format!(
+            "{} curves · {} points selected",
+            d.curves.len(),
+            d.points.len()
+        )
+        .into(),
+    );
     ui.set_drawing_constraints(ModelRc::new(VecModel::from(
         d.model
             .constraints
@@ -648,13 +661,17 @@ pub(super) fn sync(ui: &MainWindow, state: &AppState) {
                 y: p.1 as f32,
                 text: {
                     let value = c.kind.value().unwrap_or(0.0);
-                    if c.kind.is_angle() { format!("{:.2}°",value.to_degrees()) }
-                    else { match c.kind {
-                        core::ConstraintKind::Radius { .. } => format!("R{value:.3} mm"),
-                        core::ConstraintKind::Diameter { .. } => format!("⌀{value:.3} mm"),
-                        _ => format!("{value:.3} mm"),
-                    }}
-                }.into(),
+                    if c.kind.is_angle() {
+                        format!("{:.2}°", value.to_degrees())
+                    } else {
+                        match c.kind {
+                            core::ConstraintKind::Radius { .. } => format!("R{value:.3} mm"),
+                            core::ConstraintKind::Diameter { .. } => format!("⌀{value:.3} mm"),
+                            _ => format!("{value:.3} mm"),
+                        }
+                    }
+                }
+                .into(),
             }
         })
         .collect::<Vec<_>>();

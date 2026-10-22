@@ -655,9 +655,20 @@ pub(super) fn build_project_tree_rows(
         TREE_KIND_STAGE,
         1,
     ));
-    rows.push((1, "Meshing controls".to_string(), "Sizing · refinement · inflation".to_string(), TREE_KIND_MESH_PANEL, 1));
-    rows.push((1, "Mesh quality".to_string(), "Metrics · histogram · cutaway".to_string(), TREE_KIND_MESH_PANEL, 2));
-
+    rows.push((
+        1,
+        "Meshing controls".to_string(),
+        "Sizing · refinement · inflation".to_string(),
+        TREE_KIND_MESH_PANEL,
+        1,
+    ));
+    rows.push((
+        1,
+        "Mesh quality".to_string(),
+        "Metrics · histogram · cutaway".to_string(),
+        TREE_KIND_MESH_PANEL,
+        2,
+    ));
 
     rows.push((
         0,

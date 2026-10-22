@@ -243,17 +243,34 @@ pub(super) fn profile_csv(points: &[ProfilePoint], label: &str) -> String {
     out
 }
 fn saved_report(state: &AppState) -> Option<serde_json::Value> {
-    let run=state.active_result()?.run_id();
-    let record=state.workbench_project.runs.iter().find(|r|r.id==run)?;
-    let text=std::fs::read_to_string(state.workspace_path.as_ref()?.join(&record.report_path)).ok()?;
+    let run = state.active_result()?.run_id();
+    let record = state.workbench_project.runs.iter().find(|r| r.id == run)?;
+    let text =
+        std::fs::read_to_string(state.workspace_path.as_ref()?.join(&record.report_path)).ok()?;
     serde_json::from_str(&text).ok()
 }
 
-pub(super) fn engineering_summary_csv(state:&AppState)->Result<String,String> {
-    let data=state.active_result().ok_or("Select a completed result first")?;
-    let mut out=String::from("quantity,minimum,maximum,volume_weighted_mean\n");
-    for field in [ResultFieldKind::Pressure,ResultFieldKind::VelocityMagnitude,ResultFieldKind::VelocityX,ResultFieldKind::VelocityY,ResultFieldKind::VelocityZ,ResultFieldKind::VorticityMagnitude,ResultFieldKind::VelocityDivergence] {
-        if let Ok((lo,hi))=data.scalar_range(field) {out.push_str(&format!("\"{}\",{lo:.17e},{hi:.17e},{:.17e}\n",field.label().replace('"',"\"\""),data.volume_mean(field).unwrap_or(f64::NAN)));}
+pub(super) fn engineering_summary_csv(state: &AppState) -> Result<String, String> {
+    let data = state
+        .active_result()
+        .ok_or("Select a completed result first")?;
+    let mut out = String::from("quantity,minimum,maximum,volume_weighted_mean\n");
+    for field in [
+        ResultFieldKind::Pressure,
+        ResultFieldKind::VelocityMagnitude,
+        ResultFieldKind::VelocityX,
+        ResultFieldKind::VelocityY,
+        ResultFieldKind::VelocityZ,
+        ResultFieldKind::VorticityMagnitude,
+        ResultFieldKind::VelocityDivergence,
+    ] {
+        if let Ok((lo, hi)) = data.scalar_range(field) {
+            out.push_str(&format!(
+                "\"{}\",{lo:.17e},{hi:.17e},{:.17e}\n",
+                field.label().replace('"', "\"\""),
+                data.volume_mean(field).unwrap_or(f64::NAN)
+            ));
+        }
     }
     Ok(out)
 }
@@ -299,18 +316,36 @@ pub(super) fn report(state: &AppState) -> Result<String, String> {
     }
     if !state.post.wall_reports.is_empty() {
         out.push_str("<h2>Wall resolution and force estimates</h2><pre>");
-        out.push_str(&escape(&flursys::workbench::wall_reports::summary(&state.post.wall_reports)));
+        out.push_str(&escape(&flursys::workbench::wall_reports::summary(
+            &state.post.wall_reports,
+        )));
         out.push_str("</pre><p>First-cell wall-resolved estimate; pressure force uses adjacent-cell gauge pressure. No high-Re wall function. Integrated 2D forces are per unit depth.</p>");
     }
     out.push_str("<h2>Run provenance and settings</h2>");
-    if let Some(saved)=saved_report(state) {
-        for (key,title) in [("run","Run status"),("solver_version","Solver version"),("material","Fluid material"),("solver_settings","Numerical controls"),("boundaries","Boundary conditions"),("mesh_settings","Meshing controls"),("mesh_recipe","Meshing algorithms and refinement"),("spatial_methods","Spatial discretization"),("mesh_preflight","Mesh preflight"),("conservation","Conservative mass balance")] {
-            if let Some(value)=saved.get(key).filter(|v|!v.is_null()) {
-                out.push_str(&format!("<h3>{title}</h3><pre>{}</pre>",escape(&serde_json::to_string_pretty(value).map_err(|e|e.to_string())?)));
+    if let Some(saved) = saved_report(state) {
+        for (key, title) in [
+            ("run", "Run status"),
+            ("solver_version", "Solver version"),
+            ("material", "Fluid material"),
+            ("solver_settings", "Numerical controls"),
+            ("boundaries", "Boundary conditions"),
+            ("mesh_settings", "Meshing controls"),
+            ("mesh_recipe", "Meshing algorithms and refinement"),
+            ("spatial_methods", "Spatial discretization"),
+            ("mesh_preflight", "Mesh preflight"),
+            ("conservation", "Conservative mass balance"),
+        ] {
+            if let Some(value) = saved.get(key).filter(|v| !v.is_null()) {
+                out.push_str(&format!(
+                    "<h3>{title}</h3><pre>{}</pre>",
+                    escape(&serde_json::to_string_pretty(value).map_err(|e| e.to_string())?)
+                ));
             }
         }
-    } else {out.push_str("<p>Archived run settings unavailable. Current editable settings are not substituted for historical settings.</p>");}
-    let q=d.mesh().quality();
+    } else {
+        out.push_str("<p>Archived run settings unavailable. Current editable settings are not substituted for historical settings.</p>");
+    }
+    let q = d.mesh().quality();
     out.push_str(&format!("<h2>Result mesh quality</h2><table><tr><th>Metric</th><th>Value</th></tr><tr><td>Minimum cell measure</td><td>{:.7e}</td></tr><tr><td>Maximum cell measure</td><td>{:.7e}</td></tr><tr><td>Maximum aspect ratio</td><td>{:.7e}</td></tr><tr><td>Maximum non-orthogonality (degrees)</td><td>{:.4}</td></tr><tr><td>Centre-line displacement / centre distance</td><td>{:.7e}</td></tr></table>",q.min_cell_volume,q.max_cell_volume,q.max_aspect_ratio,q.max_non_orthogonality_degrees,q.max_skewness));
     out.push_str("<p>Cell measure is area in 2D and volume in 3D. Boundary flux and reconstructed cell divergence have different definitions. Zero boundary imbalance alone is insufficient evidence of convergence in a closed domain. Numerical convergence does not establish mesh or time-step independence.</p>");
     out.push_str("<h2>Recorded convergence</h2>");

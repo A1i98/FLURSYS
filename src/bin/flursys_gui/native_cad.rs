@@ -20,7 +20,7 @@ enum Reply {
     Published(
         String,
         i32,
-        Result<(flursys::GeometryTopology, String), String>,
+        Box<Result<(flursys::GeometryTopology, String), String>>,
     ),
     Unchanged(String, i32),
     Planes(
@@ -262,7 +262,7 @@ impl Gpu {
                 v: v(p.y),
                 enabled: false,
                 every: 10,
-                display:Default::default(),
+                display: Default::default(),
             });
         };
         for (name, plane) in [
@@ -287,17 +287,22 @@ impl Gpu {
         let selected = if self.app.dialog.is_some() || self.app.session.active_sketch.is_some() {
             None
         } else {
-            self.app.session.selection.iter().rev().find_map(|s| match s {
-                cad_engine::Sel::Plane { name } => planes
-                    .iter()
-                    .find(|p| p.name == *name)
-                    .map(|p| p.id.clone()),
-                cad_engine::Sel::Feature { id } => planes
-                    .iter()
-                    .find(|p| p.id == format!("datum-{id}") || p.id == format!("sketch-{id}"))
-                    .map(|p| p.id.clone()),
-                _ => None,
-            })
+            self.app
+                .session
+                .selection
+                .iter()
+                .rev()
+                .find_map(|s| match s {
+                    cad_engine::Sel::Plane { name } => planes
+                        .iter()
+                        .find(|p| p.name == *name)
+                        .map(|p| p.id.clone()),
+                    cad_engine::Sel::Feature { id } => planes
+                        .iter()
+                        .find(|p| p.id == format!("datum-{id}") || p.id == format!("sketch-{id}"))
+                        .map(|p| p.id.clone()),
+                    _ => None,
+                })
         };
         (planes, selected)
     }
@@ -469,8 +474,12 @@ fn worker(rx: Receiver<Request>, tx: SyncSender<Reply>) {
             gpu.app.dialog.is_some() || gpu.app.session.active_sketch.is_some(),
         );
         let evaluated_model = gpu.app.session.model.state();
-        if catalog_input.as_ref() != Some(&key) || catalog_model.as_ref().is_none_or(|old| !std::sync::Arc::ptr_eq(old,&evaluated_model)) {
-            catalog_model=Some(evaluated_model);
+        if catalog_input.as_ref() != Some(&key)
+            || catalog_model
+                .as_ref()
+                .is_none_or(|old| !std::sync::Arc::ptr_eq(old, &evaluated_model))
+        {
+            catalog_model = Some(evaluated_model);
             catalog_input = Some(key);
             let planes = gpu.plane_catalog();
             if catalog.as_ref() != Some(&planes) {
@@ -484,7 +493,11 @@ fn worker(rx: Receiver<Request>, tx: SyncSender<Reply>) {
             let hash = match model.host_geometry_hash() {
                 Ok(h) => h,
                 Err(e) => {
-                    let _ = tx.send(Reply::Published(project.clone(), step, Err(e.to_string())));
+                    let _ = tx.send(Reply::Published(
+                        project.clone(),
+                        step,
+                        Box::new(Err(e.to_string())),
+                    ));
                     continue;
                 }
             };
@@ -496,7 +509,7 @@ fn worker(rx: Receiver<Request>, tx: SyncSender<Reply>) {
                 let _ = tx.send(Reply::Unchanged(project.clone(), step));
             } else {
                 let result = gpu.geometry().map(|g| (g, hash));
-                let _ = tx.send(Reply::Published(project.clone(), step, result));
+                let _ = tx.send(Reply::Published(project.clone(), step, Box::new(result)));
             }
         }
     }
@@ -703,7 +716,7 @@ pub(super) fn bind(ui: &MainWindow, state: &Rc<RefCell<AppState>>) -> Timer {
                         state.mark_workbench_dirty();
                     }
                 }
-                Reply::Published(id, step, result) if id == project => match result {
+                Reply::Published(id, step, result) if id == project => match *result {
                     Ok((geometry, hash)) => {
                         // The native document is authoritative. Old topology IDs cannot be
                         // reassigned to a different shape's CFD groups by their integer alone.

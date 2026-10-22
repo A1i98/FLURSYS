@@ -174,10 +174,9 @@ pub(super) fn consume(ui: &MainWindow, state: &mut AppState) {
         2 => super::cad_axis::command(ui, state, 79),
         3 => assign_body(ui, state, false),
         4 => assign_body(ui, state, true),
-        5 => super::cad_axis::command(ui, state, 81).map(|message| {
+        5 => super::cad_axis::command(ui, state, 81).inspect(|_message| {
             ui.set_cad_pick_role(0);
             super::cad_properties::invalidate(ui, state);
-            message
         }),
         6 => assign_pocket_stop_face(ui, state),
         _ => return,

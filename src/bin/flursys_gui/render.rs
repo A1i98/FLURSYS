@@ -6,11 +6,11 @@ mod sketch_visual;
 use super::viewport::{Camera3d, View3d};
 use super::{residual_level, MeshColorMode, ResidualSample, PREVIEW_HEIGHT, PREVIEW_WIDTH};
 use flursys::{
-    BoundaryConditionKind, BoundaryFace, ExtrudedMesh3D, FieldUpdate,
-    GeometryPart, GeometryPartKind, GeometrySelectionTarget, GeometrySketch, GeometryTopology,
-    MeshDimension, MeshQualityMetric, MeshRenderCache, MeshSelection,
-    Project, ProjectCase, ResultFieldKind, ResultRenderCache, SketchAxis,
-    SketchEntityKind, StreamlinePath, StructuredMesh2D, UnstructuredMesh, Vec3, ViewTransform,
+    BoundaryConditionKind, BoundaryFace, ExtrudedMesh3D, FieldUpdate, GeometryPart,
+    GeometryPartKind, GeometrySelectionTarget, GeometrySketch, GeometryTopology, MeshDimension,
+    MeshQualityMetric, MeshRenderCache, MeshSelection, Project, ProjectCase, ResultFieldKind,
+    ResultRenderCache, SketchAxis, SketchEntityKind, StreamlinePath, StructuredMesh2D,
+    UnstructuredMesh, Vec3, ViewTransform,
 };
 use slint::{Image, Rgba8Pixel, SharedPixelBuffer};
 use std::collections::VecDeque;
@@ -143,7 +143,19 @@ pub(super) fn render_workbench_mesh(
     view_3d: View3d,
     clip: Option<super::mesh_inspection::MeshClip>,
 ) -> Image {
-    super::scene_view::mesh(mesh, cache, view, display_mode, color_mode, metric, selected, hovered, highlighted_patch, view_3d, clip)
+    super::scene_view::mesh(
+        mesh,
+        cache,
+        view,
+        display_mode,
+        color_mode,
+        metric,
+        selected,
+        hovered,
+        highlighted_patch,
+        view_3d,
+        clip,
+    )
 }
 
 /// Renders immutable archived or live unstructured result data. Surface values
@@ -165,21 +177,32 @@ pub(super) fn render_persisted_result(
     view_3d: View3d,
 ) -> Image {
     let (width, height) = (PREVIEW_WIDTH, PREVIEW_HEIGHT);
-    let mut pixels = super::scene_view::results(cache, field, colormap, plot, vector_density, vector_scale, display_range, view, streamlines, view_3d, edges, width, height);
-    if cache.mesh_cache().dimension() == MeshDimension::TwoD {
-        if matches!(plot, 1 | 2) {
-            draw_result_contours(
-                &mut pixels,
-                width,
-                height,
-                cache,
-                field,
-                view,
-                display_range,
-                levels,
-            );
-        }
-
+    let mut pixels = super::scene_view::results(
+        cache,
+        field,
+        colormap,
+        plot,
+        vector_density,
+        vector_scale,
+        display_range,
+        view,
+        streamlines,
+        view_3d,
+        edges,
+        width,
+        height,
+    );
+    if cache.mesh_cache().dimension() == MeshDimension::TwoD && matches!(plot, 1 | 2) {
+        draw_result_contours(
+            &mut pixels,
+            width,
+            height,
+            cache,
+            field,
+            view,
+            display_range,
+            levels,
+        );
     }
     draw_colormap_legend(&mut pixels, width, height, colormap);
     image_from_rgba(width, height, pixels)
@@ -201,182 +224,21 @@ fn render_persisted_pixels(
     streamlines: &[StreamlinePath],
     view_3d: View3d,
 ) -> Vec<u8> {
-    super::scene_view::results(cache, field, colormap, plot, vector_density, vector_scale, display_range, view, streamlines, view_3d, false, width, height)
-}
-
-fn draw_streamlines(
-    pixels: &mut [u8],
-    width: u32,
-    height: u32,
-    streamlines: &[StreamlinePath],
-    view: &ViewTransform,
-) {
-    for path in streamlines {
-        for pair in path.points.windows(2) {
-            let start = view.world_to_screen((pair[0].x, pair[0].y));
-            let end = view.world_to_screen((pair[1].x, pair[1].y));
-            draw_line(
-                pixels,
-                width,
-                height,
-                (start.0 as i32, start.1 as i32),
-                (end.0 as i32, end.1 as i32),
-                [255, 245, 157, 255],
-            );
-        }
-    }
-}
-
-fn draw_result_vectors(
-    pixels: &mut [u8],
-    width: u32,
-    height: u32,
-    cache: &ResultRenderCache,
-    view: &ViewTransform,
-    density: i32,
-    manual_scale: &str,
-) {
-    let mesh_cache = cache.mesh_cache();
-    let sample_stride = vector_sample_stride(cache.cell_count(), density);
-    let max_speed = (0..cache.cell_count())
-        .filter_map(|cell| cache.velocity_for_cell(cell))
-        .map(|velocity| velocity.norm())
-        .fold(0.0_f64, f64::max);
-    if max_speed <= f64::EPSILON {
-        return;
-    }
-    for cell in (0..cache.cell_count()).step_by(sample_stride) {
-        let (Some(polygon), Some(velocity)) =
-            (mesh_cache.cell_polygon(cell), cache.velocity_for_cell(cell))
-        else {
-            continue;
-        };
-        let summed_center = polygon
-            .iter()
-            .fold((0.0, 0.0), |sum, point| (sum.0 + point.0, sum.1 + point.1));
-        let center = (
-            summed_center.0 / polygon.len() as f64,
-            summed_center.1 / polygon.len() as f64,
-        );
-        let start = view.world_to_screen(center);
-        let scale =
-            (12.0 / view.pixels_per_unit) / max_speed * vector_scale_multiplier(manual_scale);
-        let end =
-            view.world_to_screen((center.0 + velocity.x * scale, center.1 + velocity.y * scale));
-        draw_line(
-            pixels,
-            width,
-            height,
-            (start.0 as i32, start.1 as i32),
-            (end.0 as i32, end.1 as i32),
-            [238, 246, 250, 255],
-        );
-        let dx = end.0 - start.0;
-        let dy = end.1 - start.1;
-        let length = dx.hypot(dy);
-        if length > 2.5 {
-            let angle = dy.atan2(dx);
-            let head = (length * 0.35).min(4.0);
-            for offset in [-0.5f64, 0.5] {
-                let tip = (
-                    end.0 - head * (angle + offset).cos(),
-                    end.1 - head * (angle + offset).sin(),
-                );
-                draw_line(
-                    pixels,
-                    width,
-                    height,
-                    (end.0 as i32, end.1 as i32),
-                    (tip.0 as i32, tip.1 as i32),
-                    [238, 246, 250, 255],
-                );
-            }
-        }
-    }
-}
-
-fn draw_result_vectors_3d(
-    pixels: &mut [u8],
-    width: u32,
-    height: u32,
-    cache: &ResultRenderCache,
-    density: i32,
-    manual_scale: &str,
-    view_3d: View3d,
-    depth_buffer: &[f64],
-) {
-    let camera = Camera3d::fit(cache.mesh_cache().positions().iter().copied(), view_3d);
-    let mesh_cache = cache.mesh_cache();
-    let samples: Vec<_> = mesh_cache
-        .surface_triangles()
-        .iter()
-        .zip(mesh_cache.triangle_faces())
-        .filter_map(|(&triangle, &face)| {
-            cache
-                .owner_for_face(face)
-                .and_then(|owner| cache.velocity_for_cell(owner))
-                .map(|velocity| (triangle, velocity))
-        })
-        .collect();
-    let max_speed = samples
-        .iter()
-        .map(|(_, velocity)| velocity.norm())
-        .fold(0.0_f64, f64::max);
-    if max_speed <= f64::EPSILON {
-        return;
-    }
-    let stride = vector_sample_stride(samples.len(), density);
-    for &(triangle, velocity) in samples.iter().step_by(stride) {
-        let positions = mesh_cache.positions();
-        let center = Vec3::new(
-            (positions[triangle[0]].x + positions[triangle[1]].x + positions[triangle[2]].x) / 3.0,
-            (positions[triangle[0]].y + positions[triangle[1]].y + positions[triangle[2]].y) / 3.0,
-            (positions[triangle[0]].z + positions[triangle[1]].z + positions[triangle[2]].z) / 3.0,
-        );
-        let scale = (mesh_cache.bounds().1 - mesh_cache.bounds().0).norm() * 0.08 / max_speed
-            * vector_scale_multiplier(manual_scale);
-        let start = camera.screen(center);
-        let (sx, sy) = (start.0.round() as i32, start.1.round() as i32);
-        if sx < 0 || sy < 0 || sx >= width as i32 || sy >= height as i32 {
-            continue;
-        }
-        if depth_buffer
-            .get(sy as usize * width as usize + sx as usize)
-            .is_some_and(|depth| camera.depth(&[center]) > *depth + 2.0 / camera.scale)
-        {
-            continue;
-        }
-        let end = camera.screen(center + velocity * scale);
-        draw_line(
-            pixels,
-            width,
-            height,
-            (start.0 as i32, start.1 as i32),
-            (end.0 as i32, end.1 as i32),
-            [238, 246, 250, 255],
-        );
-        let dx = end.0 - start.0;
-        let dy = end.1 - start.1;
-        let length = dx.hypot(dy);
-        if length > 2.5 {
-            let angle = dy.atan2(dx);
-            let head = (length * 0.35).min(4.0);
-            for offset in [-0.5f64, 0.5] {
-                let tip = (
-                    end.0 - head * (angle + offset).cos(),
-                    end.1 - head * (angle + offset).sin(),
-                );
-                draw_line(
-                    pixels,
-                    width,
-                    height,
-                    (end.0 as i32, end.1 as i32),
-                    (tip.0 as i32, tip.1 as i32),
-                    [238, 246, 250, 255],
-                );
-            }
-        }
-    }
+    super::scene_view::results(
+        cache,
+        field,
+        colormap,
+        plot,
+        vector_density,
+        vector_scale,
+        display_range,
+        view,
+        streamlines,
+        view_3d,
+        false,
+        width,
+        height,
+    )
 }
 
 pub(super) fn vector_sample_stride(cell_count: usize, density: i32) -> usize {
@@ -414,6 +276,7 @@ pub(super) fn result_screen_ray(
     }
 }
 
+#[cfg(test)]
 fn draw_filled_polygon(
     pixels: &mut [u8],
     width: u32,
@@ -735,72 +598,14 @@ pub(super) fn render_canonical_geometry_3d(
     hovered_target: Option<GeometrySelectionTarget>,
     display_mode: i32,
 ) -> Image {
-    super::scene_view::geometry(topology, view, pick_mode, selected_targets, hovered_target, display_mode)
-}
-
-fn draw_cad_curve(
-    pixels: &mut [u8],
-    depth: &[f64],
-    width: u32,
-    height: u32,
-    camera: &CanonicalCamera,
-    path: &[Vec3],
-    color: [u8; 4],
-) {
-    for segment in path.windows(2) {
-        let (a, b) = (camera.project(segment[0]), camera.project(segment[1]));
-        let (ax, ay) = (a.0 as f64, a.1 as f64);
-        let (dx, dy) = (b.0 as f64 - ax, b.1 as f64 - ay);
-        let (mut lo, mut hi) = (0.0f64, 1.0f64);
-        let mut visible = true;
-        for (p, q) in [
-            (-dx, ax),
-            (dx, width as f64 - 1.0 - ax),
-            (-dy, ay),
-            (dy, height as f64 - 1.0 - ay),
-        ] {
-            if p == 0.0 {
-                if q < 0.0 {
-                    visible = false;
-                    break;
-                }
-            } else {
-                let t = q / p;
-                if p < 0.0 {
-                    lo = lo.max(t);
-                } else {
-                    hi = hi.min(t);
-                }
-            }
-        }
-        if !visible || lo > hi {
-            continue;
-        }
-        let steps = (dx.abs().max(dy.abs()) * (hi - lo)).ceil().max(1.0) as usize;
-        let za = camera.depth(&segment[..1]);
-        let zb = camera.depth(&segment[1..]);
-        for i in 0..=steps {
-            let t = lo + (hi - lo) * i as f64 / steps as f64;
-            let (x, y) = ((ax + dx * t).round() as i32, (ay + dy * t).round() as i32);
-            if x < 0 || y < 0 || x >= width as i32 || y >= height as i32 {
-                continue;
-            }
-            // Keep topological edges one logical pixel wide at supersampled
-            // resolutions; otherwise downsampling makes wireframe dotted.
-            for oy in 0..camera.pixel_ratio() {
-                for ox in 0..camera.pixel_ratio() {
-                    let (px, py) = (x as usize + ox, y as usize + oy);
-                    if px >= width as usize || py >= height as usize {
-                        continue;
-                    }
-                    let index = py * width as usize + px;
-                    if za + (zb - za) * t <= depth[index] + 2.0 / camera.scale {
-                        pixels[index * 4..index * 4 + 4].copy_from_slice(&color);
-                    }
-                }
-            }
-        }
-    }
+    super::scene_view::geometry(
+        topology,
+        view,
+        pick_mode,
+        selected_targets,
+        hovered_target,
+        display_mode,
+    )
 }
 
 /// Builds the orthographic canonical CAD ray for a viewport point using the
@@ -810,14 +615,18 @@ pub(super) fn canonical_geometry_ray(
     view: View3d,
     point: (f64, f64),
 ) -> Option<flursys::Ray3> {
-    canonical_camera(topology,view)?.ray(point)
+    canonical_camera(topology, view)?.ray(point)
 }
 
 fn canonical_camera(topology: &GeometryTopology, view: View3d) -> Option<CanonicalCamera> {
-    let surfaces=topology.renderable_faces();
-    let paths=topology.cad_open_drawing_paths();
-    let points=surfaces.iter().flat_map(|s|s.vertices.iter().copied()).chain(paths.iter().flatten().copied()).collect::<Vec<_>>();
-    (!points.is_empty()).then(|| CanonicalCamera::fit(points,view))
+    let surfaces = topology.renderable_faces();
+    let paths = topology.cad_open_drawing_paths();
+    let points = surfaces
+        .iter()
+        .flat_map(|s| s.vertices.iter().copied())
+        .chain(paths.iter().flatten().copied())
+        .collect::<Vec<_>>();
+    (!points.is_empty()).then(|| CanonicalCamera::fit(points, view))
 }
 
 /// Frame the selected geometry without changing document visibility or history.
@@ -958,8 +767,11 @@ pub(super) fn pick_canonical_geometry_target(
     let camera = canonical_camera(topology, view)?;
     let ray = camera.ray(point)?;
     if mode == 3 {
-        let face=topology.pick_face(ray)?.face;
-        return topology.bodies().find(|body|body.faces.contains(&face)).map(|body|GeometrySelectionTarget::Body(body.id));
+        let face = topology.pick_face(ray)?.face;
+        return topology
+            .bodies()
+            .find(|body| body.faces.contains(&face))
+            .map(|body| GeometrySelectionTarget::Body(body.id));
     }
     if mode == 0 {
         return topology
@@ -1058,53 +870,6 @@ pub(super) fn canonical_edge_path(
                     })
                     .collect(),
             )
-        }
-    }
-}
-
-/// Depth-tested rasterization prevents curved CAD faces from painting through
-/// each other; depth is interpolated in the orthographic camera basis.
-fn draw_cad_triangle(
-    pixels: &mut [u8],
-    depth: &mut [f64],
-    width: u32,
-    height: u32,
-    triangle: [(f64, f64, f64); 3],
-    color: [u8; 4],
-) {
-    let [(ax, ay, az), (bx, by, bz), (cx, cy, cz)] = triangle;
-    let area = (by - cy) * (ax - cx) + (cx - bx) * (ay - cy);
-    if area.abs() < 1e-12 {
-        return;
-    }
-    let min_x = ax.min(bx).min(cx).floor().max(0.0) as u32;
-    let max_x = ax
-        .max(bx)
-        .max(cx)
-        .ceil()
-        .min(f64::from(width) - 1.0)
-        .max(0.0) as u32;
-    let min_y = ay.min(by).min(cy).floor().max(0.0) as u32;
-    let max_y = ay
-        .max(by)
-        .max(cy)
-        .ceil()
-        .min(f64::from(height) - 1.0)
-        .max(0.0) as u32;
-    for y in min_y..=max_y {
-        for x in min_x..=max_x {
-            let (px, py) = (f64::from(x) + 0.5, f64::from(y) + 0.5);
-            let a = ((by - cy) * (px - cx) + (cx - bx) * (py - cy)) / area;
-            let b = ((cy - ay) * (px - cx) + (ax - cx) * (py - cy)) / area;
-            let c = 1.0 - a - b;
-            if a >= -1e-9 && b >= -1e-9 && c >= -1e-9 {
-                let d = a * az + b * bz + c * cz;
-                let index = (y * width + x) as usize;
-                if d < depth[index] {
-                    depth[index] = d;
-                    pixels[index * 4..index * 4 + 4].copy_from_slice(&color);
-                }
-            }
         }
     }
 }
@@ -1764,6 +1529,7 @@ impl MeshCamera {
 const TRIAD_ORIGIN: (i32, i32) = (PREVIEW_WIDTH as i32 - 48, PREVIEW_HEIGHT as i32 - 48);
 #[cfg(test)]
 const TRIAD_LENGTH: f64 = 25.0;
+#[cfg(test)]
 const TRIAD_COLORS: [[u8; 4]; 3] = [[235, 91, 91, 255], [91, 210, 125, 255], [91, 144, 235, 255]];
 
 #[cfg(test)]
@@ -1793,54 +1559,111 @@ pub(super) fn pick_orientation_triad(point: (f64, f64), camera: MeshCamera) -> O
 
 // Six depth-ordered signed-axis handles share the viewport camera.
 // Coordinates come from the same yaw/pitch basis as the shared CAD camera.
-fn navigator_handles(yaw:f32,pitch:f32)->Vec<(i32,(i32,i32),f64)> {
-    let(yaw,pitch)=(f64::from(yaw),f64::from(pitch));
-    let mut handles=Vec::new();
-    for (axis,(x,y,z)) in [(1.,0.,0.),(0.,1.,0.),(0.,0.,1.)].into_iter().enumerate(){
-        for sign in [-1.,1.] {
-            let horizontal=sign*(x*yaw.cos()-y*yaw.sin());
-            let vertical=sign*(z*pitch.cos()+(x*yaw.sin()+y*yaw.cos())*pitch.sin());
-            let depth=sign*((x*yaw.sin()+y*yaw.cos())*pitch.cos()-z*pitch.sin());
-            handles.push((if sign>0.{axis as i32}else{axis as i32+4},((48.+horizontal*32.).round()as i32,(48.-vertical*32.).round()as i32),depth));
+fn navigator_handles(yaw: f32, pitch: f32) -> Vec<(i32, (i32, i32), f64)> {
+    let (yaw, pitch) = (f64::from(yaw), f64::from(pitch));
+    let mut handles = Vec::new();
+    for (axis, (x, y, z)) in [(1., 0., 0.), (0., 1., 0.), (0., 0., 1.)]
+        .into_iter()
+        .enumerate()
+    {
+        for sign in [-1., 1.] {
+            let horizontal = sign * (x * yaw.cos() - y * yaw.sin());
+            let vertical = sign * (z * pitch.cos() + (x * yaw.sin() + y * yaw.cos()) * pitch.sin());
+            let depth = sign * ((x * yaw.sin() + y * yaw.cos()) * pitch.cos() - z * pitch.sin());
+            handles.push((
+                if sign > 0. {
+                    axis as i32
+                } else {
+                    axis as i32 + 4
+                },
+                (
+                    (48. + horizontal * 32.).round() as i32,
+                    (48. - vertical * 32.).round() as i32,
+                ),
+                depth,
+            ));
         }
     }
-    handles.sort_by(|a,b|b.2.total_cmp(&a.2));handles
+    handles.sort_by(|a, b| b.2.total_cmp(&a.2));
+    handles
 }
-pub(super) fn render_orientation_overlay(yaw:f32,pitch:f32)->Image {
+pub(super) fn render_orientation_overlay(yaw: f32, pitch: f32) -> Image {
     // Supersample the compass while keeping its hit targets in logical 96px coordinates.
-    const S:i32=3;const W:u32=288;
-    let mut pixels=vec![0u8;(W*W*4) as usize];
-    for y in 0..288i32 {for x in 0..288i32 {
-        let r=((x-144) as f64).hypot((y-144) as f64)/3.;
-        if r<=46.5 {let c=if r>45.8 {[72,80,96,190]}else{[38,44,55,125]};
-            let i=(y as usize*288+x as usize)*4;pixels[i..i+4].copy_from_slice(&c);
-        }
-    }}
-    for(axis,p,_)in navigator_handles(yaw,pitch){
-        let c=match axis {0|4=>[244,91,112,255],1|5=>[111,212,122,255],_=>[70,117,244,255]};
-        let p=(p.0*S,p.1*S);
-        draw_line(&mut pixels,W,W,(144,144),p,c);
-        let radius=if axis<3 {9*S}else{8*S};
-        for dy in -radius..=radius {for dx in -radius..=radius {if dx*dx+dy*dy<=radius*radius {
-            let(x,y)=(p.0+dx,p.1+dy);if (0..288).contains(&x)&&(0..288).contains(&y){
-                let i=(y as usize*288+x as usize)*4;
-                let edge=dx*dx+dy*dy>=(radius-3)*(radius-3);
-                pixels[i..i+4].copy_from_slice(&if axis<3||edge{c}else{[39,45,57,255]});
+    const S: i32 = 3;
+    const W: u32 = 288;
+    let mut pixels = vec![0u8; (W * W * 4) as usize];
+    for y in 0..288i32 {
+        for x in 0..288i32 {
+            let r = ((x - 144) as f64).hypot((y - 144) as f64) / 3.;
+            if r <= 46.5 {
+                let c = if r > 45.8 {
+                    [72, 80, 96, 190]
+                } else {
+                    [38, 44, 55, 125]
+                };
+                let i = (y as usize * 288 + x as usize) * 4;
+                pixels[i..i + 4].copy_from_slice(&c);
             }
-        }}}
-        let ink=if axis<3{[250,252,255,255]}else{c};let(x,y)=(p.0-3*S,p.1-4*S);
-        let strokes:&[((i32,i32),(i32,i32))]=match axis%4 {
-            0=>&[((0,0),(6,8)),((6,0),(0,8))],
-            1=>&[((0,0),(3,4)),((6,0),(3,4)),((3,4),(3,8))],
-            _=>&[((0,0),(6,0)),((6,0),(0,8)),((0,8),(6,8))]
-        };
-        for(a,b)in strokes{for offset in -1..=1{draw_line(&mut pixels,W,W,(x+a.0*S+offset,y+a.1*S),(x+b.0*S+offset,y+b.1*S),ink);}}
+        }
     }
-    image_from_rgba(W,W,pixels)
+    for (axis, p, _) in navigator_handles(yaw, pitch) {
+        let c = match axis {
+            0 | 4 => [244, 91, 112, 255],
+            1 | 5 => [111, 212, 122, 255],
+            _ => [70, 117, 244, 255],
+        };
+        let p = (p.0 * S, p.1 * S);
+        draw_line(&mut pixels, W, W, (144, 144), p, c);
+        let radius = if axis < 3 { 9 * S } else { 8 * S };
+        for dy in -radius..=radius {
+            for dx in -radius..=radius {
+                if dx * dx + dy * dy <= radius * radius {
+                    let (x, y) = (p.0 + dx, p.1 + dy);
+                    if (0..288).contains(&x) && (0..288).contains(&y) {
+                        let i = (y as usize * 288 + x as usize) * 4;
+                        let edge = dx * dx + dy * dy >= (radius - 3) * (radius - 3);
+                        pixels[i..i + 4].copy_from_slice(&if axis < 3 || edge {
+                            c
+                        } else {
+                            [39, 45, 57, 255]
+                        });
+                    }
+                }
+            }
+        }
+        let ink = if axis < 3 { [250, 252, 255, 255] } else { c };
+        let (x, y) = (p.0 - 3 * S, p.1 - 4 * S);
+        let strokes: &[((i32, i32), (i32, i32))] = match axis % 4 {
+            0 => &[((0, 0), (6, 8)), ((6, 0), (0, 8))],
+            1 => &[((0, 0), (3, 4)), ((6, 0), (3, 4)), ((3, 4), (3, 8))],
+            _ => &[((0, 0), (6, 0)), ((6, 0), (0, 8)), ((0, 8), (6, 8))],
+        };
+        for (a, b) in strokes {
+            for offset in -1..=1 {
+                draw_line(
+                    &mut pixels,
+                    W,
+                    W,
+                    (x + a.0 * S + offset, y + a.1 * S),
+                    (x + b.0 * S + offset, y + b.1 * S),
+                    ink,
+                );
+            }
+        }
+    }
+    image_from_rgba(W, W, pixels)
 }
-pub(super) fn pick_orientation_overlay(yaw:f32,pitch:f32,x:f32,y:f32)->Option<i32>{
-    if !x.is_finite()||!y.is_finite(){return None;}
-    navigator_handles(yaw,pitch).into_iter().rev().find(|(_,p,_)|(f64::from(x)-f64::from(p.0)).hypot(f64::from(y)-f64::from(p.1))<=10.).map(|h|h.0)
+pub(super) fn pick_orientation_overlay(yaw: f32, pitch: f32, x: f32, y: f32) -> Option<i32> {
+    if !x.is_finite() || !y.is_finite() {
+        return None;
+    }
+    navigator_handles(yaw, pitch)
+        .into_iter()
+        .rev()
+        .find(|(_, p, _)| {
+            (f64::from(x) - f64::from(p.0)).hypot(f64::from(y) - f64::from(p.1)) <= 10.
+        })
+        .map(|h| h.0)
 }
 
 #[cfg(test)]
@@ -3082,6 +2905,103 @@ pub(super) fn image_from_rgba(width: u32, height: u32, pixels: Vec<u8>) -> Image
     Image::from_rgba8(buffer)
 }
 
+/// Display-only contour reconstruction; stored cell data is never modified.
+fn draw_result_contours(
+    pixels: &mut [u8],
+    width: u32,
+    height: u32,
+    cache: &ResultRenderCache,
+    field: ResultFieldKind,
+    view: &ViewTransform,
+    range: Option<(f64, f64)>,
+    levels: usize,
+) {
+    let values = (0..cache.cell_count())
+        .map(|c| cache.scalar_for_cell(field, c).unwrap_or(0.0))
+        .collect::<Vec<_>>();
+    let (lo, hi) = range.unwrap_or_else(|| scalar_range(&values, false));
+    if hi.partial_cmp(&lo) != Some(std::cmp::Ordering::Greater)
+        || values.iter().all(|v| *v == values[0])
+    {
+        return;
+    }
+    let mut nodes = std::collections::HashMap::<(u64, u64), (f64, usize)>::new();
+    for (i, v) in values.iter().enumerate() {
+        if let Some(poly) = cache.mesh_cache().cell_polygon(i) {
+            for &(x, y) in poly {
+                let a = nodes.entry((x.to_bits(), y.to_bits())).or_default();
+                a.0 += v;
+                a.1 += 1;
+            }
+        }
+    }
+    for (i, &v) in values.iter().enumerate() {
+        let Some(poly) = cache.mesh_cache().cell_polygon(i) else {
+            continue;
+        };
+        if poly.len() < 3 {
+            continue;
+        }
+        let center = (
+            poly.iter().map(|p| p.0).sum::<f64>() / poly.len() as f64,
+            poly.iter().map(|p| p.1).sum::<f64>() / poly.len() as f64,
+        );
+        for j in 0..poly.len() {
+            let (a, b) = (poly[j], poly[(j + 1) % poly.len()]);
+            let value = |p: (f64, f64)| {
+                let n = nodes[&(p.0.to_bits(), p.1.to_bits())];
+                n.0 / n.1 as f64
+            };
+            let triangle = [(center, v), (a, value(a)), (b, value(b))];
+            for level in 1..levels.clamp(3, 32) {
+                let iso = lo + (hi - lo) * level as f64 / levels as f64;
+                let mut intersections = Vec::with_capacity(2);
+                for k in 0..3 {
+                    let ((a, va), (b, vb)) = (triangle[k], triangle[(k + 1) % 3]);
+                    if (va < iso && vb >= iso) || (vb < iso && va >= iso) {
+                        let t = (iso - va) / (vb - va);
+                        intersections.push(
+                            view.world_to_screen((a.0 + (b.0 - a.0) * t, a.1 + (b.1 - a.1) * t)),
+                        );
+                    }
+                }
+                if intersections.len() == 2 {
+                    let (a, b) = (intersections[0], intersections[1]);
+                    draw_line(
+                        pixels,
+                        width,
+                        height,
+                        (a.0 as i32, a.1 as i32),
+                        (b.0 as i32, b.1 as i32),
+                        [26, 39, 48, 255],
+                    );
+                }
+            }
+        }
+    }
+}
+
+pub(super) fn overlay_markers(image: Image, points: &[(f64, f64)], view: &ViewTransform) -> Image {
+    let Some(buffer) = image.to_rgba8() else {
+        return image;
+    };
+    let (w, h) = (buffer.width(), buffer.height());
+    let mut pixels = buffer.as_bytes().to_vec();
+    for &point in points {
+        let p = view.world_to_screen(point);
+        draw_ellipse(
+            &mut pixels,
+            w,
+            h,
+            (p.0 as i32, p.1 as i32),
+            3,
+            3,
+            [255, 248, 207, 255],
+        );
+    }
+    image_from_rgba(w, h, pixels)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3367,8 +3287,12 @@ mod tests {
             (screen.1.round() as usize * PREVIEW_WIDTH as usize + screen.0.round() as usize) * 4;
         let mesh_scale = image.width() as f64 / PREVIEW_WIDTH as f64;
         let mesh_offset = ((screen.1 * mesh_scale).round() as usize * image.width() as usize
-            + (screen.0 * mesh_scale).round() as usize) * 4;
-        assert_eq!(&image.as_bytes()[mesh_offset..mesh_offset + 4], &[255, 214, 95, 255]);
+            + (screen.0 * mesh_scale).round() as usize)
+            * 4;
+        assert_eq!(
+            &image.as_bytes()[mesh_offset..mesh_offset + 4],
+            &[255, 214, 95, 255]
+        );
         let dataset = ResultDataset::from_values(
             "3d-camera",
             &mesh,
@@ -3529,99 +3453,4 @@ mod tests {
         assert_eq!(vector_scale_multiplier("nan"), 1.0);
         assert_eq!(vector_scale_multiplier("100"), 5.0);
     }
-}
-
-/// Display-only contour reconstruction; stored cell data is never modified.
-fn draw_result_contours(
-    pixels: &mut [u8],
-    width: u32,
-    height: u32,
-    cache: &ResultRenderCache,
-    field: ResultFieldKind,
-    view: &ViewTransform,
-    range: Option<(f64, f64)>,
-    levels: usize,
-) {
-    let values = (0..cache.cell_count())
-        .map(|c| cache.scalar_for_cell(field, c).unwrap_or(0.0))
-        .collect::<Vec<_>>();
-    let (lo, hi) = range.unwrap_or_else(|| scalar_range(&values, false));
-    if !(hi > lo) || values.iter().all(|v| *v == values[0]) {
-        return;
-    }
-    let mut nodes = std::collections::HashMap::<(u64, u64), (f64, usize)>::new();
-    for (i, v) in values.iter().enumerate() {
-        if let Some(poly) = cache.mesh_cache().cell_polygon(i) {
-            for &(x, y) in poly {
-                let a = nodes.entry((x.to_bits(), y.to_bits())).or_default();
-                a.0 += v;
-                a.1 += 1;
-            }
-        }
-    }
-    for (i, &v) in values.iter().enumerate() {
-        let Some(poly) = cache.mesh_cache().cell_polygon(i) else {
-            continue;
-        };
-        if poly.len() < 3 {
-            continue;
-        }
-        let center = (
-            poly.iter().map(|p| p.0).sum::<f64>() / poly.len() as f64,
-            poly.iter().map(|p| p.1).sum::<f64>() / poly.len() as f64,
-        );
-        for j in 0..poly.len() {
-            let (a, b) = (poly[j], poly[(j + 1) % poly.len()]);
-            let value = |p: (f64, f64)| {
-                let n = nodes[&(p.0.to_bits(), p.1.to_bits())];
-                n.0 / n.1 as f64
-            };
-            let triangle = [(center, v), (a, value(a)), (b, value(b))];
-            for level in 1..levels.clamp(3, 32) {
-                let iso = lo + (hi - lo) * level as f64 / levels as f64;
-                let mut intersections = Vec::with_capacity(2);
-                for k in 0..3 {
-                    let ((a, va), (b, vb)) = (triangle[k], triangle[(k + 1) % 3]);
-                    if (va < iso && vb >= iso) || (vb < iso && va >= iso) {
-                        let t = (iso - va) / (vb - va);
-                        intersections.push(
-                            view.world_to_screen((a.0 + (b.0 - a.0) * t, a.1 + (b.1 - a.1) * t)),
-                        );
-                    }
-                }
-                if intersections.len() == 2 {
-                    let (a, b) = (intersections[0], intersections[1]);
-                    draw_line(
-                        pixels,
-                        width,
-                        height,
-                        (a.0 as i32, a.1 as i32),
-                        (b.0 as i32, b.1 as i32),
-                        [26, 39, 48, 255],
-                    );
-                }
-            }
-        }
-    }
-}
-
-pub(super) fn overlay_markers(image: Image, points: &[(f64, f64)], view: &ViewTransform) -> Image {
-    let Some(buffer) = image.to_rgba8() else {
-        return image;
-    };
-    let (w, h) = (buffer.width(), buffer.height());
-    let mut pixels = buffer.as_bytes().to_vec();
-    for &point in points {
-        let p = view.world_to_screen(point);
-        draw_ellipse(
-            &mut pixels,
-            w,
-            h,
-            (p.0 as i32, p.1 as i32),
-            3,
-            3,
-            [255, 248, 207, 255],
-        );
-    }
-    image_from_rgba(w, h, pixels)
 }

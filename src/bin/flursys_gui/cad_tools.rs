@@ -55,8 +55,8 @@ fn activate(ui: &MainWindow, state: &mut AppState, action: i32) {
         return;
     };
     if state.cad_job.is_some()
-        || super::cad::preview(&state).is_some()
-        || super::sketch_edit::valid(&state).is_some()
+        || super::cad::preview(state).is_some()
+        || super::sketch_edit::valid(state).is_some()
         || state.face_sketch_host.is_some()
     {
         ui.set_cad_feedback(

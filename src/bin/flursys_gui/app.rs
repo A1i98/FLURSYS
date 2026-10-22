@@ -25,14 +25,14 @@ use std::time::Duration;
 #[cfg(test)]
 use flursys::{ExtrudedMesh3D, StructuredMesh2D};
 
+#[path = "convergence_plot.rs"]
+mod convergence_plot;
+#[path = "plane_monitors.rs"]
+mod plane_monitors;
 #[path = "post_processing.rs"]
 mod post_processing;
 #[path = "result_activation.rs"]
 mod result_activation;
-#[path = "plane_monitors.rs"]
-mod plane_monitors;
-#[path = "convergence_plot.rs"]
-mod convergence_plot;
 #[path = "result_analysis.rs"]
 mod result_analysis;
 
@@ -57,31 +57,31 @@ mod cad_tools;
 mod cad_tree;
 #[path = "cad_units.rs"]
 mod cad_units;
-#[path = "thermal_setup.rs"]
-mod thermal_setup;
-#[path="time_boundary_setup.rs"]
-mod time_boundary_setup;
-#[path="cyclic_setup.rs"]
+#[path = "cyclic_setup.rs"]
 mod cyclic_setup;
-#[path="volume_setup.rs"]
-mod volume_setup;
-#[path="equation_setup.rs"]
+#[path = "drawing.rs"]
+mod drawing;
+#[path = "equation_setup.rs"]
 mod equation_setup;
 #[path = "flow_setup.rs"]
 mod flow_setup;
 #[path = "measure.rs"]
 mod measure;
-#[path = "mesh_setup.rs"]
-mod mesh_setup;
 #[path = "mesh_controls.rs"]
 mod mesh_controls;
-mod preferences;
 #[path = "mesh_inspection.rs"]
 mod mesh_inspection;
+#[path = "mesh_setup.rs"]
+mod mesh_setup;
+mod preferences;
 #[path = "sketch_edit.rs"]
 mod sketch_edit;
-#[path = "drawing.rs"]
-mod drawing;
+#[path = "thermal_setup.rs"]
+mod thermal_setup;
+#[path = "time_boundary_setup.rs"]
+mod time_boundary_setup;
+#[path = "volume_setup.rs"]
+mod volume_setup;
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum WorkspaceSaveRoute {
     Existing(PathBuf),
@@ -262,7 +262,7 @@ struct AppState {
     /// panels; new workspace save/load routes through this document only.
     workbench_project: WorkbenchProject,
     workspace_path: Option<PathBuf>,
-    saved_mesh_copies: BTreeMap<(PathBuf,u64,String),String>,
+    saved_mesh_copies: BTreeMap<(PathBuf, u64, String), String>,
     cad_reload_generation: u64,
     active_plane_recording_folder: Option<PathBuf>,
     workbench_dirty: bool,
@@ -734,7 +734,14 @@ impl AppState {
                     if current == 1 || current == max || current % 10 == 0 {
                         self.log(format!(
                             "Solve {} {current}/{max}, continuity {:.3e}.",
-                            if matches!(self.workbench.solver_options().time,flursys::unstructured_incompressible::TimeIntegration::Steady){"iteration"}else{"physical step"},
+                            if matches!(
+                                self.workbench.solver_options().time,
+                                flursys::unstructured_incompressible::TimeIntegration::Steady
+                            ) {
+                                "iteration"
+                            } else {
+                                "physical step"
+                            },
                             residual.unwrap_or(f64::NAN)
                         ));
                         changed = true;
@@ -753,18 +760,33 @@ impl AppState {
                     self.post.continuity_full.push(values[0]);
                     changed = true;
                 }
-                WorkbenchJobEvent::SolveProgress(JobProgress::Message(message))=>{self.log(message);changed=true;}
+                WorkbenchJobEvent::SolveProgress(JobProgress::Message(message)) => {
+                    self.log(message);
+                    changed = true;
+                }
                 WorkbenchJobEvent::SolveProgress(JobProgress::Cancelled) => {
                     self.solving = false;
                     self.log("Solve cancellation requested.");
                     changed = true;
                 }
-                WorkbenchJobEvent::WallReports{iteration,physical_time,reports}=>{self.post.wall_report_index=Some(iteration);self.post.wall_report_time=physical_time;self.post.wall_reports=reports;changed=true;}
+                WorkbenchJobEvent::WallReports {
+                    iteration,
+                    physical_time,
+                    reports,
+                } => {
+                    self.post.wall_report_index = Some(iteration);
+                    self.post.wall_report_time = physical_time;
+                    self.post.wall_reports = reports;
+                    changed = true;
+                }
                 WorkbenchJobEvent::PlaneSample(snapshot) => {
-                    self.post.plane_samples.insert(snapshot.plane.id.clone(),snapshot);changed=true;
+                    self.post
+                        .plane_samples
+                        .insert(snapshot.plane.id.clone(), snapshot);
+                    changed = true;
                 }
                 WorkbenchJobEvent::SolveCompleted(outcome) => {
-                    let plane_samples=std::mem::take(&mut self.post.plane_samples);
+                    let plane_samples = std::mem::take(&mut self.post.plane_samples);
                     self.solving = false;
                     self.post.finish_solve();
                     match &outcome {
@@ -791,7 +813,7 @@ impl AppState {
                     if let Err(error) = self.persist_completed_workbench_run() {
                         self.log(format!("Could not persist workbench run: {error}"));
                     }
-                    self.post.plane_samples=plane_samples;
+                    self.post.plane_samples = plane_samples;
                     self.tree_dirty = true;
                     changed = true;
                 }
@@ -817,7 +839,9 @@ impl AppState {
         document.cad_document = self.workbench_project.cad_document.clone();
         document.cad_geometry_hash = self.workbench_project.cad_geometry_hash.clone();
         document.plane_monitors = self.workbench_project.plane_monitors.clone();
-        if self.workbench.has_mesh() {document.mesh_asset=self.workbench_project.mesh_asset.clone();}
+        if self.workbench.has_mesh() {
+            document.mesh_asset = self.workbench_project.mesh_asset.clone();
+        }
         self.workbench_project = document;
     }
 
@@ -827,15 +851,26 @@ impl AppState {
         self.sync_workbench_project();
     }
 
-    fn persist_workbench_mesh(&mut self,workspace:&Path)->Result<(),String>{
-        let Some(generated)=self.workbench.mesh() else {self.workbench_project.mesh_asset=None;return Ok(())};
-        let intent=flursys::workbench::mesh_storage::intent(&self.workbench_project)?;
-        let key=(workspace.to_path_buf(),generated.mesh.id().get(),intent);
-        if let Some(asset)=self.saved_mesh_copies.get(&key).filter(|asset|workspace.join("meshes").join(format!("{asset}.json")).is_file()) {
-            self.workbench_project.mesh_asset=Some(asset.clone());return Ok(());
+    fn persist_workbench_mesh(&mut self, workspace: &Path) -> Result<(), String> {
+        let Some(generated) = self.workbench.mesh() else {
+            self.workbench_project.mesh_asset = None;
+            return Ok(());
+        };
+        let intent = flursys::workbench::mesh_storage::intent(&self.workbench_project)?;
+        let key = (workspace.to_path_buf(), generated.mesh.id().get(), intent);
+        if let Some(asset) = self.saved_mesh_copies.get(&key).filter(|asset| {
+            workspace
+                .join("meshes")
+                .join(format!("{asset}.json"))
+                .is_file()
+        }) {
+            self.workbench_project.mesh_asset = Some(asset.clone());
+            return Ok(());
         }
-        let asset=flursys::workbench::mesh_storage::save(workspace,&self.workbench_project,generated)?;
-        self.workbench_project.mesh_asset=Some(asset.clone());self.saved_mesh_copies.insert(key,asset);
+        let asset =
+            flursys::workbench::mesh_storage::save(workspace, &self.workbench_project, generated)?;
+        self.workbench_project.mesh_asset = Some(asset.clone());
+        self.saved_mesh_copies.insert(key, asset);
         Ok(())
     }
 
@@ -875,20 +910,24 @@ impl AppState {
         let document = flursys::load_workspace(&workspace).map_err(|error| error.to_string())?;
         let mut session =
             WorkbenchSession::from_project(&document).map_err(|error| error.to_string())?;
-        match flursys::workbench::mesh_storage::restore(&workspace,&document,&mut session) {
-            Ok(true)=>self.log("Saved mesh restored with boundary groups; Gmsh regeneration is not required."),
-            Ok(false)=>{},
-            Err(error)=>self.log(format!("Project opened without saved mesh: {error}. Regenerate the mesh.")),
+        match flursys::workbench::mesh_storage::restore(&workspace, &document, &mut session) {
+            Ok(true) => self.log(
+                "Saved mesh restored with boundary groups; Gmsh regeneration is not required.",
+            ),
+            Ok(false) => {}
+            Err(error) => self.log(format!(
+                "Project opened without saved mesh: {error}. Regenerate the mesh."
+            )),
         }
         let recovery_available =
             flursys::workbench::recovery_is_newer(&workspace).map_err(|error| error.to_string())?;
         self.cad_reload_generation = self.cad_reload_generation.wrapping_add(1);
-        self.current_step=0;
-        self.show_mesh=false;
+        self.current_step = 0;
+        self.show_mesh = false;
         self.workbench_project = document;
         self.workbench = session;
         self.workbench_jobs.set_restart(None);
-        self.active_plane_recording_folder=None;
+        self.active_plane_recording_folder = None;
         self.workspace_path = Some(workspace.clone());
         self.face_sketch_host = None;
         self.face_sketch_start = None;
@@ -932,18 +971,22 @@ impl AppState {
             .map_err(|error| error.to_string())?;
         let mut session =
             WorkbenchSession::from_project(&document).map_err(|error| error.to_string())?;
-        match flursys::workbench::mesh_storage::restore(&workspace,&document,&mut session) {
-            Ok(true)=>self.log("Saved mesh restored with boundary groups; Gmsh regeneration is not required."),
-            Ok(false)=>{},
-            Err(error)=>self.log(format!("Project opened without saved mesh: {error}. Regenerate the mesh.")),
+        match flursys::workbench::mesh_storage::restore(&workspace, &document, &mut session) {
+            Ok(true) => self.log(
+                "Saved mesh restored with boundary groups; Gmsh regeneration is not required.",
+            ),
+            Ok(false) => {}
+            Err(error) => self.log(format!(
+                "Project opened without saved mesh: {error}. Regenerate the mesh."
+            )),
         }
         self.cad_reload_generation = self.cad_reload_generation.wrapping_add(1);
-        self.current_step=0;
-        self.show_mesh=false;
+        self.current_step = 0;
+        self.show_mesh = false;
         self.workbench_project = document;
         self.workbench = session;
         self.workbench_jobs.set_restart(None);
-        self.active_plane_recording_folder=None;
+        self.active_plane_recording_folder = None;
         self.workspace_path = Some(workspace);
         self.face_sketch_host = None;
         self.face_sketch_start = None;
@@ -985,11 +1028,21 @@ impl AppState {
         )
         .map_err(|error| error.to_string())?;
         if let Some(record) = finalized {
-            if let Some(folder)=self.active_plane_recording_folder.take().and_then(|p|p.strip_prefix(&workspace).ok().map(Path::to_path_buf)) {
-                let path=workspace.join(&record.report_path);
-                let mut report:serde_json::Value=serde_json::from_slice(&std::fs::read(&path).map_err(|e|e.to_string())?).map_err(|e|e.to_string())?;
-                report["plane_recording_folder"]=serde_json::to_value(folder).map_err(|e|e.to_string())?;
-                result_analysis::atomic_text(&path,&serde_json::to_string_pretty(&report).map_err(|e|e.to_string())?)?;
+            if let Some(folder) = self
+                .active_plane_recording_folder
+                .take()
+                .and_then(|p| p.strip_prefix(&workspace).ok().map(Path::to_path_buf))
+            {
+                let path = workspace.join(&record.report_path);
+                let mut report: serde_json::Value =
+                    serde_json::from_slice(&std::fs::read(&path).map_err(|e| e.to_string())?)
+                        .map_err(|e| e.to_string())?;
+                report["plane_recording_folder"] =
+                    serde_json::to_value(folder).map_err(|e| e.to_string())?;
+                result_analysis::atomic_text(
+                    &path,
+                    &serde_json::to_string_pretty(&report).map_err(|e| e.to_string())?,
+                )?;
             }
             if record.solution_path.is_some() {
                 self.activate_current_solution(&record.id)?;
@@ -1118,8 +1171,12 @@ impl AppState {
         if let Some(record) = self.workbench_project.runs.iter().find(|r| r.id == run_id) {
             if let Ok(text) = std::fs::read_to_string(workspace.join(&record.report_path)) {
                 if let Ok(report) = serde_json::from_str::<serde_json::Value>(&text) {
-                    self.post.wall_report_index=record.iterations;self.post.wall_report_time=record.physical_time;
-                    self.post.wall_reports=report.get("wall_reports").and_then(|v|serde_json::from_value(v.clone()).ok()).unwrap_or_default();
+                    self.post.wall_report_index = record.iterations;
+                    self.post.wall_report_time = record.physical_time;
+                    self.post.wall_reports = report
+                        .get("wall_reports")
+                        .and_then(|v| serde_json::from_value(v.clone()).ok())
+                        .unwrap_or_default();
                     if let Some(v) = report.get("boundary_flow_reports") {
                         if let Ok(reports) = serde_json::from_value::<
                             Vec<flursys::workbench::boundary_reports::BoundaryFlowReport>,
@@ -1127,8 +1184,14 @@ impl AppState {
                         {
                             self.post.boundary_summary =
                                 result_analysis::boundary_summary(&reports);
-                            if let Some(balance)=report.get("conservation").and_then(|v|serde_json::from_value::<flursys::workbench::boundary_reports::ConservationReport>(v.clone()).ok()) {
-                                self.post.boundary_summary=balance.summary()+"\n\n"+&self.post.boundary_summary;
+                            if let Some(balance) = report.get("conservation").and_then(|v| {
+                                serde_json::from_value::<
+                                    flursys::workbench::boundary_reports::ConservationReport,
+                                >(v.clone())
+                                .ok()
+                            }) {
+                                self.post.boundary_summary =
+                                    balance.summary() + "\n\n" + &self.post.boundary_summary;
                             }
                             self.post.boundary_reports = reports;
                         }
@@ -1942,7 +2005,9 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
     let weak = ui.as_weak();
     let shared = state.clone();
     ui.on_apply_fluid_material(move |density, viscosity| {
-        let Some(ui) = weak.upgrade() else { return false; };
+        let Some(ui) = weak.upgrade() else {
+            return false;
+        };
         let mut state = shared.borrow_mut();
         if state.meshing || state.solving {
             ui.set_material_dialog_feedback("Wait for the running job to finish.".into());
@@ -1950,7 +2015,7 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
         }
         let density = parse_number(density.as_str(), f64::NAN);
         let viscosity = parse_number(viscosity.as_str(), f64::NAN);
-        if let Err(error) = thermal_setup::apply(&ui,&mut state.workbench,density,viscosity) {
+        if let Err(error) = thermal_setup::apply(&ui, &mut state.workbench, density, viscosity) {
             ui.set_material_dialog_feedback(error.to_string().into());
             return false;
         }
@@ -1962,14 +2027,14 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
         refresh_ui(&ui, &state);
         true
     });
-    thermal_setup::bind(ui,state);
-    time_boundary_setup::bind(ui,state);
-    equation_setup::bind(ui,state);
-    volume_setup::bind(ui,state);
-    cyclic_setup::bind(ui,state);
+    thermal_setup::bind(ui, state);
+    time_boundary_setup::bind(ui, state);
+    equation_setup::bind(ui, state);
+    volume_setup::bind(ui, state);
+    cyclic_setup::bind(ui, state);
     post_processing::bind(ui, state);
-    convergence_plot::bind(ui,state);
-    plane_monitors::bind(ui,state);
+    convergence_plot::bind(ui, state);
+    plane_monitors::bind(ui, state);
     viewport::bind(ui, state);
     drawing::bind(ui, state);
     // ---- Phase 9D stable geometry editor ----
@@ -3003,18 +3068,25 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
         let workspace = if let Some(path) = selected {
             if flursys::is_legacy_project_path(&path) {
                 let mut state = open_native_state.borrow_mut();
-                if let Err(error) = state.queue_legacy_import(path) { state.log(error); }
+                if let Err(error) = state.queue_legacy_import(path) {
+                    state.log(error);
+                }
                 refresh_ui(&ui, &state);
                 return;
             }
             match workspace_from_project_file(&path) {
                 Ok(folder) => folder,
                 Err(error) => {
-                    let mut state=open_native_state.borrow_mut();state.log(error);refresh_ui(&ui,&state);return;
+                    let mut state = open_native_state.borrow_mut();
+                    state.log(error);
+                    refresh_ui(&ui, &state);
+                    return;
                 }
             }
         } else {
-            let Some(folder)=choose_workspace_folder("Open FLURSYS Workspace") else{return;};
+            let Some(folder) = choose_workspace_folder("Open FLURSYS Workspace") else {
+                return;
+            };
             folder
         };
         let replacement = PendingProjectReplacement::OpenWorkspace(workspace);
@@ -3891,16 +3963,26 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
             TREE_KIND_MESH_CONTROL => {
                 apply_workflow_step(&ui, &mut state, 1);
                 ui.set_mesh_task(3);
-                if let Err(error)=mesh_controls::edit(&ui,&mut state,row.payload,0) {state.log(error);}
-                state.selected_tree=Some(TreeSelection{kind:TREE_KIND_MESH_CONTROL,payload:row.payload});
+                if let Err(error) = mesh_controls::edit(&ui, &mut state, row.payload, 0) {
+                    state.log(error);
+                }
+                state.selected_tree = Some(TreeSelection {
+                    kind: TREE_KIND_MESH_CONTROL,
+                    payload: row.payload,
+                });
             }
             TREE_KIND_MESH_PANEL => {
                 apply_workflow_step(&ui, &mut state, 1);
                 ui.set_mesh_task(row.payload);
                 state.show_mesh = state.workbench.has_mesh();
                 state.show_geometry_3d = !state.show_mesh;
-                if row.payload==2 {state.mesh_color_mode=MeshColorMode::Quality;}
-                state.selected_tree=Some(TreeSelection{kind:TREE_KIND_MESH_PANEL,payload:row.payload});
+                if row.payload == 2 {
+                    state.mesh_color_mode = MeshColorMode::Quality;
+                }
+                state.selected_tree = Some(TreeSelection {
+                    kind: TREE_KIND_MESH_PANEL,
+                    payload: row.payload,
+                });
             }
 
             TREE_KIND_INERT => {
@@ -4166,8 +4248,8 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
         }
     });
 
-    mesh_controls::bind(ui, &state);
-    mesh_inspection::bind(ui, &state);
+    mesh_controls::bind(ui, state);
+    mesh_inspection::bind(ui, state);
 
     let weak_ui = ui.as_weak();
     let mesh_state = state.clone();
@@ -4541,8 +4623,12 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
                 .map(|(min, _)| min * 1.1)
                 .unwrap_or(1.0),
         };
-        let filter=(state.mesh_quality_metric,state.mesh_quality_threshold);
-        if let Some(clip)=state.mesh_clip.as_mut(){if clip.quality.is_some(){clip.quality=Some(filter);}}
+        let filter = (state.mesh_quality_metric, state.mesh_quality_threshold);
+        if let Some(clip) = state.mesh_clip.as_mut() {
+            if clip.quality.is_some() {
+                clip.quality = Some(filter);
+            }
+        }
         ui.set_mesh_quality_threshold(state.mesh_quality_threshold.to_string().into());
         state.mesh_color_mode = MeshColorMode::Quality;
         refresh_ui(&ui, &state);
@@ -4554,10 +4640,21 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
             return;
         };
         let mut state = mesh_threshold_state.borrow_mut();
-        let value=ui.get_mesh_quality_threshold().trim().parse::<f64>();
-        match value {Ok(v) if v.is_finite() && v>=0.0 =>state.mesh_quality_threshold=v,_=>{state.log("Quality threshold must be a finite nonnegative number");refresh_ui(&ui,&state);return;}}
-        let filter=(state.mesh_quality_metric,state.mesh_quality_threshold);
-        if let Some(clip)=state.mesh_clip.as_mut(){if clip.quality.is_some(){clip.quality=Some(filter);}}
+        let value = ui.get_mesh_quality_threshold().trim().parse::<f64>();
+        match value {
+            Ok(v) if v.is_finite() && v >= 0.0 => state.mesh_quality_threshold = v,
+            _ => {
+                state.log("Quality threshold must be a finite nonnegative number");
+                refresh_ui(&ui, &state);
+                return;
+            }
+        }
+        let filter = (state.mesh_quality_metric, state.mesh_quality_threshold);
+        if let Some(clip) = state.mesh_clip.as_mut() {
+            if clip.quality.is_some() {
+                clip.quality = Some(filter);
+            }
+        }
         refresh_ui(&ui, &state);
     });
     let weak_ui = ui.as_weak();
@@ -4582,7 +4679,7 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
                 .workbench
                 .set_mesh_selection(Some(MeshSelection::cell(mesh_id, cell_index)));
             state.mesh_pick_mode = MeshPickMode::Cell;
-            mesh_inspection::focus_cell(&ui,&mut state,cell_index);
+            mesh_inspection::focus_cell(&ui, &mut state, cell_index);
             refresh_ui(&ui, &state);
         }
     });
@@ -4607,9 +4704,13 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
                     (MeshDimension::ThreeD, MeshPickMode::Face) => {
                         let (origin, direction) =
                             render::result_screen_ray(cache, screen, state.view_3d);
-                        if let Some(clip)=state.mesh_clip.filter(|_|ui.get_mesh_clip_enabled()) {
-                            state.workbench.mesh().and_then(|g|mesh_inspection::pick(&g.mesh,cache,clip,origin,direction))
-                        } else {cache.pick_face_3d(origin, direction)}
+                        if let Some(clip) = state.mesh_clip.filter(|_| ui.get_mesh_clip_enabled()) {
+                            state.workbench.mesh().and_then(|g| {
+                                mesh_inspection::pick(&g.mesh, cache, clip, origin, direction)
+                            })
+                        } else {
+                            cache.pick_face_3d(origin, direction)
+                        }
                     }
                     (MeshDimension::ThreeD, MeshPickMode::Cell) => None,
                 }
@@ -4626,7 +4727,7 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
                 point,
                 if state.current_step == 0 {
                     state.geometry_pick_mode
-                } else if matches!(state.current_step,1|2) {
+                } else if matches!(state.current_step, 1 | 2) {
                     ui.get_mesh_entity_mode()
                 } else {
                     0
@@ -4800,7 +4901,8 @@ fn rebuild_tree_rows(state: &mut AppState) {
         .map(|name| {
             (
                 name.clone(),
-                state.workbench.boundary_assignment(name).is_some() || state.workbench.cyclic_partner(name).is_some(),
+                state.workbench.boundary_assignment(name).is_some()
+                    || state.workbench.cyclic_partner(name).is_some(),
             )
         })
         .collect();
@@ -4910,19 +5012,59 @@ fn rebuild_tree_rows(state: &mut AppState) {
         }
     }
     // Project scoped controls into the Mesh outline, without duplicating their data.
-    if let Some(parent)=state.tree_rows.iter().position(|r|r.kind==TREE_KIND_MESH_PANEL && r.payload==1) {
-        let recipe=state.workbench.mesh_recipe();
-        let items=recipe.local_sizes.iter().map(|c|(&c.name,c.enabled,"Sizing"))
-            .chain(recipe.refinements.iter().map(|c|(&c.name,c.enabled,"Distance")))
-            .chain(recipe.boundary_layers.iter().map(|c|(&c.name,c.enabled,"Inflation")))
-            .chain(recipe.regions.iter().map(|c|(&c.name,c.enabled,"Volume box")))
-            .chain(recipe.edge_divisions.iter().map(|c|(&c.name,c.enabled,"Edge divisions")))
-            .enumerate().map(|(index,(name,enabled,kind))|ProjectTreeRowData {
-                icon:0,label:name.clone(),note:format!("{} · {kind}",if enabled {"Enabled"}else{"Suppressed"}),
-                depth:2,kind:TREE_KIND_MESH_CONTROL,payload:index as i32,
-                active:state.selected_tree==Some(TreeSelection{kind:TREE_KIND_MESH_CONTROL,payload:index as i32}),
-            }).collect::<Vec<_>>();
-        state.tree_rows.splice(parent+1..parent+1,items);
+    if let Some(parent) = state
+        .tree_rows
+        .iter()
+        .position(|r| r.kind == TREE_KIND_MESH_PANEL && r.payload == 1)
+    {
+        let recipe = state.workbench.mesh_recipe();
+        let items = recipe
+            .local_sizes
+            .iter()
+            .map(|c| (&c.name, c.enabled, "Sizing"))
+            .chain(
+                recipe
+                    .refinements
+                    .iter()
+                    .map(|c| (&c.name, c.enabled, "Distance")),
+            )
+            .chain(
+                recipe
+                    .boundary_layers
+                    .iter()
+                    .map(|c| (&c.name, c.enabled, "Inflation")),
+            )
+            .chain(
+                recipe
+                    .regions
+                    .iter()
+                    .map(|c| (&c.name, c.enabled, "Volume box")),
+            )
+            .chain(
+                recipe
+                    .edge_divisions
+                    .iter()
+                    .map(|c| (&c.name, c.enabled, "Edge divisions")),
+            )
+            .enumerate()
+            .map(|(index, (name, enabled, kind))| ProjectTreeRowData {
+                icon: 0,
+                label: name.clone(),
+                note: format!(
+                    "{} · {kind}",
+                    if enabled { "Enabled" } else { "Suppressed" }
+                ),
+                depth: 2,
+                kind: TREE_KIND_MESH_CONTROL,
+                payload: index as i32,
+                active: state.selected_tree
+                    == Some(TreeSelection {
+                        kind: TREE_KIND_MESH_CONTROL,
+                        payload: index as i32,
+                    }),
+            })
+            .collect::<Vec<_>>();
+        state.tree_rows.splice(parent + 1..parent + 1, items);
     }
     cad_tree::rebuild(state);
 }
@@ -4939,10 +5081,10 @@ fn toggle_tree_group(state: &mut AppState, index: usize) {
             | TREE_KIND_SKETCH
             | TREE_KIND_BODY
             | TREE_KIND_HISTORY_FEATURE
-    ) || !state
+    ) || state
         .tree_rows
         .get(index + 1)
-        .is_some_and(|next| next.depth > row.depth)
+        .is_none_or(|next| next.depth <= row.depth)
     {
         return;
     }
@@ -5248,7 +5390,13 @@ fn status_label(session: &WorkbenchSession) -> String {
     match session.status() {
         SolveStatus::Idle => "idle".to_string(),
         SolveStatus::Solving => "running".to_string(),
-        SolveStatus::Converged if session.solution().is_some_and(|s|s.physical_time.is_some()) => "time interval complete".to_string(),
+        SolveStatus::Converged
+            if session
+                .solution()
+                .is_some_and(|s| s.physical_time.is_some()) =>
+        {
+            "time interval complete".to_string()
+        }
         SolveStatus::Converged => "converged".to_string(),
         SolveStatus::MaxIterations => "iteration limit".to_string(),
         SolveStatus::Failed(message) => format!("failed: {message}"),
@@ -5257,12 +5405,20 @@ fn status_label(session: &WorkbenchSession) -> String {
 
 fn bc_kind_label(condition: IncompressibleBoundaryCondition) -> &'static str {
     match condition {
-        IncompressibleBoundaryCondition::TotalPressure {..}=>"Total-pressure opening",
+        IncompressibleBoundaryCondition::TotalPressure { .. } => "Total-pressure opening",
         IncompressibleBoundaryCondition::Slip => "Slip",
         IncompressibleBoundaryCondition::Symmetry => "Symmetry",
-        IncompressibleBoundaryCondition::ParabolicInlet {..} => "Parabolic inlet",
-        IncompressibleBoundaryCondition::FlowRateInlet {mass,..} => if mass {"Mass-flow inlet"}else{"Volume-flow inlet"},
-        IncompressibleBoundaryCondition::PressureOutletBackflow {..} => "Pressure outlet / backflow",
+        IncompressibleBoundaryCondition::ParabolicInlet { .. } => "Parabolic inlet",
+        IncompressibleBoundaryCondition::FlowRateInlet { mass, .. } => {
+            if mass {
+                "Mass-flow inlet"
+            } else {
+                "Volume-flow inlet"
+            }
+        }
+        IncompressibleBoundaryCondition::PressureOutletBackflow { .. } => {
+            "Pressure outlet / backflow"
+        }
         IncompressibleBoundaryCondition::FarField { .. } => "Far-field",
         IncompressibleBoundaryCondition::NoSlipWall => "No-slip wall",
         IncompressibleBoundaryCondition::MovingWall { .. } => "Moving wall",
@@ -5277,12 +5433,36 @@ fn push_workbench_defaults(ui: &MainWindow, session: &WorkbenchSession) {
     ui.set_mesh_clip_enabled(false);
     let (global_size, min_size, max_size) = session.mesh_sizes();
     let t = &session.mesh_recipe().tuning;
-    ui.set_mesh_size_growth(t.max_size_growth.map(|v|v.to_string()).unwrap_or_default().into());
-    ui.set_mesh_method(match t.method { flursys::workbench::MeshMethod::Unstructured=>0,flursys::workbench::MeshMethod::QuadDominant=>1,flursys::workbench::MeshMethod::MappedQuad=>2,flursys::workbench::MeshMethod::OGrid=>3,flursys::workbench::MeshMethod::HexBlock=>4,flursys::workbench::MeshMethod::SweepPrism=>5,flursys::workbench::MeshMethod::SweepHex=>6 });
-    ui.set_mesh_divisions_i(t.divisions[0] as i32);ui.set_mesh_divisions_j(t.divisions[1] as i32);ui.set_mesh_divisions_k(t.divisions[2] as i32);
-    ui.set_mesh_progression_i(t.progression[0].to_string().into());ui.set_mesh_progression_j(t.progression[1].to_string().into());
-    ui.set_mesh_algorithm2d(match t.algorithm_2d { 6=>0, 5=>1, _=>2 });
-    ui.set_mesh_algorithm3d(match t.algorithm_3d { 1=>0, 4=>1, _=>2 });
+    ui.set_mesh_size_growth(
+        t.max_size_growth
+            .map(|v| v.to_string())
+            .unwrap_or_default()
+            .into(),
+    );
+    ui.set_mesh_method(match t.method {
+        flursys::workbench::MeshMethod::Unstructured => 0,
+        flursys::workbench::MeshMethod::QuadDominant => 1,
+        flursys::workbench::MeshMethod::MappedQuad => 2,
+        flursys::workbench::MeshMethod::OGrid => 3,
+        flursys::workbench::MeshMethod::HexBlock => 4,
+        flursys::workbench::MeshMethod::SweepPrism => 5,
+        flursys::workbench::MeshMethod::SweepHex => 6,
+    });
+    ui.set_mesh_divisions_i(t.divisions[0] as i32);
+    ui.set_mesh_divisions_j(t.divisions[1] as i32);
+    ui.set_mesh_divisions_k(t.divisions[2] as i32);
+    ui.set_mesh_progression_i(t.progression[0].to_string().into());
+    ui.set_mesh_progression_j(t.progression[1].to_string().into());
+    ui.set_mesh_algorithm2d(match t.algorithm_2d {
+        6 => 0,
+        5 => 1,
+        _ => 2,
+    });
+    ui.set_mesh_algorithm3d(match t.algorithm_3d {
+        1 => 0,
+        4 => 1,
+        _ => 2,
+    });
     ui.set_mesh_curvature(t.curvature_points as i32);
     ui.set_mesh_smoothing(t.smoothing_steps as i32);
     ui.set_mesh_optimize(t.optimize);
@@ -5306,22 +5486,62 @@ fn push_workbench_defaults(ui: &MainWindow, session: &WorkbenchSession) {
     )));
     let solver = session.solver_options();
     use flursys::unstructured_incompressible::TimeIntegration;
-    let pc=solver.pressure_coupling;
-    ui.set_wb_coupling_algorithm(if pc.algorithm==flursys::simple::CouplingAlgorithm::Pimple {1}else{0});
-    ui.set_wb_pressure_correctors(if pc.algorithm==flursys::simple::CouplingAlgorithm::Pimple {pc.pressure_correctors as i32}else{2});
+    let pc = solver.pressure_coupling;
+    ui.set_wb_coupling_algorithm(
+        if pc.algorithm == flursys::simple::CouplingAlgorithm::Pimple {
+            1
+        } else {
+            0
+        },
+    );
+    ui.set_wb_pressure_correctors(
+        if pc.algorithm == flursys::simple::CouplingAlgorithm::Pimple {
+            pc.pressure_correctors as i32
+        } else {
+            2
+        },
+    );
     ui.set_wb_nonorthogonal_correctors(pc.non_orthogonal_correctors as i32);
     ui.set_wb_nonorthogonal_limiter(pc.non_orthogonal_limiter.to_string().into());
-    ui.set_wb_time_mode(match solver.time {TimeIntegration::Steady=>0,TimeIntegration::Euler{..}=>1,TimeIntegration::AdaptiveEuler{..}=>2,TimeIntegration::Backward{..}=>3});
-    let (dt,steps)=solver.time.parameters().unwrap_or((0.001,100));ui.set_wb_time_step(dt.to_string().into());ui.set_wb_time_steps(steps as i32);
-    let adaptive=solver.time.adaptive().unwrap_or_default();
-    ui.set_wb_target_courant(adaptive.target_courant.to_string().into());ui.set_wb_min_time_step(adaptive.min_dt.to_string().into());ui.set_wb_max_time_step(adaptive.max_dt.to_string().into());ui.set_wb_time_growth(adaptive.max_growth.to_string().into());
+    ui.set_wb_time_mode(match solver.time {
+        TimeIntegration::Steady => 0,
+        TimeIntegration::Euler { .. } => 1,
+        TimeIntegration::AdaptiveEuler { .. } => 2,
+        TimeIntegration::Backward { .. } => 3,
+    });
+    let (dt, steps) = solver.time.parameters().unwrap_or((0.001, 100));
+    ui.set_wb_time_step(dt.to_string().into());
+    ui.set_wb_time_steps(steps as i32);
+    let adaptive = solver.time.adaptive().unwrap_or_default();
+    ui.set_wb_target_courant(adaptive.target_courant.to_string().into());
+    ui.set_wb_min_time_step(adaptive.min_dt.to_string().into());
+    ui.set_wb_max_time_step(adaptive.max_dt.to_string().into());
+    ui.set_wb_time_growth(adaptive.max_growth.to_string().into());
     use flursys::turbulence::TurbulenceModel;
-    ui.set_wb_turbulence_relaxation(solver.turbulence.relaxation.to_string().into());ui.set_wb_turbulence_tolerance(solver.turbulence.relative_tolerance.to_string().into());
-    ui.set_wb_wall_treatment(if solver.turbulence.wall_treatment==flursys::turbulence::WallTreatment::Resolved{0}else{1});
+    ui.set_wb_turbulence_relaxation(solver.turbulence.relaxation.to_string().into());
+    ui.set_wb_turbulence_tolerance(solver.turbulence.relative_tolerance.to_string().into());
+    ui.set_wb_wall_treatment(
+        if solver.turbulence.wall_treatment == flursys::turbulence::WallTreatment::Resolved {
+            0
+        } else {
+            1
+        },
+    );
     ui.set_wb_nu_tilda(solver.turbulence.nu_tilda.to_string().into());
     ui.set_wb_turbulence_epsilon(solver.turbulence.epsilon.to_string().into());
-    ui.set_wb_turbulence_model(match solver.turbulence.model {TurbulenceModel::Laminar=>0,TurbulenceModel::KOmega=>1,TurbulenceModel::KOmegaSst=>2,TurbulenceModel::Smagorinsky=>3,TurbulenceModel::Wale=>4,TurbulenceModel::KEpsilon=>5,TurbulenceModel::SpalartAllmaras=>6,TurbulenceModel::RngKEpsilon=>7,TurbulenceModel::RealizableKEpsilon=>8});
-    ui.set_wb_turbulence_k(solver.turbulence.k.to_string().into());ui.set_wb_turbulence_omega(solver.turbulence.omega.to_string().into());
+    ui.set_wb_turbulence_model(match solver.turbulence.model {
+        TurbulenceModel::Laminar => 0,
+        TurbulenceModel::KOmega => 1,
+        TurbulenceModel::KOmegaSst => 2,
+        TurbulenceModel::Smagorinsky => 3,
+        TurbulenceModel::Wale => 4,
+        TurbulenceModel::KEpsilon => 5,
+        TurbulenceModel::SpalartAllmaras => 6,
+        TurbulenceModel::RngKEpsilon => 7,
+        TurbulenceModel::RealizableKEpsilon => 8,
+    });
+    ui.set_wb_turbulence_k(solver.turbulence.k.to_string().into());
+    ui.set_wb_turbulence_omega(solver.turbulence.omega.to_string().into());
     ui.set_wb_coupling_tolerance(SharedString::from(format!(
         "{:e}",
         solver.coupling_relative_tolerance
@@ -5338,7 +5558,13 @@ fn push_workbench_defaults(ui: &MainWindow, session: &WorkbenchSession) {
         "{}",
         solver.velocity_relaxation
     )));
-    ui.set_wb_convection_index(if solver.convection==flursys::momentum::MomentumConvection::LimitedLinear {1}else{0});
+    ui.set_wb_convection_index(
+        if solver.convection == flursys::momentum::MomentumConvection::LimitedLinear {
+            1
+        } else {
+            0
+        },
+    );
     ui.set_wb_pressure_relaxation(SharedString::from(format!(
         "{}",
         solver.pressure_relaxation
@@ -5350,11 +5576,13 @@ fn push_workbench_defaults(ui: &MainWindow, session: &WorkbenchSession) {
 }
 
 fn push_boundary_fields(ui: &MainWindow, session: &WorkbenchSession, patch: &str) {
-    thermal_setup::push_boundary(ui,session,patch);
-    time_boundary_setup::push(ui,session,patch);
-    if let Some(peer)=session.cyclic_partner(patch){
+    thermal_setup::push_boundary(ui, session, patch);
+    time_boundary_setup::push(ui, session, patch);
+    if let Some(peer) = session.cyclic_partner(patch) {
         ui.set_bc_kind_index(-1);
-        ui.set_bc_assigned(format!("Cyclic ↔ {peer}. Edit or remove the pair using Cyclic patch pairs.").into());
+        ui.set_bc_assigned(
+            format!("Cyclic ↔ {peer}. Edit or remove the pair using Cyclic patch pairs.").into(),
+        );
         return;
     }
     match session.boundary_assignment(patch).copied() {
@@ -5366,16 +5594,35 @@ fn push_boundary_fields(ui: &MainWindow, session: &WorkbenchSession, patch: &str
             ui.set_bc_pressure(SharedString::from("0"));
             ui.set_bc_assigned(SharedString::from("Unassigned"));
         }
-        Some(IncompressibleBoundaryCondition::ParabolicInlet {velocity,axis,center,half_width}) => {
-            ui.set_bc_kind_index(10);set_velocity_fields(ui,velocity);ui.set_bc_profile_axis(axis as i32);ui.set_bc_profile_center(center.to_string().into());ui.set_bc_profile_half_width(half_width.to_string().into());ui.set_bc_assigned("Assigned: parabolic inlet (peak velocity)".into());
+        Some(IncompressibleBoundaryCondition::ParabolicInlet {
+            velocity,
+            axis,
+            center,
+            half_width,
+        }) => {
+            ui.set_bc_kind_index(10);
+            set_velocity_fields(ui, velocity);
+            ui.set_bc_profile_axis(axis as i32);
+            ui.set_bc_profile_center(center.to_string().into());
+            ui.set_bc_profile_half_width(half_width.to_string().into());
+            ui.set_bc_assigned("Assigned: parabolic inlet (peak velocity)".into());
         }
-        Some(IncompressibleBoundaryCondition::FlowRateInlet {rate,mass}) => {
-            ui.set_bc_kind_index(if mass {8}else{7});ui.set_bc_value_x(rate.to_string().into());ui.set_bc_assigned("Assigned: flow-rate inlet".into());
+        Some(IncompressibleBoundaryCondition::FlowRateInlet { rate, mass }) => {
+            ui.set_bc_kind_index(if mass { 8 } else { 7 });
+            ui.set_bc_value_x(rate.to_string().into());
+            ui.set_bc_assigned("Assigned: flow-rate inlet".into());
         }
-        Some(IncompressibleBoundaryCondition::PressureOutletBackflow {pressure,velocity}) => {
-            ui.set_bc_kind_index(9);set_velocity_fields(ui,velocity);ui.set_bc_pressure(pressure.to_string().into());ui.set_bc_assigned("Assigned: pressure outlet with backflow".into());
+        Some(IncompressibleBoundaryCondition::PressureOutletBackflow { pressure, velocity }) => {
+            ui.set_bc_kind_index(9);
+            set_velocity_fields(ui, velocity);
+            ui.set_bc_pressure(pressure.to_string().into());
+            ui.set_bc_assigned("Assigned: pressure outlet with backflow".into());
         }
-        Some(IncompressibleBoundaryCondition::TotalPressure{pressure})=>{ui.set_bc_kind_index(11);ui.set_bc_pressure(pressure.to_string().into());ui.set_bc_assigned("Assigned: kinematic total-pressure opening".into());}
+        Some(IncompressibleBoundaryCondition::TotalPressure { pressure }) => {
+            ui.set_bc_kind_index(11);
+            ui.set_bc_pressure(pressure.to_string().into());
+            ui.set_bc_assigned("Assigned: kinematic total-pressure opening".into());
+        }
         Some(IncompressibleBoundaryCondition::Slip) => {
             ui.set_bc_kind_index(4);
             ui.set_bc_assigned("Assigned: slip".into());
@@ -5436,21 +5683,101 @@ fn sync_solver_panel(ui: &MainWindow, session: &mut WorkbenchSession) -> Result<
     let velocity = parse_number(ui.get_wb_velocity_relaxation().as_str(), f64::NAN);
     let pressure = parse_number(ui.get_wb_pressure_relaxation().as_str(), f64::NAN);
     let continuity = parse_number(ui.get_wb_continuity_tolerance().as_str(), f64::NAN);
+    use flursys::turbulence::{TurbulenceModel, TurbulenceOptions};
     use flursys::unstructured_incompressible::TimeIntegration;
-    use flursys::turbulence::{TurbulenceModel,TurbulenceOptions};
-    let time=match ui.get_wb_time_mode() {
-        3=>TimeIntegration::Backward {dt:parse_number(ui.get_wb_time_step().as_str(),f64::NAN),steps:ui.get_wb_time_steps().max(0) as usize},
-        1=>TimeIntegration::Euler {dt:parse_number(ui.get_wb_time_step().as_str(),f64::NAN),steps:ui.get_wb_time_steps().max(0) as usize},
-        2=>TimeIntegration::AdaptiveEuler {dt:parse_number(ui.get_wb_time_step().as_str(),f64::NAN),steps:ui.get_wb_time_steps().max(0) as usize,controls:flursys::unstructured_incompressible::AdaptiveTimeStep {target_courant:parse_number(ui.get_wb_target_courant().as_str(),f64::NAN),min_dt:parse_number(ui.get_wb_min_time_step().as_str(),f64::NAN),max_dt:parse_number(ui.get_wb_max_time_step().as_str(),f64::NAN),max_growth:parse_number(ui.get_wb_time_growth().as_str(),f64::NAN)}},
-        _=>TimeIntegration::Steady,
+    let time = match ui.get_wb_time_mode() {
+        3 => TimeIntegration::Backward {
+            dt: parse_number(ui.get_wb_time_step().as_str(), f64::NAN),
+            steps: ui.get_wb_time_steps().max(0) as usize,
+        },
+        1 => TimeIntegration::Euler {
+            dt: parse_number(ui.get_wb_time_step().as_str(), f64::NAN),
+            steps: ui.get_wb_time_steps().max(0) as usize,
+        },
+        2 => TimeIntegration::AdaptiveEuler {
+            dt: parse_number(ui.get_wb_time_step().as_str(), f64::NAN),
+            steps: ui.get_wb_time_steps().max(0) as usize,
+            controls: flursys::unstructured_incompressible::AdaptiveTimeStep {
+                target_courant: parse_number(ui.get_wb_target_courant().as_str(), f64::NAN),
+                min_dt: parse_number(ui.get_wb_min_time_step().as_str(), f64::NAN),
+                max_dt: parse_number(ui.get_wb_max_time_step().as_str(), f64::NAN),
+                max_growth: parse_number(ui.get_wb_time_growth().as_str(), f64::NAN),
+            },
+        },
+        _ => TimeIntegration::Steady,
     };
-    let model=match ui.get_wb_turbulence_model(){1=>TurbulenceModel::KOmega,2=>TurbulenceModel::KOmegaSst,3=>TurbulenceModel::Smagorinsky,4=>TurbulenceModel::Wale,5=>TurbulenceModel::KEpsilon,6=>TurbulenceModel::SpalartAllmaras,7=>TurbulenceModel::RngKEpsilon,8=>TurbulenceModel::RealizableKEpsilon,_=>TurbulenceModel::Laminar};
-    let turbulence=TurbulenceOptions {model,nu_tilda:if model==TurbulenceModel::SpalartAllmaras{parse_number(ui.get_wb_nu_tilda().as_str(),f64::NAN)}else{session.solver_options().turbulence.nu_tilda},relaxation:parse_number(ui.get_wb_turbulence_relaxation().as_str(),f64::NAN),relative_tolerance:parse_number(ui.get_wb_turbulence_tolerance().as_str(),f64::NAN),wall_treatment:if ui.get_wb_wall_treatment()==1{match model{TurbulenceModel::KEpsilon|TurbulenceModel::RngKEpsilon|TurbulenceModel::RealizableKEpsilon=>flursys::turbulence::WallTreatment::EquilibriumKEpsilon,TurbulenceModel::KOmega|TurbulenceModel::KOmegaSst=>flursys::turbulence::WallTreatment::EquilibriumKOmega,_=>flursys::turbulence::WallTreatment::Resolved}}else{flursys::turbulence::WallTreatment::Resolved},epsilon:if model.uses_epsilon() {parse_number(ui.get_wb_turbulence_epsilon().as_str(),f64::NAN)}else{session.solver_options().turbulence.epsilon},k:if matches!(model,TurbulenceModel::KOmega|TurbulenceModel::KOmegaSst|TurbulenceModel::KEpsilon|TurbulenceModel::RngKEpsilon|TurbulenceModel::RealizableKEpsilon){parse_number(ui.get_wb_turbulence_k().as_str(),f64::NAN)}else{session.solver_options().turbulence.k},omega:if matches!(model,TurbulenceModel::KOmega|TurbulenceModel::KOmegaSst){parse_number(ui.get_wb_turbulence_omega().as_str(),f64::NAN)}else{session.solver_options().turbulence.omega},..session.solver_options().turbulence.clone()};
-    let pressure_coupling=flursys::simple::PressureCoupling {
-        algorithm:if ui.get_wb_coupling_algorithm()==1{flursys::simple::CouplingAlgorithm::Pimple}else{flursys::simple::CouplingAlgorithm::Simple},
-        pressure_correctors:if ui.get_wb_coupling_algorithm()==1{ui.get_wb_pressure_correctors().max(0) as usize}else{1},
-        non_orthogonal_correctors:ui.get_wb_nonorthogonal_correctors().max(0) as usize,
-        non_orthogonal_limiter:parse_number(ui.get_wb_nonorthogonal_limiter().as_str(),f64::NAN),
+    let model = match ui.get_wb_turbulence_model() {
+        1 => TurbulenceModel::KOmega,
+        2 => TurbulenceModel::KOmegaSst,
+        3 => TurbulenceModel::Smagorinsky,
+        4 => TurbulenceModel::Wale,
+        5 => TurbulenceModel::KEpsilon,
+        6 => TurbulenceModel::SpalartAllmaras,
+        7 => TurbulenceModel::RngKEpsilon,
+        8 => TurbulenceModel::RealizableKEpsilon,
+        _ => TurbulenceModel::Laminar,
+    };
+    let turbulence = TurbulenceOptions {
+        model,
+        nu_tilda: if model == TurbulenceModel::SpalartAllmaras {
+            parse_number(ui.get_wb_nu_tilda().as_str(), f64::NAN)
+        } else {
+            session.solver_options().turbulence.nu_tilda
+        },
+        relaxation: parse_number(ui.get_wb_turbulence_relaxation().as_str(), f64::NAN),
+        relative_tolerance: parse_number(ui.get_wb_turbulence_tolerance().as_str(), f64::NAN),
+        wall_treatment: if ui.get_wb_wall_treatment() == 1 {
+            match model {
+                TurbulenceModel::KEpsilon
+                | TurbulenceModel::RngKEpsilon
+                | TurbulenceModel::RealizableKEpsilon => {
+                    flursys::turbulence::WallTreatment::EquilibriumKEpsilon
+                }
+                TurbulenceModel::KOmega | TurbulenceModel::KOmegaSst => {
+                    flursys::turbulence::WallTreatment::EquilibriumKOmega
+                }
+                _ => flursys::turbulence::WallTreatment::Resolved,
+            }
+        } else {
+            flursys::turbulence::WallTreatment::Resolved
+        },
+        epsilon: if model.uses_epsilon() {
+            parse_number(ui.get_wb_turbulence_epsilon().as_str(), f64::NAN)
+        } else {
+            session.solver_options().turbulence.epsilon
+        },
+        k: if matches!(
+            model,
+            TurbulenceModel::KOmega
+                | TurbulenceModel::KOmegaSst
+                | TurbulenceModel::KEpsilon
+                | TurbulenceModel::RngKEpsilon
+                | TurbulenceModel::RealizableKEpsilon
+        ) {
+            parse_number(ui.get_wb_turbulence_k().as_str(), f64::NAN)
+        } else {
+            session.solver_options().turbulence.k
+        },
+        omega: if matches!(model, TurbulenceModel::KOmega | TurbulenceModel::KOmegaSst) {
+            parse_number(ui.get_wb_turbulence_omega().as_str(), f64::NAN)
+        } else {
+            session.solver_options().turbulence.omega
+        },
+        ..session.solver_options().turbulence.clone()
+    };
+    let pressure_coupling = flursys::simple::PressureCoupling {
+        algorithm: if ui.get_wb_coupling_algorithm() == 1 {
+            flursys::simple::CouplingAlgorithm::Pimple
+        } else {
+            flursys::simple::CouplingAlgorithm::Simple
+        },
+        pressure_correctors: if ui.get_wb_coupling_algorithm() == 1 {
+            ui.get_wb_pressure_correctors().max(0) as usize
+        } else {
+            1
+        },
+        non_orthogonal_correctors: ui.get_wb_nonorthogonal_correctors().max(0) as usize,
+        non_orthogonal_limiter: parse_number(ui.get_wb_nonorthogonal_limiter().as_str(), f64::NAN),
     };
     pressure_coupling.validate(time.is_transient())?;
     // Validate the complete form before invalidating an existing solution.
@@ -5465,11 +5792,23 @@ fn sync_solver_panel(ui: &MainWindow, session: &mut WorkbenchSession) -> Result<
     draft
         .set_solver_controls(iterations, velocity, pressure, continuity)
         .map_err(|e| e.to_string())?;
-    draft.set_flow_models(time,turbulence.clone()).map_err(|e|e.to_string())?;
-    draft.set_pressure_coupling(pressure_coupling).map_err(|e|e.to_string())?;
-    session.set_flow_models(time,turbulence).map_err(|e|e.to_string())?;
-    session.set_pressure_coupling(pressure_coupling).map_err(|e|e.to_string())?;
-    session.set_convection(if ui.get_wb_convection_index()==1 {flursys::momentum::MomentumConvection::LimitedLinear}else{flursys::momentum::MomentumConvection::Upwind});
+    draft
+        .set_flow_models(time, turbulence.clone())
+        .map_err(|e| e.to_string())?;
+    draft
+        .set_pressure_coupling(pressure_coupling)
+        .map_err(|e| e.to_string())?;
+    session
+        .set_flow_models(time, turbulence)
+        .map_err(|e| e.to_string())?;
+    session
+        .set_pressure_coupling(pressure_coupling)
+        .map_err(|e| e.to_string())?;
+    session.set_convection(if ui.get_wb_convection_index() == 1 {
+        flursys::momentum::MomentumConvection::LimitedLinear
+    } else {
+        flursys::momentum::MomentumConvection::Upwind
+    });
     session.set_cpu_threads(threads);
     session
         .set_material(density, viscosity)
@@ -5483,11 +5822,16 @@ fn sync_solver_panel(ui: &MainWindow, session: &mut WorkbenchSession) -> Result<
     Ok(())
 }
 
-fn workspace_from_project_file(path: &Path) -> Result<PathBuf,String> {
-    if path.file_name().is_none_or(|name|name != flursys::workbench::PROJECT_DOCUMENT_FILE) {
+fn workspace_from_project_file(path: &Path) -> Result<PathBuf, String> {
+    if path
+        .file_name()
+        .is_none_or(|name| name != flursys::workbench::PROJECT_DOCUMENT_FILE)
+    {
         return Err("Select the workspace project.json file, or cancel and choose the workspace folder. This file is not a recognized legacy project.".into());
     }
-    path.parent().map(Path::to_path_buf).ok_or_else(||"The project file has no workspace folder".into())
+    path.parent()
+        .map(Path::to_path_buf)
+        .ok_or_else(|| "The project file has no workspace folder".into())
 }
 
 fn mesh_inspector_summary(
@@ -5553,8 +5897,28 @@ fn solution_summary_text(session: &WorkbenchSession) -> String {
                 .rev()
                 .map(|(iteration, value)| format!("  iter {iteration:>5}  continuity {value:.3e}"))
                 .collect();
-            let frame=if session.solver_options().volume_models.rotating_frame.is_some(){"Velocity reference: rotating frame (relative U)\n"}else{"Velocity reference: inertial frame\n"};
-            let linear=report.simple.equation_linear_reports.iter().map(|(name,r)|format!("{name}: L2 {:.3e} → {:.3e}; {} linear iterations",r.initial_residual,r.final_residual,r.iterations)).collect::<Vec<_>>().join("\n");
+            let frame = if session
+                .solver_options()
+                .volume_models
+                .rotating_frame
+                .is_some()
+            {
+                "Velocity reference: rotating frame (relative U)\n"
+            } else {
+                "Velocity reference: inertial frame\n"
+            };
+            let linear = report
+                .simple
+                .equation_linear_reports
+                .iter()
+                .map(|(name, r)| {
+                    format!(
+                        "{name}: L2 {:.3e} → {:.3e}; {} linear iterations",
+                        r.initial_residual, r.final_residual, r.iterations
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
             let time=solution.physical_time.map(|t|format!("physical time {t:.9e} s\naccepted steps {}\nnonlinear correctors {}\nlast max Co {:.4e}\n",solution.completed_time_steps,solution.nonlinear_iterations,solution.max_courant.unwrap_or(0.0))).unwrap_or_default();
             format!(
                 "{frame}{time}last equation solves:\n{linear}\n\nstatus      {}\nCPU workers {}\niterations  {}\ninitial mass RMS {:.3e}\nfinal mass RMS   {:.3e}\nmomentum rel {:.3e}\nvelocity Δrel {:.3e}\ninflow      {:.5}\noutflow     {:.5}\nnet flux    {:+.3e}\n{}",
@@ -5820,11 +6184,24 @@ fn recent_project_labels(state: &AppState) -> Vec<SharedString> {
 }
 
 fn refresh_ui(ui: &MainWindow, state: &AppState) {
-    let selected=match ui.get_result_field_index(){8=>Some(ResultFieldKind::TurbulentK),9=>Some(ResultFieldKind::SpecificDissipation),10=>Some(ResultFieldKind::TurbulentViscosity),_=>None};
-    if selected.is_some_and(|f|state.active_result().is_some_and(|d|d.scalar_values(f).is_empty())) {ui.set_result_field_index(0);}
+    let selected = match ui.get_result_field_index() {
+        8 => Some(ResultFieldKind::TurbulentK),
+        9 => Some(ResultFieldKind::SpecificDissipation),
+        10 => Some(ResultFieldKind::TurbulentViscosity),
+        _ => None,
+    };
+    if selected.is_some_and(|f| {
+        state
+            .active_result()
+            .is_some_and(|d| d.scalar_values(f).is_empty())
+    }) {
+        ui.set_result_field_index(0);
+    }
 
     ui.set_current_step(state.current_step as i32);
-    if state.current_step == 0 { ui.set_geometry_cad_view_3d(true); }
+    if state.current_step == 0 {
+        ui.set_geometry_cad_view_3d(true);
+    }
     cad::refresh(ui, state);
     ui.set_project_loaded(state.project_loaded);
     let recent_labels = recent_project_labels(state);
@@ -5991,17 +6368,18 @@ fn refresh_ui(ui: &MainWindow, state: &AppState) {
         state.logs.iter().cloned().collect::<Vec<_>>().join("\n"),
     ));
     result_activation::refresh(ui, state);
-    if state.current_step!=3 {
-    ui.set_residual_image(
-        if state.last_update.is_some() && state.workbench.geometry().vertices().next().is_none() {
-            render_residual_chart(&state.residual_history)
-        } else {
-            render::render_workbench_continuity_chart(&post_processing::chart_history(
-                state,
-                ui.get_wb_chart_kind(),
-            ))
-        },
-    );
+    if state.current_step != 3 {
+        ui.set_residual_image(
+            if state.last_update.is_some() && state.workbench.geometry().vertices().next().is_none()
+            {
+                render_residual_chart(&state.residual_history)
+            } else {
+                render::render_workbench_continuity_chart(&post_processing::chart_history(
+                    state,
+                    ui.get_wb_chart_kind(),
+                ))
+            },
+        );
     }
     ui.set_mesh_inspection(SharedString::from(mesh_inspection(&state.project)));
 
@@ -6011,13 +6389,24 @@ fn refresh_ui(ui: &MainWindow, state: &AppState) {
         visible_project_tree_rows(&state.tree_rows, &state.collapsed_tree_groups)
             .into_iter()
             .filter(|row| {
-                if ui.get_show_topology() { return true; }
+                if ui.get_show_topology() {
+                    return true;
+                }
                 if let Some(depth) = hidden_topology_depth {
-                    if row.depth > depth { return false; }
+                    if row.depth > depth {
+                        return false;
+                    }
                     hidden_topology_depth = None;
                 }
-                if row.kind == TREE_KIND_INERT && matches!(row.payload,
-                    TREE_GROUP_TOPOLOGY | TREE_GROUP_FACES | TREE_GROUP_EDGES | TREE_GROUP_VERTICES) {
+                if row.kind == TREE_KIND_INERT
+                    && matches!(
+                        row.payload,
+                        TREE_GROUP_TOPOLOGY
+                            | TREE_GROUP_FACES
+                            | TREE_GROUP_EDGES
+                            | TREE_GROUP_VERTICES
+                    )
+                {
                     hidden_topology_depth = Some(row.depth);
                     return false;
                 }
@@ -6025,11 +6414,15 @@ fn refresh_ui(ui: &MainWindow, state: &AppState) {
             })
             .collect();
     ui.set_project_tree_model(ModelRc::new(tree_model));
-    let mut timeline_seen=BTreeSet::new();
-    let timeline=visible_project_tree_rows(&state.tree_rows,&BTreeSet::new()).into_iter()
-        .filter(|r|matches!(r.kind,TREE_KIND_SKETCH|TREE_KIND_HISTORY_FEATURE) && timeline_seen.insert((r.kind,r.payload))).collect::<Vec<_>>();
+    let mut timeline_seen = BTreeSet::new();
+    let timeline = visible_project_tree_rows(&state.tree_rows, &BTreeSet::new())
+        .into_iter()
+        .filter(|r| {
+            matches!(r.kind, TREE_KIND_SKETCH | TREE_KIND_HISTORY_FEATURE)
+                && timeline_seen.insert((r.kind, r.payload))
+        })
+        .collect::<Vec<_>>();
     ui.set_cad_timeline(ModelRc::new(VecModel::from(timeline)));
-
 
     let patch_items: Vec<SharedString> = state
         .patch_names
@@ -6365,7 +6758,9 @@ fn refresh_ui(ui: &MainWindow, state: &AppState) {
         }
     }
 
-    if (state.current_step == 0 && state.drawing.is_none()) || (state.show_geometry_3d && !state.show_sketch_editor) {
+    if (state.current_step == 0 && state.drawing.is_none())
+        || (state.show_geometry_3d && !state.show_sketch_editor)
+    {
         ui.set_visualization_title(SharedString::from("CANONICAL 3D CAD"));
         let candidate = cad::preview(state);
         let topology = candidate
@@ -6389,7 +6784,11 @@ fn refresh_ui(ui: &MainWindow, state: &AppState) {
         ui.set_visualization_image(render_canonical_geometry_3d(
             topology,
             state.view_3d,
-            if matches!(state.current_step,1|2) {ui.get_mesh_entity_mode()}else{state.geometry_pick_mode},
+            if matches!(state.current_step, 1 | 2) {
+                ui.get_mesh_entity_mode()
+            } else {
+                state.geometry_pick_mode
+            },
             &candidate
                 .map(|p| {
                     p.selection
@@ -6656,10 +7055,10 @@ fn refresh_ui(ui: &MainWindow, state: &AppState) {
 const PREVIEW_WIDTH: u32 = 520;
 const PREVIEW_HEIGHT: u32 = 320;
 
-#[path = "scene_view.rs"]
-mod scene_view;
 #[path = "render.rs"]
 mod render;
+#[path = "scene_view.rs"]
+mod scene_view;
 #[path = "viewport.rs"]
 mod viewport;
 use render::*;
@@ -6734,8 +7133,15 @@ mod tests {
 
     #[test]
     fn modern_project_file_resolves_to_its_workspace_instead_of_being_ignored() {
-        assert_eq!(super::workspace_from_project_file(std::path::Path::new("/tmp/example/project.json")).unwrap(),std::path::PathBuf::from("/tmp/example"));
-        assert!(super::workspace_from_project_file(std::path::Path::new("/tmp/example/random.json")).is_err());
+        assert_eq!(
+            super::workspace_from_project_file(std::path::Path::new("/tmp/example/project.json"))
+                .unwrap(),
+            std::path::PathBuf::from("/tmp/example")
+        );
+        assert!(super::workspace_from_project_file(std::path::Path::new(
+            "/tmp/example/random.json"
+        ))
+        .is_err());
     }
     use super::*;
     use flursys::cases::{BackwardStepCase, CylinderCase};

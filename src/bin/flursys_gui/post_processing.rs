@@ -9,13 +9,14 @@ use post_export::{save_gif, save_png, write_probes};
 pub(super) struct State {
     pub metric_histories: [Vec<f64>; 3],
     pub continuity_full: Vec<f64>,
-    pub plane_samples: std::collections::BTreeMap<String,flursys::workbench::plane_monitor::PlaneSnapshot>,
+    pub plane_samples:
+        std::collections::BTreeMap<String, flursys::workbench::plane_monitor::PlaneSnapshot>,
     pub profile: Vec<result_analysis::ProfilePoint>,
     pub profile_label: String,
     pub boundary_summary: String,
-    pub wall_report_index:Option<usize>,
-    pub wall_report_time:Option<f64>,
-    pub wall_reports:Vec<flursys::workbench::wall_reports::WallPatchReport>,
+    pub wall_report_index: Option<usize>,
+    pub wall_report_time: Option<f64>,
+    pub wall_reports: Vec<flursys::workbench::wall_reports::WallPatchReport>,
     pub boundary_reports: Vec<flursys::workbench::boundary_reports::BoundaryFlowReport>,
     pub plane_frames: Vec<PathBuf>,
     pub plane_frame: usize,
@@ -42,7 +43,10 @@ impl State {
         self.profile.clear();
         self.profile_label.clear();
         self.boundary_summary.clear();
-        self.boundary_reports.clear();self.wall_reports.clear();self.wall_report_index=None;self.wall_report_time=None;
+        self.boundary_reports.clear();
+        self.wall_reports.clear();
+        self.wall_report_index = None;
+        self.wall_report_time = None;
         self.traces.clear();
         self.metric_histories = Default::default();
         self.continuity_full.clear();
@@ -130,7 +134,9 @@ fn field(index: i32) -> ResultFieldKind {
         5 => ResultFieldKind::VelocityY,
         6 => ResultFieldKind::VelocityZ,
         7 => ResultFieldKind::VelocityDivergence,
-        8=>ResultFieldKind::TurbulentK,9=>ResultFieldKind::SpecificDissipation,10=>ResultFieldKind::TurbulentViscosity,
+        8 => ResultFieldKind::TurbulentK,
+        9 => ResultFieldKind::SpecificDissipation,
+        10 => ResultFieldKind::TurbulentViscosity,
         _ => ResultFieldKind::VelocityMagnitude,
     }
 }
@@ -399,7 +405,7 @@ pub(super) fn bind(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
             if let Err(e) = state.activate_persisted_result(&id) {
                 feedback(&ui, &mut state, e);
             }
-            plane_monitors::refresh_selected(&ui,&mut state);
+            plane_monitors::refresh_selected(&ui, &mut state);
             state.show_mesh = false;
             state.show_geometry_3d = false;
             state.current_step = 4;
@@ -423,14 +429,14 @@ pub(super) fn bind(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
                     if state.active_result().is_none_or(|r|r.mesh().dimension()!=MeshDimension::ThreeD){return Err("Slice animation requires a 3D result".into());}
                     if ui.get_result_slice_axis()==0 {ui.set_result_slice_axis(1);}
                 }
-                state.post.playing=!state.post.playing;state.post.last_tick=Some(std::time::Instant::now());
+                state.post.playing = !state.post.playing;state.post.last_tick=Some(std::time::Instant::now());
                 state.show_mesh=false;state.show_geometry_3d=false;
                 Ok(if state.post.playing {"Animation playing · steady-field visualization, not a transient CFD solution"}else{"Animation paused"}.into())
             }
             3=>{state.post.playing=false;state.post.phase=0.0;Ok("Animation reset".into())}
             4=>{state.post.probes.clear();state.active_result_probe=None;Ok("Probes cleared".into())}
             5=>{state.post.playing=false;state.streamline_seed_mode=true;state.show_mesh=false;state.show_geometry_3d=false;Ok("Click inside the 2D fluid to place a streamline seed".into())}
-            6=>{state.show_mesh=!state.show_mesh;state.show_geometry_3d=false;Ok("Result view updated".into())}
+            6=>{state.show_mesh = !state.show_mesh;state.show_geometry_3d=false;Ok("Result view updated".into())}
             _=>Err("Unknown result action".into()),
         }})();
         feedback(&ui,&mut state,result.unwrap_or_else(|e|e));refresh_ui(&ui,&state);
@@ -540,7 +546,7 @@ pub(super) fn bind(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
                     let (w, h) = (base.width(), base.height());
                     let pixels = base.as_bytes().to_vec();
                     let traces = state.post.traces.clone();
-                    let view = state.mesh_view.clone();
+                    let view = state.mesh_view;
                     let destination = path.clone();
                     let (tx, rx) = std::sync::mpsc::channel();
                     std::thread::spawn(move || {
@@ -622,11 +628,15 @@ pub(super) fn tick(ui: &MainWindow, state: &mut AppState) -> bool {
     ui.set_solver_paused(state.solving && state.workbench_jobs.is_paused());
     if state.post.plane_playing && state.current_step == 4 && ui.get_post_tab() == 5 {
         let now = std::time::Instant::now();
-        if state.post.plane_tick.is_none_or(|t| now.duration_since(t).as_millis() >= (1000 / ui.get_flow_plane_fps().max(1)) as u128) {
+        if state.post.plane_tick.is_none_or(|t| {
+            now.duration_since(t).as_millis() >= (1000 / ui.get_flow_plane_fps().max(1)) as u128
+        }) {
             state.post.plane_tick = Some(now);
             if state.post.plane_frame + 1 < state.post.plane_frames.len() {
                 state.post.plane_frame += 1;
-            } else { state.post.plane_playing = false; }
+            } else {
+                state.post.plane_playing = false;
+            }
             plane_monitors::show_latest(ui, state);
         }
     }
@@ -686,12 +696,36 @@ pub(super) fn tick(ui: &MainWindow, state: &mut AppState) -> bool {
 }
 
 pub(super) fn refresh(ui: &MainWindow, state: &AppState) {
-    let identity=state.post.wall_report_time.map(|t|format!("Sample at physical time {t:.9e} s\n")).or_else(||state.post.wall_report_index.map(|i|format!("Sample at iteration {i}\n"))).unwrap_or_default();
-    ui.set_post_wall_summary((identity+&flursys::workbench::wall_reports::summary(&state.post.wall_reports)).into());
+    let identity = state
+        .post
+        .wall_report_time
+        .map(|t| format!("Sample at physical time {t:.9e} s\n"))
+        .or_else(|| {
+            state
+                .post
+                .wall_report_index
+                .map(|i| format!("Sample at iteration {i}\n"))
+        })
+        .unwrap_or_default();
+    ui.set_post_wall_summary(
+        (identity + &flursys::workbench::wall_reports::summary(&state.post.wall_reports)).into(),
+    );
     ui.set_post_has_wall_report(!state.post.wall_reports.is_empty());
-    ui.set_post_has_wall_samples(state.post.wall_reports.iter().any(|r|!r.samples.is_empty()));
-    if matches!(state.current_step,3|4) {plane_monitors::show_latest(ui,state);}
-    if state.current_step==3 {convergence_plot::refresh(ui,state);}else{ui.set_continuity_chart_caption(chart_caption(state, ui.get_wb_chart_kind()).into());}
+    ui.set_post_has_wall_samples(
+        state
+            .post
+            .wall_reports
+            .iter()
+            .any(|r| !r.samples.is_empty()),
+    );
+    if matches!(state.current_step, 3 | 4) {
+        plane_monitors::show_latest(ui, state);
+    }
+    if state.current_step == 3 {
+        convergence_plot::refresh(ui, state);
+    } else {
+        ui.set_continuity_chart_caption(chart_caption(state, ui.get_wb_chart_kind()).into());
+    }
     ui.set_post_has_result(state.active_result().is_some());
     ui.set_post_is_3d(
         state
@@ -769,8 +803,16 @@ pub(super) fn refresh(ui: &MainWindow, state: &AppState) {
         format!(
             "{} · {} {iteration} / {} · elapsed {:.2} s",
             status_label(&state.workbench),
-            if ui.get_wb_time_mode()!=0 {"physical step"}else{"iteration"},
-            if ui.get_wb_time_mode()!=0 {state.post.limit.max(ui.get_wb_time_steps() as usize)}else{state.post.limit.max(ui.get_wb_max_iterations() as usize)},
+            if ui.get_wb_time_mode() != 0 {
+                "physical step"
+            } else {
+                "iteration"
+            },
+            if ui.get_wb_time_mode() != 0 {
+                state.post.limit.max(ui.get_wb_time_steps() as usize)
+            } else {
+                state.post.limit.max(ui.get_wb_max_iterations() as usize)
+            },
             state.post.elapsed
         )
         .into(),
@@ -782,7 +824,10 @@ pub(super) fn refresh(ui: &MainWindow, state: &AppState) {
             0
         });
         let mut f = field(ui.get_result_field_index());
-        if data.scalar_values(f).is_empty() {ui.set_result_field_index(0);f=ResultFieldKind::VelocityMagnitude;}
+        if data.scalar_values(f).is_empty() {
+            ui.set_result_field_index(0);
+            f = ResultFieldKind::VelocityMagnitude;
+        }
         let values = data.scalar_values(f);
         if let (Some((imin, vmin)), Some((imax, vmax))) = (
             values.iter().enumerate().min_by(|a, b| a.1.total_cmp(b.1)),
@@ -899,24 +944,30 @@ mod tests {
     }
     #[test]
     fn archived_report_preserves_saved_settings_and_exports_statistics() {
-        let folder=tempfile::tempdir().unwrap();
-        let mut state=AppState::new();
-        let record=state.workbench_project.next_run(flursys::RunStatus::Converged);
-        let path=folder.path().join(&record.report_path);
+        let folder = tempfile::tempdir().unwrap();
+        let mut state = AppState::new();
+        let record = state
+            .workbench_project
+            .next_run(flursys::RunStatus::Converged);
+        let path = folder.path().join(&record.report_path);
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path,r#"{"material":{"density":1234.5},"solver_version":"fixture-version","conservation":{"net_mass_flux":0.0}}"#).unwrap();
         state.workbench_project.runs.push(record);
-        state.workspace_path=Some(folder.path().to_path_buf());
+        state.workspace_path = Some(folder.path().to_path_buf());
         state.install_result_dataset(dataset()).unwrap();
-        let html=result_analysis::report(&state).unwrap();
-        assert!(html.contains("1234.5"));assert!(html.contains("fixture-version"));
-        assert!(html.contains("Conservative mass balance"));assert!(html.contains("Result mesh quality"));
+        let html = result_analysis::report(&state).unwrap();
+        assert!(html.contains("1234.5"));
+        assert!(html.contains("fixture-version"));
+        assert!(html.contains("Conservative mass balance"));
+        assert!(html.contains("Result mesh quality"));
         assert!(!html.contains("Archived run settings unavailable"));
-        let csv=result_analysis::engineering_summary_csv(&state).unwrap();
+        let csv = result_analysis::engineering_summary_csv(&state).unwrap();
         assert!(csv.starts_with("quantity,minimum,maximum,volume_weighted_mean\n"));
-        assert!(csv.lines().count()>4);
+        assert!(csv.lines().count() > 4);
         std::fs::remove_file(path).unwrap();
-        assert!(result_analysis::report(&state).unwrap().contains("Archived run settings unavailable"));
+        assert!(result_analysis::report(&state)
+            .unwrap()
+            .contains("Archived run settings unavailable"));
     }
 
     #[test]
