@@ -3,6 +3,9 @@ use std::cell::RefCell;
 
 pub trait Preconditioner {
     fn len(&self) -> usize;
+    fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
     fn apply_into(&self, residual: &[f64], output: &mut [f64]) -> Result<(), LinearAlgebraError>;
 }
 

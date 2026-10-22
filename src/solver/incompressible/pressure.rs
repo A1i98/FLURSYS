@@ -510,10 +510,10 @@ impl IncompressibleSolver {
         }
         self.pool.install(|| {
             result.par_chunks_mut(nx).enumerate().for_each(|(j, row)| {
-                for i in 0..nx {
+                for (i, value) in row.iter_mut().enumerate() {
                     let k = i + nx * j;
                     if identity[k] {
-                        row[i] = x[k];
+                        *value = x[k];
                         continue;
                     }
                     let mut neighbour_sum = 0.0;
@@ -530,7 +530,7 @@ impl IncompressibleSolver {
                     if mask & PressureStencil2D::SOUTH != 0 {
                         neighbour_sum += idy2 * x[k - nx];
                     }
-                    row[i] = diagonal[k] * x[k] - neighbour_sum;
+                    *value = diagonal[k] * x[k] - neighbour_sum;
                 }
             });
         });
@@ -602,13 +602,13 @@ impl IncompressibleSolver {
         }
         self.pool.install(|| {
             z.par_chunks_mut(nx).enumerate().for_each(|(j, row)| {
-                for i in 0..nx {
+                for (i, value) in row.iter_mut().enumerate() {
                     let k = i + nx * j;
                     if identity[k] {
-                        row[i] = r[k];
+                        *value = r[k];
                         continue;
                     }
-                    row[i] = if diagonal[k] > 0.0 {
+                    *value = if diagonal[k] > 0.0 {
                         r[k] / diagonal[k]
                     } else {
                         r[k]

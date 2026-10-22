@@ -316,10 +316,15 @@ fn geometric_aggregation_preserves_a_masked_pressure_solution_and_rejects_bad_we
     let matrix = pressure_matrix(nx, ny, 1.0);
     let mut weights = vec![0.0; matrix.nnz()];
     for row in 0..matrix.nrows() {
-        for entry in matrix.row_offsets()[row]..matrix.row_offsets()[row + 1] {
+        for (entry, weight) in weights
+            .iter_mut()
+            .enumerate()
+            .take(matrix.row_offsets()[row + 1])
+            .skip(matrix.row_offsets()[row])
+        {
             let column = matrix.column_indices()[entry];
             if column != row {
-                weights[entry] = if column.abs_diff(row) == nx { 0.2 } else { 0.1 };
+                *weight = if column.abs_diff(row) == nx { 0.2 } else { 0.1 };
             }
         }
     }

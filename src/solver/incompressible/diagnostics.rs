@@ -157,6 +157,13 @@ fn wall_pressure(owner: f64, away: Option<f64>) -> f64 {
     away.map_or(owner, |away| owner + 0.5 * (owner - away))
 }
 
+pub(super) fn max_field_difference(a: &Field2D, b: &Field2D) -> f64 {
+    a.as_slice()
+        .iter()
+        .zip(b.as_slice())
+        .fold(0.0_f64, |m, (&x, &y)| m.max((x - y).abs()))
+}
+
 #[cfg(test)]
 mod force_tests {
     use super::wall_pressure;
@@ -170,11 +177,4 @@ mod force_tests {
         let before = wall_pressure(2.0, Some(3.0));
         assert_eq!(wall_pressure(102.0, Some(103.0)) - before, 100.0);
     }
-}
-
-pub(super) fn max_field_difference(a: &Field2D, b: &Field2D) -> f64 {
-    a.as_slice()
-        .iter()
-        .zip(b.as_slice())
-        .fold(0.0_f64, |m, (&x, &y)| m.max((x - y).abs()))
 }

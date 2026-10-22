@@ -13,7 +13,7 @@ impl IncompressibleSolver {
             diag.velocity_change,
             diag.momentum_equation_residual
                 .map(|value| format!("{value:.12e}"))
-                .unwrap_or_else(|| "".to_string()),
+                .unwrap_or_default(),
             diag.max_speed,
             diag.cd,
             diag.cl,

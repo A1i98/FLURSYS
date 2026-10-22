@@ -69,13 +69,12 @@ pub(super) fn galerkin(
     // both CSR entries identical also keeps the coarse PCG operator symmetric.
     let mirrored: Vec<_> = coefficients
         .iter()
-        .filter_map(|(&(row, column), &value)| {
-            (row < column).then(|| {
-                (
-                    (row, column),
-                    0.5 * value + 0.5 * coefficients[&(column, row)],
-                )
-            })
+        .filter(|&(&(row, column), &_value)| row < column)
+        .map(|(&(row, column), &value)| {
+            (
+                (row, column),
+                0.5 * value + 0.5 * coefficients[&(column, row)],
+            )
         })
         .collect();
     for ((row, column), value) in mirrored {

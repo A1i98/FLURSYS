@@ -152,8 +152,8 @@ impl IncompressibleSolver {
         // as snapshots instead of cloning both face fields every outer step.
         let u_before = self.u.as_slice();
         let v_before = self.v.as_slice();
-        let transient_coefficient = if transient_reference.is_some() {
-            self.grid.dx * self.grid.dy * transient_reference.unwrap().weights[0] / step_dt
+        let transient_coefficient = if let Some(reference) = transient_reference {
+            self.grid.dx * self.grid.dy * reference.weights[0] / step_dt
         } else {
             0.0
         };
@@ -373,7 +373,7 @@ impl IncompressibleSolver {
         let u_matrix = &workspace.u_matrix;
         let u_diagonal = u_matrix.diagonal().map_err(|e| e.to_string())?;
         let mut u_pressure_diagonal =
-            Self::pressure_coupling_diagonal(&u_matrix, &u_diagonal, consistent);
+            Self::pressure_coupling_diagonal(u_matrix, &u_diagonal, consistent);
         let transient_pressure_outlet = transient_reference.is_some()
             && matches!(
                 self.cfg
@@ -391,13 +391,13 @@ impl IncompressibleSolver {
         // solution. Cloning `u_before` here allocated another full field on
         // every implicit iteration even though `u_star` already has the right
         // size and is reused by the other coupling modes.
-        self.u_star.as_mut_slice().copy_from_slice(&u_before);
+        self.u_star.as_mut_slice().copy_from_slice(u_before);
         let u_solve_profile = ProfileScope::new(ProfileStage::USolve);
-        let u_preconditioner = SymmetricGaussSeidelPreconditioner::new(&u_matrix)
+        let u_preconditioner = SymmetricGaussSeidelPreconditioner::new(u_matrix)
             .map_err(|e| format!("cannot build u-momentum Gauss-Seidel preconditioner: {e}"))?;
         let u_report = bicgstab_with_preconditioner_and_workspace(
-            &u_matrix,
-            &u_rhs,
+            u_matrix,
+            u_rhs,
             self.u_star.as_mut_slice(),
             &u_preconditioner,
             momentum_options,
@@ -411,7 +411,7 @@ impl IncompressibleSolver {
                 u_report.final_residual, u_report.iterations
             ));
         }
-        let u_equation_residual = normalized_linear_residual(u_report.final_residual, &u_rhs);
+        let u_equation_residual = normalized_linear_residual(u_report.final_residual, u_rhs);
 
         let v_assembly_profile = ProfileScope::new(ProfileStage::VAssembly);
         workspace.v_builder.clear();
@@ -568,16 +568,16 @@ impl IncompressibleSolver {
         let v_matrix = &workspace.v_matrix;
         let v_diagonal = v_matrix.diagonal().map_err(|e| e.to_string())?;
         let v_pressure_diagonal =
-            Self::pressure_coupling_diagonal(&v_matrix, &v_diagonal, consistent);
+            Self::pressure_coupling_diagonal(v_matrix, &v_diagonal, consistent);
         // Match the u path: keep the BiCGStab iterate in the persistent face
         // field rather than allocating a fresh vector for each outer step.
-        self.v_star.as_mut_slice().copy_from_slice(&v_before);
+        self.v_star.as_mut_slice().copy_from_slice(v_before);
         let v_solve_profile = ProfileScope::new(ProfileStage::VSolve);
-        let v_preconditioner = SymmetricGaussSeidelPreconditioner::new(&v_matrix)
+        let v_preconditioner = SymmetricGaussSeidelPreconditioner::new(v_matrix)
             .map_err(|e| format!("cannot build v-momentum Gauss-Seidel preconditioner: {e}"))?;
         let v_report = bicgstab_with_preconditioner_and_workspace(
-            &v_matrix,
-            &v_rhs,
+            v_matrix,
+            v_rhs,
             self.v_star.as_mut_slice(),
             &v_preconditioner,
             momentum_options,
@@ -591,12 +591,12 @@ impl IncompressibleSolver {
                 v_report.final_residual, v_report.iterations
             ));
         }
-        let v_equation_residual = normalized_linear_residual(v_report.final_residual, &v_rhs);
+        let v_equation_residual = normalized_linear_residual(v_report.final_residual, v_rhs);
 
         // Separate the pressure force so each transient corrector can rebuild
         // the momentum predictor using the latest pressure and neighbour values.
-        workspace.u_pressure_free_rhs.copy_from_slice(&u_rhs);
-        workspace.v_pressure_free_rhs.copy_from_slice(&v_rhs);
+        workspace.u_pressure_free_rhs.copy_from_slice(u_rhs);
+        workspace.v_pressure_free_rhs.copy_from_slice(v_rhs);
         for j in 0..ny {
             for i in 1..nx {
                 if u_face_open(&self.solid, nx, i, j) {

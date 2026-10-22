@@ -61,9 +61,9 @@ impl Closure {
             let nut = self.fields.nut[i];
             let tr = (0..3).map(|a| g[i][a][a]).sum::<f64>();
             let mut strain = 0.0;
-            for a in 0..3 {
-                for b in 0..3 {
-                    strain += 0.5 * (g[i][a][b] + g[i][b][a]).powi(2);
+            for (a, row) in g[i].iter().enumerate() {
+                for (b, value) in row.iter().enumerate() {
+                    strain += 0.5 * (value + g[i][b][a]).powi(2);
                 }
             }
             let production =

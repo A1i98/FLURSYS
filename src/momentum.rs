@@ -87,8 +87,10 @@ impl ResolvedVelocityBoundaryConditions {
         })
     }
 
-    pub(crate) fn set_cyclic(&mut self,map:std::sync::Arc<crate::periodic::CyclicMap>){
-        self.x.set_cyclic(map.clone());self.y.set_cyclic(map.clone());self.z.set_cyclic(map);
+    pub(crate) fn set_cyclic(&mut self, map: std::sync::Arc<crate::periodic::CyclicMap>) {
+        self.x.set_cyclic(map.clone());
+        self.y.set_cyclic(map.clone());
+        self.z.set_cyclic(map);
     }
     pub(crate) fn set_face_velocity(&mut self, face: usize, velocity: Option<Vec3>) {
         for (boundary, value) in [
@@ -230,9 +232,13 @@ pub fn assemble_momentum_component(
 }
 /// Positive implicit reaction coefficient, in inverse seconds, before relaxation.
 pub(crate) fn assemble_momentum_component_with_sink(
-    mesh:&UnstructuredMesh, options:MomentumOptions<'_>, sink:Option<&CellField<f64>>,
-)->Result<MomentumSystem,MomentumError>{
-    if let Some(s)=sink{s.ensure_mesh(mesh)?;}
+    mesh: &UnstructuredMesh,
+    options: MomentumOptions<'_>,
+    sink: Option<&CellField<f64>>,
+) -> Result<MomentumSystem, MomentumError> {
+    if let Some(s) = sink {
+        s.ensure_mesh(mesh)?;
+    }
     options.boundary.ensure_mesh(mesh)?;
     options.flux.ensure_mesh(mesh)?;
     if let Some(old) = options.old {
@@ -274,10 +280,15 @@ pub(crate) fn assemble_momentum_component_with_sink(
     let mut entries = Vec::with_capacity(mesh.face_count() * 4 + mesh.cell_count());
     let mut rhs = vec![0.0; mesh.cell_count()];
     for (cell_index, cell) in mesh.cells().iter().enumerate() {
-        if let Some(s)=sink {
-            let coefficient=s[cell_index]*cell.volume;
-            if !coefficient.is_finite()||coefficient<0.0{return Err(MomentumError::NonFiniteSource{cell:cell_index,value:coefficient})}
-            entries.push((cell_index,cell_index,coefficient));
+        if let Some(s) = sink {
+            let coefficient = s[cell_index] * cell.volume;
+            if !coefficient.is_finite() || coefficient < 0.0 {
+                return Err(MomentumError::NonFiniteSource {
+                    cell: cell_index,
+                    value: coefficient,
+                });
+            }
+            entries.push((cell_index, cell_index, coefficient));
         }
         if let Some(source) = options.source {
             if !source[cell_index].is_finite() {
@@ -326,15 +337,27 @@ pub(crate) fn assemble_momentum_component_with_sink(
                 (neighbour, face.owner, -diffusion - phi.max(0.0)),
                 (neighbour, neighbour, diffusion - phi.min(0.0)),
             ]);
-        } else if let Some((n,_))=options.boundary.cyclic_neighbour(mesh,face_index){
-            let canonical=options.boundary.cyclic_link(face_index).map(|l|face_index.min(l.peer_face)).unwrap_or(face_index);
-            let canonical_face=&mesh.faces()[canonical];
-            let (_,image)=options.boundary.cyclic_neighbour(mesh,canonical).ok_or(NumericsError::InvalidNonOrthogonalGeometry{face:canonical})?;
-            let d=image-mesh.cells()[canonical_face.owner].center;
-            let diffusion=viscosity[canonical]*canonical_face.area_vector.dot(d)/d.norm_squared();
-            if !diffusion.is_finite()||diffusion<0.0{return Err(NumericsError::InvalidNonOrthogonalGeometry{face:face_index}.into())}
-            entries.push((face.owner,face.owner,diffusion+phi.max(0.0)));
-            entries.push((face.owner,n,-diffusion+phi.min(0.0)));
+        } else if let Some((n, _)) = options.boundary.cyclic_neighbour(mesh, face_index) {
+            let canonical = options
+                .boundary
+                .cyclic_link(face_index)
+                .map(|l| face_index.min(l.peer_face))
+                .unwrap_or(face_index);
+            let canonical_face = &mesh.faces()[canonical];
+            let (_, image) = options
+                .boundary
+                .cyclic_neighbour(mesh, canonical)
+                .ok_or(NumericsError::InvalidNonOrthogonalGeometry { face: canonical })?;
+            let d = image - mesh.cells()[canonical_face.owner].center;
+            let diffusion =
+                viscosity[canonical] * canonical_face.area_vector.dot(d) / d.norm_squared();
+            if !diffusion.is_finite() || diffusion < 0.0 {
+                return Err(
+                    NumericsError::InvalidNonOrthogonalGeometry { face: face_index }.into(),
+                );
+            }
+            entries.push((face.owner, face.owner, diffusion + phi.max(0.0)));
+            entries.push((face.owner, n, -diffusion + phi.min(0.0)));
         } else {
             let condition = options
                 .boundary
@@ -361,7 +384,16 @@ pub(crate) fn assemble_momentum_component_with_sink(
                     if phi < 0.0 && !options.allow_iterative_outlet_backflow {
                         return Err(MomentumError::BackflowOnZeroGradient { face: face_index });
                     }
-                    entries.push((face.owner, face.owner, phi));
+                    // Iterative outlet backflow uses the previous owner value as
+                    // incoming data. Keep the implicit diagonal nonnegative.
+                    entries.push((face.owner, face.owner, phi.max(0.0)));
+                    if phi < 0.0 {
+                        let previous = options
+                            .correction_field
+                            .or(options.relaxation_field)
+                            .ok_or(MomentumError::MissingCorrectionField)?;
+                        rhs[face.owner] -= phi * previous[face.owner];
+                    }
                 }
             }
         }
@@ -514,11 +546,17 @@ pub fn solve_momentum_velocity(
     velocity: &mut CellField<Vec3>,
     options: LinearSolverOptions,
 ) -> Result<[LinearSolveReport; 3], MomentumError> {
-    solve_momentum_velocity_with_controls(systems,velocity,crate::equations::EquationControl::from_options(options))
+    solve_momentum_velocity_with_controls(
+        systems,
+        velocity,
+        crate::equations::EquationControl::from_options(options),
+    )
 }
 pub fn solve_momentum_velocity_with_controls(
-    systems:[&MomentumSystem;3],velocity:&mut CellField<Vec3>,controls:crate::equations::EquationControl,
-)->Result<[LinearSolveReport;3],MomentumError>{
+    systems: [&MomentumSystem; 3],
+    velocity: &mut CellField<Vec3>,
+    controls: crate::equations::EquationControl,
+) -> Result<[LinearSolveReport; 3], MomentumError> {
     for system in systems {
         if system.mesh_id() != velocity.mesh_id() {
             return Err(FieldError::MeshMismatch {
@@ -1224,6 +1262,33 @@ mod tests {
             ),
             Err(MomentumError::BackflowOnZeroGradient { face: actual }) if actual == face
         ));
+    }
+
+    #[test]
+    fn iterative_backflow_keeps_positive_diagonal_and_lags_incoming_velocity() {
+        let mesh = channel(1);
+        let face = mesh
+            .faces()
+            .iter()
+            .position(|f| f.neighbour.is_none())
+            .unwrap();
+        let assignments: Vec<_> = mesh
+            .boundary_patches()
+            .iter()
+            .map(|p| (p.name.as_str(), ScalarBoundaryCondition::ZeroGradient))
+            .collect();
+        let boundary = ResolvedScalarBoundaryConditions::strict(&mesh, &assignments).unwrap();
+        let mut flux = FaceField::filled(&mesh, 0.0);
+        flux[face] = -2.0;
+        let old = CellField::filled(&mesh, 3.0);
+        let mut options = MomentumOptions::steady(Diffusivity::Constant(0.0), &boundary, &flux);
+        options.old = Some(&old);
+        options.time_step = Some(1.0);
+        options.correction_field = Some(&old);
+        options.allow_iterative_outlet_backflow = true;
+        let system = assemble_momentum_component(&mesh, options).unwrap();
+        assert_eq!(system.matrix().get(0, 0), Some(1.0));
+        assert_eq!(system.rhs(), &[9.0]);
     }
 
     #[test]

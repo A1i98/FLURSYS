@@ -61,7 +61,11 @@ pub(super) fn build(
         let (mut map, mut count) = if terminal {
             (Vec::new(), current.nrows())
         } else {
-            let result = aggregation::pairs(&current, pairing_stage % 2 == 0, weights.as_deref());
+            let result = aggregation::pairs(
+                &current,
+                pairing_stage.is_multiple_of(2),
+                weights.as_deref(),
+            );
             pairing_stage += 1;
             result
         };
@@ -90,8 +94,11 @@ pub(super) fn build(
             if SymmetricMatrix::new(&coarse)?.coupled_rows() <= options.coarsest_cells {
                 break;
             }
-            let (next_map, next_count) =
-                aggregation::pairs(&coarse, pairing_stage % 2 == 0, next_weights.as_deref());
+            let (next_map, next_count) = aggregation::pairs(
+                &coarse,
+                pairing_stage.is_multiple_of(2),
+                next_weights.as_deref(),
+            );
             pairing_stage += 1;
             if next_count == count {
                 break;

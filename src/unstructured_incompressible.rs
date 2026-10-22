@@ -5,22 +5,23 @@
 //! remains in `crate::simple`.
 
 use crate::{
-    NumericsError,
     initial_face_flux, CellField, Diffusivity, FaceField, FieldError, LeastSquaresGradientStencil,
-    LinearSolverOptions, ResolvedScalarBoundaryConditions, ResolvedVelocityBoundaryConditions,
-    ScalarBoundaryCondition, SimpleError, SimpleOptions, SimpleReport, SimpleState,
-    UnstructuredMesh, Vec3, VelocityBoundaryCondition,
+    LinearSolverOptions, NumericsError, ResolvedScalarBoundaryConditions,
+    ResolvedVelocityBoundaryConditions, ScalarBoundaryCondition, SimpleError, SimpleOptions,
+    SimpleReport, SimpleState, UnstructuredMesh, Vec3, VelocityBoundaryCondition,
 };
 
-mod time;
 mod profiles;
-pub use profiles::{BoundaryProfiles,BoundaryProfile,BoundaryQuantity,TimeSample};
+mod time;
+pub use profiles::{BoundaryProfile, BoundaryProfiles, BoundaryQuantity, TimeSample};
 pub use time::{AdaptiveTimeStep, TimeIntegration};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum IncompressibleBoundaryCondition {
     /// Kinematic total pressure on inflow, static pressure on outflow; natural velocity opening.
-    TotalPressure { pressure:f64 },
+    TotalPressure {
+        pressure: f64,
+    },
     /// Truncated planar parabola. Velocity is the peak; axis is transverse (0=X,1=Y,2=Z).
     ParabolicInlet {
         velocity: Vec3,
@@ -69,13 +70,13 @@ pub struct IncompressibleMaterial {
 #[derive(Clone, Debug, PartialEq)]
 pub struct IncompressibleSolverOptions {
     pub time: TimeIntegration,
-    pub pressure_coupling:crate::simple::PressureCoupling,
-    pub volume_models:crate::volume_models::VolumeModels,
-    pub cyclic_pairs:Vec<crate::periodic::TranslationalCyclicPair>,
-    pub equations:Option<crate::equations::EquationSolvers>,
-    pub boundary_profiles:BoundaryProfiles,
+    pub pressure_coupling: crate::simple::PressureCoupling,
+    pub volume_models: crate::volume_models::VolumeModels,
+    pub cyclic_pairs: Vec<crate::periodic::TranslationalCyclicPair>,
+    pub equations: Option<crate::equations::EquationSolvers>,
+    pub boundary_profiles: BoundaryProfiles,
     pub turbulence: crate::turbulence::TurbulenceOptions,
-    pub thermal:crate::thermal::Options,
+    pub thermal: crate::thermal::Options,
     pub convection: crate::momentum::MomentumConvection,
     /// Private worker-pool size; zero uses the CPUs available to this process.
     /// Momentum components can run concurrently; pressure is currently serial.
@@ -90,32 +91,42 @@ pub struct IncompressibleSolverOptions {
 }
 
 impl IncompressibleSolverOptions {
-    pub fn resolve_cyclic(&self,mesh:&UnstructuredMesh)->Result<crate::periodic::CyclicMap,String>{
-        if !self.cyclic_pairs.is_empty(){
-            if self.turbulence.model!=crate::turbulence::TurbulenceModel::Laminar||self.thermal.enabled
-                ||self.convection!=crate::momentum::MomentumConvection::Upwind||self.volume_models.rotating_frame.is_some(){
-                return Err("Workbench cyclic currently requires laminar, isothermal, first-order upwind flow in an inertial frame".into())
+    pub fn resolve_cyclic(
+        &self,
+        mesh: &UnstructuredMesh,
+    ) -> Result<crate::periodic::CyclicMap, String> {
+        if !self.cyclic_pairs.is_empty() {
+            if self.turbulence.model != crate::turbulence::TurbulenceModel::Laminar
+                || self.thermal.enabled
+                || self.convection != crate::momentum::MomentumConvection::Upwind
+                || self.volume_models.rotating_frame.is_some()
+            {
+                return Err("Workbench cyclic currently requires laminar, isothermal, first-order upwind flow in an inertial frame".into());
             }
-            for pair in &self.cyclic_pairs{
-                if self.boundary_profiles.contains_key(&pair.first)||self.boundary_profiles.contains_key(&pair.second){
-                    return Err("Cyclic patches cannot also have physical boundary time tables".into())
+            for pair in &self.cyclic_pairs {
+                if self.boundary_profiles.contains_key(&pair.first)
+                    || self.boundary_profiles.contains_key(&pair.second)
+                {
+                    return Err(
+                        "Cyclic patches cannot also have physical boundary time tables".into(),
+                    );
                 }
             }
         }
-        crate::periodic::resolve(mesh,&self.cyclic_pairs)
+        crate::periodic::resolve(mesh, &self.cyclic_pairs)
     }
 }
 impl Default for IncompressibleSolverOptions {
     fn default() -> Self {
         Self {
             time: TimeIntegration::Steady,
-            pressure_coupling:Default::default(),
-            volume_models:Default::default(),
-            cyclic_pairs:Vec::new(),
-            equations:None,
-            boundary_profiles:Default::default(),
+            pressure_coupling: Default::default(),
+            volume_models: Default::default(),
+            cyclic_pairs: Vec::new(),
+            equations: None,
+            boundary_profiles: Default::default(),
             turbulence: crate::turbulence::TurbulenceOptions::default(),
-            thermal:crate::thermal::Options::default(),
+            thermal: crate::thermal::Options::default(),
             convection: crate::momentum::MomentumConvection::Upwind,
             threads: 1,
             max_outer_iterations: 1000,
@@ -130,6 +141,7 @@ impl Default for IncompressibleSolverOptions {
 }
 
 #[derive(Clone, Debug)]
+#[allow(clippy::large_enum_variant)] // Preserve the public value-based API.
 pub enum IncompressibleInitialConditions {
     Restart {
         velocity: CellField<Vec3>,
@@ -137,7 +149,7 @@ pub enum IncompressibleInitialConditions {
         face_flux: FaceField<f64>,
         time: f64,
         last_dt: Option<f64>,
-        temperature:Option<CellField<f64>>,
+        temperature: Option<CellField<f64>>,
         turbulence: Option<crate::turbulence::TurbulenceFields>,
     },
     Uniform {
@@ -339,7 +351,8 @@ impl IncompressibleCase {
                     correction_assignments
                         .push((name.as_str(), ScalarBoundaryCondition::ZeroGradient));
                 }
-                IncompressibleBoundaryCondition::TotalPressure { pressure } | IncompressibleBoundaryCondition::PressureOutlet { pressure } => {
+                IncompressibleBoundaryCondition::TotalPressure { pressure }
+                | IncompressibleBoundaryCondition::PressureOutlet { pressure } => {
                     if !pressure.is_finite() {
                         return Err(IncompressibleCaseError::InvalidOutletPressure {
                             patch: name.clone(),
@@ -355,12 +368,18 @@ impl IncompressibleCase {
                 }
             }
         }
-        for pair in &self.solver.cyclic_pairs{
-            for name in [&pair.first,&pair.second]{
-                if self.boundaries.iter().any(|(n,_)|n==name){return Err(IncompressibleCaseError::Numerics(NumericsError::DuplicateBoundaryPatchCondition{patch:name.clone()}))}
-                velocity_assignments.push((name.as_str(),VelocityBoundaryCondition::ZeroGradient));
-                pressure_assignments.push((name.as_str(),ScalarBoundaryCondition::ZeroGradient));
-                correction_assignments.push((name.as_str(),ScalarBoundaryCondition::ZeroGradient));
+        for pair in &self.solver.cyclic_pairs {
+            for name in [&pair.first, &pair.second] {
+                if self.boundaries.iter().any(|(n, _)| n == name) {
+                    return Err(IncompressibleCaseError::Numerics(
+                        NumericsError::DuplicateBoundaryPatchCondition {
+                            patch: name.clone(),
+                        },
+                    ));
+                }
+                velocity_assignments.push((name.as_str(), VelocityBoundaryCondition::ZeroGradient));
+                pressure_assignments.push((name.as_str(), ScalarBoundaryCondition::ZeroGradient));
+                correction_assignments.push((name.as_str(), ScalarBoundaryCondition::ZeroGradient));
             }
         }
         let mut velocity_boundary =
@@ -450,13 +469,21 @@ impl IncompressibleCase {
                         velocity_boundary.set_face_velocity(i, Some(value));
                         boundary_flux[i] = -flow_speed * face.area_vector.norm();
                     }
-                    IncompressibleBoundaryCondition::TotalPressure {pressure}=>{
-                        let u=velocity.map(|v|v[face.owner]).unwrap_or(Vec3::ZERO);
-                        let q=flux.map(|v|v[i]).unwrap_or_else(||u.dot(face.area_vector));
-                        let p=pressure-if q<0.0 {0.5*u.dot(u)}else{0.0};
-                        if !p.is_finite(){return Err(IncompressibleCaseError::InvalidOutletPressure{patch:name.clone(),pressure:p});}
-                        pressure_boundary.set_condition(i,ScalarBoundaryCondition::FixedValue(p));
-                        pressure_correction_boundary.set_condition(i,ScalarBoundaryCondition::FixedValue(0.0));
+                    IncompressibleBoundaryCondition::TotalPressure { pressure } => {
+                        let u = velocity.map(|v| v[face.owner]).unwrap_or(Vec3::ZERO);
+                        let q = flux
+                            .map(|v| v[i])
+                            .unwrap_or_else(|| u.dot(face.area_vector));
+                        let p = pressure - if q < 0.0 { 0.5 * u.dot(u) } else { 0.0 };
+                        if !p.is_finite() {
+                            return Err(IncompressibleCaseError::InvalidOutletPressure {
+                                patch: name.clone(),
+                                pressure: p,
+                            });
+                        }
+                        pressure_boundary.set_condition(i, ScalarBoundaryCondition::FixedValue(p));
+                        pressure_correction_boundary
+                            .set_condition(i, ScalarBoundaryCondition::FixedValue(0.0));
                     }
                     IncompressibleBoundaryCondition::PressureOutletBackflow {
                         velocity: incoming,
@@ -502,21 +529,40 @@ impl IncompressibleCase {
                 }
             }
         }
-        if !self.solver.cyclic_pairs.is_empty(){
-            let cyclic=std::sync::Arc::new(self.solver.resolve_cyclic(&self.mesh).map_err(|message|IncompressibleCaseError::InvalidCyclic{message})?);
-            velocity_boundary.set_cyclic(cyclic.clone());pressure_boundary.set_cyclic(cyclic.clone());pressure_correction_boundary.set_cyclic(cyclic.clone());
-            let u=|cell:usize|->Vec3{if let Some(u)=velocity{return u[cell]}
-                match &self.initial_conditions{
-                    IncompressibleInitialConditions::Uniform{velocity,..}=>*velocity,
-                    IncompressibleInitialConditions::Fields{velocity,..}|IncompressibleInitialConditions::Restart{velocity,..}=>velocity.values().get(cell).copied().unwrap_or(Vec3::ZERO),
-                }};
-            for (i,face) in self.mesh.faces().iter().enumerate(){
-                if let Some(link)=cyclic.link(i){
-                    if i>link.peer_face{continue}
-                    let peer=&self.mesh.faces()[link.peer_face];let image=self.mesh.cells()[peer.owner].center-link.translation;
-                    let a=(face.center-self.mesh.cells()[face.owner].center).norm();let b=(face.center-image).norm();
-                    let phi=((u(face.owner)*b+u(peer.owner)*a)/(a+b)).dot(face.area_vector);
-                    boundary_flux[i]=phi;boundary_flux[link.peer_face]=-phi;
+        if !self.solver.cyclic_pairs.is_empty() {
+            let cyclic = std::sync::Arc::new(
+                self.solver
+                    .resolve_cyclic(&self.mesh)
+                    .map_err(|message| IncompressibleCaseError::InvalidCyclic { message })?,
+            );
+            velocity_boundary.set_cyclic(cyclic.clone());
+            pressure_boundary.set_cyclic(cyclic.clone());
+            pressure_correction_boundary.set_cyclic(cyclic.clone());
+            let u = |cell: usize| -> Vec3 {
+                if let Some(u) = velocity {
+                    return u[cell];
+                }
+                match &self.initial_conditions {
+                    IncompressibleInitialConditions::Uniform { velocity, .. } => *velocity,
+                    IncompressibleInitialConditions::Fields { velocity, .. }
+                    | IncompressibleInitialConditions::Restart { velocity, .. } => {
+                        velocity.values().get(cell).copied().unwrap_or(Vec3::ZERO)
+                    }
+                }
+            };
+            for (i, face) in self.mesh.faces().iter().enumerate() {
+                if let Some(link) = cyclic.link(i) {
+                    if i > link.peer_face {
+                        continue;
+                    }
+                    let peer = &self.mesh.faces()[link.peer_face];
+                    let image = self.mesh.cells()[peer.owner].center - link.translation;
+                    let a = (face.center - self.mesh.cells()[face.owner].center).norm();
+                    let b = (face.center - image).norm();
+                    let phi =
+                        ((u(face.owner) * b + u(peer.owner) * a) / (a + b)).dot(face.area_vector);
+                    boundary_flux[i] = phi;
+                    boundary_flux[link.peer_face] = -phi;
                 }
             }
         }
@@ -593,7 +639,7 @@ impl ResolvedIncompressibleBoundaries {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum IncompressibleCaseError {
-    InvalidCyclic {message:String},
+    InvalidCyclic { message: String },
     Field(FieldError),
     Numerics(crate::NumericsError),
     UnknownBoundaryPatch { patch: String },
@@ -686,7 +732,7 @@ pub struct IncompressibleSolution {
     pub nonlinear_iterations: usize,
     pub max_courant: Option<f64>,
     pub turbulence: Option<crate::turbulence::TurbulenceFields>,
-    pub temperature:Option<CellField<f64>>,
+    pub temperature: Option<CellField<f64>>,
     pub last_time_step: Option<f64>,
     pub rejected_time_steps: usize,
     pub physical_time: Option<f64>,
@@ -799,7 +845,7 @@ impl IncompressibleSolution {
             face_flux: self.face_flux.clone(),
             time: self.physical_time.unwrap_or(0.0),
             last_dt: self.last_time_step,
-            temperature:self.temperature.clone(),
+            temperature: self.temperature.clone(),
             turbulence: self.turbulence.clone(),
         }
     }
@@ -896,9 +942,11 @@ fn solve_incompressible_on_pool(
     case: &IncompressibleCase,
     control: Option<&SolveControl<'_>>,
     time_step: Option<f64>,
-    older:Option<&IncompressibleInitialConditions>,
+    older: Option<&IncompressibleInitialConditions>,
 ) -> Result<IncompressibleSolution, IncompressibleSolveError> {
-    if let Some(e)=&case.solver.equations{e.validate().map_err(SimpleError::PhysicalBoundary)?;}
+    if let Some(e) = &case.solver.equations {
+        e.validate().map_err(SimpleError::PhysicalBoundary)?;
+    }
     let resolved = case.resolve_boundaries()?;
     let prescribed_flux = case
         .mesh
@@ -1024,12 +1072,23 @@ fn solve_incompressible_on_pool(
     options.coupling_relative_tolerance = case.solver.coupling_relative_tolerance;
     options.velocity_relaxation = case.solver.velocity_relaxation;
     options.pressure_relaxation = case.solver.pressure_relaxation;
-    options.pressure_coupling=case.solver.pressure_coupling;
-    options.volume_models=case.solver.volume_models;
-    if !case.solver.cyclic_pairs.is_empty(){options.pressure_boundary=Some(resolved.pressure_boundary());options.pressure_correction_boundary=Some(resolved.pressure_correction_boundary());}
-    options.equations=case.solver.equations.as_ref();
-    options.momentum_solver = case.solver.equations.as_ref().map_or(case.solver.momentum_solver,|e|e.velocity.options());
-    options.pressure_solver = case.solver.equations.as_ref().map_or(case.solver.pressure_solver,|e|e.pressure.options());
+    options.pressure_coupling = case.solver.pressure_coupling;
+    options.volume_models = case.solver.volume_models;
+    if !case.solver.cyclic_pairs.is_empty() {
+        options.pressure_boundary = Some(resolved.pressure_boundary());
+        options.pressure_correction_boundary = Some(resolved.pressure_correction_boundary());
+    }
+    options.equations = case.solver.equations.as_ref();
+    options.momentum_solver = case
+        .solver
+        .equations
+        .as_ref()
+        .map_or(case.solver.momentum_solver, |e| e.velocity.options());
+    options.pressure_solver = case
+        .solver
+        .equations
+        .as_ref()
+        .map_or(case.solver.pressure_solver, |e| e.pressure.options());
     let initial_turbulence = match &case.initial_conditions {
         IncompressibleInitialConditions::Restart { turbulence, .. } => turbulence.clone(),
         _ => None,
@@ -1043,31 +1102,80 @@ fn solve_incompressible_on_pool(
     } else {
         None
     };
-    let initial_temperature=match &case.initial_conditions {
-        IncompressibleInitialConditions::Restart{temperature,time,..}=>{
-            if case.solver.thermal.enabled && *time>0.0 && temperature.is_none(){return Err(IncompressibleSolveError::Simple(SimpleError::PhysicalBoundary("Thermal transient restart requires saved temperature".into())));}
+    let initial_temperature = match &case.initial_conditions {
+        IncompressibleInitialConditions::Restart {
+            temperature, time, ..
+        } => {
+            if case.solver.thermal.enabled && *time > 0.0 && temperature.is_none() {
+                return Err(IncompressibleSolveError::Simple(
+                    SimpleError::PhysicalBoundary(
+                        "Thermal transient restart requires saved temperature".into(),
+                    ),
+                ));
+            }
             temperature.clone()
-        },_=>None
+        }
+        _ => None,
     };
-    case.solver.thermal.validate().map_err(|e|IncompressibleSolveError::Simple(SimpleError::PhysicalBoundary(e)))?;
-    let thermal=if case.solver.thermal.enabled {Some(std::sync::Mutex::new(crate::thermal::Closure::new(case,initial_temperature)?))}else{None};
-    options.thermal=thermal.as_ref();
+    case.solver
+        .thermal
+        .validate()
+        .map_err(|e| IncompressibleSolveError::Simple(SimpleError::PhysicalBoundary(e)))?;
+    let thermal = if case.solver.thermal.enabled {
+        Some(std::sync::Mutex::new(crate::thermal::Closure::new(
+            case,
+            initial_temperature,
+        )?))
+    } else {
+        None
+    };
+    options.thermal = thermal.as_ref();
     options.closure = closure.as_ref();
     if closure.is_some() {
         options.boundary_case = Some(case);
     }
     let mut temporal_velocity = time_step.map(|_| state.velocity.clone());
     let mut temporal_flux = time_step.map(|_| state.face_flux.clone());
-    if let Some(older)=older {
-        let (u,phi,t,turb)=match older {
-            IncompressibleInitialConditions::Restart{velocity,face_flux,temperature,turbulence,..}=>(velocity.clone(),face_flux.clone(),temperature.clone(),turbulence.clone()),
-            IncompressibleInitialConditions::Uniform{velocity,..}=>{let u=CellField::filled(&case.mesh,*velocity);let phi=initial_face_flux(&case.mesh,&u,resolved.boundary_flux())?;(u,phi,None,None)},
-            IncompressibleInitialConditions::Fields{velocity,..}=>{let phi=initial_face_flux(&case.mesh,velocity,resolved.boundary_flux())?;(velocity.clone(),phi,None,None)},
+    if let Some(older) = older {
+        let (u, phi, t, turb) = match older {
+            IncompressibleInitialConditions::Restart {
+                velocity,
+                face_flux,
+                temperature,
+                turbulence,
+                ..
+            } => (
+                velocity.clone(),
+                face_flux.clone(),
+                temperature.clone(),
+                turbulence.clone(),
+            ),
+            IncompressibleInitialConditions::Uniform { velocity, .. } => {
+                let u = CellField::filled(&case.mesh, *velocity);
+                let phi = initial_face_flux(&case.mesh, &u, resolved.boundary_flux())?;
+                (u, phi, None, None)
+            }
+            IncompressibleInitialConditions::Fields { velocity, .. } => {
+                let phi = initial_face_flux(&case.mesh, velocity, resolved.boundary_flux())?;
+                (velocity.clone(), phi, None, None)
+            }
         };
-        if let Some(v)=&mut temporal_velocity {for (a,b) in v.values_mut().iter_mut().zip(u.values()){*a=*a*(4.0/3.0)-*b/3.0;}}
-        if let Some(v)=&mut temporal_flux {for (a,b) in v.values_mut().iter_mut().zip(phi.values()){*a=*a*(4.0/3.0)-*b/3.0;}}
-        if let Some(c)=&thermal {c.lock().unwrap().backward_old(t.as_ref());}
-        if let Some(c)=&closure {c.lock().unwrap().backward_old(turb.as_ref());}
+        if let Some(v) = &mut temporal_velocity {
+            for (a, b) in v.values_mut().iter_mut().zip(u.values()) {
+                *a = *a * (4.0 / 3.0) - *b / 3.0;
+            }
+        }
+        if let Some(v) = &mut temporal_flux {
+            for (a, b) in v.values_mut().iter_mut().zip(phi.values()) {
+                *a = *a * (4.0 / 3.0) - *b / 3.0;
+            }
+        }
+        if let Some(c) = &thermal {
+            c.lock().unwrap().backward_old(t.as_ref());
+        }
+        if let Some(c) = &closure {
+            c.lock().unwrap().backward_old(turb.as_ref());
+        }
     }
     options.time_step = time_step;
     options.time_velocity = temporal_velocity.as_ref();
@@ -1103,7 +1211,7 @@ fn solve_incompressible_on_pool(
                             time: 0.0,
                             last_dt: None,
                             turbulence: closure.as_ref().map(|c| c.lock().unwrap().fields()),
-                            temperature:thermal.as_ref().map(|t|t.lock().unwrap().field()),
+                            temperature: thermal.as_ref().map(|t| t.lock().unwrap().field()),
                         },
                     )
                     .map_err(SimpleError::Monitor)?;
@@ -1129,7 +1237,7 @@ fn solve_incompressible_on_pool(
                             time: 0.0,
                             last_dt: None,
                             turbulence: closure.as_ref().map(|c| c.lock().unwrap().fields()),
-                            temperature:thermal.as_ref().map(|t|t.lock().unwrap().field()),
+                            temperature: thermal.as_ref().map(|t| t.lock().unwrap().field()),
                         },
                     ) {
                         return IncompressibleSolveError::Simple(SimpleError::Monitor(error));
@@ -1196,7 +1304,9 @@ fn solve_incompressible_on_pool(
         .faces()
         .iter()
         .enumerate()
-        .filter(|(i, face)| face.neighbour.is_none() && resolved.pressure_boundary().cyclic_link(*i).is_none())
+        .filter(|(i, face)| {
+            face.neighbour.is_none() && resolved.pressure_boundary().cyclic_link(*i).is_none()
+        })
         .map(|(face, _)| state.face_flux[face])
         .fold((0.0, 0.0), |(inflow, outflow), flux| {
             if flux < 0.0 {
@@ -1209,7 +1319,7 @@ fn solve_incompressible_on_pool(
         nonlinear_iterations: simple.outer_iterations,
         max_courant: None,
         turbulence: closure.as_ref().map(|c| c.lock().unwrap().fields()),
-        temperature:thermal.as_ref().map(|t|t.lock().unwrap().field()),
+        temperature: thermal.as_ref().map(|t| t.lock().unwrap().field()),
         physical_time: None,
         last_time_step: None,
         rejected_time_steps: 0,
@@ -1308,10 +1418,12 @@ mod tetra_cavity_stability_tests {
                 },
             ])
             .unwrap();
-        let mut options = IncompressibleSolverOptions::default();
-        options.max_outer_iterations = 1000;
-        options.velocity_relaxation = 0.3;
-        options.pressure_relaxation = 0.1;
+        let options = IncompressibleSolverOptions {
+            max_outer_iterations: 1000,
+            velocity_relaxation: 0.3,
+            pressure_relaxation: 0.1,
+            ..Default::default()
+        };
         let case = IncompressibleCase::steady(
             mesh,
             vec![

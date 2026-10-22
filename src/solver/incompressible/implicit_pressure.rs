@@ -13,7 +13,7 @@ enum ImplicitPressurePreconditioner {
 
 enum ImplicitPressureSolver {
     Pcg(ImplicitPressurePreconditioner),
-    Gamg(AlgebraicMultigrid),
+    Gamg(Box<AlgebraicMultigrid>),
 }
 
 impl crate::Preconditioner for ImplicitPressurePreconditioner {
@@ -73,10 +73,15 @@ impl IncompressibleSolver {
                         let matrix = &workspace.pressure_matrix;
                         let mut weights = vec![0.0; matrix.nnz()];
                         for row in 0..matrix.nrows() {
-                            for entry in matrix.row_offsets()[row]..matrix.row_offsets()[row + 1] {
+                            for (entry, weight) in weights
+                                .iter_mut()
+                                .enumerate()
+                                .take(matrix.row_offsets()[row + 1])
+                                .skip(matrix.row_offsets()[row])
+                            {
                                 let column = matrix.column_indices()[entry];
                                 if column != row {
-                                    weights[entry] = if column.abs_diff(row) == nx {
+                                    *weight = if column.abs_diff(row) == nx {
                                         self.grid.dx
                                     } else {
                                         self.grid.dy
@@ -92,7 +97,7 @@ impl IncompressibleSolver {
                         .map_err(|error| format!("cannot build algebraic multigrid: {error}"))?
                     }
                 };
-                ImplicitPressureSolver::Gamg(solver)
+                ImplicitPressureSolver::Gamg(Box::new(solver))
             }
             PressureSolverKind::PcgDic => {
                 ImplicitPressureSolver::Pcg(ImplicitPressurePreconditioner::Dic(
@@ -144,7 +149,7 @@ impl IncompressibleSolver {
             ImplicitPressureSolver::Pcg(ImplicitPressurePreconditioner::Mg(mg)) => {
                 self.multigrid_preconditioner = Some(mg)
             }
-            ImplicitPressureSolver::Gamg(solver) => self.algebraic_multigrid = Some(solver),
+            ImplicitPressureSolver::Gamg(solver) => self.algebraic_multigrid = Some(*solver),
             _ => {}
         }
         result

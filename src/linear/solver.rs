@@ -182,23 +182,23 @@ fn solve_cg_with_workspace(
         preconditioned,
     } = workspace;
     profile.measure(false, || residual_into(matrix, solution, rhs, residual))?;
-    let initial = norm_l2(&residual)?;
+    let initial = norm_l2(residual)?;
     let threshold = options.absolute_tolerance + options.relative_tolerance * initial;
     if initial <= threshold {
         return Ok(report(LinearSolverStatus::Converged, 0, initial, initial));
     }
     if let Some(preconditioner) = preconditioner {
         profile.measure(true, || preconditioner.apply_into(residual, preconditioned))?;
-        direction.copy_from_slice(&preconditioned);
+        direction.copy_from_slice(preconditioned);
     } else {
-        direction.copy_from_slice(&residual);
-        preconditioned.copy_from_slice(&residual);
+        direction.copy_from_slice(residual);
+        preconditioned.copy_from_slice(residual);
     }
-    let mut rho = dot(&residual, &preconditioned)?;
+    let mut rho = dot(residual, preconditioned)?;
     for iteration in 1..=options.max_iterations {
         profile.iteration();
         profile.measure(false, || matrix.spmv_into(direction, product))?;
-        let denominator = dot(&direction, &product)?;
+        let denominator = dot(direction, product)?;
         if !denominator.is_finite() || denominator <= BREAKDOWN_EPSILON {
             return Err(LinearAlgebraError::Breakdown {
                 reason: "non-positive CG search denominator; pressure operator must be positive definite",
@@ -214,16 +214,21 @@ fn solve_cg_with_workspace(
             solution[index] += alpha * direction[index];
             residual[index] -= alpha * product[index];
         }
-        let recursive_norm = norm_l2(&residual)?;
+        let recursive_norm = norm_l2(residual)?;
         // The recurrence can drift from b-Ax on ill-conditioned pressure
         // systems. Certify convergence using the actual operator and refresh
-        // periodically. Restart conjugacy after replacement, never enlarge
+        // when the recursive estimate reaches tolerance. Restart conjugacy after replacement, never enlarge
         // tolerances or reset the iteration budget.
-        if recursive_norm <= threshold || iteration % 50 == 0 {
+        if recursive_norm <= threshold {
             residual_into(matrix, solution, rhs, residual)?;
             let true_norm = norm_l2(residual)?;
             if true_norm <= threshold {
-                return Ok(report(LinearSolverStatus::Converged, iteration, initial, true_norm));
+                return Ok(report(
+                    LinearSolverStatus::Converged,
+                    iteration,
+                    initial,
+                    true_norm,
+                ));
             }
             if let Some(preconditioner) = preconditioner {
                 profile.measure(true, || preconditioner.apply_into(residual, preconditioned))?;
@@ -237,9 +242,9 @@ fn solve_cg_with_workspace(
         if let Some(preconditioner) = preconditioner {
             profile.measure(true, || preconditioner.apply_into(residual, preconditioned))?;
         } else {
-            preconditioned.copy_from_slice(&residual);
+            preconditioned.copy_from_slice(residual);
         }
-        let rho_new = dot(&residual, &preconditioned)?;
+        let rho_new = dot(residual, preconditioned)?;
         if !rho_new.is_finite() || rho.abs() <= BREAKDOWN_EPSILON {
             return Err(LinearAlgebraError::Breakdown {
                 reason: "zero CG recurrence denominator",
@@ -257,7 +262,7 @@ fn solve_cg_with_workspace(
         rho = rho_new;
     }
     residual_into(matrix, solution, rhs, residual)?;
-    let final_residual = norm_l2(&residual)?;
+    let final_residual = norm_l2(residual)?;
     Ok(report(
         LinearSolverStatus::MaxIterations,
         options.max_iterations,
@@ -351,7 +356,7 @@ fn solve_bicgstab_with_workspace(
     } = workspace;
     residual_into(matrix, solution, rhs, r)?;
     r_hat.copy_from_slice(r);
-    let initial = norm_l2(&r)?;
+    let initial = norm_l2(r)?;
     let threshold = options.absolute_tolerance + options.relative_tolerance * initial;
     if initial <= threshold {
         return Ok(report(LinearSolverStatus::Converged, 0, initial, initial));
@@ -363,7 +368,7 @@ fn solve_bicgstab_with_workspace(
     let mut alpha = 1.0;
     let mut omega = 1.0;
     for iteration in 1..=options.max_iterations {
-        let rho = dot(&r_hat, &r)?;
+        let rho = dot(r_hat, r)?;
         if !rho.is_finite() || rho.abs() <= BREAKDOWN_EPSILON {
             return Err(LinearAlgebraError::Breakdown {
                 reason: "zero BiCGSTAB rho",
@@ -379,7 +384,7 @@ fn solve_bicgstab_with_workspace(
             p[index] = r[index] + beta * (p[index] - omega * v[index]);
         }
         if let Some(preconditioner) = preconditioner {
-            preconditioner.apply_into(&p, p_preconditioned)?;
+            preconditioner.apply_into(p, p_preconditioned)?;
         }
         let p_direction = if preconditioner.is_some() {
             p_preconditioned.as_slice()
@@ -387,7 +392,7 @@ fn solve_bicgstab_with_workspace(
             p.as_slice()
         };
         matrix.spmv_into(p_direction, v)?;
-        let denominator = dot(&r_hat, &v)?;
+        let denominator = dot(r_hat, v)?;
         if !denominator.is_finite() || denominator.abs() <= BREAKDOWN_EPSILON {
             return Err(LinearAlgebraError::Breakdown {
                 reason: "zero BiCGSTAB alpha denominator",
@@ -402,7 +407,7 @@ fn solve_bicgstab_with_workspace(
         for index in 0..n {
             s[index] = r[index] - alpha * v[index];
         }
-        let s_norm = norm_l2(&s)?;
+        let s_norm = norm_l2(s)?;
         if s_norm <= threshold {
             for (solution_value, &direction_value) in solution.iter_mut().zip(p_direction) {
                 *solution_value += alpha * direction_value;
@@ -415,7 +420,7 @@ fn solve_bicgstab_with_workspace(
             ));
         }
         if let Some(preconditioner) = preconditioner {
-            preconditioner.apply_into(&s, s_preconditioned)?;
+            preconditioner.apply_into(s, s_preconditioned)?;
         }
         let s_direction = if preconditioner.is_some() {
             s_preconditioned.as_slice()
@@ -423,13 +428,13 @@ fn solve_bicgstab_with_workspace(
             s.as_slice()
         };
         matrix.spmv_into(s_direction, t)?;
-        let tt = dot(&t, &t)?;
+        let tt = dot(t, t)?;
         if !tt.is_finite() || tt.abs() <= BREAKDOWN_EPSILON {
             return Err(LinearAlgebraError::Breakdown {
                 reason: "zero BiCGSTAB omega denominator",
             });
         }
-        omega = dot(&t, &s)? / tt;
+        omega = dot(t, s)? / tt;
         if !omega.is_finite() || omega.abs() <= BREAKDOWN_EPSILON {
             return Err(LinearAlgebraError::Breakdown {
                 reason: "zero BiCGSTAB omega",
@@ -443,7 +448,7 @@ fn solve_bicgstab_with_workspace(
         for index in 0..n {
             r[index] = s[index] - omega * t[index];
         }
-        let residual_norm = norm_l2(&r)?;
+        let residual_norm = norm_l2(r)?;
         if residual_norm <= threshold {
             return Ok(report(
                 LinearSolverStatus::Converged,
@@ -458,7 +463,7 @@ fn solve_bicgstab_with_workspace(
         LinearSolverStatus::MaxIterations,
         options.max_iterations,
         initial,
-        norm_l2(&r)?,
+        norm_l2(r)?,
     ))
 }
 

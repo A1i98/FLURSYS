@@ -1,3 +1,4 @@
+#![allow(clippy::needless_range_loop)] // CSR row indices address multiple aligned work arrays.
 //! Standalone algebraic multigrid with connected aggregation and scaled corrections.
 //! Residual-dependent scaling and directional smoothers are kept outside PCG.
 mod acceleration;
