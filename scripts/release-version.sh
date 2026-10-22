@@ -291,10 +291,10 @@ replace_manifest_version "$NEXT_VERSION"
 VERSION_CHANGED=true
 
 # Refresh the root-package entry in Cargo.lock before enforcing --locked.
-run cargo check --all-targets --features gui
-run cargo fmt --all -- --check
-run cargo test --all-targets --features gui --locked
-run cargo clippy --all-targets --features gui --locked -- -D warnings
+run cargo check -p flursys --all-targets --features gui
+run cargo fmt -p flursys -- --check
+run cargo test -p flursys --all-targets --features gui --locked
+run cargo clippy -p flursys --no-deps --all-targets --features gui --locked -- -D warnings
 run cargo build --release --features gui --locked --bin flursys --bin flursys-gui
 
 FILES_TO_COMMIT=(Cargo.toml)
