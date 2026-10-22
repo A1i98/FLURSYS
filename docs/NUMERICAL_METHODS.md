@@ -1019,13 +1019,14 @@ extensions have not been numerically benchmark validated.
 
 ### CG/PCG residual certification
 
-CG/PCG recomputes the true residual b−Ax before accepting convergence and
-every 50 iterations. If the refreshed residual remains above the original
+CG/PCG recomputes the true residual b−Ax whenever the recursive estimate
+reaches the stopping threshold, before accepting convergence. If the refreshed residual remains above the original
 threshold, the search direction is restarted from the preconditioned residual
 within the same iteration budget. The terminal non-converged report also uses
 b−Ax. Non-positive search curvature is an error, not a valid CG step. This
 guards recurrence drift; it does not make an indefinite or singular operator SPD.
-Performance and numerical regression validation of this change remain pending.
+The structured pressure-corrector regression compares preconditioners and checks
+the true matrix defect; this is not a full performance or accuracy validation.
 
 
 ## Fixed-mesh Workbench nested pressure coupling (experimental)
@@ -1314,3 +1315,14 @@ verify conservation and pressure references, periodic flux cancellation,
 porous pressure drop, frame equilibrium, turbulence profiles and forces against
 reference cases, with grid/time-step refinement. No new benchmark values or
 performance/accuracy claims are supplied with this update.
+
+
+### Release regression corrections (0.16)
+
+Temporary zero-gradient outlet backflow is assembled with an explicit lagged
+owner velocity on the incoming flux and a nonnegative implicit outflow diagonal.
+This is an iterative boundary treatment, not a prescribed physical backflow state;
+final outlet backflow validation remains active. A one-cell assembly regression
+checks its diagonal and source. The existing over-relaxed pressure operator and dimensional gradient choices
+are retained. The layered channel example remains a failing regression; this
+update does not establish stability on its anisotropic boundary-layer mesh.

@@ -75,4 +75,7 @@ preprocessing workflow, not a general CAD kernel or a completed 3D CAD GUI. See
 
 ## License
 
-MIT
+FLURSYS-owned code is available under either the [MIT License](LICENSE) or
+[Apache License, Version 2.0](LICENSE-APACHE), at your option
+(`MIT OR Apache-2.0`). Existing third-party code, assets and dependencies retain
+their own licenses; see [THIRD_PARTY_NOTICES.txt](THIRD_PARTY_NOTICES.txt)
