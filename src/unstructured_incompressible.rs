@@ -68,6 +68,7 @@ pub struct IncompressibleMaterial {
 #[derive(Clone, Debug, PartialEq)]
 pub struct IncompressibleSolverOptions {
     pub time: TimeIntegration,
+    pub equations:Option<crate::equations::EquationSolvers>,
     pub boundary_profiles:BoundaryProfiles,
     pub turbulence: crate::turbulence::TurbulenceOptions,
     pub thermal:crate::thermal::Options,
@@ -88,6 +89,7 @@ impl Default for IncompressibleSolverOptions {
     fn default() -> Self {
         Self {
             time: TimeIntegration::Steady,
+            equations:None,
             boundary_profiles:Default::default(),
             turbulence: crate::turbulence::TurbulenceOptions::default(),
             thermal:crate::thermal::Options::default(),
@@ -846,6 +848,7 @@ fn solve_incompressible_on_pool(
     time_step: Option<f64>,
     older:Option<&IncompressibleInitialConditions>,
 ) -> Result<IncompressibleSolution, IncompressibleSolveError> {
+    if let Some(e)=&case.solver.equations{e.validate().map_err(SimpleError::PhysicalBoundary)?;}
     let resolved = case.resolve_boundaries()?;
     let prescribed_flux = case
         .mesh
@@ -971,8 +974,9 @@ fn solve_incompressible_on_pool(
     options.coupling_relative_tolerance = case.solver.coupling_relative_tolerance;
     options.velocity_relaxation = case.solver.velocity_relaxation;
     options.pressure_relaxation = case.solver.pressure_relaxation;
-    options.momentum_solver = case.solver.momentum_solver;
-    options.pressure_solver = case.solver.pressure_solver;
+    options.equations=case.solver.equations.as_ref();
+    options.momentum_solver = case.solver.equations.as_ref().map_or(case.solver.momentum_solver,|e|e.velocity.options());
+    options.pressure_solver = case.solver.equations.as_ref().map_or(case.solver.pressure_solver,|e|e.pressure.options());
     let initial_turbulence = match &case.initial_conditions {
         IncompressibleInitialConditions::Restart { turbulence, .. } => turbulence.clone(),
         _ => None,

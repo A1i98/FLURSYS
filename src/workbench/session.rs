@@ -166,6 +166,7 @@ impl WorkbenchSession {
         let mut session = Self::new();
         session.geometry = project.geometry.clone();
         session.fluid_face_selection = project.fluid_face;
+        session.solver.equations=project.solver.equations.clone();
         session.solver.boundary_profiles=project.solver.boundary_profiles.clone();
         session.solver.thermal=project.solver.thermal.clone();
         session.solver.time=project.solver.time;session.solver.turbulence=project.solver.turbulence.clone();
@@ -238,6 +239,7 @@ impl WorkbenchSession {
         project.mesh.element_order = self.element_order;
         project.mesh_recipe = self.mesh_recipe.clone();
         project.material.catalog=self.catalog_material.clone();
+        project.solver.equations=self.solver.equations.clone();
         project.solver.boundary_profiles=self.solver.boundary_profiles.clone();
         project.solver.thermal=self.solver.thermal.clone();
         project.material.density = self.material.density;
@@ -1190,8 +1192,12 @@ impl WorkbenchSession {
         self.boundaries.get(patch)
     }
 
+    pub fn set_equation_solvers(&mut self,e:crate::equations::EquationSolvers)->Result<(),WorkbenchError>{
+        e.validate().map_err(|message|WorkbenchError::InvalidGrouping{message})?;
+        if self.solver.equations.as_ref()!=Some(&e){self.solution=None;self.status=SolveStatus::Idle;self.solver.equations=Some(e);}Ok(())
+    }
     pub fn set_boundary_profile(&mut self,name:&str,profile:Option<crate::unstructured_incompressible::BoundaryProfile>)->Result<(),WorkbenchError>{
-        if let Some(p)=&profile{let bc=*self.boundaries.get(name).ok_or_else(||WorkbenchError::InvalidGrouping{message:"Assign a physical boundary first".into()})?;p.apply(bc,0.0).map_err(|message|WorkbenchError::InvalidGrouping{message})?;}
+        if let Some(p)=&profile{let bc=*self.boundaries.get(name).ok_or_else(||WorkbenchError::InvalidGrouping{message:"Assign a physical boundary first".into()})?;if p.quantity.is_thermal(){let thermal=*self.solver.thermal.boundaries.get(name).ok_or_else(||WorkbenchError::InvalidGrouping{message:"Assign the thermal boundary before its time table".into()})?;p.apply_thermal(thermal,0.0).map_err(|message|WorkbenchError::InvalidGrouping{message})?;}else{p.apply(bc,0.0).map_err(|message|WorkbenchError::InvalidGrouping{message})?;}}
         if self.solver.boundary_profiles.get(name)!=profile.as_ref(){
             if let Some(p)=profile{self.solver.boundary_profiles.insert(name.into(),p);}else{self.solver.boundary_profiles.remove(name);}
             self.solution=None;self.status=SolveStatus::Idle;
@@ -1326,13 +1332,15 @@ impl WorkbenchSession {
             return Err("generate a mesh first (Mesh stage)".to_string());
         };
         if !self.solver.boundary_profiles.is_empty() && !self.solver.time.is_transient(){return Err("Time-dependent boundaries require transient integration".into());}
-        for (name,p) in &self.solver.boundary_profiles {let bc=*self.boundaries.get(name).ok_or_else(||format!("Missing physical boundary for time table: {name}"))?;p.apply(bc,0.0)?;}
+        for (name,p) in &self.solver.boundary_profiles {let bc=*self.boundaries.get(name).ok_or_else(||format!("Missing physical boundary for time table: {name}"))?;if p.quantity.is_thermal(){if !self.solver.thermal.enabled{return Err("Enable temperature transport for thermal time tables".into())}let t=*self.solver.thermal.boundaries.get(name).ok_or_else(||format!("Assign thermal boundary {name}"))?;p.apply_thermal(t,0.0)?;}else{p.apply(bc,0.0)?;}}
+        if let Some(e)=&self.solver.equations{e.validate()?;}
         self.solver.turbulence.validate()?;
         for name in self.solver.turbulence.inlets.keys(){
             if !generated.mesh.boundary_patches().iter().any(|p|&p.name==name){return Err(format!("Unknown turbulence boundary {name}"));}
             if matches!(self.boundaries.get(name),Some(IncompressibleBoundaryCondition::NoSlipWall|IncompressibleBoundaryCondition::MovingWall{..}|IncompressibleBoundaryCondition::Slip|IncompressibleBoundaryCondition::Symmetry)){return Err(format!("Clear incoming turbulence on impermeable boundary {name}"));}
         }
         self.solver.thermal.validate()?;
+        if self.solver.thermal.enabled && self.solver.thermal.wall_treatment==crate::thermal::ThermalWallTreatment::EquilibriumPrt && (self.solver.turbulence.model!=crate::turbulence::TurbulenceModel::KEpsilon || self.solver.turbulence.wall_treatment!=crate::turbulence::WallTreatment::EquilibriumKEpsilon){return Err("Equilibrium Prt thermal walls require equilibrium k-epsilon momentum walls".into());}
         if self.solver.thermal.enabled {
             let missing=generated.mesh.boundary_patches().iter().filter(|p|!self.solver.thermal.boundaries.contains_key(&p.name)).map(|p|p.name.clone()).collect::<Vec<_>>();
             if !missing.is_empty(){return Err(format!("Assign thermal boundary conditions: {}",missing.join(", ")))}

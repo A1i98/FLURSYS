@@ -9,6 +9,8 @@ pub enum BoundaryQuantity {
     Velocity,
     FlowRate,
     Pressure,
+    Temperature,
+    HeatFlux,
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct TimeSample {
@@ -19,6 +21,11 @@ pub struct TimeSample {
 pub struct BoundaryProfile {
     pub quantity: BoundaryQuantity,
     pub samples: Vec<TimeSample>,
+}
+impl BoundaryQuantity {
+    pub fn is_thermal(self) -> bool {
+        matches!(self, Self::Temperature | Self::HeatFlux)
+    }
 }
 impl BoundaryProfile {
     pub fn validate(&self) -> Result<(), String> {
@@ -42,6 +49,9 @@ impl BoundaryProfile {
             }
             if self.quantity == BoundaryQuantity::FlowRate && s.value.x < 0.0 {
                 return Err("Incoming flow-rate table must be nonnegative".into());
+            }
+            if self.quantity == BoundaryQuantity::Temperature && s.value.x <= 0.0 {
+                return Err("Temperature table requires positive Kelvin values".into());
             }
             previous = s.time;
         }
@@ -125,6 +135,20 @@ impl BoundaryProfile {
             _ => return Err("Time-table quantity does not match this physical boundary".into()),
         })
     }
+    pub fn apply_thermal(
+        &self,
+        bc: crate::thermal::Boundary,
+        time: f64,
+    ) -> Result<crate::thermal::Boundary, String> {
+        use crate::thermal::Boundary as B;
+        let v = self.value(time)?.x;
+        Ok(match (self.quantity,bc){
+            (BoundaryQuantity::Temperature,B::FixedTemperature{..})=>B::FixedTemperature{temperature:v},
+            (BoundaryQuantity::Temperature,B::InletOutlet{..})=>B::InletOutlet{incoming_temperature:v},
+            (BoundaryQuantity::HeatFlux,B::HeatFlux{..})=>B::HeatFlux{inward_flux:v},
+            _=>return Err("Thermal time table must match Fixed temperature, Inlet/outlet temperature or Heat flux condition".into()),
+        })
+    }
     /// CSV rows: t,Ux,Uy,Uz for velocity; t,value for scalar quantities.
     pub fn from_csv(quantity: BoundaryQuantity, text: &str) -> Result<Self, String> {
         let mut samples = Vec::new();
@@ -184,6 +208,29 @@ pub(super) fn apply(
     time: f64,
 ) -> Result<(), IncompressibleSolveError> {
     for (name, p) in &case.solver.boundary_profiles {
+        if p.quantity.is_thermal() {
+            if !case.solver.thermal.enabled {
+                return Err(SimpleError::PhysicalBoundary(
+                    "Thermal time tables require enabled temperature transport".into(),
+                )
+                .into());
+            }
+            let bc = case
+                .solver
+                .thermal
+                .boundaries
+                .get_mut(name)
+                .ok_or_else(|| {
+                    SimpleError::PhysicalBoundary(format!(
+                        "Missing thermal boundary for table {name}"
+                    ))
+                })?;
+            *bc = p
+                .apply_thermal(*bc, time)
+                .map_err(SimpleError::PhysicalBoundary)?;
+            continue;
+        }
+
         let (_, bc) = case
             .boundaries
             .iter_mut()

@@ -7,6 +7,7 @@
 pub mod app;
 pub mod compressible;
 pub mod cases;
+pub mod equations;
 pub mod field;
 pub mod fields;
 pub mod geometry;

@@ -490,6 +490,11 @@ pub fn solve_momentum_velocity(
     velocity: &mut CellField<Vec3>,
     options: LinearSolverOptions,
 ) -> Result<[LinearSolveReport; 3], MomentumError> {
+    solve_momentum_velocity_with_controls(systems,velocity,crate::equations::EquationControl::from_options(options))
+}
+pub fn solve_momentum_velocity_with_controls(
+    systems:[&MomentumSystem;3],velocity:&mut CellField<Vec3>,controls:crate::equations::EquationControl,
+)->Result<[LinearSolveReport;3],MomentumError>{
     for system in systems {
         if system.mesh_id() != velocity.mesh_id() {
             return Err(FieldError::MeshMismatch {
@@ -504,20 +509,20 @@ pub fn solve_momentum_velocity(
     let mut z: Vec<f64> = velocity.values().iter().map(|value| value.z).collect();
     let reports = if rayon::current_thread_index().is_some() && rayon::current_num_threads() > 1 {
         let (rx, (ry, rz)) = rayon::join(
-            || bicgstab(systems[0].matrix(), systems[0].rhs(), &mut x, options),
+            || controls.solve(systems[0].matrix(), systems[0].rhs(), &mut x, false),
             || {
                 rayon::join(
-                    || bicgstab(systems[1].matrix(), systems[1].rhs(), &mut y, options),
-                    || bicgstab(systems[2].matrix(), systems[2].rhs(), &mut z, options),
+                    || controls.solve(systems[1].matrix(), systems[1].rhs(), &mut y, false),
+                    || controls.solve(systems[2].matrix(), systems[2].rhs(), &mut z, false),
                 )
             },
         );
         [rx?, ry?, rz?]
     } else {
         [
-            bicgstab(systems[0].matrix(), systems[0].rhs(), &mut x, options)?,
-            bicgstab(systems[1].matrix(), systems[1].rhs(), &mut y, options)?,
-            bicgstab(systems[2].matrix(), systems[2].rhs(), &mut z, options)?,
+            controls.solve(systems[0].matrix(), systems[0].rhs(), &mut x, false)?,
+            controls.solve(systems[1].matrix(), systems[1].rhs(), &mut y, false)?,
+            controls.solve(systems[2].matrix(), systems[2].rhs(), &mut z, false)?,
         ]
     };
     for (value, ((x, y), z)) in velocity

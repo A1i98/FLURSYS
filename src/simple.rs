@@ -6,7 +6,7 @@
 
 use crate::{
     assemble_momentum_component, interpolate_vector_into, least_squares_gradient,
-    momentum_component_field, solve_momentum_velocity, CellField, CsrBuilder, CsrMatrix,
+    momentum_component_field, CellField, CsrBuilder, CsrMatrix,
     DiffusionOptions, Diffusivity, FaceField, FieldError, LeastSquaresGradientStencil,
     LinearAlgebraError, LinearSolveReport, LinearSolverOptions, MomentumComponent, MomentumError,
     MomentumOptions, NumericsError, ResolvedScalarBoundaryConditions,
@@ -119,6 +119,7 @@ pub struct SimpleOptions<'a> {
     /// Both momentum-residual reduction and the relative velocity update must
     /// meet this tolerance; pressure projection alone cannot end a steady solve.
     pub coupling_relative_tolerance: f64,
+    pub equations:Option<&'a crate::equations::EquationSolvers>,
     pub momentum_solver: LinearSolverOptions,
     pub pressure_solver: LinearSolverOptions,
     pub velocity_relaxation: f64,
@@ -152,6 +153,7 @@ impl<'a> SimpleOptions<'a> {
             max_outer_iterations: 1000,
             continuity_absolute_tolerance: 1.0e-10,
             coupling_relative_tolerance: 1.0e-6,
+            equations:None,
             momentum_solver: LinearSolverOptions::default(),
             pressure_solver: LinearSolverOptions::default(),
             velocity_relaxation: 0.7,
@@ -174,6 +176,7 @@ pub struct SimpleReport {
     pub final_velocity_relative_change: f64,
     pub momentum_reports: Option<[LinearSolveReport; 3]>,
     pub pressure_report: Option<LinearSolveReport>,
+    pub equation_linear_reports:std::collections::BTreeMap<String,LinearSolveReport>,
 }
 
 /// Executes steady, constant-density SIMPLE outer iterations for the initial
@@ -281,8 +284,10 @@ pub fn solve_simple_with_observer(
     let mut momentum_relative = f64::INFINITY;
     let mut velocity_relative = f64::INFINITY;
 
+    let mut equation_linear_reports=std::collections::BTreeMap::new();
     let mut last_momentum = None;
     let mut last_pressure = None;
+    let mut pressure_workspace = crate::equations::PressureWorkspace::default();
     let static_correction_stencil = options
         .pressure_correction_boundary
         .map(|b| LeastSquaresGradientStencil::new(mesh, b))
@@ -394,7 +399,8 @@ pub fn solve_simple_with_observer(
         if let Some(thermal)=options.thermal {
             let turbulent=options.closure.map(|c|c.lock().unwrap());
             let nut=turbulent.as_ref().map(|c|c.turbulent_viscosity());
-            let force=thermal.lock().unwrap().correct(mesh,state,nut,options.time_step,options.momentum_solver)?;
+            let wall_nut=turbulent.as_ref().map(|c|c.thermal_wall_viscosity(mesh)).transpose()?;
+            let force=thermal.lock().unwrap().correct(mesh,state,nut,wall_nut.as_ref(),options.time_step,options.momentum_solver)?;
             for (value,extra) in pressure_source.values_mut().iter_mut().zip(force.values()){*value+=*extra;}
         }
         let source_x = momentum_component_field(mesh, &pressure_source, MomentumComponent::X)?;
@@ -434,10 +440,10 @@ pub fn solve_simple_with_observer(
         let y_system = assemble(MomentumComponent::Y, &source_y, &current_y)?;
         let z_system = assemble(MomentumComponent::Z, &source_z, &current_z)?;
         let mut predictor = state.velocity.clone();
-        let momentum_reports = solve_momentum_velocity(
+        let momentum_reports = crate::momentum::solve_momentum_velocity_with_controls(
             [&x_system, &y_system, &z_system],
             &mut predictor,
-            options.momentum_solver,
+            options.equations.map_or(crate::equations::EquationControl::from_options(options.momentum_solver),|e|e.velocity),
         )?;
         if !momentum_reports.iter().all(LinearSolveReport::converged) {
             return Err(SimpleError::MomentumLinearDidNotConverge);
@@ -546,7 +552,12 @@ pub fn solve_simple_with_observer(
         };
         let mut correction = CellField::filled(mesh, 0.0);
         let pressure_report =
-            solve_pressure_correction(&pressure_system, &mut correction, options.pressure_solver)?;
+            pressure_workspace.solve(
+                options.equations.map(|e| e.pressure).unwrap_or(crate::equations::EquationControl {
+                    preconditioner: crate::equations::EquationPreconditioner::Ic0,
+                    ..crate::equations::EquationControl::from_options(options.pressure_solver)
+                }), &pressure_system.matrix, &pressure_system.rhs, correction.values_mut()
+            )?;
         if !pressure_report.converged() {
             return Err(SimpleError::PressureLinearDidNotConverge);
         }
@@ -601,13 +612,18 @@ pub fn solve_simple_with_observer(
         on_state(iteration, state)?;
         last_momentum = Some(momentum_reports);
         last_pressure = Some(pressure_report);
+        for (name,r) in ["Ux","Uy","Uz"].into_iter().zip(momentum_reports){equation_linear_reports.insert(name.into(),r);}
+        equation_linear_reports.insert("pressure".into(),pressure_report);
+        if let Some(t)=options.thermal{if let Some(r)=t.lock().unwrap().last_linear{equation_linear_reports.insert("temperature".into(),r);}}
+        if let Some(t)=options.closure{equation_linear_reports.extend(t.lock().unwrap().last_linear.clone());}
+
         if continuity <= options.continuity_absolute_tolerance
             && (momentum_relative <= options.coupling_relative_tolerance
                 || momentum_initial <= options.momentum_solver.absolute_tolerance)
             && velocity_relative <= options.coupling_relative_tolerance
             && options.thermal.is_none_or(|t|t.lock().unwrap().converged())
             && options.closure.is_none_or(|c| {
-                c.lock().unwrap().relative_change <= options.coupling_relative_tolerance
+                c.lock().unwrap().converged()
             })
         {
             return Ok(SimpleReport {
@@ -622,6 +638,7 @@ pub fn solve_simple_with_observer(
                 final_momentum_relative_residual: momentum_relative,
                 final_velocity_relative_change: velocity_relative,
                 momentum_reports: last_momentum,
+                equation_linear_reports,
                 pressure_report: last_pressure,
             });
         }
@@ -638,6 +655,7 @@ pub fn solve_simple_with_observer(
         final_momentum_relative_residual: momentum_relative,
         final_velocity_relative_change: velocity_relative,
         momentum_reports: last_momentum,
+        equation_linear_reports,
         pressure_report: last_pressure,
     })
 }
@@ -1002,6 +1020,9 @@ pub fn solve_pressure_correction(
     correction: &mut CellField<f64>,
     options: LinearSolverOptions,
 ) -> Result<LinearSolveReport, SimpleError> {
+    solve_pressure_correction_controlled(system,correction,crate::equations::EquationControl{preconditioner:crate::equations::EquationPreconditioner::Ic0,..crate::equations::EquationControl::from_options(options)})
+}
+fn solve_pressure_correction_controlled(system:&PressureCorrectionSystem,correction:&mut CellField<f64>,control:crate::equations::EquationControl)->Result<LinearSolveReport,SimpleError>{
     if correction.mesh_id() != system.mesh_id {
         return Err(FieldError::MeshMismatch {
             expected: system.mesh_id,
@@ -1009,14 +1030,7 @@ pub fn solve_pressure_correction(
         }
         .into());
     }
-    let preconditioner = crate::IncompleteCholeskyPreconditioner::new(&system.matrix)?;
-    Ok(crate::pcg(
-        &system.matrix,
-        &system.rhs,
-        correction.values_mut(),
-        &preconditioner,
-        options,
-    )?)
+    Ok(control.solve(&system.matrix,&system.rhs,correction.values_mut(),true)?)
 }
 
 /// Applies the cell-centred SIMPLE velocity update `U = U* - rAU grad(p')`.

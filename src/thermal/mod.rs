@@ -21,6 +21,13 @@ pub enum Boundary {
         ambient_temperature: f64,
     },
 }
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ThermalWallTreatment {
+    #[default]
+    Molecular,
+    EquilibriumPrt,
+}
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Options {
@@ -32,6 +39,7 @@ pub struct Options {
     pub relaxation: f64,
     pub relative_tolerance: f64,
     pub turbulent_prandtl: f64,
+    pub wall_treatment: ThermalWallTreatment,
     pub buoyancy: bool,
     pub reference_temperature: f64,
     pub expansion: f64,
@@ -50,6 +58,7 @@ impl Default for Options {
             relaxation: 0.7,
             relative_tolerance: 1e-8,
             turbulent_prandtl: 0.85,
+            wall_treatment: ThermalWallTreatment::Molecular,
             buoyancy: false,
             reference_temperature: 293.15,
             expansion: 0.0,
@@ -120,10 +129,13 @@ impl Options {
 #[derive(Debug)]
 pub(crate) struct Closure {
     config: Options,
+    linear: Option<crate::equations::EquationControl>,
+    pub last_linear: Option<LinearSolveReport>,
     rho: f64,
     field: CellField<f64>,
     old: CellField<f64>,
     face_bc: Vec<Option<Boundary>>,
+    walls: Vec<bool>,
     pub relative_change: f64,
 }
 fn failure(message: impl Into<String>) -> SimpleError {
@@ -136,7 +148,28 @@ impl Closure {
     ) -> Result<Self, SimpleError> {
         let config = case.solver.thermal.clone();
         config.validate().map_err(failure)?;
+        if config.wall_treatment == ThermalWallTreatment::EquilibriumPrt
+            && (case.solver.turbulence.model != crate::turbulence::TurbulenceModel::KEpsilon
+                || case.solver.turbulence.wall_treatment
+                    != crate::turbulence::WallTreatment::EquilibriumKEpsilon)
+        {
+            return Err(failure("Equilibrium Prt thermal wall treatment requires equilibrium k-epsilon momentum walls"));
+        }
         let mesh = &case.mesh;
+        let mut walls = vec![false; mesh.face_count()];
+        for (name, bc) in &case.boundaries {
+            if matches!(
+                bc,
+                IncompressibleBoundaryCondition::NoSlipWall
+                    | IncompressibleBoundaryCondition::MovingWall { .. }
+            ) {
+                if let Some(p) = mesh.boundary_patches().iter().find(|p| &p.name == name) {
+                    for &f in &p.face_indices {
+                        walls[f] = true;
+                    }
+                }
+            }
+        }
         let mut face_bc = vec![None; mesh.face_count()];
         for p in mesh.boundary_patches() {
             let b = *config.boundaries.get(&p.name).ok_or_else(|| {
@@ -161,11 +194,14 @@ impl Closure {
             ));
         }
         Ok(Self {
+            linear: case.solver.equations.as_ref().map(|e| e.temperature),
+            last_linear: None,
             config,
             rho: case.material.density,
             old: field.clone(),
             field,
             face_bc,
+            walls,
             relative_change: f64::INFINITY,
         })
     }
@@ -183,6 +219,7 @@ impl Closure {
         mesh: &UnstructuredMesh,
         state: &SimpleState,
         nut: Option<&CellField<f64>>,
+        wall_nut: Option<&FaceField<f64>>,
         dt: Option<f64>,
         linear: LinearSolverOptions,
     ) -> Result<CellField<Vec3>, SimpleError> {
@@ -194,11 +231,27 @@ impl Closure {
                 d[i] += nut[i] / self.config.turbulent_prandtl;
             }
         }
-        let face_d = interpolate_diffusivity(
+        let mut face_d = interpolate_diffusivity(
             mesh,
             Diffusivity::CellField(&d),
             DiffusivityInterpolation::Harmonic,
         )?;
+        if let Some(n) = wall_nut {
+            n.ensure_mesh(mesh)?;
+        }
+        for (i, wall) in self.walls.iter().enumerate() {
+            if *wall {
+                let turbulent = if self.config.wall_treatment
+                    == ThermalWallTreatment::EquilibriumPrt
+                {
+                    wall_nut.ok_or_else(|| failure("Missing modeled thermal wall viscosity"))?[i]
+                        / self.config.turbulent_prandtl
+                } else {
+                    0.0
+                };
+                face_d[i] = self.config.conductivity / rho_cp + turbulent;
+            }
+        }
         let mut source = CellField::filled(mesh, self.config.source_w_m3 / rho_cp);
         let mut extra_diag = vec![0.0; mesh.cell_count()];
         for (i, f) in mesh.faces().iter().enumerate() {
@@ -278,7 +331,11 @@ impl Closure {
             rhs[i] += (1.0 / alpha - 1.0) * diag * self.field[i];
         }
         let matrix = builder.finalize()?;
-        let report = bicgstab(&matrix, &rhs, self.field.values_mut(), linear)?;
+        let report = self
+            .linear
+            .unwrap_or(crate::equations::EquationControl::from_options(linear))
+            .solve(&matrix, &rhs, self.field.values_mut(), false)?;
+        self.last_linear = Some(report);
         if report.status != LinearSolverStatus::Converged {
             return Err(failure(
                 "Temperature linear equation did not reach tolerance",

@@ -334,6 +334,7 @@ impl Default for WorkbenchMaterial {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct WorkbenchSolverSettings {
+    #[serde(default)] pub equations:Option<crate::equations::EquationSolvers>,
     #[serde(default)] pub boundary_profiles:crate::unstructured_incompressible::BoundaryProfiles,
     #[serde(default)] pub thermal:crate::thermal::Options,
     #[serde(default)] pub time:crate::unstructured_incompressible::TimeIntegration,
@@ -353,6 +354,7 @@ pub struct WorkbenchSolverSettings {
 impl Default for WorkbenchSolverSettings {
     fn default() -> Self {
         Self {
+            equations:None,
             boundary_profiles:Default::default(),
             thermal:crate::thermal::Options::default(),
             time:Default::default(),turbulence:Default::default(),
@@ -535,6 +537,7 @@ impl WorkbenchProject {
             ));
         }
         for p in self.solver.boundary_profiles.values(){p.validate().map_err(ProjectDocumentError::Invalid)?;}
+        if let Some(e)=&self.solver.equations{e.validate().map_err(ProjectDocumentError::Invalid)?;}
         self.solver.thermal.validate().map_err(ProjectDocumentError::Invalid)?;
         if let Some(material)=&self.material.catalog {material.validate().map_err(ProjectDocumentError::Invalid)?;}
         self.mesh_recipe.tuning.validate().map_err(ProjectDocumentError::Invalid)?;
@@ -803,6 +806,7 @@ pub fn finalize_workspace_run(
         "mesh_recipe": &project.mesh_recipe,
         "material": &project.material,
         "solver_settings": &project.solver,
+        "last_equation_linear_solves":session.solution().map(|s|&s.report.simple.equation_linear_reports),
         "physical_time_s":session.solution().and_then(|s|s.physical_time),
         "completed_time_steps":session.solution().map(|s|s.completed_time_steps),
         "nonlinear_iterations":session.solution().map(|s|s.nonlinear_iterations),

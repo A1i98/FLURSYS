@@ -111,7 +111,7 @@ impl Closure {
             sw[i] += (-gamma * a).max(0.0) * w;
         }
         let old = self.old.as_ref();
-        scalar_solve(
+        let report = scalar_solve(
             mesh,
             &state.face_flux,
             &wb,
@@ -122,11 +122,15 @@ impl Closure {
             old.map(|o| &o.omega),
             dt,
             self.config.relaxation,
-            linear,
+            self.linear.as_ref().map_or(
+                crate::equations::EquationControl::from_options(linear),
+                |e| e.omega,
+            ),
             &self.walls,
             nu,
             None,
         )?;
+        self.last_linear.insert("omega".into(), report);
         // Use the newly solved bounded omega in k destruction and SST limiter.
         for i in 0..n {
             let k = self.fields.k[i].max(1e-14);
@@ -145,7 +149,7 @@ impl Closure {
                 sk[i] = production.min(10.0 * 0.09 * k * w) + (-2.0 / 3.0 * tr).max(0.0) * k;
             }
         }
-        scalar_solve(
+        let report = scalar_solve(
             mesh,
             &state.face_flux,
             &kb,
@@ -156,11 +160,15 @@ impl Closure {
             old.map(|o| &o.k),
             dt,
             self.config.relaxation,
-            linear,
+            self.linear.as_ref().map_or(
+                crate::equations::EquationControl::from_options(linear),
+                |e| e.k,
+            ),
             &self.walls,
             nu,
             None,
         )?;
+        self.last_linear.insert("k".into(), report);
         for i in 0..n {
             self.fields.k[i] = self.fields.k[i].max(1e-14);
             self.fields.omega[i] = self.fields.omega[i]
@@ -182,11 +190,11 @@ pub(super) fn scalar_solve(
     old: Option<&CellField<f64>>,
     dt: Option<f64>,
     alpha: f64,
-    linear: LinearSolverOptions,
+    linear: crate::equations::EquationControl,
     walls: &[bool],
     nu: f64,
     prescribed: Option<&[Option<f64>]>,
-) -> Result<(), SimpleError> {
+) -> Result<LinearSolveReport, SimpleError> {
     let mut face_diffusion = interpolate_diffusivity(
         mesh,
         Diffusivity::CellField(d),
@@ -232,7 +240,7 @@ pub(super) fn scalar_solve(
         rhs[i] += (1.0 / alpha - 1.0) * diag * field[i];
     }
     let matrix = builder.finalize()?;
-    let report = bicgstab(&matrix, &rhs, field.values_mut(), linear)?;
+    let report = linear.solve(&matrix, &rhs, field.values_mut(), false)?;
     if report.status != LinearSolverStatus::Converged {
         return Err(SimpleError::PhysicalBoundary(
             "Turbulence scalar linear solve did not converge".into(),
@@ -243,5 +251,5 @@ pub(super) fn scalar_solve(
             "Non-finite turbulence transport solution".into(),
         ));
     }
-    Ok(())
+    Ok(report)
 }

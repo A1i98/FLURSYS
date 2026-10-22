@@ -33,6 +33,7 @@ pub struct TurbulenceOptions {
     /// k-epsilon incoming dissipation, m²/s³.
     pub epsilon: f64,
     pub relaxation: f64,
+    pub relative_tolerance: f64,
     pub ck: f64,
     pub ce: f64,
     pub cw: f64,
@@ -47,6 +48,7 @@ impl Default for TurbulenceOptions {
             omega: 1.0,
             epsilon: 1e-5,
             relaxation: 0.5,
+            relative_tolerance: 1e-6,
             ck: 0.094,
             ce: 1.048,
             cw: 0.325,
@@ -63,9 +65,17 @@ impl TurbulenceOptions {
         for b in self.inlets.values() {
             b.validate()?;
         }
-        if [self.k, self.omega, self.epsilon, self.ck, self.ce, self.cw]
-            .iter()
-            .any(|x| !x.is_finite() || *x <= 0.0)
+        if [
+            self.k,
+            self.omega,
+            self.epsilon,
+            self.ck,
+            self.ce,
+            self.cw,
+            self.relative_tolerance,
+        ]
+        .iter()
+        .any(|x| !x.is_finite() || *x <= 0.0)
             || !self.relaxation.is_finite()
             || self.relaxation <= 0.0
             || self.relaxation > 1.0
@@ -105,6 +115,9 @@ impl TurbulenceFields {
 #[derive(Debug)]
 pub(crate) struct Closure {
     config: TurbulenceOptions,
+    linear: Option<crate::equations::EquationSolvers>,
+    molecular_viscosity: f64,
+    pub last_linear: std::collections::BTreeMap<String, LinearSolveReport>,
     fields: TurbulenceFields,
     walls: Vec<bool>,
     incoming: Vec<Option<TurbulenceInlet>>,
@@ -228,6 +241,9 @@ impl Closure {
             ));
         }
         Ok(Self {
+            linear: case.solver.equations.clone(),
+            molecular_viscosity: case.material.kinematic_viscosity,
+            last_linear: Default::default(),
             config,
             old: Some(fields.clone()),
             fields,
@@ -278,6 +294,21 @@ impl Closure {
                 }
             }
         }
+    }
+    pub fn converged(&self) -> bool {
+        self.relative_change <= self.config.relative_tolerance
+    }
+    pub fn thermal_wall_viscosity(
+        &self,
+        mesh: &UnstructuredMesh,
+    ) -> Result<FaceField<f64>, SimpleError> {
+        let mut result = FaceField::filled(mesh, 0.0);
+        for (i, wall) in self.walls.iter().enumerate() {
+            if *wall {
+                result[i] = self.wall_nut(mesh, i, self.molecular_viscosity)?;
+            }
+        }
+        Ok(result)
     }
     pub fn turbulent_viscosity(&self) -> &CellField<f64> {
         &self.fields.nut

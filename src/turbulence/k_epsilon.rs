@@ -66,7 +66,7 @@ impl Closure {
             sinke[i] = 1.92 * e / k + (2.0 / 3.0 * 1.44 * tr).max(0.0);
         }
         let old = self.old.as_ref();
-        transport::scalar_solve(
+        let report = transport::scalar_solve(
             mesh,
             &state.face_flux,
             &eb,
@@ -77,11 +77,15 @@ impl Closure {
             old.and_then(|o| o.epsilon.as_ref()),
             dt,
             self.config.relaxation,
-            linear,
+            self.linear.as_ref().map_or(
+                crate::equations::EquationControl::from_options(linear),
+                |e| e.epsilon,
+            ),
             &self.walls,
             nu,
             Some(&wall.epsilon),
         )?;
+        self.last_linear.insert("epsilon".into(), report);
         // Couple k destruction to the newly solved dissipation, not its lagged value.
         for i in 0..n {
             let e = self.fields.epsilon.as_mut().unwrap();
@@ -93,7 +97,7 @@ impl Closure {
             let tr = (0..3).map(|a| g[i][a][a]).sum::<f64>();
             sinkk[i] = e[i] / self.fields.k[i].max(1e-14) + (2.0 / 3.0 * tr).max(0.0);
         }
-        transport::scalar_solve(
+        let report = transport::scalar_solve(
             mesh,
             &state.face_flux,
             &kb,
@@ -104,11 +108,15 @@ impl Closure {
             old.map(|o| &o.k),
             dt,
             self.config.relaxation,
-            linear,
+            self.linear.as_ref().map_or(
+                crate::equations::EquationControl::from_options(linear),
+                |e| e.k,
+            ),
             &self.walls,
             nu,
             None,
         )?;
+        self.last_linear.insert("k".into(), report);
         for i in 0..n {
             self.fields.k[i] = self.fields.k[i].max(1e-14);
             let e = self.fields.epsilon.as_mut().unwrap();
