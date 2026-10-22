@@ -267,9 +267,7 @@ export component WorkflowControlCard inherits PropertiesPanel {
                 if !root.planar-navigation : Button {icon:@image-url("icons/rotate.svg");accessible-label:"Orbit · drag in viewport";checked:root.navigation-mode==0;checkable:true;min-width:28px;max-width:30px;clicked=>{root.navigation-mode=0;}}
                 Button {text:"✥";accessible-label:"Pan · drag in viewport";checked:root.navigation-mode==1;checkable:true;min-width:28px;max-width:30px;clicked=>{root.navigation-mode=1;}}
                 Button {text:"⌕";accessible-label:"Zoom · drag in viewport";checked:root.navigation-mode==2;checkable:true;min-width:28px;max-width:30px;clicked=>{root.navigation-mode=2;}}
-                if root.show-fit-control : Button {icon:@image-url("icons/fit.svg");accessible-label:"Fit model · F";min-width:28px;max-width:30px;clicked=>{root.reset-view();}}
                 if root.display-controls : Button {text:"⌖";accessible-label:"Look at selected face";min-width:28px;max-width:30px;clicked=>{root.normal-view();}}
-                Button {icon:@image-url("icons/cube.svg");accessible-label:"Home isometric view";min-width:28px;max-width:30px;clicked=>{root.reset-view();root.select-view-axis(root.planar-navigation ? 2 : 3);}}
                 ComboBox {model:["Right · X","Front · Y","Top · Z","Isometric","Left · −X","Back · −Y","Bottom · −Z","Custom"];current-index:root.view-axis;
                     min-width:0px;horizontal-stretch:1;selected(value)=>{if self.current-index<7{root.select-view-axis(self.current-index);}}}
                 if root.display-controls : ComboBox {model:["Edges","Shaded","Wireframe"];current-index <=> root.display-mode;min-width:0px;horizontal-stretch:1;selected(value)=>{root.display-changed();}}
@@ -284,6 +282,16 @@ export component WorkflowControlCard inherits PropertiesPanel {
                 moved=>{if self.pressed {if Math.abs((self.mouse-x - self.start-x)/1px)>4 || Math.abs((self.mouse-y - self.start-y)/1px)>4 {self.dragged=true;}if self.dragged{root.orbit(self.mouse-x/1px,self.mouse-y/1px,self.start-x/1px,self.start-y/1px);}}}
                 clicked=>{if !self.dragged{root.pick-orientation(self.mouse-x/1px,self.mouse-y/1px);}}
                 scroll-event(event)=>{root.zoom(event.delta-y/1px);accept}
+            }
+            Rectangle {
+                x:0px;y:0px;width:25px;height:25px;border-radius:13px;
+                background:home-touch.has-hover ? UiTheme.toolbar : UiTheme.sidebar;
+                border-width:1px;border-color:UiTheme.border;
+                Image {x:4px;y:4px;width:17px;height:17px;source:@image-url("icons/home.svg");}
+                home-touch := TouchArea {
+                    mouse-cursor:pointer;accessible-role:button;accessible-label:"Home · fit model and reset orientation";
+                    clicked=>{root.select-view-axis(root.planar-navigation ? 2 : 3);root.reset-view();}
+                }
             }
         }
         if root.coordinates!="" : Text {x:10px;y:parent.height - 68px;width:max(0px,parent.width - 20px);height:18px;text:root.coordinates;color:UiTheme.text-secondary;font-size:10px;overflow:elide;}

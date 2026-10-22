@@ -1807,21 +1807,36 @@ fn navigator_handles(yaw:f32,pitch:f32)->Vec<(i32,(i32,i32),f64)> {
     handles.sort_by(|a,b|b.2.total_cmp(&a.2));handles
 }
 pub(super) fn render_orientation_overlay(yaw:f32,pitch:f32)->Image {
-    let mut pixels=vec![0u8;96*96*4];
+    // Supersample the compass while keeping its hit targets in logical 96px coordinates.
+    const S:i32=3;const W:u32=288;
+    let mut pixels=vec![0u8;(W*W*4) as usize];
+    for y in 0..288i32 {for x in 0..288i32 {
+        let r=((x-144) as f64).hypot((y-144) as f64)/3.;
+        if r<=46.5 {let c=if r>45.8 {[72,80,96,190]}else{[38,44,55,125]};
+            let i=(y as usize*288+x as usize)*4;pixels[i..i+4].copy_from_slice(&c);
+        }
+    }}
     for(axis,p,_)in navigator_handles(yaw,pitch){
-        let c=TRIAD_COLORS[if axis<3{axis as usize}else{(axis-4)as usize}];
-        draw_line(&mut pixels,96,96,(48,48),p,if axis<3{c}else{[c[0]/2,c[1]/2,c[2]/2,230]});
-        for dy in -7..=7 {for dx in -7..=7 {if dx*dx+dy*dy<=49 {let(x,y)=(p.0+dx,p.1+dy);if (0..96).contains(&x)&&(0..96).contains(&y){let i=(y as usize*96+x as usize)*4;pixels[i..i+4].copy_from_slice(&if axis<3{c}else{[28,42,51,255]});}}}}
-        if axis>=4{draw_ellipse(&mut pixels,96,96,p,7,7,c);}
-        let color=if axis<3{[9,16,22,255]}else{c};let(x,y)=(p.0-3,p.1-4);
+        let c=match axis {0|4=>[244,91,112,255],1|5=>[111,212,122,255],_=>[70,117,244,255]};
+        let p=(p.0*S,p.1*S);
+        draw_line(&mut pixels,W,W,(144,144),p,c);
+        let radius=if axis<3 {9*S}else{8*S};
+        for dy in -radius..=radius {for dx in -radius..=radius {if dx*dx+dy*dy<=radius*radius {
+            let(x,y)=(p.0+dx,p.1+dy);if (0..288).contains(&x)&&(0..288).contains(&y){
+                let i=(y as usize*288+x as usize)*4;
+                let edge=dx*dx+dy*dy>=(radius-3)*(radius-3);
+                pixels[i..i+4].copy_from_slice(&if axis<3||edge{c}else{[39,45,57,255]});
+            }
+        }}}
+        let ink=if axis<3{[250,252,255,255]}else{c};let(x,y)=(p.0-3*S,p.1-4*S);
         let strokes:&[((i32,i32),(i32,i32))]=match axis%4 {
             0=>&[((0,0),(6,8)),((6,0),(0,8))],
             1=>&[((0,0),(3,4)),((6,0),(3,4)),((3,4),(3,8))],
             _=>&[((0,0),(6,0)),((6,0),(0,8)),((0,8),(6,8))]
         };
-        for(a,b)in strokes{draw_line(&mut pixels,96,96,(x+a.0,y+a.1),(x+b.0,y+b.1),color);}
+        for(a,b)in strokes{for offset in -1..=1{draw_line(&mut pixels,W,W,(x+a.0*S+offset,y+a.1*S),(x+b.0*S+offset,y+b.1*S),ink);}}
     }
-    image_from_rgba(96,96,pixels)
+    image_from_rgba(W,W,pixels)
 }
 pub(super) fn pick_orientation_overlay(yaw:f32,pitch:f32,x:f32,y:f32)->Option<i32>{
     if !x.is_finite()||!y.is_finite(){return None;}
