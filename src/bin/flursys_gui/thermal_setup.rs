@@ -149,11 +149,13 @@ pub(super) fn apply(
 pub(super) fn push_boundary(ui: &MainWindow, s: &WorkbenchSession, name: &str) {
     use flursys::turbulence::TurbulenceInlet as TI;
     let t = &s.solver_options().turbulence;
+    ui.set_turb_patch_nu_tilda(t.nu_tilda.to_string().into());
     ui.set_turb_patch_k(t.k.to_string().into());
     ui.set_turb_patch_omega(t.omega.to_string().into());
     ui.set_turb_patch_epsilon(t.epsilon.to_string().into());
     match t.inlets.get(name) {
         None => ui.set_turb_patch_mode(0),
+        Some(TI::ModifiedViscosity{nu_tilda})=>{ui.set_turb_patch_mode(3);ui.set_turb_patch_nu_tilda(nu_tilda.to_string().into());}
         Some(TI::Direct { k, omega, epsilon }) => {
             ui.set_turb_patch_mode(1);
             ui.set_turb_patch_k(k.to_string().into());
@@ -220,6 +222,7 @@ pub(super) fn bind(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
                 .clone();
             let mut t = state.workbench.solver_options().turbulence.clone();
             let b = match ui.get_turb_patch_mode() {
+                3=>Some(TI::ModifiedViscosity{nu_tilda:number(ui.get_turb_patch_nu_tilda(),"SA modified viscosity")?}),
                 1 => Some(TI::Direct {
                     k: number(ui.get_turb_patch_k(), "k")?,
                     omega: number(ui.get_turb_patch_omega(), "omega")?,

@@ -57,11 +57,16 @@ export component SolutionWorkspace inherits Rectangle {
     in-out property <string> min-time-step;
     in-out property <string> max-time-step;
     in-out property <string> time-growth;
+    in-out property <int> coupling-algorithm;
+    in-out property <int> pressure-correctors;
+    in-out property <int> nonorthogonal-correctors;
+    in-out property <string> nonorthogonal-limiter;
     in-out property <int> time-mode;
     in-out property <string> time-step;
     in-out property <int> time-steps;
     in-out property <string> turbulence-relaxation;in-out property <string> turbulence-tolerance;
     in-out property <int> turbulence-model;
+    in-out property <string> nu-tilda;
     in-out property <int> wall-treatment;
     in-out property <string> turbulence-epsilon;
     in-out property <string> turbulence-k;
@@ -83,7 +88,7 @@ export component SolutionWorkspace inherits Rectangle {
     in-out property <bool> solver-panel-open:true;
     in-out property <bool> report-panel-open:false;
     in-out property <int> export-format:0;
-    callback apply();callback run();callback cancel();callback edit-material();callback edit-equations();callback export-history();callback export-chart();callback export-vector();
+    callback apply();callback run();callback cancel();callback edit-material();callback edit-equations();callback edit-volume-models();callback export-history();callback export-chart();callback export-vector();
     background:UiTheme.background;
     VerticalLayout {padding:12px;spacing:9px;
         HorizontalLayout {height:34px;spacing:8px;
@@ -116,21 +121,28 @@ if root.properties-section==0 : VerticalLayout {spacing:6px;vertical-stretch:0;
                             Label {text:root.material;}
                             Tool {text:"Fluid material…";enabled:!root.busy;clicked=>{root.edit-material();}}
 Label {text:"Momentum transport model · experimental";}
-                        ComboBox {model:["Laminar","RANS · k–ω (wall resolved)","RANS · k–ω SST (wall resolved)","LES · Smagorinsky","LES · WALE","RANS · k–ε (experimental)"];current-index <=> root.turbulence-model;enabled:!root.busy;min-width:0px;}
+                        ComboBox {model:["Laminar","RANS · k–ω (wall resolved)","RANS · k–ω SST (wall resolved)","LES · Smagorinsky","LES · WALE","RANS · k–ε (experimental)","RANS · SA-noft2 (wall resolved)","RANS · RNG k–ε (experimental)","RANS · Realizable k–ε (experimental)"];current-index <=> root.turbulence-model;enabled:!root.busy;min-width:0px;}
                         if root.turbulence-model>0 : VerticalLayout {spacing:6px;vertical-stretch:0;
                             Label {text:"Turbulence equation relaxation (0,1]";}
                             LineEdit {text <=> root.turbulence-relaxation;max-height:32px;min-width:0px;}
                             Label {text:"Relative turbulence update tolerance";}
                             LineEdit {text <=> root.turbulence-tolerance;max-height:32px;min-width:0px;}
                         }
+                        if root.turbulence-model==6 : VerticalLayout {spacing:6px;vertical-stretch:0;
+                            Label {text:"Initial / default incoming SA ν̃ · m²/s";}
+                            LineEdit {text <=> root.nu-tilda;enabled:!root.busy;max-height:32px;min-width:0px;}
+                            Label {text:"SA-noft2, wall-resolved: ν̃=0 at walls. Target y+ ≈ 1. No transition, roughness or SA-neg extension. Experimental.";}
+                        }
                         if root.turbulence-model==1 || root.turbulence-model==2 : VerticalLayout {spacing:6px;vertical-stretch:0;
                             Label {text:"Initial / inlet k (m²/s²)";}
                             LineEdit {text <=> root.turbulence-k;enabled:!root.busy;min-width:0px;}
                             Label {text:"Initial / inlet ω (1/s)";}
                             LineEdit {text <=> root.turbulence-omega;enabled:!root.busy;min-width:0px;}
-                            Label {text:"Resolve the viscous sublayer (target y+ ≈ 1). High-Re wall functions are not implemented. Incoming/backflow turbulence uses these values.";}
+                            Label {text:"Wall treatment";}
+                            ComboBox {model:["Wall resolved","Blended smooth omega wall functions"];current-index <=> root.wall-treatment;enabled:!root.busy;min-height:32px;max-height:32px;min-width:0px;}
+                            Label {text:root.wall-treatment==0 ? "Resolve the viscous sublayer: target y+ ≈ 1." : "Experimental equilibrium smooth-wall model. Inspect y+ and separation; no roughness or validated buffer-layer accuracy.";}
                         }
-                        if root.turbulence-model==5 : VerticalLayout {spacing:6px;vertical-stretch:0;
+                        if root.turbulence-model==5 || root.turbulence-model==7 || root.turbulence-model==8 : VerticalLayout {spacing:6px;vertical-stretch:0;
                             Label {text:"Initial / inlet k (m²/s²)";}LineEdit {text <=> root.turbulence-k;min-width:0px;}
                             Label {text:"Initial / inlet ε (m²/s³)";}LineEdit {text <=> root.turbulence-epsilon;min-width:0px;}
                             Label {text:"Wall treatment";}
@@ -173,6 +185,21 @@ Label {text:"CPU worker threads (0 = automatic)";}
                         SpinBox {max-height:32px;value <=> root.iterations;minimum:1;maximum:1000000;enabled:!root.busy;}
                         Label {text:"Momentum convection";}
                         ComboBox {model:["First-order upwind","Limited linear upwind"];current-index <=> root.convection-index;enabled:!root.busy;max-height:32px;min-width:0px;}
+                        Label {text:"Pressure–velocity coupling · experimental"; }
+                        ComboBox {model:["SIMPLE","PIMPLE · transient only"];current-index <=> root.coupling-algorithm;enabled:!root.busy;max-height:32px;min-width:0px;}
+                        if root.coupling-algorithm==1 : VerticalLayout {vertical-stretch:0;spacing:5px;
+                            Label {text:"Inner pressure correctors per outer iteration";}
+                            SpinBox {value <=> root.pressure-correctors;minimum:1;maximum:8;enabled:!root.busy;max-height:32px;}
+                            Label {text:"Select a transient time scheme above. Outer iterations retain the same physical-time history.";}
+                        }
+                        Label {text:"Extra non-orthogonal pressure passes";}
+                        SpinBox {value <=> root.nonorthogonal-correctors;minimum:0;maximum:8;enabled:!root.busy;max-height:32px;}
+                        if root.nonorthogonal-correctors>0 : VerticalLayout {vertical-stretch:0;spacing:5px;
+                            Label {text:"Non-orthogonal limiter · 0 off / 1 unlimited";}
+                            LineEdit {text <=> root.nonorthogonal-limiter;enabled:!root.busy;max-height:32px;min-width:0px;}
+                            Label {text:"Limited deferred pressure flux; does not repair poor mesh quality.";}
+                        }
+                        Tool {text:"Volume momentum models…";enabled:!root.busy;clicked=>{root.edit-volume-models();}}
                         Tool {text:"Equation solver controls…";enabled:!root.busy;clicked=>{root.edit-equations();}}
                         if root.three-d : Label {text:"3D: Gauss pressure gradient · limited non-orthogonal diffusion";}
                         Label {text:"Velocity relaxation αu";}

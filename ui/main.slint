@@ -11,7 +11,7 @@ import { TopBar } from "layout/topbar.slint";
 import { ProjectTree } from "layout/project_tree.slint";
 import { ExampleGallery, ExampleDescriptor } from "layout/example_gallery.slint";
 import { StatusBar } from "layout/status_bar.slint";
-import { LegacyImportDialog, RecoveryDialog, UnsavedChangesDialog, FluidMaterialDialog, SettingsDialog, EquationControlsDialog, EquationDraft } from "layout/project_dialogs.slint";
+import { LegacyImportDialog, RecoveryDialog, UnsavedChangesDialog, FluidMaterialDialog, SettingsDialog, EquationControlsDialog, EquationDraft, VolumeModelsDialog, VolumeModelDraft, CyclicPairsDialog } from "layout/project_dialogs.slint";
 
 export component MainWindow inherits Window {
     init => { Palette.color-scheme = ColorScheme.dark; UiTheme.cad-active=true; }
@@ -518,6 +518,10 @@ export component MainWindow inherits Window {
     in-out property <string> post-wall-summary;
     in-out property <bool> post-has-wall-report:false;
     in-out property <bool> post-has-wall-samples:false;
+    in-out property <int> wb-coupling-algorithm:0;
+    in-out property <int> wb-pressure-correctors:2;
+    in-out property <int> wb-nonorthogonal-correctors:0;
+    in-out property <string> wb-nonorthogonal-limiter:"0.5";
     in-out property <int> wb-time-mode:0;
     in-out property <string> wb-time-step:"0.001";
     in-out property <int> wb-time-steps:100;
@@ -527,6 +531,8 @@ export component MainWindow inherits Window {
     in-out property <string> wb-turbulence-relaxation:"0.5";
     in-out property <string> wb-turbulence-tolerance:"1e-6";
     in-out property <int> wb-wall-treatment:0;
+    in-out property <string> wb-nu-tilda:"1e-5";
+    in-out property <string> turb-patch-nu-tilda:"1e-5";
     in-out property <string> wb-turbulence-epsilon:"0.00001";
     in-out property <int> wb-max-iterations: 1000;
     in-out property <int> wb-cpu-threads: 1;
@@ -626,6 +632,22 @@ export component MainWindow inherits Window {
     in-out property <string> wb-run-readiness;
     in-out property <string> wb-boundary-summary;
     in-out property <bool> setup-material-expanded:false;
+    callback open-cyclic-pairs();callback add-cyclic-pair();callback remove-cyclic-pair();callback apply-cyclic-pairs();
+    in-out property <bool> cyclic-dialog-open:false;
+    in-out property <[string]> cyclic-patch-list;
+    in-out property <[string]> cyclic-pair-list;
+    in-out property <int> cyclic-first-index:0;
+    in-out property <int> cyclic-second-index:1;
+    in-out property <int> cyclic-pair-index:-1;
+    in-out property <string> cyclic-tx:"0";
+    in-out property <string> cyclic-ty:"0";
+    in-out property <string> cyclic-tz:"0";
+    in-out property <string> cyclic-tolerance:"1e-8";
+    in-out property <string> cyclic-feedback;
+    callback open-volume-models();callback apply-volume-models();
+    in-out property <bool> volume-models-open:false;
+    in-out property <VolumeModelDraft> volume-model-draft;
+    in-out property <string> volume-model-feedback;
     callback open-equation-controls();callback apply-equation-controls();
     in-out property <bool> equation-controls-open:false;
     in-out property <[EquationDraft]> equation-drafts;
@@ -936,6 +958,7 @@ PlaneMonitorPanel {
                             spacing:10px;
                             WorkflowControlCard {section:root.setup-section;
                                 if root.setup-section==0 : VerticalLayout {spacing:8px;vertical-stretch:0;
+                                Button {text:"Cyclic patch pairs…";enabled:!root.wb-busy;clicked=>{root.open-cyclic-pairs();}}
                                 Text {text:"BOUNDARY CONDITIONS";color:UiTheme.accent;font-size:11px;font-weight:700;}
                                 InspectorValue {text:root.wb-boundary-summary;}
                                 VerticalLayout {spacing:3px;vertical-stretch:0;
@@ -999,11 +1022,14 @@ PlaneMonitorPanel {
                                     Button {text:root.time-bc-mode==0 ? "Remove time table" : "Apply time table";enabled:!root.wb-busy && root.patch-model.length>0;clicked=>{root.apply-time-boundary();}}
                                     InspectorLabel {text:root.time-bc-status;wrap:word-wrap;}
                                     InspectorLabel {text:"INCOMING TURBULENCE / BACKFLOW";}
-                                    ComboBox {min-height:32px;max-height:32px;min-width:0px;model:["Use global RANS values","Direct k / omega / epsilon","Intensity and length scale"];current-index <=> root.turb-patch-mode;}
+                                    ComboBox {min-height:32px;max-height:32px;min-width:0px;model:["Use global model values","Direct k / omega / epsilon","Intensity and length scale","SA modified viscosity"];current-index <=> root.turb-patch-mode;}
                                     if root.turb-patch-mode==1 : VerticalLayout {
                                         InspectorLabel {text:"k (m²/s²)";} LineEdit {min-height:32px;max-height:32px;min-width:0px;text <=> root.turb-patch-k;}
                                         InspectorLabel {text:"omega (1/s)";} LineEdit {min-height:32px;max-height:32px;min-width:0px;text <=> root.turb-patch-omega;}
                                         InspectorLabel {text:"epsilon (m²/s³)";} LineEdit {min-height:32px;max-height:32px;min-width:0px;text <=> root.turb-patch-epsilon;}
+                                    }
+                                    if root.turb-patch-mode==3 : VerticalLayout {
+                                        InspectorLabel {text:"SA incoming ν̃ (m²/s) ≥ 0";}LineEdit {text <=> root.turb-patch-nu-tilda;min-height:32px;max-height:32px;min-width:0px;}
                                     }
                                     if root.turb-patch-mode==2 : VerticalLayout {
                                         InspectorLabel {text:"Intensity (fraction: 0.05 = 5%)";} LineEdit {min-height:32px;max-height:32px;min-width:0px;text <=> root.turb-patch-intensity;}
@@ -1090,8 +1116,11 @@ HorizontalLayout {height:32px;spacing:5px;
                     busy:root.wb-busy;can-run:root.can-run-workbench;progress:root.wb-solve-progress;
                     target-courant <=> root.wb-target-courant;min-time-step <=> root.wb-min-time-step;max-time-step <=> root.wb-max-time-step;time-growth <=> root.wb-time-growth;
                     wall-summary:root.post-wall-summary;
+                    coupling-algorithm <=> root.wb-coupling-algorithm;pressure-correctors <=> root.wb-pressure-correctors;nonorthogonal-correctors <=> root.wb-nonorthogonal-correctors;nonorthogonal-limiter <=> root.wb-nonorthogonal-limiter;
                     time-mode <=> root.wb-time-mode;time-step <=> root.wb-time-step;time-steps <=> root.wb-time-steps;
+                    edit-volume-models=>{root.open-volume-models();}
                     edit-equations=>{root.open-equation-controls();}
+                    nu-tilda <=> root.wb-nu-tilda;
                     turbulence-relaxation <=> root.wb-turbulence-relaxation;turbulence-tolerance <=> root.wb-turbulence-tolerance;wall-treatment <=> root.wb-wall-treatment;turbulence-model <=> root.wb-turbulence-model;turbulence-k <=> root.wb-turbulence-k;turbulence-omega <=> root.wb-turbulence-omega;turbulence-epsilon <=> root.wb-turbulence-epsilon;
                     cpu-limit:root.wb-cpu-limit;cpu-threads <=> root.wb-cpu-threads;iterations <=> root.wb-max-iterations;velocity-relaxation <=> root.wb-velocity-relaxation;
                     convection-index <=> root.wb-convection-index;
@@ -1178,6 +1207,17 @@ HorizontalLayout {height:32px;spacing:5px;
             cancel => { root.cancel-legacy-import(); }
             import-project => { root.confirm-legacy-import(); }
         }
+    if root.cyclic-dialog-open : CyclicPairsDialog {
+        patches:root.cyclic-patch-list;pairs:root.cyclic-pair-list;
+        first-index <=> root.cyclic-first-index;second-index <=> root.cyclic-second-index;pair-index <=> root.cyclic-pair-index;
+        tx <=> root.cyclic-tx;ty <=> root.cyclic-ty;tz <=> root.cyclic-tz;tolerance <=> root.cyclic-tolerance;
+        feedback:root.cyclic-feedback;busy:root.wb-busy;
+        add=>{root.add-cyclic-pair();}remove=>{root.remove-cyclic-pair();}apply=>{root.apply-cyclic-pairs();}cancel=>{root.cyclic-dialog-open=false;}
+    }
+    if root.volume-models-open : VolumeModelsDialog {
+        draft <=> root.volume-model-draft;feedback:root.volume-model-feedback;busy:root.wb-busy;
+        apply=>{root.apply-volume-models();}cancel=>{root.volume-models-open=false;}
+    }
     if root.equation-controls-open : EquationControlsDialog {
         rows <=> root.equation-drafts;feedback:root.equation-feedback;busy:root.wb-busy;
         apply=>{root.apply-equation-controls();}cancel=>{root.equation-controls-open=false;}

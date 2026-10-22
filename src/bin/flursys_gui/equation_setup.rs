@@ -38,6 +38,7 @@ pub(super) fn bind(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
             k: EquationControl::from_options(s.momentum_solver),
             omega: EquationControl::from_options(s.momentum_solver),
             epsilon: EquationControl::from_options(s.momentum_solver),
+            nu_tilda: EquationControl::from_options(s.momentum_solver),
         });
         ui.set_equation_drafts(ModelRc::new(VecModel::from(vec![
             row("Velocity Ux / Uy / Uz", e.velocity, false),
@@ -46,6 +47,7 @@ pub(super) fn bind(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
             row("Turbulent kinetic energy k", e.k, false),
             row("Specific dissipation omega", e.omega, false),
             row("Dissipation epsilon", e.epsilon, false),
+            row("SA modified viscosity nu_tilda", e.nu_tilda, false),
         ])));
         ui.set_equation_feedback(
             "Settings for inactive equations are retained for later use.".into(),
@@ -63,7 +65,7 @@ pub(super) fn bind(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
         let result = (|| -> Result<(), String> {
             let rows = ui.get_equation_drafts();
             let mut values = Vec::new();
-            for i in 0..6 {
+            for i in 0..7 {
                 let r = rows.row_data(i).ok_or("Missing equation draft")?;
                 let number = |v: SharedString| {
                     v.trim()
@@ -93,6 +95,7 @@ pub(super) fn bind(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
                 k: values[3],
                 omega: values[4],
                 epsilon: values[5],
+                nu_tilda: values[6],
             };
             state
                 .workbench

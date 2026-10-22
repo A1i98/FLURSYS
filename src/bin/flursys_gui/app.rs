@@ -61,6 +61,10 @@ mod cad_units;
 mod thermal_setup;
 #[path="time_boundary_setup.rs"]
 mod time_boundary_setup;
+#[path="cyclic_setup.rs"]
+mod cyclic_setup;
+#[path="volume_setup.rs"]
+mod volume_setup;
 #[path="equation_setup.rs"]
 mod equation_setup;
 #[path = "flow_setup.rs"]
@@ -1961,6 +1965,8 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
     thermal_setup::bind(ui,state);
     time_boundary_setup::bind(ui,state);
     equation_setup::bind(ui,state);
+    volume_setup::bind(ui,state);
+    cyclic_setup::bind(ui,state);
     post_processing::bind(ui, state);
     convergence_plot::bind(ui,state);
     plane_monitors::bind(ui,state);
@@ -4308,7 +4314,7 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
         match sync_solver_panel(&ui, &mut state.workbench) {
             Ok(()) => {
                 state.mark_workbench_dirty();
-                state.log("Applied material and SIMPLE solver settings.");
+                state.log("Applied material and pressure–velocity coupling settings.");
             }
             Err(error) => state.log(error),
         }
@@ -4794,7 +4800,7 @@ fn rebuild_tree_rows(state: &mut AppState) {
         .map(|name| {
             (
                 name.clone(),
-                state.workbench.boundary_assignment(name).is_some(),
+                state.workbench.boundary_assignment(name).is_some() || state.workbench.cyclic_partner(name).is_some(),
             )
         })
         .collect();
@@ -5300,15 +5306,21 @@ fn push_workbench_defaults(ui: &MainWindow, session: &WorkbenchSession) {
     )));
     let solver = session.solver_options();
     use flursys::unstructured_incompressible::TimeIntegration;
+    let pc=solver.pressure_coupling;
+    ui.set_wb_coupling_algorithm(if pc.algorithm==flursys::simple::CouplingAlgorithm::Pimple {1}else{0});
+    ui.set_wb_pressure_correctors(if pc.algorithm==flursys::simple::CouplingAlgorithm::Pimple {pc.pressure_correctors as i32}else{2});
+    ui.set_wb_nonorthogonal_correctors(pc.non_orthogonal_correctors as i32);
+    ui.set_wb_nonorthogonal_limiter(pc.non_orthogonal_limiter.to_string().into());
     ui.set_wb_time_mode(match solver.time {TimeIntegration::Steady=>0,TimeIntegration::Euler{..}=>1,TimeIntegration::AdaptiveEuler{..}=>2,TimeIntegration::Backward{..}=>3});
     let (dt,steps)=solver.time.parameters().unwrap_or((0.001,100));ui.set_wb_time_step(dt.to_string().into());ui.set_wb_time_steps(steps as i32);
     let adaptive=solver.time.adaptive().unwrap_or_default();
     ui.set_wb_target_courant(adaptive.target_courant.to_string().into());ui.set_wb_min_time_step(adaptive.min_dt.to_string().into());ui.set_wb_max_time_step(adaptive.max_dt.to_string().into());ui.set_wb_time_growth(adaptive.max_growth.to_string().into());
     use flursys::turbulence::TurbulenceModel;
     ui.set_wb_turbulence_relaxation(solver.turbulence.relaxation.to_string().into());ui.set_wb_turbulence_tolerance(solver.turbulence.relative_tolerance.to_string().into());
-    ui.set_wb_wall_treatment(if solver.turbulence.wall_treatment==flursys::turbulence::WallTreatment::EquilibriumKEpsilon {1}else{0});
+    ui.set_wb_wall_treatment(if solver.turbulence.wall_treatment==flursys::turbulence::WallTreatment::Resolved{0}else{1});
+    ui.set_wb_nu_tilda(solver.turbulence.nu_tilda.to_string().into());
     ui.set_wb_turbulence_epsilon(solver.turbulence.epsilon.to_string().into());
-    ui.set_wb_turbulence_model(match solver.turbulence.model {TurbulenceModel::Laminar=>0,TurbulenceModel::KOmega=>1,TurbulenceModel::KOmegaSst=>2,TurbulenceModel::Smagorinsky=>3,TurbulenceModel::Wale=>4,TurbulenceModel::KEpsilon=>5});
+    ui.set_wb_turbulence_model(match solver.turbulence.model {TurbulenceModel::Laminar=>0,TurbulenceModel::KOmega=>1,TurbulenceModel::KOmegaSst=>2,TurbulenceModel::Smagorinsky=>3,TurbulenceModel::Wale=>4,TurbulenceModel::KEpsilon=>5,TurbulenceModel::SpalartAllmaras=>6,TurbulenceModel::RngKEpsilon=>7,TurbulenceModel::RealizableKEpsilon=>8});
     ui.set_wb_turbulence_k(solver.turbulence.k.to_string().into());ui.set_wb_turbulence_omega(solver.turbulence.omega.to_string().into());
     ui.set_wb_coupling_tolerance(SharedString::from(format!(
         "{:e}",
@@ -5340,6 +5352,11 @@ fn push_workbench_defaults(ui: &MainWindow, session: &WorkbenchSession) {
 fn push_boundary_fields(ui: &MainWindow, session: &WorkbenchSession, patch: &str) {
     thermal_setup::push_boundary(ui,session,patch);
     time_boundary_setup::push(ui,session,patch);
+    if let Some(peer)=session.cyclic_partner(patch){
+        ui.set_bc_kind_index(-1);
+        ui.set_bc_assigned(format!("Cyclic ↔ {peer}. Edit or remove the pair using Cyclic patch pairs.").into());
+        return;
+    }
     match session.boundary_assignment(patch).copied() {
         None => {
             ui.set_bc_kind_index(-1);
@@ -5427,8 +5444,15 @@ fn sync_solver_panel(ui: &MainWindow, session: &mut WorkbenchSession) -> Result<
         2=>TimeIntegration::AdaptiveEuler {dt:parse_number(ui.get_wb_time_step().as_str(),f64::NAN),steps:ui.get_wb_time_steps().max(0) as usize,controls:flursys::unstructured_incompressible::AdaptiveTimeStep {target_courant:parse_number(ui.get_wb_target_courant().as_str(),f64::NAN),min_dt:parse_number(ui.get_wb_min_time_step().as_str(),f64::NAN),max_dt:parse_number(ui.get_wb_max_time_step().as_str(),f64::NAN),max_growth:parse_number(ui.get_wb_time_growth().as_str(),f64::NAN)}},
         _=>TimeIntegration::Steady,
     };
-    let model=match ui.get_wb_turbulence_model(){1=>TurbulenceModel::KOmega,2=>TurbulenceModel::KOmegaSst,3=>TurbulenceModel::Smagorinsky,4=>TurbulenceModel::Wale,5=>TurbulenceModel::KEpsilon,_=>TurbulenceModel::Laminar};
-    let turbulence=TurbulenceOptions {model,relaxation:parse_number(ui.get_wb_turbulence_relaxation().as_str(),f64::NAN),relative_tolerance:parse_number(ui.get_wb_turbulence_tolerance().as_str(),f64::NAN),wall_treatment:if model==TurbulenceModel::KEpsilon && ui.get_wb_wall_treatment()==1{flursys::turbulence::WallTreatment::EquilibriumKEpsilon}else{flursys::turbulence::WallTreatment::Resolved},epsilon:if model==TurbulenceModel::KEpsilon {parse_number(ui.get_wb_turbulence_epsilon().as_str(),f64::NAN)}else{session.solver_options().turbulence.epsilon},k:if matches!(model,TurbulenceModel::KOmega|TurbulenceModel::KOmegaSst|TurbulenceModel::KEpsilon){parse_number(ui.get_wb_turbulence_k().as_str(),f64::NAN)}else{session.solver_options().turbulence.k},omega:if matches!(model,TurbulenceModel::KOmega|TurbulenceModel::KOmegaSst){parse_number(ui.get_wb_turbulence_omega().as_str(),f64::NAN)}else{session.solver_options().turbulence.omega},..session.solver_options().turbulence.clone()};
+    let model=match ui.get_wb_turbulence_model(){1=>TurbulenceModel::KOmega,2=>TurbulenceModel::KOmegaSst,3=>TurbulenceModel::Smagorinsky,4=>TurbulenceModel::Wale,5=>TurbulenceModel::KEpsilon,6=>TurbulenceModel::SpalartAllmaras,7=>TurbulenceModel::RngKEpsilon,8=>TurbulenceModel::RealizableKEpsilon,_=>TurbulenceModel::Laminar};
+    let turbulence=TurbulenceOptions {model,nu_tilda:if model==TurbulenceModel::SpalartAllmaras{parse_number(ui.get_wb_nu_tilda().as_str(),f64::NAN)}else{session.solver_options().turbulence.nu_tilda},relaxation:parse_number(ui.get_wb_turbulence_relaxation().as_str(),f64::NAN),relative_tolerance:parse_number(ui.get_wb_turbulence_tolerance().as_str(),f64::NAN),wall_treatment:if ui.get_wb_wall_treatment()==1{match model{TurbulenceModel::KEpsilon|TurbulenceModel::RngKEpsilon|TurbulenceModel::RealizableKEpsilon=>flursys::turbulence::WallTreatment::EquilibriumKEpsilon,TurbulenceModel::KOmega|TurbulenceModel::KOmegaSst=>flursys::turbulence::WallTreatment::EquilibriumKOmega,_=>flursys::turbulence::WallTreatment::Resolved}}else{flursys::turbulence::WallTreatment::Resolved},epsilon:if model.uses_epsilon() {parse_number(ui.get_wb_turbulence_epsilon().as_str(),f64::NAN)}else{session.solver_options().turbulence.epsilon},k:if matches!(model,TurbulenceModel::KOmega|TurbulenceModel::KOmegaSst|TurbulenceModel::KEpsilon|TurbulenceModel::RngKEpsilon|TurbulenceModel::RealizableKEpsilon){parse_number(ui.get_wb_turbulence_k().as_str(),f64::NAN)}else{session.solver_options().turbulence.k},omega:if matches!(model,TurbulenceModel::KOmega|TurbulenceModel::KOmegaSst){parse_number(ui.get_wb_turbulence_omega().as_str(),f64::NAN)}else{session.solver_options().turbulence.omega},..session.solver_options().turbulence.clone()};
+    let pressure_coupling=flursys::simple::PressureCoupling {
+        algorithm:if ui.get_wb_coupling_algorithm()==1{flursys::simple::CouplingAlgorithm::Pimple}else{flursys::simple::CouplingAlgorithm::Simple},
+        pressure_correctors:if ui.get_wb_coupling_algorithm()==1{ui.get_wb_pressure_correctors().max(0) as usize}else{1},
+        non_orthogonal_correctors:ui.get_wb_nonorthogonal_correctors().max(0) as usize,
+        non_orthogonal_limiter:parse_number(ui.get_wb_nonorthogonal_limiter().as_str(),f64::NAN),
+    };
+    pressure_coupling.validate(time.is_transient())?;
     // Validate the complete form before invalidating an existing solution.
     let mut draft = WorkbenchSession::from_project(&session.to_project("Solver validation"))
         .map_err(|e| e.to_string())?;
@@ -5442,7 +5466,9 @@ fn sync_solver_panel(ui: &MainWindow, session: &mut WorkbenchSession) -> Result<
         .set_solver_controls(iterations, velocity, pressure, continuity)
         .map_err(|e| e.to_string())?;
     draft.set_flow_models(time,turbulence.clone()).map_err(|e|e.to_string())?;
+    draft.set_pressure_coupling(pressure_coupling).map_err(|e|e.to_string())?;
     session.set_flow_models(time,turbulence).map_err(|e|e.to_string())?;
+    session.set_pressure_coupling(pressure_coupling).map_err(|e|e.to_string())?;
     session.set_convection(if ui.get_wb_convection_index()==1 {flursys::momentum::MomentumConvection::LimitedLinear}else{flursys::momentum::MomentumConvection::Upwind});
     session.set_cpu_threads(threads);
     session
@@ -5527,10 +5553,11 @@ fn solution_summary_text(session: &WorkbenchSession) -> String {
                 .rev()
                 .map(|(iteration, value)| format!("  iter {iteration:>5}  continuity {value:.3e}"))
                 .collect();
+            let frame=if session.solver_options().volume_models.rotating_frame.is_some(){"Velocity reference: rotating frame (relative U)\n"}else{"Velocity reference: inertial frame\n"};
             let linear=report.simple.equation_linear_reports.iter().map(|(name,r)|format!("{name}: L2 {:.3e} → {:.3e}; {} linear iterations",r.initial_residual,r.final_residual,r.iterations)).collect::<Vec<_>>().join("\n");
             let time=solution.physical_time.map(|t|format!("physical time {t:.9e} s\naccepted steps {}\nnonlinear correctors {}\nlast max Co {:.4e}\n",solution.completed_time_steps,solution.nonlinear_iterations,solution.max_courant.unwrap_or(0.0))).unwrap_or_default();
             format!(
-                "{time}last equation solves:\n{linear}\n\nstatus      {}\nCPU workers {}\niterations  {}\ninitial mass RMS {:.3e}\nfinal mass RMS   {:.3e}\nmomentum rel {:.3e}\nvelocity Δrel {:.3e}\ninflow      {:.5}\noutflow     {:.5}\nnet flux    {:+.3e}\n{}",
+                "{frame}{time}last equation solves:\n{linear}\n\nstatus      {}\nCPU workers {}\niterations  {}\ninitial mass RMS {:.3e}\nfinal mass RMS   {:.3e}\nmomentum rel {:.3e}\nvelocity Δrel {:.3e}\ninflow      {:.5}\noutflow     {:.5}\nnet flux    {:+.3e}\n{}",
                 status_label(session),
                 report.cpu_threads,
                 report.outer_iterations,
@@ -6329,7 +6356,7 @@ fn refresh_ui(ui: &MainWindow, state: &AppState) {
                 1 => "Group geometry entities into reusable Named Selections; each group becomes one Gmsh physical group and boundary patch.".to_string(),
                 2 => "Generate the unstructured mesh with Gmsh once the Named Selections cover every exterior edge/face you need as a boundary patch.".to_string(),
                 3 => "Assign physical conditions to every mesh patch; the run stays blocked until all patches are covered.".to_string(),
-                4 => "Material properties and SIMPLE coupling controls for the unstructured solver.".to_string(),
+                4 => "Material properties and SIMPLE/PIMPLE coupling controls for the unstructured solver.".to_string(),
                 _ => overview,
             }));
             if mode != 1 {

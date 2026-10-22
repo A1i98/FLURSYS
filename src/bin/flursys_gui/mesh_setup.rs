@@ -587,7 +587,7 @@ pub(super) fn refresh(ui: &MainWindow, state: &AppState) {
     let rows = names
         .iter()
         .map(|name| {
-            let description = state
+            let description = if let Some(peer)=state.workbench.cyclic_partner(name){assigned+=1;format!("Cyclic ↔ {peer}")}else{state
                 .workbench
                 .boundary_assignment(name)
                 .map(|bc| {
@@ -612,7 +612,7 @@ pub(super) fn refresh(ui: &MainWindow, state: &AppState) {
                         }
                     }
                 })
-                .unwrap_or_else(|| "UNASSIGNED".into());
+                .unwrap_or_else(|| "UNASSIGNED".into())};
             let count = state.workbench.mesh().and_then(|m| {
                 m.mesh
                     .boundary_patches()

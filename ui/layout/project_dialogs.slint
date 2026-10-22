@@ -204,3 +204,114 @@ export component EquationControlsDialog inherits ModalFrame {
     Text {text:root.feedback;color:UiTheme.accent;wrap:word-wrap;vertical-stretch:0;}
     HorizontalLayout {spacing:8px;vertical-stretch:0;Rectangle {horizontal-stretch:1;}Button {text:"Cancel";clicked=>{root.cancel();}}Button {text:"Apply";enabled:!root.busy;clicked=>{root.apply();}}}
 }
+
+export struct VolumeModelDraft {
+    rotation_enabled:bool, resistance_enabled:bool, bounded:bool,
+    omega-x:string,
+    omega-y:string,
+    omega-z:string,
+    origin-x:string,
+    origin-y:string,
+    origin-z:string,
+    minimum-x:string,
+    minimum-y:string,
+    minimum-z:string,
+    maximum-x:string,
+    maximum-y:string,
+    maximum-z:string,
+    darcy:string,
+    forchheimer:string,
+}
+export component VolumeModelsDialog inherits ModalFrame {
+    in-out property <VolumeModelDraft> draft;
+    in property <string> feedback;
+    in property <bool> busy;
+    callback apply();callback cancel();
+    close-requested=>{root.cancel();}
+    panel-width:650px;panel-height:660px;
+    Text {text:"Volume momentum models · experimental";color:UiTheme.text-title;font-size:17px;font-weight:700;vertical-stretch:0;}
+    PropertyScroll {
+        VerticalLayout {spacing:10px;vertical-stretch:0;
+            CheckBox {text:"Global rotating frame · relative velocity";checked <=> root.draft.rotation-enabled;enabled:!root.busy;}
+            if root.draft.rotation-enabled : VerticalLayout {spacing:6px;vertical-stretch:0;
+                Text {text:"3D only. All inlet, wall, initial and displayed velocities are relative to this frame. No stationary/rotating zone interface or moving mesh.";color:UiTheme.text-secondary;wrap:word-wrap;vertical-stretch:0;}
+                Text {text:"Angular velocity vector · rad/s";color:UiTheme.text-secondary;vertical-stretch:0;}
+                HorizontalLayout {spacing:6px;vertical-stretch:0;
+                    MaterialField {label:"X";value <=> root.draft.omega-x;}
+                    MaterialField {label:"Y";value <=> root.draft.omega-y;}
+                    MaterialField {label:"Z";value <=> root.draft.omega-z;}
+                }
+                Text {text:"Rotation origin · m";color:UiTheme.text-secondary;vertical-stretch:0;}
+                HorizontalLayout {spacing:6px;vertical-stretch:0;
+                    MaterialField {label:"X";value <=> root.draft.origin-x;}
+                    MaterialField {label:"Y";value <=> root.draft.origin-y;}
+                    MaterialField {label:"Z";value <=> root.draft.origin-z;}
+                }
+            }
+            CheckBox {text:"Isotropic Darcy–Forchheimer momentum resistance";checked <=> root.draft.resistance-enabled;enabled:!root.busy;}
+            if root.draft.resistance-enabled : VerticalLayout {spacing:6px;vertical-stretch:0;
+                Text {text:"Sink: −(ν D + ½ F |U|) U. No porosity storage or porous heat-transfer model.";color:UiTheme.text-secondary;wrap:word-wrap;vertical-stretch:0;}
+                HorizontalLayout {spacing:6px;vertical-stretch:0;
+                    MaterialField {label:"Darcy D · 1/m²";value <=> root.draft.darcy;}
+                    MaterialField {label:"Forchheimer F · 1/m";value <=> root.draft.forchheimer;}
+                }
+                CheckBox {text:"Restrict to a box of cell centres";checked <=> root.draft.bounded;enabled:!root.busy;}
+                if root.draft.bounded : VerticalLayout {spacing:6px;vertical-stretch:0;
+                Text {text:"Box minimum · m";color:UiTheme.text-secondary;vertical-stretch:0;}
+                HorizontalLayout {spacing:6px;vertical-stretch:0;
+                    MaterialField {label:"X";value <=> root.draft.minimum-x;}
+                    MaterialField {label:"Y";value <=> root.draft.minimum-y;}
+                    MaterialField {label:"Z";value <=> root.draft.minimum-z;}
+                }
+                Text {text:"Box maximum · m";color:UiTheme.text-secondary;vertical-stretch:0;}
+                HorizontalLayout {spacing:6px;vertical-stretch:0;
+                    MaterialField {label:"X";value <=> root.draft.maximum-x;}
+                    MaterialField {label:"Y";value <=> root.draft.maximum-y;}
+                    MaterialField {label:"Z";value <=> root.draft.maximum-z;}
+                }
+                }
+            }
+        }
+    }
+    Text {text:root.feedback;color:UiTheme.accent;wrap:word-wrap;vertical-stretch:0;}
+    HorizontalLayout {spacing:8px;vertical-stretch:0;Rectangle {horizontal-stretch:1;}Button {text:"Cancel";clicked=>{root.cancel();}}Button {text:"Apply";enabled:!root.busy;clicked=>{root.apply();}}}
+}
+
+export component CyclicPairsDialog inherits ModalFrame {
+    in property <[string]> patches;
+    in property <[string]> pairs;
+    in-out property <int> first-index:0;
+    in-out property <int> second-index:1;
+    in-out property <int> pair-index:-1;
+    in-out property <string> tx:"0";
+    in-out property <string> ty:"0";
+    in-out property <string> tz:"0";
+    in-out property <string> tolerance:"1e-8";
+    in property <string> feedback;
+    in property <bool> busy;
+    callback add();callback remove();callback apply();callback cancel();
+    close-requested=>{root.cancel();}
+    panel-width:620px;panel-height:550px;
+    Text {text:"Conformal translational Cyclic · experimental";color:UiTheme.text-title;font-size:17px;font-weight:700;vertical-stretch:0;}
+    PropertyScroll {
+        VerticalLayout {spacing:10px;vertical-stretch:0;
+            Text {text:"Laminar, isothermal, first-order upwind; inertial frame. Matching faces are required. No AMI or rotational transform.";color:UiTheme.text-secondary;wrap:word-wrap;vertical-stretch:0;}
+            Text {text:"First patch → second patch";color:UiTheme.text;vertical-stretch:0;}
+            ComboBox {model:root.patches;current-index <=> root.first-index;min-width:0px;max-height:32px;}
+            ComboBox {model:root.patches;current-index <=> root.second-index;min-width:0px;max-height:32px;}
+            Text {text:"Translation from first to second · metres";color:UiTheme.text-secondary;vertical-stretch:0;}
+            HorizontalLayout {spacing:6px;vertical-stretch:0;
+                MaterialField {label:"X";value <=> root.tx;}
+                MaterialField {label:"Y";value <=> root.ty;}
+                MaterialField {label:"Z";value <=> root.tz;}
+            }
+            MaterialField {label:"Absolute matching tolerance · m";value <=> root.tolerance;}
+            Button {text:"Add pair to draft";enabled:!root.busy;clicked=>{root.add();}}
+            ComboBox {model:root.pairs;current-index <=> root.pair-index;min-width:0px;max-height:32px;}
+            Button {text:"Remove selected draft pair";enabled:!root.busy && root.pair-index>=0;clicked=>{root.remove();}}
+            Text {text:"Apply replaces physical conditions on paired patches. Removing a pair requires assigning physical conditions again. Mesh generation is unchanged; opposite mesh partitions must already match.";color:UiTheme.text-secondary;wrap:word-wrap;vertical-stretch:0;}
+        }
+    }
+    Text {text:root.feedback;color:UiTheme.accent;wrap:word-wrap;vertical-stretch:0;}
+    HorizontalLayout {spacing:8px;vertical-stretch:0;Rectangle {horizontal-stretch:1;}Button {text:"Cancel";clicked=>{root.cancel();}}Button {text:"Apply pairs";enabled:!root.busy;clicked=>{root.apply();}}}
+}
