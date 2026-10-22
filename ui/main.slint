@@ -11,7 +11,7 @@ import { TopBar } from "layout/topbar.slint";
 import { ProjectTree } from "layout/project_tree.slint";
 import { ExampleGallery, ExampleDescriptor } from "layout/example_gallery.slint";
 import { StatusBar } from "layout/status_bar.slint";
-import { LegacyImportDialog, RecoveryDialog, UnsavedChangesDialog, FluidMaterialDialog, SettingsDialog } from "layout/project_dialogs.slint";
+import { LegacyImportDialog, RecoveryDialog, UnsavedChangesDialog, FluidMaterialDialog, SettingsDialog, EquationControlsDialog, EquationDraft } from "layout/project_dialogs.slint";
 
 export component MainWindow inherits Window {
     init => { Palette.color-scheme = ColorScheme.dark; UiTheme.cad-active=true; }
@@ -524,6 +524,8 @@ export component MainWindow inherits Window {
     in-out property <int> wb-turbulence-model:0;
     in-out property <string> wb-turbulence-k:"0.0001";
     in-out property <string> wb-turbulence-omega:"1";
+    in-out property <string> wb-turbulence-relaxation:"0.5";
+    in-out property <string> wb-turbulence-tolerance:"1e-6";
     in-out property <int> wb-wall-treatment:0;
     in-out property <string> wb-turbulence-epsilon:"0.00001";
     in-out property <int> wb-max-iterations: 1000;
@@ -624,6 +626,10 @@ export component MainWindow inherits Window {
     in-out property <string> wb-run-readiness;
     in-out property <string> wb-boundary-summary;
     in-out property <bool> setup-material-expanded:false;
+    callback open-equation-controls();callback apply-equation-controls();
+    in-out property <bool> equation-controls-open:false;
+    in-out property <[EquationDraft]> equation-drafts;
+    in-out property <string> equation-feedback;
     callback apply-time-boundary();
     in-out property <int> time-bc-mode:0;
     in-out property <string> time-bc-table;
@@ -648,6 +654,9 @@ export component MainWindow inherits Window {
     in-out property <string> thermal-cp:"1005";
     in-out property <string> thermal-kappa:"0.025";
     in-out property <string> thermal-volume-source:"0";
+    in-out property <int> thermal-wall-treatment:0;
+    in-out property <string> thermal-relaxation:"0.7";
+    in-out property <string> thermal-tolerance:"1e-8";
     in-out property <string> thermal-prt:"0.85";
     in-out property <bool> thermal-buoyancy:false;
     in-out property <string> thermal-reference:"293.15";
@@ -980,10 +989,10 @@ PlaneMonitorPanel {
                                     }
                                     InspectorValue { text: root.bc-assigned; }
                                     InspectorLabel {text:"PHYSICAL-TIME BOUNDARY TABLE";}
-                                    ComboBox {model:["Constant / remove time table","Velocity vector vs time","Flow rate vs time","Pressure vs time"];current-index <=> root.time-bc-mode;min-height:32px;max-height:32px;min-width:0px;enabled:!root.wb-busy;}
+                                    ComboBox {model:["Constant / remove time table","Velocity vector vs time","Flow rate vs time","Pressure vs time","Temperature vs time","Heat flux vs time"];current-index <=> root.time-bc-mode;min-height:32px;max-height:32px;min-width:0px;enabled:!root.wb-busy;}
                                     if root.time-bc-mode>0 : VerticalLayout {
                                         vertical-stretch:0;
-                                        InspectorLabel {text:root.time-bc-mode==1 ? "CSV: time_s, Ux, Uy, Uz (m/s). For velocity, parabolic, far-field or backflow inlet." : root.time-bc-mode==2 ? "CSV: time_s, inward rate. Uses the assigned inlet's m³/s or kg/s units." : "CSV: time_s, pressure/rho (m²/s²). Uses the assigned static or total-pressure condition.";wrap:word-wrap;}
+                                        InspectorLabel {text:root.time-bc-mode==4 ? "CSV: time_s, temperature_K. Assign Fixed or Inlet/outlet temperature first." : root.time-bc-mode==5 ? "CSV: time_s, inward heat flux_W/m². Assign Heat flux first." : root.time-bc-mode==1 ? "CSV: time_s, Ux, Uy, Uz (m/s). For velocity, parabolic, far-field or backflow inlet." : root.time-bc-mode==2 ? "CSV: time_s, inward rate. Uses the assigned inlet's m³/s or kg/s units." : "CSV: time_s, pressure/rho (m²/s²). Uses the assigned static or total-pressure condition.";wrap:word-wrap;}
                                         TextEdit {text <=> root.time-bc-table;min-width:0px;min-height:120px;max-height:120px;enabled:!root.wb-busy;}
                                         InspectorLabel {text:"At least two rows; increasing times ≥ 0. Linear interpolation; endpoint values held outside table. Transient solve required. One table per patch.";wrap:word-wrap;}
                                     }
@@ -1082,7 +1091,8 @@ HorizontalLayout {height:32px;spacing:5px;
                     target-courant <=> root.wb-target-courant;min-time-step <=> root.wb-min-time-step;max-time-step <=> root.wb-max-time-step;time-growth <=> root.wb-time-growth;
                     wall-summary:root.post-wall-summary;
                     time-mode <=> root.wb-time-mode;time-step <=> root.wb-time-step;time-steps <=> root.wb-time-steps;
-                    wall-treatment <=> root.wb-wall-treatment;turbulence-model <=> root.wb-turbulence-model;turbulence-k <=> root.wb-turbulence-k;turbulence-omega <=> root.wb-turbulence-omega;turbulence-epsilon <=> root.wb-turbulence-epsilon;
+                    edit-equations=>{root.open-equation-controls();}
+                    turbulence-relaxation <=> root.wb-turbulence-relaxation;turbulence-tolerance <=> root.wb-turbulence-tolerance;wall-treatment <=> root.wb-wall-treatment;turbulence-model <=> root.wb-turbulence-model;turbulence-k <=> root.wb-turbulence-k;turbulence-omega <=> root.wb-turbulence-omega;turbulence-epsilon <=> root.wb-turbulence-epsilon;
                     cpu-limit:root.wb-cpu-limit;cpu-threads <=> root.wb-cpu-threads;iterations <=> root.wb-max-iterations;velocity-relaxation <=> root.wb-velocity-relaxation;
                     convection-index <=> root.wb-convection-index;
                     pressure-relaxation <=> root.wb-pressure-relaxation;continuity-tolerance <=> root.wb-continuity-tolerance;
@@ -1168,11 +1178,15 @@ HorizontalLayout {height:32px;spacing:5px;
             cancel => { root.cancel-legacy-import(); }
             import-project => { root.confirm-legacy-import(); }
         }
+    if root.equation-controls-open : EquationControlsDialog {
+        rows <=> root.equation-drafts;feedback:root.equation-feedback;busy:root.wb-busy;
+        apply=>{root.apply-equation-controls();}cancel=>{root.equation-controls-open=false;}
+    }
     if root.material-dialog-open : FluidMaterialDialog {
         x:0px;y:0px;width:root.width;height:root.height;
         density <=> root.material-draft-density;viscosity <=> root.material-draft-viscosity;
         catalog-index <=> root.material-catalog-index;eval-temperature <=> root.material-eval-temperature;eval-pressure <=> root.material-eval-pressure;source:root.material-source;
-        enabled-energy <=> root.thermal-enabled;initial <=> root.thermal-initial;cp <=> root.thermal-cp;kappa <=> root.thermal-kappa;heat-source <=> root.thermal-volume-source;prt <=> root.thermal-prt;
+        enabled-energy <=> root.thermal-enabled;initial <=> root.thermal-initial;cp <=> root.thermal-cp;kappa <=> root.thermal-kappa;heat-source <=> root.thermal-volume-source;wall-treatment <=> root.thermal-wall-treatment;prt <=> root.thermal-prt;relaxation <=> root.thermal-relaxation;tolerance <=> root.thermal-tolerance;
         buoyancy <=> root.thermal-buoyancy;reference <=> root.thermal-reference;beta <=> root.thermal-beta;gx <=> root.thermal-gx;gy <=> root.thermal-gy;gz <=> root.thermal-gz;
         load-catalog=>{root.load-material-catalog();}
         feedback:root.material-dialog-feedback;busy:root.wb-busy;

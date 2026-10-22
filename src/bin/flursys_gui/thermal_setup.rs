@@ -59,6 +59,15 @@ pub(super) fn push(ui: &MainWindow, s: &WorkbenchSession) {
     ui.set_thermal_gx(t.gravity.x.to_string().into());
     ui.set_thermal_gy(t.gravity.y.to_string().into());
     ui.set_thermal_gz(t.gravity.z.to_string().into());
+    ui.set_thermal_wall_treatment(
+        if t.wall_treatment == flursys::thermal::ThermalWallTreatment::EquilibriumPrt {
+            1
+        } else {
+            0
+        },
+    );
+    ui.set_thermal_relaxation(t.relaxation.to_string().into());
+    ui.set_thermal_tolerance(t.relative_tolerance.to_string().into());
     ui.set_thermal_prt(t.turbulent_prandtl.to_string().into());
 }
 pub(super) fn apply(
@@ -81,8 +90,28 @@ pub(super) fn apply(
         number(ui.get_thermal_gy(), "Gravity Y")?,
         number(ui.get_thermal_gz(), "Gravity Z")?,
     );
+    t.wall_treatment = if ui.get_thermal_wall_treatment() == 1 {
+        flursys::thermal::ThermalWallTreatment::EquilibriumPrt
+    } else {
+        flursys::thermal::ThermalWallTreatment::Molecular
+    };
+    t.relaxation = number(ui.get_thermal_relaxation(), "Temperature relaxation")?;
+    t.relative_tolerance = number(
+        ui.get_thermal_tolerance(),
+        "Temperature convergence tolerance",
+    )?;
     t.turbulent_prandtl = number(ui.get_thermal_prt(), "Turbulent Prandtl")?;
     t.validate()?;
+    if t.enabled
+        && t.wall_treatment == flursys::thermal::ThermalWallTreatment::EquilibriumPrt
+        && (s.solver_options().turbulence.model != flursys::turbulence::TurbulenceModel::KEpsilon
+            || s.solver_options().turbulence.wall_treatment
+                != flursys::turbulence::WallTreatment::EquilibriumKEpsilon)
+    {
+        return Err(
+            "Select equilibrium k-epsilon momentum walls before the thermal Prt wall model".into(),
+        );
+    }
     if !rho.is_finite() || rho <= 0.0 || !nu.is_finite() || nu < 0.0 {
         return Err("Require density > 0 and viscosity ≥ 0".into());
     }

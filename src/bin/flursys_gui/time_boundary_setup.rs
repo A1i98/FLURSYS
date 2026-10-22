@@ -7,6 +7,8 @@ pub(super) fn push(ui: &MainWindow, s: &WorkbenchSession, name: &str) {
             BoundaryQuantity::Velocity => 1,
             BoundaryQuantity::FlowRate => 2,
             BoundaryQuantity::Pressure => 3,
+            BoundaryQuantity::Temperature => 4,
+            BoundaryQuantity::HeatFlux => 5,
         });
         ui.set_time_bc_table(p.csv().into());
         ui.set_time_bc_status(
@@ -41,6 +43,8 @@ pub(super) fn bind(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
                 1 => Some(BoundaryQuantity::Velocity),
                 2 => Some(BoundaryQuantity::FlowRate),
                 3 => Some(BoundaryQuantity::Pressure),
+                4 => Some(BoundaryQuantity::Temperature),
+                5 => Some(BoundaryQuantity::HeatFlux),
                 _ => None,
             };
             let profile = quantity

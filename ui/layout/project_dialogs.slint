@@ -1,4 +1,4 @@
-import { Button, LineEdit, CheckBox, ComboBox } from "std-widgets.slint";
+import { Button, LineEdit, CheckBox, ComboBox, SpinBox } from "std-widgets.slint";
 import { UiTheme, PropertyScroll, WorkspaceSections } from "../components.slint";
 
 // Window-sized modal scrim; dialogs never participate in workspace layout.
@@ -72,6 +72,8 @@ export component FluidMaterialDialog inherits ModalFrame {
     in-out property <string> eval-temperature;in-out property <string> eval-pressure;
     in property <string> source;
     in-out property <bool> enabled-energy;in-out property <bool> buoyancy;
+    in-out property <int> wall-treatment;
+    in-out property <string> relaxation;in-out property <string> tolerance;
     in-out property <string> initial;in-out property <string> cp;in-out property <string> kappa;in-out property <string> heat-source;in-out property <string> prt;
     in-out property <string> reference;in-out property <string> beta;in-out property <string> gx;in-out property <string> gy;in-out property <string> gz;
     private property <int> section:0;
@@ -99,6 +101,10 @@ export component FluidMaterialDialog inherits ModalFrame {
             MaterialField {label:"Thermal conductivity k (W/m/K)";value <=> root.kappa;}
             MaterialField {label:"Volumetric heat source (W/m³)";value <=> root.heat-source;}
             MaterialField {label:"Turbulent Prandtl number";value <=> root.prt;}
+            ComboBox {model:["Wall diffusivity · molecular / resolved","Wall diffusivity · equilibrium constant Prt"];current-index <=> root.wall-treatment;min-height:32px;max-height:32px;min-width:0px;}
+            Text {text:"Equilibrium Prt requires the k–epsilon equilibrium momentum wall model. It is not the Jayatilleke thermal log-law model.";color:UiTheme.text-secondary;wrap:word-wrap;vertical-stretch:0;}
+            MaterialField {label:"Temperature equation relaxation (0,1]";value <=> root.relaxation;}
+            MaterialField {label:"Relative temperature update tolerance";value <=> root.tolerance;}
             Text {text:"Set temperature/heat-flux conditions for each patch in Setup → Boundaries. Upwind temperature transport; turbulent diffusivity νt/Prt when RANS/LES is active.";color:UiTheme.text-secondary;wrap:word-wrap;vertical-stretch:0;}
         }
         if root.section==2 : VerticalLayout {spacing:8px;vertical-stretch:0;
@@ -160,4 +166,41 @@ export component SettingsDialog inherits ModalFrame {
         Button {text:"Cancel";clicked=>{root.cancel();}}
         Button {text:"Apply";clicked=>{root.apply(root.browser,root.topology,root.panel-size);}}
     }
+}
+
+export struct EquationDraft {
+    name:string, pressure:bool, absolute:string, relative:string, iterations:int, preconditioner:int,
+}
+export component EquationControlsDialog inherits ModalFrame {
+    in-out property <[EquationDraft]> rows;
+    in property <string> feedback;
+    in property <bool> busy;
+    callback apply();callback cancel();
+    close-requested=>{root.cancel();}
+    panel-width:700px;panel-height:690px;
+    Text {text:"Equation solver controls";color:UiTheme.text-title;font-size:17px;font-weight:700;vertical-stretch:0;}
+    Text {text:"Pressure: CG/PCG or GAMG/GCR · Transport: BiCGSTAB. Stop when L2 residual ≤ max(absTol, relTol × initial residual). These are linear criteria, separate from coupled convergence.";color:UiTheme.text-secondary;wrap:word-wrap;vertical-stretch:0;}
+    PropertyScroll {
+        VerticalLayout {spacing:12px;vertical-stretch:0;
+            for row in root.rows : VerticalLayout {spacing:4px;vertical-stretch:0;
+                Text {text:row.name;color:UiTheme.accent;font-weight:600;vertical-stretch:0;}
+                HorizontalLayout {spacing:8px;vertical-stretch:0;
+                    MaterialField {label:"Absolute tolerance";value <=> row.absolute;}
+                    MaterialField {label:"Relative tolerance";value <=> row.relative;}
+                }
+                HorizontalLayout {spacing:8px;vertical-stretch:0;
+                    VerticalLayout {vertical-stretch:0;
+                        Text {text:"Maximum linear iterations";color:UiTheme.text-secondary;vertical-stretch:0;}
+                        SpinBox {value <=> row.iterations;minimum:1;maximum:1000000;min-height:32px;max-height:32px;min-width:0px;}
+                    }
+                    VerticalLayout {vertical-stretch:0;
+                        Text {text:"Linear method / preconditioner";color:UiTheme.text-secondary;vertical-stretch:0;}
+                        ComboBox {model:row.pressure ? ["None","Jacobi","IC0","GAMG / GCR","Auto · IC0 → Jacobi"] : ["None","Jacobi"];current-index <=> row.preconditioner;min-height:32px;max-height:32px;min-width:0px;}
+                    }
+                }
+            }
+        }
+    }
+    Text {text:root.feedback;color:UiTheme.accent;wrap:word-wrap;vertical-stretch:0;}
+    HorizontalLayout {spacing:8px;vertical-stretch:0;Rectangle {horizontal-stretch:1;}Button {text:"Cancel";clicked=>{root.cancel();}}Button {text:"Apply";enabled:!root.busy;clicked=>{root.apply();}}}
 }

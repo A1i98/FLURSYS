@@ -61,6 +61,8 @@ mod cad_units;
 mod thermal_setup;
 #[path="time_boundary_setup.rs"]
 mod time_boundary_setup;
+#[path="equation_setup.rs"]
+mod equation_setup;
 #[path = "flow_setup.rs"]
 mod flow_setup;
 #[path = "measure.rs"]
@@ -1958,6 +1960,7 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
     });
     thermal_setup::bind(ui,state);
     time_boundary_setup::bind(ui,state);
+    equation_setup::bind(ui,state);
     post_processing::bind(ui, state);
     convergence_plot::bind(ui,state);
     plane_monitors::bind(ui,state);
@@ -5302,6 +5305,7 @@ fn push_workbench_defaults(ui: &MainWindow, session: &WorkbenchSession) {
     let adaptive=solver.time.adaptive().unwrap_or_default();
     ui.set_wb_target_courant(adaptive.target_courant.to_string().into());ui.set_wb_min_time_step(adaptive.min_dt.to_string().into());ui.set_wb_max_time_step(adaptive.max_dt.to_string().into());ui.set_wb_time_growth(adaptive.max_growth.to_string().into());
     use flursys::turbulence::TurbulenceModel;
+    ui.set_wb_turbulence_relaxation(solver.turbulence.relaxation.to_string().into());ui.set_wb_turbulence_tolerance(solver.turbulence.relative_tolerance.to_string().into());
     ui.set_wb_wall_treatment(if solver.turbulence.wall_treatment==flursys::turbulence::WallTreatment::EquilibriumKEpsilon {1}else{0});
     ui.set_wb_turbulence_epsilon(solver.turbulence.epsilon.to_string().into());
     ui.set_wb_turbulence_model(match solver.turbulence.model {TurbulenceModel::Laminar=>0,TurbulenceModel::KOmega=>1,TurbulenceModel::KOmegaSst=>2,TurbulenceModel::Smagorinsky=>3,TurbulenceModel::Wale=>4,TurbulenceModel::KEpsilon=>5});
@@ -5424,7 +5428,7 @@ fn sync_solver_panel(ui: &MainWindow, session: &mut WorkbenchSession) -> Result<
         _=>TimeIntegration::Steady,
     };
     let model=match ui.get_wb_turbulence_model(){1=>TurbulenceModel::KOmega,2=>TurbulenceModel::KOmegaSst,3=>TurbulenceModel::Smagorinsky,4=>TurbulenceModel::Wale,5=>TurbulenceModel::KEpsilon,_=>TurbulenceModel::Laminar};
-    let turbulence=TurbulenceOptions {model,wall_treatment:if model==TurbulenceModel::KEpsilon && ui.get_wb_wall_treatment()==1{flursys::turbulence::WallTreatment::EquilibriumKEpsilon}else{flursys::turbulence::WallTreatment::Resolved},epsilon:if model==TurbulenceModel::KEpsilon {parse_number(ui.get_wb_turbulence_epsilon().as_str(),f64::NAN)}else{session.solver_options().turbulence.epsilon},k:if matches!(model,TurbulenceModel::KOmega|TurbulenceModel::KOmegaSst|TurbulenceModel::KEpsilon){parse_number(ui.get_wb_turbulence_k().as_str(),f64::NAN)}else{session.solver_options().turbulence.k},omega:if matches!(model,TurbulenceModel::KOmega|TurbulenceModel::KOmegaSst){parse_number(ui.get_wb_turbulence_omega().as_str(),f64::NAN)}else{session.solver_options().turbulence.omega},..session.solver_options().turbulence.clone()};
+    let turbulence=TurbulenceOptions {model,relaxation:parse_number(ui.get_wb_turbulence_relaxation().as_str(),f64::NAN),relative_tolerance:parse_number(ui.get_wb_turbulence_tolerance().as_str(),f64::NAN),wall_treatment:if model==TurbulenceModel::KEpsilon && ui.get_wb_wall_treatment()==1{flursys::turbulence::WallTreatment::EquilibriumKEpsilon}else{flursys::turbulence::WallTreatment::Resolved},epsilon:if model==TurbulenceModel::KEpsilon {parse_number(ui.get_wb_turbulence_epsilon().as_str(),f64::NAN)}else{session.solver_options().turbulence.epsilon},k:if matches!(model,TurbulenceModel::KOmega|TurbulenceModel::KOmegaSst|TurbulenceModel::KEpsilon){parse_number(ui.get_wb_turbulence_k().as_str(),f64::NAN)}else{session.solver_options().turbulence.k},omega:if matches!(model,TurbulenceModel::KOmega|TurbulenceModel::KOmegaSst){parse_number(ui.get_wb_turbulence_omega().as_str(),f64::NAN)}else{session.solver_options().turbulence.omega},..session.solver_options().turbulence.clone()};
     // Validate the complete form before invalidating an existing solution.
     let mut draft = WorkbenchSession::from_project(&session.to_project("Solver validation"))
         .map_err(|e| e.to_string())?;
@@ -5523,9 +5527,10 @@ fn solution_summary_text(session: &WorkbenchSession) -> String {
                 .rev()
                 .map(|(iteration, value)| format!("  iter {iteration:>5}  continuity {value:.3e}"))
                 .collect();
+            let linear=report.simple.equation_linear_reports.iter().map(|(name,r)|format!("{name}: L2 {:.3e} → {:.3e}; {} linear iterations",r.initial_residual,r.final_residual,r.iterations)).collect::<Vec<_>>().join("\n");
             let time=solution.physical_time.map(|t|format!("physical time {t:.9e} s\naccepted steps {}\nnonlinear correctors {}\nlast max Co {:.4e}\n",solution.completed_time_steps,solution.nonlinear_iterations,solution.max_courant.unwrap_or(0.0))).unwrap_or_default();
             format!(
-                "{time}status      {}\nCPU workers {}\niterations  {}\ninitial mass RMS {:.3e}\nfinal mass RMS   {:.3e}\nmomentum rel {:.3e}\nvelocity Δrel {:.3e}\ninflow      {:.5}\noutflow     {:.5}\nnet flux    {:+.3e}\n{}",
+                "{time}last equation solves:\n{linear}\n\nstatus      {}\nCPU workers {}\niterations  {}\ninitial mass RMS {:.3e}\nfinal mass RMS   {:.3e}\nmomentum rel {:.3e}\nvelocity Δrel {:.3e}\ninflow      {:.5}\noutflow     {:.5}\nnet flux    {:+.3e}\n{}",
                 status_label(session),
                 report.cpu_threads,
                 report.outer_iterations,
@@ -5923,7 +5928,7 @@ fn refresh_ui(ui: &MainWindow, state: &AppState) {
             update.max_speed,
         )));
         ui.set_residual_summary(SharedString::from(format!(
-            "Iteration        {:>10}\nElapsed          {:>10.3} s\nLast iteration   {:>10.3} ms\nPressure PCG     {:>10} iters\nContinuity       {:>10.3e}\nMomentum ΔU      {:>10.3e}\nMomentum eq      {}\nPressure         {:>10.3e}\nConverged        {}",
+            "Iteration        {:>10}\nElapsed          {:>10.3} s\nLast iteration   {:>10.3} ms\nPressure linear  {:>10} iters\nContinuity       {:>10.3e}\nMomentum ΔU      {:>10.3e}\nMomentum eq      {}\nPressure         {:>10.3e}\nConverged        {}",
             update.iteration,
             update.elapsed_seconds,
             update.iteration_seconds * 1_000.0,

@@ -60,6 +60,7 @@ export component SolutionWorkspace inherits Rectangle {
     in-out property <int> time-mode;
     in-out property <string> time-step;
     in-out property <int> time-steps;
+    in-out property <string> turbulence-relaxation;in-out property <string> turbulence-tolerance;
     in-out property <int> turbulence-model;
     in-out property <int> wall-treatment;
     in-out property <string> turbulence-epsilon;
@@ -82,7 +83,7 @@ export component SolutionWorkspace inherits Rectangle {
     in-out property <bool> solver-panel-open:true;
     in-out property <bool> report-panel-open:false;
     in-out property <int> export-format:0;
-    callback apply();callback run();callback cancel();callback edit-material();callback export-history();callback export-chart();callback export-vector();
+    callback apply();callback run();callback cancel();callback edit-material();callback edit-equations();callback export-history();callback export-chart();callback export-vector();
     background:UiTheme.background;
     VerticalLayout {padding:12px;spacing:9px;
         HorizontalLayout {height:34px;spacing:8px;
@@ -116,6 +117,12 @@ if root.properties-section==0 : VerticalLayout {spacing:6px;vertical-stretch:0;
                             Tool {text:"Fluid material…";enabled:!root.busy;clicked=>{root.edit-material();}}
 Label {text:"Momentum transport model · experimental";}
                         ComboBox {model:["Laminar","RANS · k–ω (wall resolved)","RANS · k–ω SST (wall resolved)","LES · Smagorinsky","LES · WALE","RANS · k–ε (experimental)"];current-index <=> root.turbulence-model;enabled:!root.busy;min-width:0px;}
+                        if root.turbulence-model>0 : VerticalLayout {spacing:6px;vertical-stretch:0;
+                            Label {text:"Turbulence equation relaxation (0,1]";}
+                            LineEdit {text <=> root.turbulence-relaxation;max-height:32px;min-width:0px;}
+                            Label {text:"Relative turbulence update tolerance";}
+                            LineEdit {text <=> root.turbulence-tolerance;max-height:32px;min-width:0px;}
+                        }
                         if root.turbulence-model==1 || root.turbulence-model==2 : VerticalLayout {spacing:6px;vertical-stretch:0;
                             Label {text:"Initial / inlet k (m²/s²)";}
                             LineEdit {text <=> root.turbulence-k;enabled:!root.busy;min-width:0px;}
@@ -166,7 +173,7 @@ Label {text:"CPU worker threads (0 = automatic)";}
                         SpinBox {max-height:32px;value <=> root.iterations;minimum:1;maximum:1000000;enabled:!root.busy;}
                         Label {text:"Momentum convection";}
                         ComboBox {model:["First-order upwind","Limited linear upwind"];current-index <=> root.convection-index;enabled:!root.busy;max-height:32px;min-width:0px;}
-                        Label {text:"Pressure: PCG + incomplete Cholesky (IC0)";}
+                        Tool {text:"Equation solver controls…";enabled:!root.busy;clicked=>{root.edit-equations();}}
                         if root.three-d : Label {text:"3D: Gauss pressure gradient · limited non-orthogonal diffusion";}
                         Label {text:"Velocity relaxation αu";}
                         LineEdit {max-height:32px;text <=> root.velocity-relaxation;min-width:0px;enabled:!root.busy;}
