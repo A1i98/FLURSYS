@@ -19,13 +19,13 @@ impl Default for LinearSolverOptions {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
 pub enum LinearSolverStatus {
     Converged,
     MaxIterations,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize)]
 pub struct LinearSolveReport {
     pub status: LinearSolverStatus,
     pub iterations: usize,
@@ -199,9 +199,9 @@ fn solve_cg_with_workspace(
         profile.iteration();
         profile.measure(false, || matrix.spmv_into(direction, product))?;
         let denominator = dot(&direction, &product)?;
-        if !denominator.is_finite() || denominator.abs() <= BREAKDOWN_EPSILON {
+        if !denominator.is_finite() || denominator <= BREAKDOWN_EPSILON {
             return Err(LinearAlgebraError::Breakdown {
-                reason: "zero CG search denominator",
+                reason: "non-positive CG search denominator; pressure operator must be positive definite",
             });
         }
         let alpha = rho / denominator;
@@ -214,14 +214,25 @@ fn solve_cg_with_workspace(
             solution[index] += alpha * direction[index];
             residual[index] -= alpha * product[index];
         }
-        let residual_norm = norm_l2(&residual)?;
-        if residual_norm <= threshold {
-            return Ok(report(
-                LinearSolverStatus::Converged,
-                iteration,
-                initial,
-                residual_norm,
-            ));
+        let recursive_norm = norm_l2(&residual)?;
+        // The recurrence can drift from b-Ax on ill-conditioned pressure
+        // systems. Certify convergence using the actual operator and refresh
+        // periodically. Restart conjugacy after replacement, never enlarge
+        // tolerances or reset the iteration budget.
+        if recursive_norm <= threshold || iteration % 50 == 0 {
+            residual_into(matrix, solution, rhs, residual)?;
+            let true_norm = norm_l2(residual)?;
+            if true_norm <= threshold {
+                return Ok(report(LinearSolverStatus::Converged, iteration, initial, true_norm));
+            }
+            if let Some(preconditioner) = preconditioner {
+                profile.measure(true, || preconditioner.apply_into(residual, preconditioned))?;
+            } else {
+                preconditioned.copy_from_slice(residual);
+            }
+            rho = dot(residual, preconditioned)?;
+            direction.copy_from_slice(preconditioned);
+            continue;
         }
         if let Some(preconditioner) = preconditioner {
             profile.measure(true, || preconditioner.apply_into(residual, preconditioned))?;
@@ -245,6 +256,7 @@ fn solve_cg_with_workspace(
         }
         rho = rho_new;
     }
+    residual_into(matrix, solution, rhs, residual)?;
     let final_residual = norm_l2(&residual)?;
     Ok(report(
         LinearSolverStatus::MaxIterations,
