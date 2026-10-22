@@ -350,7 +350,11 @@ fn recipe_uses_edges(recipe: &CadRecipe, edges: &[EdgeId]) -> bool {
 
 impl GeometryTopology {
     /// Import an evaluated sketch in its explicit world frame (all coordinates in metres).
-    pub fn cad_import_drawing_frame(&mut self, frame: CadPlaneFrame, drawing: cad_sketch::Sketch) -> Result<CadSketchId, GeometryError> {
+    pub fn cad_import_drawing_frame(
+        &mut self,
+        frame: CadPlaneFrame,
+        drawing: cad_sketch::Sketch,
+    ) -> Result<CadSketchId, GeometryError> {
         let mut next = self.clone();
         let sketch = next.insert_sketch(CadSketchPlane::Xy, frame, None)?;
         next.cad_set_drawing(sketch.id, drawing)?;

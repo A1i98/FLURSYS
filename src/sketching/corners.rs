@@ -1,7 +1,7 @@
 //! Sketch modification adapter; see THIRD_PARTY_NOTICES.txt for attribution.
-use serde_json::{json, Value};
 use cad_geom::Vec2;
 use cad_sketch::{intersections, ConstraintKind, Curve, CurveKind, Shape, Sketch};
+use serde_json::{json, Value};
 use std::f64::consts::TAU;
 type Result<T> = std::result::Result<T, cad_sketch::SketchError>;
 fn bad(cmd: &str, message: impl std::fmt::Display) -> cad_sketch::SketchError {

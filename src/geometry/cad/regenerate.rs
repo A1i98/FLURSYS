@@ -388,7 +388,7 @@ impl GeometryTopology {
         let mut moved = BTreeSet::new();
         for s in attached {
             let mut frame = self.sketch_frame_for_face(s.host_face.unwrap())?;
-            frame.origin = frame.origin + frame.normal * s.attachment_offset;
+            frame.origin += frame.normal * s.attachment_offset;
             finite(frame.origin)?;
             if let Some(face) = s.profile_face {
                 for vertex in self.profile_vertices(face)? {

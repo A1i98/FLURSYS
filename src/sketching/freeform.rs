@@ -3,9 +3,9 @@
 //! pieces (cubic Béziers become single-span control splines, conic arcs conics), so the result
 //! stays exact; the pieces replace the original curve.
 
-use serde_json::{json, Value};
 use cad_geom::{Seg2, Vec2};
 use cad_sketch::{ConstraintKind, CurveKind, Sketch};
+use serde_json::{json, Value};
 
 type Result<T> = std::result::Result<T, cad_sketch::SketchError>;
 fn bad(cmd: &str, message: impl std::fmt::Display) -> cad_sketch::SketchError {

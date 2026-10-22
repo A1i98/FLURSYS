@@ -216,7 +216,7 @@ impl GeometryTopology {
             .face_meshes
             .iter()
             .flat_map(|f| f.triangles.iter().flatten())
-            .map(|p| (*p - origin).dot(normal) * -1.0)
+            .map(|p| -(*p - origin).dot(normal))
             .fold(0.0f64, f64::max);
         let clearance = (tolerance * 4.0).max(extent * 1e-6).max(1e-5);
         if through_all && stop_face.is_some() {

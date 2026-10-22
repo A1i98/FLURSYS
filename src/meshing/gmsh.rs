@@ -75,11 +75,11 @@ fn prune_stale_gmsh_workspaces(root: &Path, now: SystemTime) {
             continue;
         };
         if !metadata.is_dir()
-            || !metadata
+            || metadata
                 .modified()
                 .ok()
                 .and_then(|modified| now.duration_since(modified).ok())
-                .is_some_and(|age| age >= STALE_WORKSPACE_AGE)
+                .is_none_or(|age| age < STALE_WORKSPACE_AGE)
         {
             continue;
         }
@@ -192,10 +192,16 @@ impl GmshMeshOptions {
                 });
             }
         }
-        if self.min_size.is_some_and(|v| self.characteristic_length < v)
-            || self.max_size.is_some_and(|v| self.characteristic_length > v) {
+        if self
+            .min_size
+            .is_some_and(|v| self.characteristic_length < v)
+            || self
+                .max_size
+                .is_some_and(|v| self.characteristic_length > v)
+        {
             return Err(MeshingError::InvalidOptions {
-                message: "target element size must lie between minimum and maximum mesh size".into(),
+                message: "target element size must lie between minimum and maximum mesh size"
+                    .into(),
             });
         }
         if self.element_order != 1 {

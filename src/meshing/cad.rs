@@ -40,7 +40,7 @@ impl GmshGeometryExporter {
         let mut edges = BTreeMap::<(usize, usize), (usize, usize)>::new();
         let mut face_groups = BTreeMap::<FaceId, Vec<usize>>::new();
         let mut source=String::from("// FLURSYS faceted CAD approximation; exact analytic geometry is retained in the project B-rep.\n");
-        let mut face_triangles=BTreeMap::<FaceId,Vec<[usize;3]>>::new();
+        let mut face_triangles = BTreeMap::<FaceId, Vec<[usize; 3]>>::new();
         let mut next_edge = 1;
         let mut surfaces = Vec::new();
         for face in data.face_meshes.iter() {
@@ -101,7 +101,11 @@ impl GmshGeometryExporter {
                 {
                     continue;
                 }
-                face_triangles.entry(face.face).or_default().push([vertex_tags[0],vertex_tags[1],vertex_tags[2]]);
+                face_triangles.entry(face.face).or_default().push([
+                    vertex_tags[0],
+                    vertex_tags[1],
+                    vertex_tags[2],
+                ]);
                 let mut edge_tags = Vec::new();
                 for i in 0..3 {
                     let (a, b) = (vertex_tags[i], vertex_tags[(i + 1) % 3]);
@@ -137,31 +141,94 @@ impl GmshGeometryExporter {
         }
         // A planar CAD face should be one mesher surface, not one surface per
         // display triangle. Keep its complete boundary (including holes).
-        let mut next_tag=surfaces.len()+1;
-        for (face,triangles) in &face_triangles {
-            if triangles.len()<2 {continue}
-            let Some(loops)=super::planar_merge::loops(triangles,&coordinates,((maximum-minimum).norm()*1e-10).max(1e-12)) else {continue};
-            let mut loop_tags=vec![];
-            let mut retained_edges=std::collections::BTreeSet::new();
-            for vertices in loops {
-                let mut tags=vec![];
-                for i in 0..vertices.len(){
-                    let a=vertices[i] as usize;let b=vertices[(i+1)%vertices.len()] as usize;
-                    let tag=edges[&(a.min(b),a.max(b))].0;retained_edges.insert(tag);
-                    tags.push(if a<b {tag as i64}else{-(tag as i64)});
-                }
-                let tag=next_tag;next_tag+=1;loop_tags.push(tag);
-                writeln!(source,"Curve Loop({tag}) = {{{}}};",tags.iter().map(ToString::to_string).collect::<Vec<_>>().join(",")).unwrap();
+        let mut next_tag = surfaces.len() + 1;
+        for (face, triangles) in &face_triangles {
+            if triangles.len() < 2 {
+                continue;
             }
-            let old=face_groups[face].iter().copied().collect::<std::collections::BTreeSet<_>>();
-            writeln!(source,"Delete {{ Surface{{{}}}; }}",old.iter().map(ToString::to_string).collect::<Vec<_>>().join(",")).unwrap();
+            let Some(loops) = super::planar_merge::loops(
+                triangles,
+                &coordinates,
+                ((maximum - minimum).norm() * 1e-10).max(1e-12),
+            ) else {
+                continue;
+            };
+            let mut loop_tags = vec![];
+            let mut retained_edges = std::collections::BTreeSet::new();
+            for vertices in loops {
+                let mut tags = vec![];
+                for i in 0..vertices.len() {
+                    let a = vertices[i] as usize;
+                    let b = vertices[(i + 1) % vertices.len()] as usize;
+                    let tag = edges[&(a.min(b), a.max(b))].0;
+                    retained_edges.insert(tag);
+                    tags.push(if a < b { tag as i64 } else { -(tag as i64) });
+                }
+                let tag = next_tag;
+                next_tag += 1;
+                loop_tags.push(tag);
+                writeln!(
+                    source,
+                    "Curve Loop({tag}) = {{{}}};",
+                    tags.iter()
+                        .map(ToString::to_string)
+                        .collect::<Vec<_>>()
+                        .join(",")
+                )
+                .unwrap();
+            }
+            let old = face_groups[face]
+                .iter()
+                .copied()
+                .collect::<std::collections::BTreeSet<_>>();
+            writeln!(
+                source,
+                "Delete {{ Surface{{{}}}; }}",
+                old.iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(",")
+            )
+            .unwrap();
             // Internal diagonals cannot remain embedded CAD partition curves.
-            let mut removed=std::collections::BTreeSet::new();
-            for t in triangles {for i in 0..3{let a=t[i];let b=t[(i+1)%3];let tag=edges[&(a.min(b),a.max(b))].0;if !retained_edges.contains(&tag){removed.insert(tag);}}}
-            if !removed.is_empty(){writeln!(source,"Delete {{ Curve{{{}}}; }}",removed.iter().map(ToString::to_string).collect::<Vec<_>>().join(",")).unwrap();}
-            let tag=next_tag;next_tag+=1;
-            writeln!(source,"Plane Surface({tag}) = {{{}}};",loop_tags.iter().map(ToString::to_string).collect::<Vec<_>>().join(",")).unwrap();
-            surfaces.retain(|s|!old.contains(s));surfaces.push(tag);face_groups.insert(*face,vec![tag]);
+            let mut removed = std::collections::BTreeSet::new();
+            for t in triangles {
+                for i in 0..3 {
+                    let a = t[i];
+                    let b = t[(i + 1) % 3];
+                    let tag = edges[&(a.min(b), a.max(b))].0;
+                    if !retained_edges.contains(&tag) {
+                        removed.insert(tag);
+                    }
+                }
+            }
+            if !removed.is_empty() {
+                writeln!(
+                    source,
+                    "Delete {{ Curve{{{}}}; }}",
+                    removed
+                        .iter()
+                        .map(ToString::to_string)
+                        .collect::<Vec<_>>()
+                        .join(",")
+                )
+                .unwrap();
+            }
+            let tag = next_tag;
+            next_tag += 1;
+            writeln!(
+                source,
+                "Plane Surface({tag}) = {{{}}};",
+                loop_tags
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(",")
+            )
+            .unwrap();
+            surfaces.retain(|s| !old.contains(s));
+            surfaces.push(tag);
+            face_groups.insert(*face, vec![tag]);
         }
         let all = surfaces
             .iter()

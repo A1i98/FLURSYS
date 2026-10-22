@@ -1304,9 +1304,9 @@ impl GeometryTopology {
             };
             rim_vertices.extend([start, end]);
             for source in [Some(start), Some(end), center].into_iter().flatten() {
-                if !top_vertices.contains_key(&source) {
+                if let std::collections::btree_map::Entry::Vacant(e) = top_vertices.entry(source) {
                     let position = self.vertex_position(source)? + displacement;
-                    top_vertices.insert(source, self.add_vertex(position)?);
+                    e.insert(self.add_vertex(position)?);
                 }
             }
         }
@@ -1782,7 +1782,10 @@ impl GeometryTopology {
                     });
                 }
             }
-            if let Some(drawing)=&sketch.drawing { crate::sketching::validate(drawing).map_err(|message|GeometryError::InvalidPrimitive{message})?; }
+            if let Some(drawing) = &sketch.drawing {
+                crate::sketching::validate(drawing)
+                    .map_err(|message| GeometryError::InvalidPrimitive { message })?;
+            }
             self.cad_validate_sketch_constraints(id)?;
             validate_plane_frame(sketch.frame)?;
             match (sketch.plane, sketch.host_face) {

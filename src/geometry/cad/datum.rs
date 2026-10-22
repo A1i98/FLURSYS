@@ -21,7 +21,7 @@ impl GeometryTopology {
             }
             GeometryTopology::new().create_sketch_on_plane(plane)?.frame
         };
-        frame.origin = frame.origin + frame.normal * offset;
+        frame.origin += frame.normal * offset;
         finite(frame.origin)?;
         let sketch = self.insert_sketch(plane, frame, host)?;
         self.sketches.get_mut(&sketch.id).unwrap().attachment_offset = offset;

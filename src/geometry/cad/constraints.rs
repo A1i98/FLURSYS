@@ -221,8 +221,16 @@ impl GeometryTopology {
     ) -> Option<usize> {
         let s = self.sketch(id)?;
         if constraints.is_none() {
-            if s.drawing.is_some(){return s.drawing_dof;}
-            if let Some(owner)=s.region_owner {if let Some(root)=self.sketch(owner){if root.drawing.is_some(){return root.drawing_dof;}}}
+            if s.drawing.is_some() {
+                return s.drawing_dof;
+            }
+            if let Some(owner) = s.region_owner {
+                if let Some(root) = self.sketch(owner) {
+                    if root.drawing.is_some() {
+                        return root.drawing_dof;
+                    }
+                }
+            }
         }
         let c = constraints.unwrap_or(&s.constraints);
         let position = if c.centered {
