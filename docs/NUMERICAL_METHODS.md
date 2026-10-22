@@ -14,11 +14,11 @@ residuals and geometry representations must not be interchanged.
 |---|---|---|---|
 | Layout | Cell-centred, collocated finite volumes | Cartesian staggered/MAC | Cartesian staggered/MAC |
 | Geometry | Imported/generated unstructured 2D or 3D mesh | Built-in geometry and Boolean solid masks | Rectangular cavity |
-| Coupling | SIMPLE; converged implicit-Euler time levels (experimental) | Projection, explicit SIMPLE-style, implicit SIMPLE, SIMPLEC, PIMPLE-like | Transient projection |
-| Physical-time integration | Implicit Euler on fixed meshes (experimental) | Forward Euler for explicit predictor; Euler/BDF2 for implicit PIMPLE | Forward Euler |
+| Coupling | SIMPLE or optional fixed-mesh PIMPLE-style nested correctors (experimental) | Projection, explicit SIMPLE-style, implicit SIMPLE, SIMPLEC, PIMPLE-like | Transient projection |
+| Physical-time integration | Fixed Euler/BDF2; adaptive Euler (experimental) | Forward Euler for explicit predictor; Euler/BDF2 for implicit PIMPLE | Forward Euler |
 | Momentum convection | Upwind or limited linear upwind | Upwind, central, Van Leer deferred correction in supported implicit modes | Centred advective predictor |
-| Pressure | PCG + IC0 | Matrix-free PCG/SOR or CSR PCG, DIC/IC0, structured MG, GAMG | SOR |
-| Thermal/Boussinesq | Not connected | Optional constant-property temperature/Boussinesq | Not connected |
+| Pressure | CG/PCG; optional aggregation AMG/GCR | Matrix-free PCG/SOR or CSR PCG, DIC/IC0, structured MG, GAMG | SOR |
+| Thermal/Boussinesq | Single-phase constant-property transport (experimental) | Optional constant-property temperature/Boussinesq | Not connected |
 | Pressure field | Kinematic gauge pressure, p/rho | Dimensional pressure, p | Dimensional pressure, p |
 
 The structured PIMPLE, BDF2, GAMG and thermal implementations are **not** selected
@@ -853,8 +853,9 @@ After one converged Euler startup step, fixed-mesh time derivatives are
 for momentum, conservative face-flux temporal correction, temperature and RANS
 k/omega/epsilon storage. Only accepted physical steps rotate history. Reported
 time and Courant use the physical dt, not dt_eff. Nonlinear convergence remains
-mandatory at every step. This remains SIMPLE-based time integration; it does
-not implement PISO/PIMPLE. There is no adaptive BDF2 option.
+mandatory at every step. The default remains SIMPLE-based; optional fixed-mesh
+PIMPLE-style inner pressure correctors are described below. There is no adaptive
+BDF2 option.
 
 Two-level history is retained during one solve invocation, but is not yet
 persisted in restart files. Restart/continue therefore uses one explicitly
@@ -910,16 +911,16 @@ completed-step wall reports outside a nominal shear-y+ range of 30–300; this
 is diagnostic, not proof of validity or a universal admissibility threshold.
 
 No roughness correction, non-equilibrium/separation treatment, SST/omega wall
-function or thermal wall function has been implemented. Existing turbulent
-heat diffusivity is unchanged and is not a validated thermal wall treatment.
+function has been implemented. An optional constant-Prt thermal diffusivity
+closure is described below; no Jayatilleke thermal log-law treatment is available.
 Flat-plate/channel friction, corner behavior and mesh/y+ sensitivity have not
 been numerically validated. Do not infer accuracy from a successful build.
 
 ### Physical-time tabulated boundary data
 
 `IncompressibleSolverOptions.boundary_profiles` maps each patch name to one
-`BoundaryProfile` with a quantity (velocity, inward flow rate or kinematic
-pressure) and 2–10000 `(time, Vec3 value)` samples. Times must be finite,
+`BoundaryProfile` with a quantity (velocity, inward flow rate, kinematic
+pressure, temperature or inward heat flux) and 2–10000 `(time, Vec3 value)` samples. Times must be finite,
 nonnegative and strictly increasing. Scalars use x with y=z=0; inward flow
 rates cannot be negative. Linear interpolation is used between samples and
 endpoint values are held outside the table. No periodic extrapolation or
@@ -945,3 +946,371 @@ changes and boundary deletion update/remove the associated table. Large time
 steps can underresolve ramps or table breakpoints; no automatic knot-aligned
 stepping or temporal-accuracy claim is provided. Numerical validation remains
 outstanding.
+
+## Independent equation solver controls
+
+Optional `solver.equations` provides independent absolute/relative residual
+thresholds, iteration limits and preconditioner settings for velocity,
+pressure correction, temperature, k, omega and epsilon. Velocity components
+share one configuration but retain separate reports. Transport uses BiCGSTAB
+with no preconditioner or Jacobi; pressure uses CG without preconditioning,
+or PCG with Jacobi or IC0. Optional pressure methods now include aggregation
+AMG with restarted flexible GCR (dimension 4), and Auto (IC0 with Jacobi-PCG
+fallback only when IC0 reports a non-positive pivot). Transport rejects all
+pressure-only methods. Explicit IC0 still returns factorization failures;
+GAMG does not silently switch methods or loosen tolerances. Auto emits a
+diagnostic to stderr on its first pivot fallback within a coupled solve.
+It does not repair an indefinite/singular matrix or guarantee convergence.
+
+The Workbench pressure workspace retains CG vectors and, when GAMG is selected,
+the aggregation hierarchy, coarse data and scratch buffers across outer
+iterations of one SIMPLE invocation. Identical CSR row offsets and column
+indices permit coefficient/factor refresh; a changed pressure graph rebuilds
+the hierarchy. No cache is shared between unrelated solves. The Workbench
+GAMG configuration uses symmetric Gauss-Seidel, bounded dense Cholesky on
+the terminal coupled system (32 target cells), and **absolute L2** residuals,
+preserving the equation controls' norm. This differs from the normalized L1
+default used by other multigrid entry points. AMG hierarchy updates and GCR
+are existing Rust implementations, now connected to this path. Numerical
+equivalence, performance and mesh robustness of this connection remain
+unvalidated. Linear solver selection is independent of the optional nested
+pressure-coupling controls described below.
+
+Stopping uses the existing Euclidean residual criterion
+`||b-Ax||2 <= max(absTol, relTol ||r_initial||2)`. Absolute norms are matrix/
+mesh-dependent and are not OpenFOAM-normalized residuals; do not compare them
+numerically as if definitions were identical. At least one tolerance must be
+positive, relTol is in [0,1), and limits are 1..1000000. A missing equations
+block preserves legacy solver settings. All explicit settings persist in
+projects and run reports. `last_equation_linear_solves` stores the last
+completed linear reports (initial/final L2 residual and iterations), including
+active temperature and RANS equations. It is not a full residual time series
+or a record of equations that failed before a report could be returned.
+
+Turbulence now has its own relative-update convergence tolerance (default
+1e-6), independent of velocity coupling tolerance; its relaxation remains
+shared across active RANS equations. Temperature relaxation and relative-update
+criterion are exposed in the material/heat dialog. Linear convergence alone
+does not establish coupled or physical convergence. The design was compared
+with separate solver/tolerance/relTol sections of the local fvSolution tutorial;
+algorithm and residual normalization equivalence are not claimed.
+
+## Thermal time tables and wall diffusivity
+
+Temperature tables accept positive Kelvin values and override either fixed
+wall temperature or the incoming value of an existing inlet/outlet temperature
+condition. Heat-flux tables accept signed inward W/m² and require an existing
+HeatFlux condition. Tables retain the physical-time interpolation, endpoint
+hold, retry and restart semantics above; thermal tables require enabled energy
+transport. One table per patch is still supported, so independent pressure
+and temperature tables on the same patch are not yet possible.
+
+On solid walls, thermal face diffusivity is now explicitly selected instead
+of inheriting the owner cell's turbulent diffusivity. The default molecular
+choice is `k/(rho cp)`. Optional `EquilibriumPrt` adds `nut_wall/Prt` using the
+smooth equilibrium k-epsilon momentum wall viscosity. Compatibility is checked
+before solving. This implements the constant-Prt relation represented by the
+reference alphatWallFunction, converted from dynamic `rho nut/Prt` units to
+kinematic diffusivity. It is not Jayatilleke's thermal sublayer/log-law model,
+rough-wall heat transfer or CHT. Interior turbulent diffusion is unchanged.
+The default changes previous wall heat-transfer behavior by removing the
+owner-cell turbulent contribution on solid faces. Thermal and preconditioner
+extensions have not been numerically benchmark validated.
+
+### CG/PCG residual certification
+
+CG/PCG recomputes the true residual b−Ax before accepting convergence and
+every 50 iterations. If the refreshed residual remains above the original
+threshold, the search direction is restarted from the preconditioned residual
+within the same iteration budget. The terminal non-converged report also uses
+b−Ax. Non-positive search curvature is an error, not a valid CG step. This
+guards recurrence drift; it does not make an indefinite or singular operator SPD.
+Performance and numerical regression validation of this change remain pending.
+
+
+## Fixed-mesh Workbench nested pressure coupling (experimental)
+
+The solver.pressure_coupling object persists algorithm ("simple" or "pimple"),
+pressure_correctors (1..8), non_orthogonal_correctors (0..8 extra passes),
+and non_orthogonal_limiter (0..1). Defaults retain SIMPLE, one pressure solve
+and zero extra non-orthogonal passes. PIMPLE is rejected in Steady mode.
+The maximum outer-iteration setting remains the coupled iteration budget per
+physical time step. Existing Euler/BDF2 history and adaptive acceptance rules
+remain authoritative; intermediate correctors do not advance physical time.
+
+Each outer iteration assembles/solves momentum once. Subsequent inner pressure
+correctors reconstruct the predictor from the momentum defect with the same
+frozen matrices and latest velocity:
+U_predict = U + diag(A)^(-1)(b - A U) + rAU (grad(p_assembled)-grad(p_current)).
+Here b contains the pressure force at assembly; rAU includes cell volume.
+This is a fixed-mesh PIMPLE-style extension of the existing incremental
+pressure-correction scheme, not a claim of algebraic equivalence to all
+OpenFOAM PIMPLE options. Under-relaxation remains user-controlled. There is
+no SIMPLEC/consistent response option or optional skipped momentum predictor.
+
+For the over-relaxed coefficient d_f and centre displacement d, the deferred
+non-orthogonal pressure-correction flux is
+q_exp = (d_f d - rAU_f S) dot grad(p').
+Its limiter is min(1, L |d_f delta(p')| / ((1-L)|q_exp| + tiny));
+L=0 disables and L=1 leaves it unlimited. Face contributions enter owner and
+neighbour with opposite signs. A configured count N performs N+1 pressure
+solves: the first uses zero explicit correction, later solves use the previous
+correction gradient. The matrix is assembled once per inner pressure corrector;
+the RHS is refreshed. Final conservative flux uses exactly the lagged explicit
+flux used by the final linear RHS; it is not replaced by interpolated cell U.
+Cancellation is checked inside pressure and non-orthogonal loops.
+
+References inspected: local OpenFOAM-dev applications/modules/incompressibleFluid/
+correctPressure.C and src/finiteVolume/finiteVolume/snGradSchemes/limitedSnGrad/
+limitedSnGrad.C. The Rust implementation uses the project's existing operators,
+incremental pressure convention, residual norms and boundary treatment.
+Mesh independence, time-step independence, stability, accuracy and performance
+of this extension have not been validated. It cannot repair invalid cells or
+establish that an arbitrary high-Re flow is steady.
+
+MPI decomposition, cyclic/AMI coupling, MRF/moving meshes, VOF, CHT and
+compressible RANS are not supplied by this change.
+
+
+## Fixed-mesh volume momentum models (experimental)
+
+The optional solver.volume_models object is persisted in the Workbench project
+and copied into the solver case. Both models default off. The GUI exposes one
+isotropic resistance region and one global rotating frame in Solution.
+
+### Isotropic Darcy–Forchheimer resistance
+
+For superficial velocity U and molecular kinematic viscosity nu, the
+acceleration is S = -(nu D + 0.5 F |U|) U. D is inverse permeability [1/m²];
+F is inertial resistance [1/m]. Finite nonnegative coefficients are required,
+with at least one positive. Selection is either the entire fluid or an
+axis-aligned box of cell centres in metres. A box selecting no cells is
+rejected. Box selection is binary at centres, not cut-cell volume weighting.
+
+The nonnegative coefficient is evaluated from the previous outer-iteration
+speed, multiplied by cell volume and added to the momentum diagonal BEFORE
+equation relaxation. It is therefore included in rAU and the pressure response.
+The nonlinear Forchheimer coefficient is refreshed every outer iteration.
+There is no porosity-dependent storage, anisotropic tensor resistance,
+porous thermal closure or mesh-aligned CAD cell-zone selection in this model.
+
+### Global constant rotating frame
+
+The solved velocity U_rel, imposed velocities and conservative face fluxes are
+relative to the entire rotating coordinate frame. Coordinates are fixed to
+that frame. Constant angular velocity omega [rad/s] and origin [m] give
+S_rot = -2 omega cross U_rel - omega cross (omega cross (x-origin)).
+Both acceleration terms are explicit at the current outer iteration; large
+rotation rates can require smaller physical dt and additional convergence
+control. No unconditional stability claim is made.
+
+The conversion helper RotatingFrame.absolute_velocity implements
+U_abs = U_rel + omega cross (x-origin), in the current frame's vector basis.
+It is not automatically applied to exported velocity fields: exports, vectors,
+forces' reference speed inputs and monitors must be interpreted accordingly.
+Pressure retains the usual kinematic gauge convention; centrifugal
+acceleration is explicit, not absorbed into a reduced-pressure variable.
+Only 3D meshes are accepted. Constant-gravity buoyancy is restricted to gravity
+parallel to the rotation axis; varying frame-relative gravity is unsupported.
+
+This is a global rotating-coordinate formulation. It is NOT multi-zone MRF,
+AMI/sliding interfaces, rotating geometry, rotating mesh, time-dependent RPM,
+or the absolute-velocity MRF operator used in OpenFOAM. There is no Euler
+acceleration term because angular velocity is constant.
+
+Sources inspected for equations/conventions: OpenFOAM-dev DarcyForchheimer
+porosity model and MRFZone (relative/absolute velocity transforms and rotation
+terms). The Rust operators above are independently implemented and their
+velocity convention differs from the absolute-velocity multi-zone MRF path.
+Compilation is not numerical validation; porous-channel pressure drop,
+rotating hydrostatic equilibrium, frame conversion and coupled mesh/time
+convergence still need verification before scientific/performance claims.
+
+
+## Translational conformal cyclic fluxes in the compressible CLI (experimental)
+
+The compressible Settings object accepts cyclic_pairs. Each pair names first
+and second mesh patches, translation (first to second, in metres), and absolute
+matching tolerance (default 1e-8 m). Both patches must have equal nonzero face
+counts, equal areas, opposite outward normals, and unambiguously matching
+translated vertices and centres. Patches may appear in only one pair and must
+not also appear in ordinary physical boundary assignments. Rotational periodicity
+and nonconformal AMI are rejected/not provided.
+
+The independent periodic::resolve matcher returns bidirectional addressing;
+spatial bins avoid a full all-to-all face search. The existing mesh topology
+and IDs are not rewritten. Each interface's Riemann flux is evaluated once and
+the same integrated five-component flux enters the owners of the paired faces
+with opposite signs. Cyclic exchange is internal transport and is excluded from
+external boundary-outflow integrals. Report.cyclic_face_pairs gives the number
+of unique geometric pairs.
+
+For molecular-viscosity cases, Gauss gradients use the same paired-face value
+and opposite face-area vectors. Viscous/heat flux reconstruction uses the peer
+cell imaged into local coordinates (peer centre minus local-to-peer translation),
+not the full distance across the domain. Acoustic/diffusive time-step restrictions
+include both adjacent cells. This is compatible with the existing inviscid and
+laminar Navier–Stokes operators and SSP-RK2 stages; it adds no turbulence model,
+pressure jump or rotational tensor transform.
+
+This path is available only in flursys-compressible, not the incompressible
+SIMPLE/PIMPLE Workbench or its boundary-condition dropdown. A periodic pressure
+operator and image-aware reconstruction are still required for that connection.
+Reference reviewed: OpenFOAM-dev cyclicPolyPatch/cyclicFvPatch addressing and
+translation conventions; no claim of full cyclic/AMI feature parity is made.
+Compilation has passed; conservation, periodic advection, acoustic-wave and
+viscous periodic-flow numerical benchmarks have not been run.
+
+
+## Conformal translational Cyclic in incompressible Workbench (experimental)
+
+The same geometric pair matcher is now connected to solver.cyclic_pairs in
+the incompressible case and persisted Workbench settings. Setup exposes a
+draft pair editor. Adding a pair validates the existing mesh; Apply removes
+ordinary physical assignments from the paired patches. Cancel does not mutate
+the project. Removing a pair leaves its patches requiring physical conditions.
+
+Scope is deliberately restricted to laminar, isothermal, first-order-upwind
+flow in an inertial frame. Euler/BDF2 time integration and the existing
+SIMPLE/PIMPLE pressure loops remain available. Turbulence, heat transport,
+limited-linear convection, global rotating frames and boundary time tables on
+cyclic patches are rejected until their coupled operators are supplied.
+No pressure jump, rotational transformation or AMI interpolation is implemented.
+
+Boundary metadata stores immutable paired-face addressing without modifying
+the geometric mesh or cell/face identities. LSQ equations use the peer cell
+centre shifted into local coordinates; Gauss pressure interpolation uses the
+same local image geometry. Momentum convection couples the two owners and
+diffusion uses a canonical shared coefficient. Deferred diffusion computes
+one cyclic flux and adds/subtracts it from the pair's owners.
+
+Pressure response, Rhie–Chow predictor flux and pressure-correction matrix
+include both sides as coupled unknowns. The paired pressure coefficient is
+shared so the pressure graph remains symmetric. Closed periodic systems use
+symmetric zero-reference row/column elimination; pressure outlets still anchor
+the system through their fixed correction values. Deferred non-orthogonal
+pressure flux uses the same image geometry and one equal/opposite pair flux.
+The final face flux remains authoritative. Temporal flux correction includes
+cyclic interpolation of old velocity and retains the old conservative flux.
+
+Cyclic exchange is excluded from aggregate external inflow/outflow totals;
+per-patch inspections can still show transfer across a periodic side.
+A pair editor does not generate matching Gmsh partitions: conformal opposite
+faces must already exist, e.g. via suitable structured meshing or imported
+periodic meshes. Pair matching rejects differing face partitions. Mesh
+regeneration or group changes may invalidate pairs and require repair.
+
+The implementation has compilation checks only. Numerical periodic Couette/
+Poiseuille, conservation, gauge-invariance, restart and transient-transport
+benchmarks have not been run. It is not yet validated for research claims.
+This section supersedes the earlier compressible-only scope statement for the
+restricted laminar Workbench path.
+
+
+## SA-noft2 and smooth omega wall treatment (experimental)
+
+The Workbench turbulence list now includes SpalartAllmaras, a positive
+wall-resolved SA-noft2 model. The transported field is nu_tilda [m²/s], not
+k or omega. Its eddy viscosity is nut=nu_tilda*fv1, where chi=nu_tilda/nu
+and fv1=chi³/(chi³+7.1³), evaluated in an overflow-resistant equivalent form.
+
+The transport equation uses diffusion (nu+nu_tilda)/sigma, explicit production
+Cb1*S_tilde*nu_tilda plus Cb2/sigma*|grad(nu_tilda)|², and implicit destruction
+Cw1*fw*nu_tilda/d² multiplying nu_tilda. Constants are sigma=2/3, Cb1=0.1355,
+Cb2=0.622, kappa=0.41, Cw2=0.3 and Cw3=2; Cw1=Cb1/kappa²+(1+Cb2)/sigma.
+S_tilde=max(|curl U|+fv2*nu_tilda/(kappa*d)²,0.3*|curl U|);
+fv2=1-chi/(1+chi*fv1). The wall-destruction ratio is capped at 10.
+Nearest segment/triangle wall distance uses the existing BVH implementation.
+
+Walls impose nu_tilda=0. Incoming/backflow faces use global nu_tilda or a
+patch-specific ModifiedViscosity value; outgoing faces use zero gradient.
+Values must be finite and nonnegative. Negative solved values are clipped
+to zero. No negative-SA extension, trip term, ft2 term, transition, rotation/
+curvature correction or roughness treatment is implemented. No positivity/
+temporal-order proof is claimed for BDF2 plus clipping.
+
+nu_tilda has independent equation solver controls and a last-linear-solve
+report. Euler/BDF2 storage and restart/checkpoint serialization include the field.
+An SA restart without nu_tilda is rejected. k/omega are zero internal placeholders
+for the shared storage layout, not inferred physical SA outputs; run metadata
+does not report them as SA observables. The VTK artifact exports modified_turbulent_viscosity (nu_tilda) and turbulent_viscosity (nut), without fictitious SA k/omega outputs. Plotting a new nu_tilda Results field has not been added. Cyclic turbulence and SA with a global rotating frame remain rejected; rotating-frame vorticity treatment is not implemented.
+
+The optional EquilibriumKOmega wall treatment is restricted to k-omega/SST.
+It reuses the existing smooth-wall nut(k,y,nu) law and area-weighted wall
+production. First-cell omega is constrained to the face-area-weighted blend
+hypot(6 nu/(0.075 y²), sqrt(k)/(Cmu^0.25 kappa y)); k uses a zero-gradient
+wall condition. Constrained omega rows are included in the existing scalar
+solver's prescribed-value elimination before relaxation/linear solution.
+Wall-function diagnostics now use modeled wall viscosity for both equilibrium
+wall modes. This is smooth equilibrium modeling, not a general separation,
+roughness, transition or validated all-y+ treatment. Thermal EquilibriumPrt
+remains restricted to the previously supported k-epsilon momentum walls.
+
+References inspected: local OpenFOAM-dev SpalartAllmaras transport, fv1/fv2,
+Stilda/fw and smooth omega wall-function conventions. The numerical adaptation
+uses the existing Rust discretization, not OpenFOAM solver equivalence.
+Compilation is the current evidence; flat-plate/airfoil SA, channel-flow wall
+functions, mesh/y+ studies and restart equivalence have not been validated.
+
+
+### Experimental RNG k–ε transport
+
+`rng-k-epsilon` uses Cμ=0.0845, Cε1=1.42, Cε2=1.68 and σk=σε=0.71942.
+With S²=2 dev(symm(∇U)):dev(symm(∇U)), η=√S² k/ε and
+R=η(1−η/4.38)/(1+0.012η³), the ε production is (Cε1−R) Pk ε/k.
+Negative production is moved to an implicit positive sink. k destruction uses
+the newly solved ε; ε bounding uses the RNG Cμ and the existing νt/ν limit.
+The strain correction is evaluated in reciprocal form for η>1 to avoid η³ overflow.
+Both equations use existing transient history, independent linear controls, inlet
+conditions and checkpoint fields. The smooth-wall treatment deliberately retains
+its existing wall-law Cμ=0.09 (separate from the bulk RNG coefficient); no RNG
+swirl correction, transition model or RNG-specific thermal wall law is supplied.
+Equilibrium-Prt thermal walls remain restricted to standard k–ε.
+Equation conventions and coefficients were checked against the local reference
+`RAS/RNGkEpsilon/RNGkEpsilon.C`; this is an independent integration with the
+existing scalar finite-volume assembly, not a claim of full reference parity.
+Compilation is not numerical validation: channel, free-shear and transient
+reference cases and mesh/time refinement remain required before research use.
+
+
+### Experimental Realizable k–ε
+
+`realizable-k-epsilon` shares conservative scalar transport, time history,
+independent k/ε linear controls, wall constraints and restart fields with the
+other ε models. It is restricted to an inertial frame. Define D=dev(symm(∇U)),
+S²=2 D:D, |S|=√S² and Ω=skew(∇U). The bulk viscosity is
+νt=Cμ k²/ε, where Cμ=1/(4+As Us k/ε), Us=√(S²/2+Ω:Ω),
+As=√6 cos(acos(clamp(√6 W,−1,1))/3) and
+W=2√2 tr(D³)/(|S| S²), taking W=0 for zero strain.
+The coefficient implementation normalizes the gradient tensor before forming
+its cubic invariant; zero gradient gives Cμ=1/4.
+
+The ε production is C1 |S| ε, C1=max(η/(5+η),0.43), η=|S|k/ε.
+Its implicit destruction coefficient is 1.9 ε/(k+√(νε)). Diffusivities are
+ν+νt for k and ν+νt/1.2 for ε. k production and ε/k destruction use the
+existing k-equation assembly. The ε lower bound retains 0.09 k²/(10⁵ν),
+which is a bound convention and not the variable bulk Cμ. There is no added
+explicit div(U) term in the realizable ε equation. Incoming viscosity uses
+incoming k/ε and the owner-cell velocity gradient. This is an approximation,
+not a separately imposed inlet-gradient condition.
+
+Smooth equilibrium wall functions retain their existing Cμ=0.09 convention
+and need log-layer cell placement; this is not a low-Re wall-resolved model.
+Equilibrium-Prt thermal walls remain restricted to standard k–ε. Realizable
+with a rotating frame is rejected pending absolute-vorticity treatment.
+Coefficient and equation conventions were compared with the local reference
+`RAS/realizableKE/realizableKE.C`; algorithms are integrated into FLURSYS's
+existing finite-volume transport. Reference: Shih et al., “A new k–ε eddy
+viscosity model for high Reynolds number turbulent flows,” Computers & Fluids
+24(3), 227–238 (1995). No numerical validation is claimed by this addition.
+
+### Implementation versus validation status
+
+Pressure-corrector loops, limited non-orthogonal pressure corrections,
+conformal translational cyclic coupling, positive Darcy–Forchheimer resistance,
+global rotating coordinates, SA-noft2, RNG and Realizable k–ε are experimental.
+Compiler checks establish type/interface consistency only. Before publication,
+verify conservation and pressure references, periodic flux cancellation,
+porous pressure drop, frame equilibrium, turbulence profiles and forces against
+reference cases, with grid/time-step refinement. No new benchmark values or
+performance/accuracy claims are supplied with this update.

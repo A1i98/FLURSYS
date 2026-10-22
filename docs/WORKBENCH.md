@@ -526,5 +526,124 @@ the physical inlet's m³/s or kg/s setting (per unit depth for 2D volume flow).
 To remove it, choose **Constant / remove time table**, then click Remove.
 Changing physical type can make an existing table incompatible; remove or edit
 that table before solving. Tables are saved inside the project; direct CSV file
-import, periodic repetition, spatial profiles and temperature tables are not
-implemented. The new path is compiled but not numerically benchmark validated.
+import, periodic repetition and spatial profiles are not implemented.
+Temperature and heat-flux tables are now available as described below. The new path is compiled but not numerically benchmark validated.
+
+### Equation controls and thermal completion
+
+Solution → Controls → **Equation solver controls…** opens a scrollable draft
+editor for velocity, pressure, temperature, k, omega and epsilon. Change
+absolute/relative linear tolerance, iteration count and supported preconditioner,
+then Apply. Cancel discards the draft. Inactive equation settings are retained.
+The run summary and report JSON include last completed equation linear residuals
+and counts. L2 residuals are not interchangeable with reference solvers'
+normalized residuals.
+
+Model settings expose a separate turbulence relaxation and relative-update
+tolerance. Fluid material → Heat transfer exposes temperature relaxation,
+relative-update tolerance and molecular/equilibrium-Prt wall diffusivity.
+Equilibrium-Prt requires equilibrium k-epsilon momentum walls; it is not a
+validated thermal log-law model.
+
+In Setup, assign the thermal condition first, then select Temperature vs time
+or Heat flux vs time in the boundary-table editor. Use rows `time_s,value`;
+Kelvin temperatures must be positive, and flux is positive into the fluid in
+W/m². Enable heat transfer and transient integration before running. Only one
+time table can currently be assigned per patch.
+
+### Pressure linear method selection
+
+In Solution, open the independent equation solver controls and select the
+pressure row's **GAMG / GCR** method to use aggregation multigrid. **Auto · IC0
+→ Jacobi** instead attempts IC0-PCG and uses Jacobi-PCG only if IC0 factorization
+encounters a non-positive pivot. Explicit IC0 remains strict. These methods
+retain the entered absolute/relative L2 tolerances and maximum linear iterations.
+They do not change the outer SIMPLE convergence criteria or mesh quality.
+The default remains IC0; the new options require numerical validation before
+production/performance claims.
+
+
+### Experimental transient PIMPLE and pressure mesh correction
+
+In Solution, select a transient time scheme and then PIMPLE · transient only.
+Set the inner pressure correctors (e.g. 2); the outer-iteration limit is still
+the maximum coupled budget per time step. Select extra non-orthogonal pressure
+passes (e.g. 1) and limiter (e.g. 0.5) to enable deferred pressure flux correction.
+Apply settings before running. SIMPLE permits one inner pressure corrector but
+can also use the non-orthogonal passes. Zero extra passes preserves the previous
+pressure operator. All settings are stored with the project; these new paths
+are experimental and have not undergone numerical benchmark validation.
+
+
+### Volume momentum models (experimental)
+
+Solution → Volume momentum models opens an atomic editor. Resistance can apply
+to the whole domain or a box in metres; enter D [1/m²] and F [1/m]. Selected
+cells are reported when a solve starts. This is isotropic momentum resistance,
+not a complete porous multiphysics model.
+
+Global rotating frame requires a 3D fluid mesh. Enter the angular velocity vector
+in rad/s and its origin in metres. With this model active, inlet/wall/initial
+velocities, result vectors, plane monitors and exports are RELATIVE to that
+frame. A co-rotating wall uses zero relative velocity. This is not a
+stationary/rotating multi-zone interface, nor moving-mesh geometry. Apply
+invalidates the old active solution; historical Runs retain their own settings.
+
+
+### Cyclic support scope
+
+Conformal translational cyclic coupling currently belongs to the experimental
+compressible CLI. It is not selectable in the Workbench incompressible Setup
+panel. CLI settings.cyclic_pairs contains objects with first/second patch names,
+translation {x,y,z} in metres, and tolerance. Omit both patch names from
+settings.boundaries; retain physical conditions on every other exterior patch.
+For x=0 and x=1 matching sides, a first-to-second translation is {x:1,y:0,z:0}.
+The mesh must actually have matching face partitions: Gmsh refinement on one
+side alone is not enough, and AMI interpolation is not supplied.
+
+
+### Cyclic pairs in Setup (experimental)
+
+Generate a mesh with conformal translated opposite sides. In Solution select
+Laminar, first-order Upwind and disable temperature transport and the rotating
+frame, then apply those settings. Open Setup → Boundaries → Cyclic patch pairs.
+Choose first and second patches and enter the translation from first to second
+in metres. Add to draft validates geometric matching; Apply activates the pair
+and replaces ordinary physical conditions on those sides.
+
+Assign physical conditions to all other patches. Select SIMPLE or transient
+PIMPLE as appropriate. Cyclic pair rows are marked in the boundary list.
+Removing a pair requires assigning physical conditions again. No automatic
+Gmsh periodic-mesh constraint, rotational periodicity or AMI is provided.
+
+
+### Additional turbulence choices (experimental)
+
+Solution → Momentum transport model offers SA-noft2 (wall resolved). Enter
+initial/default incoming nu_tilda in m²/s; resolve the wall layer (target y+≈1).
+For patch-specific data, Setup → incoming turbulence → SA modified viscosity.
+k/omega or intensity-length inputs are not accepted as SA boundary data.
+Equation solver controls includes a separate nu_tilda row. Restart fields
+preserve nu_tilda, but numerical restart equivalence remains unvalidated.
+
+For k-omega/SST, the Wall treatment selector now offers blended smooth omega
+wall functions. Inspect the wall y+ report; large first-cell heights or
+separation are not made accurate by selecting this option. Roughness and
+general all-y+ behavior remain unsupported.
+
+
+Experimental RNG k–ε is available under Solution → momentum transport model.
+Set initial/incoming k and ε; solid walls require smooth equilibrium wall treatment.
+Inspect wall y+; this is not a wall-resolved low-Re model. Saved projects and
+checkpoints retain the RNG model and ε field. Numerical validation is pending.
+
+
+### Realizable k–ε selection
+
+In Solution → momentum transport model choose **Realizable k–ε (experimental)**.
+Set positive initial/default incoming k and ε. Configure per-patch turbulence
+inlets in Setup where appropriate. For solid walls select smooth equilibrium
+wall functions and inspect y+; refining to y+≈1 does not turn this into a
+low-Re model. Global rotating frames and equilibrium-Prt thermal walls are not
+supported for this model. Existing field restart and VTK ε/νt output are used.
+The model is implemented but has not been numerically validated.
