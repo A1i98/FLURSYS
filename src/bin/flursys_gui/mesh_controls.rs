@@ -452,6 +452,32 @@ pub(super) fn bind(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
         }
     });
     let weak = ui.as_weak();
+    let shared = state.clone();
+    ui.on_mesh_estimate_first_layer(move || {
+        let Some(ui)=weak.upgrade() else {return};
+        let state=shared.borrow();
+        if state.meshing || state.solving {return;}
+        let result=(|| -> Result<(f64,f64),String> {
+            let yplus=number(ui.get_mesh_layer_yplus(),"Target y+")?;
+            let utau=number(ui.get_mesh_layer_utau(),"Friction velocity")?;
+            let nu=state.workbench.material().kinematic_viscosity;
+            let height=2.0*yplus*nu/utau;
+            if yplus<=0.0 || utau<=0.0 || !height.is_finite() || height<=0.0 {
+                return Err("Require positive finite y+, friction velocity and saved fluid viscosity".into());
+            }
+            Ok((height,nu))
+        })();
+        match result {
+            Ok((height,nu))=>{
+                ui.set_mesh_layer_mode(0);
+                ui.set_wb_layer_first(format!("{height:.12e}").into());
+                ui.set_mesh_layer_estimate(format!("Estimated h₁ = {height:.6e} m using ν={nu:.6e} m²/s. Apply inflation separately; this does not generate 3D prisms.").into());
+                preview(&ui);
+            }
+            Err(e)=>ui.set_mesh_layer_estimate(e.into()),
+        }
+    });
+    let weak = ui.as_weak();
     ui.on_mesh_layer_preview(move || {
         if let Some(ui) = weak.upgrade() {
             preview(&ui);

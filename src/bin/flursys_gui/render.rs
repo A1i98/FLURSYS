@@ -760,6 +760,66 @@ pub(super) fn annotate_measurement(image: Image, points: &[(i32, i32)]) -> Image
     image_from_rgba(width, height, pixels)
 }
 
+/// Pick only exterior edges of the selected 2D fluid domain. Coincident
+/// edges belonging to other sketch regions must never win the hit test.
+pub(super) fn pick_domain_edge(
+    topology: &GeometryTopology,
+    view: View3d,
+    point: (f64, f64),
+    targets: &[GeometrySelectionTarget],
+) -> Option<GeometrySelectionTarget> {
+    let camera = canonical_camera(topology, view)?;
+    targets
+        .iter()
+        .filter_map(|target| {
+            let GeometrySelectionTarget::Edge(id) = target else {
+                return None;
+            };
+            let path = canonical_edge_path(topology, &topology.edge(*id)?.geometry)?;
+            let distance = path
+                .windows(2)
+                .map(|pair| {
+                    let a = camera.screen(pair[0]);
+                    let b = camera.screen(pair[1]);
+                    let d = (b.0 - a.0, b.1 - a.1);
+                    let length = d.0 * d.0 + d.1 * d.1;
+                    let t = if length > 0.0 {
+                        ((point.0 - a.0) * d.0 + (point.1 - a.1) * d.1) / length
+                    } else {
+                        0.0
+                    }
+                    .clamp(0.0, 1.0);
+                    (point.0 - a.0 - t * d.0).hypot(point.1 - a.1 - t * d.1)
+                })
+                .min_by(f64::total_cmp)?;
+            (distance <= 8.0).then_some((*target, distance))
+        })
+        .min_by(|a, b| a.1.total_cmp(&b.1))
+        .map(|hit| hit.0)
+}
+
+/// Window selection: the complete sampled edge must lie inside the rectangle.
+pub(super) fn domain_edges_in_box(
+    topology: &GeometryTopology, view: View3d, a: (f64,f64), b: (f64,f64),
+    targets: &[GeometrySelectionTarget],
+) -> Vec<GeometrySelectionTarget> {
+    let Some(camera)=canonical_camera(topology,view) else {return Vec::new()};
+    let inside=|p:Vec3| {
+        let p=camera.screen(p);
+        p.0>=a.0.min(b.0) && p.0<=a.0.max(b.0) && p.1>=a.1.min(b.1) && p.1<=a.1.max(b.1)
+    };
+    let surfaces=if targets.iter().any(|t|matches!(t,GeometrySelectionTarget::Face(_))) {topology.renderable_faces()} else {Vec::new()};
+    targets.iter().copied().filter(|target|match target {
+        GeometrySelectionTarget::Edge(id)=>topology.edge(*id).and_then(|edge|canonical_edge_path(topology,&edge.geometry))
+            .is_some_and(|path|!path.is_empty() && path.into_iter().all(&inside)),
+        GeometrySelectionTarget::Face(id)=>{
+            let pieces=surfaces.iter().filter(|s|s.face==*id).collect::<Vec<_>>();
+            !pieces.is_empty() && pieces.iter().all(|s|!s.vertices.is_empty() && s.vertices.iter().copied().all(&inside))
+        },
+        _=>false,
+    }).collect()
+}
+
 pub(super) fn pick_canonical_geometry_target(
     topology: &GeometryTopology,
     view: View3d,

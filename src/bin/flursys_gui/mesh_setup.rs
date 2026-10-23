@@ -129,7 +129,51 @@ fn group_name(state: &AppState, index: i32) -> Option<String> {
         .map(|g| g.name.clone())
 }
 
+// Stable IDs are kept outside the UI model; labels are never parsed.
+fn domain_faces(state: &AppState) -> Vec<flursys::FaceId> {
+    let geometry = state.workbench.geometry();
+    geometry
+        .faces()
+        .filter(|face| {
+            matches!(
+                face.representation,
+                flursys::GeometryFaceRepresentation::Planar { .. }
+            ) && geometry.cad_owner(face.id).is_none()
+                && geometry.is_face_visible(face.id)
+        })
+        .map(|face| face.id)
+        .collect()
+}
+
 fn bind_grouping(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
+    let weak = ui.as_weak();
+    let shared = state.clone();
+    ui.on_mesh_select_domain_face(move |index| {
+        let Some(ui) = weak.upgrade() else { return };
+        let mut state = shared.borrow_mut();
+        if state.meshing || state.solving {
+            return;
+        }
+        let Some(face) = usize::try_from(index)
+            .ok()
+            .and_then(|i| domain_faces(&state).get(i).copied())
+        else {
+            return;
+        };
+        select_tree_geometry_target(&mut state, GeometrySelectionTarget::Face(face), false);
+        ui.set_mesh_entity_mode(0);
+        show_geometry(&ui, &mut state, true);
+        ui.set_wb_flow_feedback(
+            format!(
+                "Face {} selected. Use selected face as 2D domain to confirm.",
+                face.get()
+            )
+            .into(),
+        );
+        rebuild_tree_rows(&mut state);
+        refresh_ui(&ui, &state);
+    });
+
     let weak_apply = ui.as_weak();
     let apply_state = state.clone();
     ui.on_mesh_apply_settings(move || {
@@ -258,6 +302,29 @@ fn bind_grouping(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
     });
     let weak = ui.as_weak();
     let shared = state.clone();
+    ui.on_mesh_box_geometry(move |x0,y0,x1,y1,w,h,additive| {
+        let Some(ui) = weak.upgrade() else {return};
+        let mut state=shared.borrow_mut();
+        if state.meshing || state.solving || state.workbench.mesh_dimension()!=MeshDimension::TwoD || ui.get_mesh_entity_mode()!=1 {return;}
+        // Clamp window corners to the contained image, including letterboxing.
+        let scale=(w/PREVIEW_WIDTH as f32).min(h/PREVIEW_HEIGHT as f32);
+        if !scale.is_finite() || scale<=0.0 {return;}
+        let offset=((w-PREVIEW_WIDTH as f32*scale)*0.5,(h-PREVIEW_HEIGHT as f32*scale)*0.5);
+        let point=|x:f32,y:f32| (((x-offset.0)/scale).clamp(0.0,PREVIEW_WIDTH as f32) as f64,((y-offset.1)/scale).clamp(0.0,PREVIEW_HEIGHT as f32) as f64);
+        let targets=state.workbench.boundary_geometry_targets().unwrap_or_default();
+        let selected=render::domain_edges_in_box(state.workbench.geometry(),state.view_3d,point(x0,y0),point(x1,y1),&targets);
+        if !additive {state.wb_selected_targets.clear();}
+        for target in selected {
+            if !state.wb_selected_targets.contains(&target) {state.wb_selected_targets.push(target);}
+        }
+        state.geometry_editor.selection=state.wb_selected_targets.clone();
+        state.selected_tree=None;
+        ui.set_wb_flow_feedback(format!("{} exterior entities selected. Box includes complete projected entities (including occluded faces); Shift/Ctrl adds.",state.wb_selected_targets.len()).into());
+        rebuild_tree_rows(&mut state);
+        refresh_ui(&ui,&state);
+    });
+    let weak = ui.as_weak();
+    let shared = state.clone();
     ui.on_mesh_pick_geometry(move |x, y, w, h, additive| {
         let Some(ui) = weak.upgrade() else { return };
         let mut state = shared.borrow_mut();
@@ -267,13 +334,29 @@ fn bind_grouping(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
         let Some(point) = preview_image_point(x, y, w, h) else {
             return;
         };
-        let target = pick_canonical_geometry_target(
-            state.workbench.geometry(),
-            state.view_3d,
-            point,
-            ui.get_mesh_entity_mode(),
-        );
+        let target = if state.workbench.mesh_dimension() == MeshDimension::TwoD
+            && ui.get_mesh_entity_mode() == 1
+            && state.workbench.fluid_face().is_some()
+        {
+            render::pick_domain_edge(
+                state.workbench.geometry(),
+                state.view_3d,
+                point,
+                &state
+                    .workbench
+                    .boundary_geometry_targets()
+                    .unwrap_or_default(),
+            )
+        } else {
+            pick_canonical_geometry_target(
+                state.workbench.geometry(),
+                state.view_3d,
+                point,
+                ui.get_mesh_entity_mode(),
+            )
+        };
         if let Some(target) = target {
+            ui.set_wb_flow_feedback(format!("Selected {}.", describe_targets(&[target])).into());
             select_tree_geometry_target(&mut state, target, additive);
             if state.current_step == 2 {
                 let name = state
@@ -294,6 +377,9 @@ fn bind_grouping(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
                 }
             }
         } else if !additive {
+            ui.set_wb_flow_feedback(
+                "No geometry hit. For a 2D domain, choose a planar profile in Fluid domain.".into(),
+            );
             state.wb_selected_targets.clear();
             state.geometry_editor.selection.clear();
             state.selected_tree = None;
@@ -554,6 +640,23 @@ pub(super) fn bind(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
 }
 
 pub(super) fn refresh(ui: &MainWindow, state: &AppState) {
+    let faces = domain_faces(state);
+    let selected = match state.wb_selected_targets.as_slice() {
+        [GeometrySelectionTarget::Face(face)] => Some(*face),
+        _ => state.workbench.fluid_face(),
+    };
+    ui.set_mesh_domain_face_index(
+        selected
+            .and_then(|face| faces.iter().position(|f| *f == face))
+            .map_or(-1, |i| i as i32),
+    );
+    ui.set_mesh_domain_faces(ModelRc::new(VecModel::from(
+        faces
+            .iter()
+            .map(|face| SharedString::from(format!("Face {} · planar profile", face.get())))
+            .collect::<Vec<_>>(),
+    )));
+
     super::mesh_inspection::refresh(ui, state);
     ui.set_mesh_cad_route(if state.workbench.geometry().cad_bodies().any(|(_,b)|b.visible) {
         "CAD route: recognized axis-aligned boxes can use Hex Block. Other solids use planar-face recovery and faceted curved surfaces; direct STEP/OCC meshing is not connected."

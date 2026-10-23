@@ -169,6 +169,8 @@ export component WorkflowControlCard inherits PropertiesPanel {
         callback pick-orientation(float,float);
         in property <string> help-text: "DRAG: ORBIT  ·  WHEEL: ZOOM  ·  CLICK RGB XYZ TRIAD: AXIS VIEW  ·  DOUBLE-CLICK: RESET";
         in property <bool> select-geometry: false;
+        in property <bool> box-selection:false;
+        callback box-select(float,float,float,float,float,float,bool);
         callback orbit(float, float, float, float);
         callback orbit-end();
         callback zoom(float);
@@ -212,7 +214,8 @@ export component WorkflowControlCard inherits PropertiesPanel {
                 else {reject}
             }
         }
-        TouchArea {
+        viewport-hit := TouchArea {
+            property <bool> box-held:false;
             property <bool> dragged:false;
             property <bool> orbit-held:false;
             property <bool> pan-held:false;
@@ -227,22 +230,29 @@ export component WorkflowControlCard inherits PropertiesPanel {
                     viewport-focus.focus();
                     self.start-x=self.mouse-x;self.start-y=self.mouse-y;
                     self.last-x=self.mouse-x;self.last-y=self.mouse-y;self.dragged=false;
-                    self.pan-held=(root.planar-navigation && root.navigation-mode!=2 && event.button==PointerEventButton.left) || event.button==PointerEventButton.middle || (event.button==PointerEventButton.left && event.modifiers.shift) || (event.button==PointerEventButton.left && root.navigation-mode==1);
-                    self.orbit-held=event.button==PointerEventButton.left && !self.pan-held;
+                    self.box-held=root.box-selection && event.button==PointerEventButton.left;
+                    self.pan-held=!self.box-held && ((root.planar-navigation && root.navigation-mode!=2 && event.button==PointerEventButton.left) || event.button==PointerEventButton.middle || (event.button==PointerEventButton.left && event.modifiers.shift) || (event.button==PointerEventButton.left && root.navigation-mode==1));
+                    self.orbit-held=event.button==PointerEventButton.left && !self.pan-held && !self.box-held;
                     self.additive=event.modifiers.shift || event.modifiers.control;
                 }
                 if event.kind == PointerEventKind.up {
+                    if self.box-held && self.dragged {
+                        root.box-select(self.start-x/1px,self.start-y/1px,self.mouse-x/1px,self.mouse-y/1px,root.width/1px,root.height/1px,self.additive);
+                    }
+                    self.box-held=false;
                     if event.button==PointerEventButton.right && !self.dragged {
                         root.context-menu(self.mouse-x/1px,self.mouse-y/1px,root.width/1px,root.height/1px);
                     }
                     self.orbit-held=false;self.pan-held=false;root.orbit-end();
                 }
                 if event.kind == PointerEventKind.cancel {
-                    self.orbit-held=false;self.pan-held=false;self.dragged=true;root.orbit-end();
+                    self.box-held=false;self.orbit-held=false;self.pan-held=false;self.dragged=true;root.orbit-end();
                 }
             }
             moved => {
-                if self.orbit-held || self.pan-held {
+                if self.box-held {
+                    if Math.abs((self.mouse-x - self.start-x)/1px)>4 || Math.abs((self.mouse-y - self.start-y)/1px)>4 {self.dragged=true;}
+                } else if self.orbit-held || self.pan-held {
                     if Math.abs((self.mouse-x - self.start-x)/1px)>4 || Math.abs((self.mouse-y - self.start-y)/1px)>4 {self.dragged=true;}
                     if self.dragged {
                         if self.pan-held {root.pan((self.mouse-x - self.last-x)/1px,(self.mouse-y - self.last-y)/1px,root.width/1px,root.height/1px);}
@@ -258,6 +268,11 @@ export component WorkflowControlCard inherits PropertiesPanel {
                 root.pick-boundary(self.mouse-x/1px,self.mouse-y/1px,root.width/1px,root.height/1px);
                 root.pick-modified(self.mouse-x/1px,self.mouse-y/1px,root.width/1px,root.height/1px,self.additive);
             }}
+        }
+        if viewport-hit.box-held && viewport-hit.dragged : Rectangle {
+            x:min(viewport-hit.start-x,viewport-hit.mouse-x);y:min(viewport-hit.start-y,viewport-hit.mouse-y);
+            width:Math.abs(viewport-hit.mouse-x - viewport-hit.start-x);height:Math.abs(viewport-hit.mouse-y - viewport-hit.start-y);
+            background:#3a88ee28;border-color:UiTheme.accent;border-width:1px;
         }
         if root.navigation-3d : Rectangle {
             x:(parent.width - self.width)/2;y:parent.height - self.height - 8px;

@@ -36,6 +36,9 @@ export component MeshWorkspace inherits Rectangle {
     in-out property <string> group-name;
     in property <string> feedback;
     in property <string> domain;
+    in property <[string]> domain-faces;
+    in property <int> domain-face-index:-1;
+    callback select-domain-face(int);
     in property <string> readiness;
     in property <string> summary;
     in property <string> gmsh;
@@ -113,11 +116,17 @@ export component MeshWorkspace inherits Rectangle {
     callback select-filter(int);
     callback show-geometry(bool);
     callback pick(float,float,float,float,bool);
+    callback box-pick(float,float,float,float,float,float,bool);
+    private property <bool> box-mode:false;
     callback pick-mesh(float,float,float,float);
     callback select-group(int);
     callback edit-condition(int);
     callback group-action(int);
     callback use-face();callback check();callback generate();callback cancel();
+    in-out property <string> layer-yplus;
+    in-out property <string> layer-utau;
+    in property <string> layer-estimate;
+    callback estimate-layer();
     callback preset(int);callback add-local();callback add-refinement();callback add-layers();
     callback display(int);callback select-color(int);callback quality(int);callback threshold();callback select-bad(int);
     callback hover(float,float,float,float);
@@ -197,6 +206,11 @@ export component MeshWorkspace inherits Rectangle {
                             Text {vertical-stretch:0;text:root.coverage;color:UiTheme.text-soft;font-size:11px;wrap:word-wrap;}
                             Rectangle {height:1px;background:UiTheme.border;}
                             Label {text:"FLUID DOMAIN";}
+                            if root.dimension==0 : ComboBox {
+                                model:root.domain-faces;current-index:root.domain-face-index;
+                                min-height:32px;max-height:32px;enabled:!root.busy && root.domain-faces.length>0;
+                                selected=>{root.select-domain-face(self.current-index);}
+                            }
                             Text {vertical-stretch:0;text:root.domain;color:UiTheme.text;font-size:11px;wrap:word-wrap;}
                             ToolButton {text:"Use selected face as 2D domain";enabled:!root.busy && root.dimension==0;clicked=>{root.use-face();}}
                         }
@@ -320,6 +334,14 @@ export component MeshWorkspace inherits Rectangle {
                                 }
                                 ToolButton {text:root.edit-id=="" ? "Apply refinement to scope" : "Update refinement";enabled:!root.busy;clicked=>{root.add-refinement();}}
                             }
+                            if root.control-kind==2 : VerticalLayout {spacing:6px;vertical-stretch:0;
+                                Label {text:"FIRST-LAYER ESTIMATE";color:UiTheme.accent;font-weight:700;}
+                                Field {label:"Target y+";value <=> root.layer-yplus;}
+                                Field {label:"Friction velocity uτ (m/s) · from prior run / estimate";value <=> root.layer-utau;}
+                                ToolButton {text:"Estimate first layer height";enabled:!root.busy;clicked=>{root.estimate-layer();}}
+                                Label {text:root.layer-estimate;}
+                                Label {text:"Uses saved fluid ν and h₁ = 2 y+ ν / uτ; assumes the cell centre is halfway through a wall-normal layer. Actual y+ must be inspected after solving."; }
+                            }
                             if root.control-kind==2 && root.dimension==1 : Label {text:"Prismatic inflation for arbitrary 3D CAD is not implemented. Distance refinement works on selected 3D surfaces, but does not produce prism layers.";}
                             if root.control-kind==2 && root.dimension==0 : VerticalLayout {vertical-stretch:0;spacing:7px;
                                 Label {text:"Inflation definition";}
@@ -412,6 +434,8 @@ export component MeshWorkspace inherits Rectangle {
 
                 InteractiveGeometryPreview {
                     vertical-stretch:1;preview-image:root.preview;
+                    box-selection:root.box-mode && root.geometry-view && ((root.dimension==0 && root.entity-mode==1) || (root.dimension==1 && root.entity-mode==0));
+                    box-select(a,b,c,d,w,h,add)=>{root.box-pick(a,b,c,d,w,h,add);}
                     navigation-3d:true;show-fit-control:false;planar-navigation:!root.spatial;orientation-image:root.orientation;view-axis:root.view-axis;
                     select-view-axis(axis)=>{root.view(axis);}pick-orientation(x,y)=>{root.pick-orientation(x,y);}
                     pan(dx,dy,w,h)=>{root.pan(dx,dy,w,h);}
@@ -424,6 +448,9 @@ export component MeshWorkspace inherits Rectangle {
                     reset-view=>{root.fit();}
                 }
                 HorizontalLayout {height:34px;spacing:6px;
+                if root.geometry-view && ((root.dimension==0 && root.entity-mode==1) || (root.dimension==1 && root.entity-mode==0)) : ToolButton {
+                    text:root.dimension==0 ? "Box select edges" : "Box select faces";checkable:true;checked <=> root.box-mode;enabled:!root.busy;
+                }
                 EntitySelectionBar {mode:root.entity-mode;enabled:!root.busy;select(mode)=>{root.select-filter(mode);}clear=>{root.group-action(0);}}
                 }
 

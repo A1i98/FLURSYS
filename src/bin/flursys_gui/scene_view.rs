@@ -388,7 +388,7 @@ pub(super) fn geometry(
         } else {
             [165, 174, 190, 255]
         };
-        if !is_sketch && display != 2 {
+        if display != 2 && (!is_sketch || (pick_mode == 0 && (chosen || hover))) {
             scene.polygon(&surface.vertices, &surface.holes, c);
         }
         let kernel = surface.body.is_some_and(|b| topology.cad_body(b).is_some());
