@@ -411,11 +411,24 @@ pub(super) fn readout(state: &AppState, options: &Options, x: f64) -> String {
         .collect::<Vec<_>>();
     format!("Iteration / step {iteration}  |  {}", values.join("  ·  "))
 }
+// UI-thread cache is bounded to one raster. Exports still use the full vector plot.
+// Comparing the complete SVG avoids stale results when archived histories change.
+thread_local! {
+    static CHART_IMAGE: RefCell<Option<(String, slint::Image)>> = const { RefCell::new(None) };
+}
 pub(super) fn refresh(ui: &MainWindow, state: &AppState) {
+    if ui.get_solution_show_plane() || ui.get_solution_show_log() {return;}
     let plot = build(state, &Options::from_ui(ui));
-    if let Ok(image) = slint::Image::load_from_svg_data(plot.svg.as_bytes()) {
-        ui.set_residual_image(image);
-    }
+    CHART_IMAGE.with(|cache| {
+        let mut cache=cache.borrow_mut();
+        if let Some((svg,image))=cache.as_ref().filter(|(svg,_)|svg==&plot.svg) {
+            let _=svg;
+            ui.set_residual_image(image.clone());
+        } else if let Ok(image)=slint::Image::load_from_svg_data(plot.svg.as_bytes()) {
+            ui.set_residual_image(image.clone());
+            *cache=Some((plot.svg,image));
+        }
+    });
     ui.set_continuity_chart_caption(plot.caption.into());
 }
 pub(super) fn bind(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {

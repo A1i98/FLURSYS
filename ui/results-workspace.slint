@@ -7,6 +7,8 @@ import {UiTheme, PropertiesPanel, PropertyScroll, WorkspaceSections,InteractiveG
 component Tool inherits PropertyAction {}
 component Label inherits PropertyCaption {}
 export component ResultsWorkspace inherits Rectangle {
+    in property <string> warning;
+    callback manage-plane(int);
     in property <string> wall-summary;
     in property <bool> has-wall-report;
     in property <bool> has-wall-samples;
@@ -102,6 +104,8 @@ export component ResultsWorkspace inherits Rectangle {
     callback drag(float,float,float,float,float,float);callback drag-end();callback zoom(float);callback fit();
     background:UiTheme.background;
     VerticalLayout {
+        if root.warning!="" : Text {text:root.warning;color:#f5b85b;font-size:12px;wrap:word-wrap;vertical-stretch:0;min-height:32px;}
+
         padding:12px;spacing:8px;
         HorizontalLayout {
             height:34px;spacing:8px;
@@ -145,7 +149,7 @@ export component ResultsWorkspace inherits Rectangle {
 
                                 Label {text:"Cells retain the exported values. Contour lines use vertex-averaged interpolation. Reconstructed curl/divergence use neighbour LSQ gradients; div U is not the conservative face-flux residual.";}
                             }
-                            if root.tab==0 && root.slice-axis>=4 : SectionProperties {field <=> root.plane-field;plot <=> root.plane-plot;palette <=> root.plane-palette;density <=> root.plane-density;scale <=> root.plane-scale;
+                            if root.tab==0 && root.slice-axis>=4 : SectionProperties {manage(i)=>{root.manage-plane(i);}field <=> root.plane-field;plot <=> root.plane-plot;palette <=> root.plane-palette;density <=> root.plane-density;scale <=> root.plane-scale;
     levels <=> root.plane-levels;streamlines <=> root.plane-streamlines;vectors <=> root.plane-vectors;edges <=> root.plane-edges;normalize <=> root.plane-normalize;normal-marks <=> root.plane-normal-marks;range-min <=> root.plane-min;range-max <=> root.plane-max;
     every <=> root.plane-every;record <=> root.plane-enabled;busy:root.busy;style=>{root.style-plane();}apply=>{root.apply-plane();}export(i)=>{root.export-plane(i);}profile(a,b,c,d,n,k)=>{root.plane-profile(a,b,c,d,n,k);}}
 if root.tab==1 : VerticalLayout {spacing:8px;

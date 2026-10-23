@@ -731,6 +731,14 @@ pub(super) fn bind(ui: &MainWindow, shared: &Rc<RefCell<AppState>>) {
     let control_state = shared.clone();
     ui.on_solver_control(move |action| {
         let Some(ui)=weak.upgrade() else{return;};let mut s=control_state.borrow_mut();
+        if action==6 {field_mapping::start_patch(&ui,&mut s);return;}
+        if matches!(action,3|4) {
+            field_mapping::start(&ui,&mut s,action==4);return;
+        }
+        if action==5 {
+            s.post.mapping.cancel();s.log("Field mapping cancelled; initialization unchanged.");refresh_ui(&ui,&s);return;
+        }
+        if s.post.mapping.busy() {s.log("Wait for field mapping to finish before changing initialization.");return;}
         if action==2 && !s.solving {
             let Some(mesh)=s.workbench.mesh() else{s.log("Generate a mesh before loading a checkpoint.");return;};
             let mut dialog=rfd::FileDialog::new().add_filter("Field checkpoint",&["json"]);
@@ -1086,6 +1094,23 @@ pub(super) fn bind(ui: &MainWindow, shared: &Rc<RefCell<AppState>>) {
         let mut state = state.borrow_mut();
         load(&ui, &state);
         refresh_selected(&ui, &mut state);
+    });
+    let weak=ui.as_weak();
+    let state=shared.clone();
+    ui.on_flow_plane_manage(move |action| {
+        let Some(ui)=weak.upgrade() else {return};
+        let mut state=state.borrow_mut();
+        if state.solving || state.meshing {return;}
+        if action==0 {
+            for p in &mut state.workbench_project.plane_monitors {p.enabled=false;}
+        } else if action==1 {
+            let Some(p)=state.workbench_project.plane_monitors.get_mut(ui.get_flow_plane_index().max(0) as usize) else {return};
+            p.enabled=false;p.every=10;p.display=Default::default();
+        } else {return;}
+        state.mark_workbench_dirty();
+        load(&ui,&state);
+        ui.set_flow_plane_status("Monitor settings updated; existing recorded files were retained.".into());
+        refresh_ui(&ui,&state);
     });
     let weak = ui.as_weak();
     let state = shared.clone();

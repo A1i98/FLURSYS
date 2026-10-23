@@ -325,12 +325,21 @@ export component MainWindow inherits Window {
     in-out property <bool> cad-flow-plane-selected:false;
     in-out property <bool> solution-show-plane:false;
     in-out property <int> solution-properties-section:0;
+    in property <string> post-result-warning;
+    in property <bool> field-mapping-busy;
+    in-out property <string> initial-box-xmin;
+    in-out property <string> initial-box-ymin;
+    in-out property <string> initial-box-zmin:"0";
+    in-out property <string> initial-box-xmax;
+    in-out property <string> initial-box-ymax;
+    in-out property <string> initial-box-zmax:"0";
     in-out property <image> flow-plane-image;
     in-out property <string> flow-plane-render-key;
     in-out property <string> flow-plane-details;
     in-out property <string> flow-plane-status:"Select a CAD construction plane or a sketch plane.";
     callback flow-plane-select(int);
     callback flow-plane-apply();
+    callback flow-plane-manage(int);
     callback flow-plane-view();
     callback flow-plane-export(int);
     callback flow-plane-profile(string,string,string,string,int,int);
@@ -633,6 +642,9 @@ export component MainWindow inherits Window {
     callback rotate-selected-body();
     in-out property <int> mesh-task:0;
     in-out property <int> mesh-entity-mode:1;
+    in property <[string]> mesh-domain-faces;
+    in property <int> mesh-domain-face-index:-1;
+    callback mesh-select-domain-face(int);
     in-out property <bool> mesh-spatial-view:false;
     in-out property <bool> mesh-show-geometry:true;
     in-out property <string> mesh-selection-summary;
@@ -641,6 +653,11 @@ export component MainWindow inherits Window {
     in-out property <int> mesh-group-index:-1;
     in-out property <int> mesh-local-group-index:-1;
     callback mesh-pick-geometry(float,float,float,float,bool);
+    in-out property <string> mesh-layer-yplus:"1";
+    in-out property <string> mesh-layer-utau;
+    in-out property <string> mesh-layer-estimate;
+    callback mesh-estimate-first-layer();
+    callback mesh-box-geometry(float,float,float,float,float,float,bool);
     callback mesh-group-action(int);
     callback mesh-select-group(int);
     callback mesh-edit-condition(int);
@@ -681,6 +698,9 @@ export component MainWindow inherits Window {
     in-out property <string> turb-patch-omega:"1";
     in-out property <string> turb-patch-epsilon:"0.00001";
     in-out property <string> turb-patch-intensity:"0.05";
+    in-out property <string> turb-patch-diameter:"0.01";
+    in-out property <string> turb-patch-viscosity-ratio:"10";
+    in-out property <string> turb-patch-length-ratio:"0.07";
     in-out property <string> turb-patch-length:"0.01";
     in-out property <string> turb-patch-status;
     callback prepare-material-editor();
@@ -875,7 +895,7 @@ export component MainWindow inherits Window {
                         x:min(260px,max(8px,parent.width - self.width - 8px));y:110px;width:292px;height:min(parent.height - 125px,650px);
                         background:UiTheme.sidebar;border-color:UiTheme.border;border-width:1px;border-radius:4px;
                         VerticalLayout {padding:0px;PropertyScroll {section:root.flow-plane-index;
-PlaneMonitorPanel {
+PlaneMonitorPanel {manage-plane(i)=>{root.flow-plane-manage(i);}
                                 palette <=> root.flow-plane-palette;density <=> root.flow-plane-density;scale <=> root.flow-plane-scale;plot <=> root.flow-plane-plot;levels <=> root.flow-plane-levels;streamlines <=> root.flow-plane-streamlines;field <=> root.flow-plane-field;vectors <=> root.flow-plane-vectors;edges <=> root.flow-plane-edges;normalize <=> root.flow-plane-normalize;normal-marks <=> root.flow-plane-normal-marks;range-min <=> root.flow-plane-min;range-max <=> root.flow-plane-max;
                                 style=>{root.flow-plane-style();}export(i)=>{root.flow-plane-export(i);}profile(a,b,c,d,n,k)=>{root.flow-plane-profile(a,b,c,d,n,k);}
                                 names:root.flow-plane-names;index <=> root.flow-plane-index;every <=> root.flow-plane-every;record <=> root.flow-plane-enabled;
@@ -892,6 +912,8 @@ PlaneMonitorPanel {
                     busy:root.wb-busy;
                     dimension <=> root.mesh-dimension-index;
                     entity-mode:root.mesh-entity-mode;spatial:root.mesh-spatial-view;
+                    layer-yplus <=> root.mesh-layer-yplus;layer-utau <=> root.mesh-layer-utau;layer-estimate:root.mesh-layer-estimate;estimate-layer=>{root.mesh-estimate-first-layer();}
+                    domain-faces:root.mesh-domain-faces;domain-face-index:root.mesh-domain-face-index;select-domain-face(i)=>{root.mesh-select-domain-face(i);}
                     geometry-view:root.mesh-show-geometry;
                     selection:root.mesh-selection-summary;
                     coverage:root.mesh-coverage;
@@ -944,6 +966,7 @@ PlaneMonitorPanel {
                     select-filter(index)=>{root.mesh-entity-filter(index);}
                     show-geometry(value)=>{root.mesh-workspace-view(value);}
                     pick(x,y,w,h,additive)=>{root.mesh-pick-geometry(x,y,w,h,additive);}
+                    box-pick(a,b,c,d,w,h,add)=>{root.mesh-box-geometry(a,b,c,d,w,h,add);}
                     pick-mesh(x,y,w,h)=>{root.pick-boundary(x,y,w,h);}
                     select-group(index)=>{root.mesh-select-group(index);}
                     edit-condition(index)=>{root.mesh-edit-condition(index);}
@@ -1045,7 +1068,7 @@ PlaneMonitorPanel {
                                     Button {text:root.time-bc-mode==0 ? "Remove time table" : "Apply time table";enabled:!root.wb-busy && root.patch-model.length>0;clicked=>{root.apply-time-boundary();}}
                                     InspectorLabel {text:root.time-bc-status;wrap:word-wrap;}
                                     InspectorLabel {text:"INCOMING TURBULENCE / BACKFLOW";}
-                                    ComboBox {min-height:32px;max-height:32px;min-width:0px;model:["Use global model values","Direct k / omega / epsilon","Intensity and length scale","SA modified viscosity"];current-index <=> root.turb-patch-mode;}
+                                    ComboBox {min-height:32px;max-height:32px;min-width:0px;model:["Use global model values","Direct k / omega / epsilon","Intensity and length scale","SA modified viscosity","Intensity + hydraulic diameter","Intensity + viscosity ratio"];current-index <=> root.turb-patch-mode;}
                                     if root.turb-patch-mode==1 : VerticalLayout {
                                         InspectorLabel {text:"k (m²/s²)";} LineEdit {min-height:32px;max-height:32px;min-width:0px;text <=> root.turb-patch-k;}
                                         InspectorLabel {text:"omega (1/s)";} LineEdit {min-height:32px;max-height:32px;min-width:0px;text <=> root.turb-patch-omega;}
@@ -1054,9 +1077,18 @@ PlaneMonitorPanel {
                                     if root.turb-patch-mode==3 : VerticalLayout {
                                         InspectorLabel {text:"SA incoming ν̃ (m²/s) ≥ 0";}LineEdit {text <=> root.turb-patch-nu-tilda;min-height:32px;max-height:32px;min-width:0px;}
                                     }
-                                    if root.turb-patch-mode==2 : VerticalLayout {
+                                    if root.turb-patch-mode==2 || root.turb-patch-mode==4 || root.turb-patch-mode==5 : VerticalLayout {
                                         InspectorLabel {text:"Intensity (fraction: 0.05 = 5%)";} LineEdit {min-height:32px;max-height:32px;min-width:0px;text <=> root.turb-patch-intensity;}
-                                        InspectorLabel {text:"Length scale (m)";} LineEdit {min-height:32px;max-height:32px;min-width:0px;text <=> root.turb-patch-length;}
+                                        if root.turb-patch-mode==5 : VerticalLayout {
+                                            InspectorLabel {text:"Turbulent / molecular viscosity νt/ν";}LineEdit {text <=> root.turb-patch-viscosity-ratio;min-width:0px;max-height:32px;}
+                                            InspectorLabel {text:"Inlet estimate using Cμ=0.09 and the saved fluid viscosity; not a local closure constraint.";wrap:word-wrap;}
+                                        }
+                                        if root.turb-patch-mode==4 : VerticalLayout {
+                                            InspectorLabel {text:"Hydraulic diameter (m)";} LineEdit {text <=> root.turb-patch-diameter;max-height:32px;min-width:0px;}
+                                            InspectorLabel {text:"Length / diameter (0–1)";} LineEdit {text <=> root.turb-patch-length-ratio;max-height:32px;min-width:0px;}
+                                            InspectorLabel {text:"L = ratio × hydraulic diameter; this is an inlet estimate, not a wall function.";wrap:word-wrap;}
+                                        }
+                                        if root.turb-patch-mode==2 : InspectorLabel {text:"Length scale (m)";} if root.turb-patch-mode==2 : LineEdit {min-height:32px;max-height:32px;min-width:0px;text <=> root.turb-patch-length;}
                                     }
                                     Button {text:"Apply incoming turbulence";enabled:!root.wb-busy && root.patch-model.length>0;clicked=>{root.apply-turbulence-patch();}}
                                     InspectorLabel {text:root.turb-patch-status;wrap:word-wrap;}
@@ -1115,6 +1147,9 @@ HorizontalLayout {height:32px;spacing:5px;
                 }
 
                 if !root.examples-open && root.current-step == 3 : SolutionWorkspace {
+                    box-xmin <=> root.initial-box-xmin;box-ymin <=> root.initial-box-ymin;box-zmin <=> root.initial-box-zmin;
+                    box-xmax <=> root.initial-box-xmax;box-ymax <=> root.initial-box-ymax;box-zmax <=> root.initial-box-zmax;
+                    mapping-busy:root.field-mapping-busy;preflight:root.preflight-summary;review=>{root.validate-case();}repair-stage(i)=>{root.select-step(i);}manage-plane(i)=>{root.flow-plane-manage(i);}
                     width:parent.width;height:parent.height;
                     properties-section <=> root.solution-properties-section;show-log <=> root.solution-show-log;chart-kind <=> root.wb-chart-kind;
                     plane-palette <=> root.flow-plane-palette;plane-density <=> root.flow-plane-density;plane-scale <=> root.flow-plane-scale;plane-plot <=> root.flow-plane-plot;plane-levels <=> root.flow-plane-levels;plane-streamlines <=> root.flow-plane-streamlines;plane-field <=> root.flow-plane-field;plane-vectors <=> root.flow-plane-vectors;plane-edges <=> root.flow-plane-edges;plane-normalize <=> root.flow-plane-normalize;plane-normal-marks <=> root.flow-plane-normal-marks;plane-min <=> root.flow-plane-min;plane-max <=> root.flow-plane-max;style-plane=>{root.flow-plane-style();}
@@ -1154,7 +1189,7 @@ HorizontalLayout {height:32px;spacing:5px;
                     edit-material=>{root.open-material-editor();}
                     export-history=>{root.post-export(3);}export-chart=>{root.post-export(6);}export-vector=>{root.post-export(11);}
                 }
-                if !root.examples-open && root.current-step == 4 : ResultsWorkspace {
+                if !root.examples-open && root.current-step == 4 : ResultsWorkspace {warning:root.post-result-warning;manage-plane(i)=>{root.flow-plane-manage(i);}
                     width:parent.width;height:parent.height;
                     plane-frame:root.flow-plane-frame;plane-count:root.flow-plane-count;plane-fps <=> root.flow-plane-fps;plane-loop <=> root.flow-plane-loop;plane-first <=> root.flow-plane-first;plane-last <=> root.flow-plane-last;plane-playing:root.flow-plane-playing;playback(i)=>{root.flow-plane-playback(i);}
                     plane-image:root.flow-plane-image;plane-readout:root.flow-plane-readout;plane-navigate(a,x,y,w,h)=>{root.flow-plane-navigate(a,x,y,w,h);}plane-names:root.flow-plane-names;plane-index <=> root.flow-plane-index;plane-every <=> root.flow-plane-every;plane-enabled <=> root.flow-plane-enabled;

@@ -165,6 +165,24 @@ pub(super) fn push_boundary(ui: &MainWindow, s: &WorkbenchSession, name: &str) {
             ui.set_turb_patch_omega(omega.to_string().into());
             ui.set_turb_patch_epsilon(epsilon.to_string().into());
         }
+        Some(TI::IntensityViscosityRatio {
+            intensity,
+            viscosity_ratio,
+        }) => {
+            ui.set_turb_patch_mode(5);
+            ui.set_turb_patch_intensity(intensity.to_string().into());
+            ui.set_turb_patch_viscosity_ratio(viscosity_ratio.to_string().into());
+        }
+        Some(TI::IntensityDiameter {
+            intensity,
+            hydraulic_diameter,
+            length_ratio,
+        }) => {
+            ui.set_turb_patch_mode(4);
+            ui.set_turb_patch_intensity(intensity.to_string().into());
+            ui.set_turb_patch_diameter(hydraulic_diameter.to_string().into());
+            ui.set_turb_patch_length_ratio(length_ratio.to_string().into());
+        }
         Some(TI::IntensityLength { intensity, length }) => {
             ui.set_turb_patch_mode(2);
             ui.set_turb_patch_intensity(intensity.to_string().into());
@@ -232,6 +250,18 @@ pub(super) fn bind(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
                     k: number(ui.get_turb_patch_k(), "k")?,
                     omega: number(ui.get_turb_patch_omega(), "omega")?,
                     epsilon: number(ui.get_turb_patch_epsilon(), "epsilon")?,
+                }),
+                5 => Some(TI::IntensityViscosityRatio {
+                    intensity: number(ui.get_turb_patch_intensity(), "Intensity")?,
+                    viscosity_ratio: number(
+                        ui.get_turb_patch_viscosity_ratio(),
+                        "Turbulent / molecular viscosity",
+                    )?,
+                }),
+                4 => Some(TI::IntensityDiameter {
+                    intensity: number(ui.get_turb_patch_intensity(), "Intensity")?,
+                    hydraulic_diameter: number(ui.get_turb_patch_diameter(), "Hydraulic diameter")?,
+                    length_ratio: number(ui.get_turb_patch_length_ratio(), "Length / diameter")?,
                 }),
                 2 => Some(TI::IntensityLength {
                     intensity: number(ui.get_turb_patch_intensity(), "Intensity")?,

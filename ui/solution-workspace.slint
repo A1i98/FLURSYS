@@ -63,6 +63,11 @@ export component SolutionWorkspace inherits Rectangle {
     in property <string> convergence-summary;
     in property <string> summary;
     in property <string> readiness;
+    in property <string> preflight;
+    in property <bool> mapping-busy;
+    in-out property <string> box-xmin;in-out property <string> box-ymin;in-out property <string> box-zmin;
+    in-out property <string> box-xmax;in-out property <string> box-ymax;in-out property <string> box-zmax;
+    callback review();callback repair-stage(int);callback manage-plane(int);
     in property <string> log;
     in property <string> material;
     in property <bool> paused;
@@ -113,6 +118,7 @@ export component SolutionWorkspace inherits Rectangle {
     VerticalLayout {padding:12px;spacing:9px;
         HorizontalLayout {height:34px;spacing:8px;
             Rectangle {horizontal-stretch:1;}
+            Tool {text:"Review case";enabled:!root.busy;clicked=>{root.review();root.properties-section=4;}}
             Tool {text:"Load restart…";enabled:root.can-run && !root.busy;clicked=>{root.control(2);}}
             Tool {text:"Initialization";enabled:root.can-run && !root.busy;clicked=>{root.properties-section=0;}}
             Tool {text:root.paused ? "Resume" : "Pause";icon:root.paused ? @image-url("assets/icons/play.svg") : @image-url("assets/icons/pause.svg");enabled:root.busy;clicked=>{root.control(1);}}
@@ -135,7 +141,20 @@ if root.properties-section==0 : VerticalLayout {spacing:6px;vertical-stretch:0;
                             Label {text:"Kinematic gauge pressure p/ρ (m²/s²)";}
                             LineEdit {text <=> root.initial-p;min-width:0px;}
                             Label {text:"Replaces retained fields. Boundary values are applied when Run starts.";}
+                            if root.mapping-busy : Label {text:"Preparing initial fields in background…";color:UiTheme.accent;}
+                            if root.mapping-busy : Tool {text:"Cancel mapping";clicked=>{root.control(5);}}
+                            Label {text:"MAP FROM PREVIOUS MESH";color:UiTheme.accent;font-weight:700;}
+                            Tool {text:"Map selected result";enabled:root.can-run && !root.busy;clicked=>{root.control(3);}}
+                            Tool {text:"Map VTK file…";enabled:root.can-run && !root.busy;clicked=>{root.control(4);}}
+                            Label {text:"U and p/ρ only; same coordinates and convex source cells. No extrapolation. Starts a new solve at time/iteration zero; other fields and flux are rebuilt."; }
                             Tool {text:"Initialize fields";enabled:root.can-run && !root.busy;clicked=>{root.control(0);}}
+                            Label {text:"BOX PATCH · metres";color:UiTheme.accent;font-weight:700;}
+                            HorizontalLayout {spacing:4px;LineEdit {text <=> root.box-xmin;placeholder-text:"X min";min-width:0px;}LineEdit {text <=> root.box-xmax;placeholder-text:"X max";min-width:0px;}}
+                            HorizontalLayout {spacing:4px;LineEdit {text <=> root.box-ymin;placeholder-text:"Y min";min-width:0px;}LineEdit {text <=> root.box-ymax;placeholder-text:"Y max";min-width:0px;}}
+                            HorizontalLayout {spacing:4px;LineEdit {text <=> root.box-zmin;placeholder-text:"Z min";min-width:0px;}LineEdit {text <=> root.box-zmax;placeholder-text:"Z max";min-width:0px;}}
+                            Tool {text:"Patch U / p inside box";enabled:root.can-run && !root.busy;clicked=>{root.control(6);}}
+                            Label {text:"Uses the U and p/ρ values above for enclosed cell centres. Outside retains queued fields, or zero if none. Flux and other physical fields are rebuilt at Run."; }
+
                         }
                         if root.properties-section==1 : VerticalLayout {spacing:8px;vertical-stretch:0;
                             Label {text:root.material;}
@@ -176,13 +195,13 @@ Label {text:"Momentum transport model · experimental";}
                         }
                         if root.properties-section==2 : VerticalLayout {spacing:8px;vertical-stretch:0;
 Label {text:"Time integration";}
-                        ComboBox {model:["Steady","Transient · fixed Euler Δt","Transient · adaptive Euler Δt","Transient · BDF2 fixed Δt"];current-index <=> root.time-mode;enabled:!root.busy;min-width:0px;}
+                        ComboBox {model:["Steady","Transient · fixed Euler Δt","Transient · adaptive Euler Δt","Transient · BDF2 fixed Δt","Transient · adaptive BDF2 Δt"];current-index <=> root.time-mode;enabled:!root.busy;min-width:0px;}
                         if root.time-mode>0 : VerticalLayout {spacing:6px;vertical-stretch:0;
-                            Label {text:root.time-mode==2 ? "Initial time step Δt (s)" : "Physical time step Δt (s)";}
+                            Label {text:(root.time-mode==2 || root.time-mode==4) ? "Initial time step Δt (s)" : "Physical time step Δt (s)";}
                             LineEdit {text <=> root.time-step;enabled:!root.busy;min-width:0px;}
                             Label {text:"Additional physical time steps";}
                             SpinBox {value <=> root.time-steps;minimum:1;maximum:1000000;enabled:!root.busy;}
-                            if root.time-mode==2 : VerticalLayout {spacing:6px;vertical-stretch:0;
+                            if root.time-mode==2 || root.time-mode==4 : VerticalLayout {spacing:6px;vertical-stretch:0;
                                 Label {text:"Target maximum Courant number";}
                                 LineEdit {text <=> root.target-courant;enabled:!root.busy;min-width:0px;}
                                 Label {text:"Minimum / maximum Δt (s)";}
@@ -235,6 +254,12 @@ Label {text:"CPU worker threads (0 = automatic)";}
 
                         }
 if root.properties-section==4 : VerticalLayout {spacing:8px;vertical-stretch:0;
+                        Label {text:"PRE-RUN REVIEW";color:UiTheme.accent;font-weight:700;}
+                        Text {text:root.preflight;color:UiTheme.text;font-size:11px;wrap:word-wrap;vertical-stretch:0;}
+                        HorizontalLayout {spacing:4px;
+                            Tool {text:"Mesh settings";enabled:!root.busy;clicked=>{root.repair-stage(1);}}
+                            Tool {text:"Boundary / fluid";enabled:!root.busy;clicked=>{root.repair-stage(2);}}
+                        }
                         Label {text:"Continuity, momentum reduction and a stable velocity field are all required; a small continuity residual alone does not establish convergence.";}
                         Text {text:root.convergence-summary;color:UiTheme.text;font-size:11px;wrap:word-wrap;}
                         Label {text:"WALL RESOLUTION / SHEAR";color:UiTheme.accent;font-weight:700;}
@@ -246,7 +271,7 @@ if root.properties-section==4 : VerticalLayout {spacing:8px;vertical-stretch:0;
 if root.properties-section==5 : VerticalLayout {vertical-stretch:0;spacing:7px;
     ComboBox {model:root.plane-names;current-index <=> root.plane-index;max-height:32px;min-width:0px;selected(value)=>{root.select-plane(self.current-index);}}
     Label {text:root.plane-details;}
-SectionProperties {field <=> root.plane-field;plot <=> root.plane-plot;palette <=> root.plane-palette;density <=> root.plane-density;scale <=> root.plane-scale;
+SectionProperties {manage(i)=>{root.manage-plane(i);}field <=> root.plane-field;plot <=> root.plane-plot;palette <=> root.plane-palette;density <=> root.plane-density;scale <=> root.plane-scale;
     levels <=> root.plane-levels;streamlines <=> root.plane-streamlines;vectors <=> root.plane-vectors;edges <=> root.plane-edges;normalize <=> root.plane-normalize;normal-marks <=> root.plane-normal-marks;range-min <=> root.plane-min;range-max <=> root.plane-max;
     every <=> root.plane-every;record <=> root.plane-enabled;busy:root.busy;style=>{root.style-plane();}apply=>{root.apply-plane();}export(i)=>{root.export-plane(i);}profile(a,b,c,d,n,k)=>{root.plane-profile(a,b,c,d,n,k);}}
 }

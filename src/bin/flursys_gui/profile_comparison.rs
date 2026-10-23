@@ -122,6 +122,9 @@ fn render(ui: &MainWindow, state: &AppState) -> Result<(), String> {
     ui.set_post_profile_caption(summary(c).into());
     Ok(())
 }
+thread_local! {
+    static MONITOR_IMAGE: RefCell<Option<(String,slint::Image)>> = const { RefCell::new(None) };
+}
 pub(super) fn show_monitors(ui: &MainWindow, state: &AppState) {
     match monitor_history::chart(
         state,
@@ -129,10 +132,14 @@ pub(super) fn show_monitors(ui: &MainWindow, state: &AppState) {
         ui.get_post_monitor_kind().clamp(0, 2) as usize,
     ) {
         Ok((svg, caption)) => {
-            match slint::Image::load_from_svg_data(svg.as_bytes()) {
-                Ok(image) => ui.set_post_profile_image(image),
-                Err(e) => ui.set_post_profile_caption(e.to_string().into()),
-            };
+            MONITOR_IMAGE.with(|cache| {
+                let mut cache=cache.borrow_mut();
+                if let Some((_,image))=cache.as_ref().filter(|(old,_)|old==&svg) {
+                    ui.set_post_profile_image(image.clone());
+                } else if let Ok(image)=slint::Image::load_from_svg_data(svg.as_bytes()) {
+                    ui.set_post_profile_image(image.clone());*cache=Some((svg,image));
+                }
+            });
             ui.set_post_profile_caption(caption.into());
         }
         Err(e) => {

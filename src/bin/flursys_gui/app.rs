@@ -29,6 +29,8 @@ use std::time::Duration;
 #[cfg(test)]
 use flursys::{ExtrudedMesh3D, StructuredMesh2D};
 
+#[path = "field_mapping.rs"]
+mod field_mapping;
 #[path = "convergence_plot.rs"]
 mod convergence_plot;
 #[path = "plane_monitors.rs"]
@@ -781,6 +783,10 @@ impl AppState {
                     self.log("Solve cancellation requested.");
                     changed = true;
                 }
+                WorkbenchJobEvent::Health(health) => {
+                    self.post.health=Some(health);
+                    changed=true;
+                }
                 WorkbenchJobEvent::WallReports {
                     iteration,
                     physical_time,
@@ -799,6 +805,7 @@ impl AppState {
                     changed = true;
                 }
                 WorkbenchJobEvent::SolveCompleted(outcome) => {
+                    let health=self.post.health.take();
                     let plane_samples = std::mem::take(&mut self.post.plane_samples);
                     let monitors=std::mem::take(&mut self.post.monitors);
                     let histories = std::mem::take(&mut self.post.metric_histories);
@@ -821,7 +828,14 @@ impl AppState {
                         Err(flursys::IncompressibleSolveError::Cancelled) => self.log("Workbench solve cancelled."),
                         Err(error) => self.log(format!("Workbench solve failed: {error}")),
                     }
+                    let incomplete=outcome.is_err();
                     self.workbench.complete_solve(outcome);
+                    if incomplete {
+                        self.active_result=None;
+                        self.result_render_cache=None;
+                        if let Err(e)=self.activate_retained_sample() {self.log(format!("No finite retained diagnostic field: {e}"));}
+                    }
+                    self.post.health=health.clone();
                     if self.workbench.solution().is_some() {
                         if let Err(error) = self.activate_current_solution("current-solve") {
                             self.log(format!("Cannot display completed solution: {error}"));
@@ -843,6 +857,7 @@ impl AppState {
                         };
                     }
                     self.post.plane_samples = plane_samples;
+                    self.post.health=health;
                     self.post.monitors=monitors;
                     self.tree_dirty = true;
                     changed = true;
@@ -1058,22 +1073,19 @@ impl AppState {
         )
         .map_err(|error| error.to_string())?;
         if let Some(record) = finalized {
-            if let Some(folder) = self
-                .active_plane_recording_folder
-                .take()
-                .and_then(|p| p.strip_prefix(&workspace).ok().map(Path::to_path_buf))
-            {
-                let path = workspace.join(&record.report_path);
-                let mut report: serde_json::Value =
-                    serde_json::from_slice(&std::fs::read(&path).map_err(|e| e.to_string())?)
-                        .map_err(|e| e.to_string())?;
-                report["plane_recording_folder"] =
-                    serde_json::to_value(folder).map_err(|e| e.to_string())?;
-                result_analysis::atomic_text(
-                    &path,
-                    &serde_json::to_string_pretty(&report).map_err(|e| e.to_string())?,
-                )?;
+            let path=workspace.join(&record.report_path);
+            let mut report:serde_json::Value=serde_json::from_slice(&std::fs::read(&path).map_err(|e|e.to_string())?).map_err(|e|e.to_string())?;
+            if let Some(health)=self.post.health.as_ref() {
+                report["sampled_field_health"]=serde_json::to_value(health).map_err(|e|e.to_string())?;
             }
+            if let Some(folder)=self.active_plane_recording_folder.take().and_then(|p|p.strip_prefix(&workspace).ok().map(Path::to_path_buf)) {
+                report["plane_recording_folder"]=serde_json::to_value(&folder).map_err(|e|e.to_string())?;
+                let diagnostic=folder.join("failed-last-sample.json");
+                if record.solution_path.is_none() && workspace.join(&diagnostic).is_file() {
+                    report["unconverged_checkpoint"]=serde_json::to_value(diagnostic).map_err(|e|e.to_string())?;
+                }
+            }
+            result_analysis::atomic_text(&path,&serde_json::to_string_pretty(&report).map_err(|e|e.to_string())?)?;
             if record.solution_path.is_some() {
                 self.activate_current_solution(&record.id)?;
             }
@@ -1194,6 +1206,9 @@ impl AppState {
             .workspace_path
             .clone()
             .ok_or_else(|| "Open a saved workspace before loading a persisted run.".to_string())?;
+        if self.workbench_project.runs.iter().find(|r|r.id==run_id).is_some_and(|r|r.solution_path.is_none()) {
+            return self.activate_failed_archive(run_id,&workspace);
+        }
         let dataset = flursys::load_workspace_result(&workspace, &self.workbench_project, run_id)
             .map_err(|error| error.to_string())?;
         self.install_result_dataset(dataset)?;
@@ -1201,6 +1216,7 @@ impl AppState {
         if let Some(record) = self.workbench_project.runs.iter().find(|r| r.id == run_id) {
             if let Ok(text) = std::fs::read_to_string(workspace.join(&record.report_path)) {
                 if let Ok(report) = serde_json::from_str::<serde_json::Value>(&text) {
+                    self.post.health=report.get("sampled_field_health").and_then(|v|serde_json::from_value(v.clone()).ok());
                     self.post.wall_report_index = record.iterations;
                     self.post.wall_report_time = record.physical_time;
                     self.post.wall_reports = report
@@ -3040,7 +3056,10 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
         };
         let mut state = validate_state.borrow_mut();
         state.preflight_summary = match state.workbench.readiness() {
-            Ok(()) => "READY\nCanonical Workbench case is ready to run.".into(),
+            Ok(()) => match state.workbench.prepare_case() {
+                Ok(case)=>flursys::workbench::solve_review::review(&case,&state.workbench_project.plane_monitors).summary(),
+                Err(e)=>format!("BLOCKED\n{e}"),
+            },
             Err(reason) => format!("BLOCKED\n{reason}"),
         };
         state.log("Validated the canonical Workbench state.");
@@ -4444,8 +4463,8 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
         };
         ui.set_wb_chart_kind(4);
         let mut state = run_state.borrow_mut();
-        if state.meshing || state.solving {
-            state.log("A job is already running; wait for it to finish.");
+        if state.meshing || state.solving || state.post.mapping.busy() {
+            state.log("A mesh, solve or field-mapping job is already running; wait for it to finish.");
             refresh_ui(&ui, &state);
             return;
         }
@@ -4473,6 +4492,15 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
                 return;
             }
         };
+        let review=flursys::workbench::solve_review::review(&case,&state.workbench_project.plane_monitors);
+        state.preflight_summary=review.summary();
+        let review_message=state.preflight_summary.clone();
+        state.log(review_message);
+        if review.blocked() {
+            ui.set_solution_properties_section(4);
+            refresh_ui(&ui,&state);
+            return;
+        }
         if let Some(solution) = state.workbench.solution() {
             case.initial_conditions = solution.restart();
             let completed = if case.solver.time.is_transient() { solution.completed_time_steps } else { solution.report.outer_iterations };
@@ -4756,7 +4784,13 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
             let Some(point) = preview_image_point(x, y, width, height) else {
                 return;
             };
-            let hover = pick_canonical_geometry_target(
+            let hover = if matches!(state.current_step, 1 | 2)
+                && state.workbench.mesh_dimension() == MeshDimension::TwoD
+                && ui.get_mesh_entity_mode() == 1 && state.workbench.fluid_face().is_some()
+            {
+                render::pick_domain_edge(state.workbench.geometry(), state.view_3d, point,
+                    &state.workbench.boundary_geometry_targets().unwrap_or_default())
+            } else { pick_canonical_geometry_target(
                 state.workbench.geometry(),
                 state.view_3d,
                 point,
@@ -4767,7 +4801,7 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
                 } else {
                     0
                 },
-            );
+            ) };
             if state.geometry_editor.hover_target != hover {
                 state.geometry_editor.hover_target = hover;
                 refresh_ui(&ui, &state);
@@ -5543,6 +5577,7 @@ fn push_workbench_defaults(ui: &MainWindow, session: &WorkbenchSession) {
         TimeIntegration::Euler { .. } => 1,
         TimeIntegration::AdaptiveEuler { .. } => 2,
         TimeIntegration::Backward { .. } => 3,
+        TimeIntegration::AdaptiveBackward { .. } => 4,
     });
     let (dt, steps) = solver.time.parameters().unwrap_or((0.001, 100));
     ui.set_wb_time_step(dt.to_string().into());
@@ -5730,6 +5765,16 @@ fn sync_solver_panel(ui: &MainWindow, session: &mut WorkbenchSession) -> Result<
             steps: ui.get_wb_time_steps().max(0) as usize,
         },
         2 => TimeIntegration::AdaptiveEuler {
+            dt: parse_number(ui.get_wb_time_step().as_str(), f64::NAN),
+            steps: ui.get_wb_time_steps().max(0) as usize,
+            controls: flursys::unstructured_incompressible::AdaptiveTimeStep {
+                target_courant: parse_number(ui.get_wb_target_courant().as_str(), f64::NAN),
+                min_dt: parse_number(ui.get_wb_min_time_step().as_str(), f64::NAN),
+                max_dt: parse_number(ui.get_wb_max_time_step().as_str(), f64::NAN),
+                max_growth: parse_number(ui.get_wb_time_growth().as_str(), f64::NAN),
+            },
+        },
+        4 => TimeIntegration::AdaptiveBackward {
             dt: parse_number(ui.get_wb_time_step().as_str(), f64::NAN),
             steps: ui.get_wb_time_steps().max(0) as usize,
             controls: flursys::unstructured_incompressible::AdaptiveTimeStep {
@@ -6559,7 +6604,7 @@ fn refresh_ui(ui: &MainWindow, state: &AppState) {
         },
     );
     ui.set_can_run_workbench(
-        !busy && state.workspace_path.is_some() && state.workbench.readiness().is_ok(),
+        !busy && !state.post.mapping.busy() && state.workspace_path.is_some() && state.workbench.readiness().is_ok(),
     );
     ui.set_geometry_face_sketch_editing(state.face_sketch_host.is_some());
     ui.set_geometry_pick_mode(state.geometry_pick_mode);

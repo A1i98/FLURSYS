@@ -88,6 +88,64 @@ impl AppState {
         Ok(())
     }
 
+    pub(super) fn activate_failed_archive(
+        &mut self,
+        run_id: &str,
+        workspace: &Path,
+    ) -> Result<(), String> {
+        let record = self
+            .workbench_project
+            .runs
+            .iter()
+            .find(|r| r.id == run_id)
+            .ok_or("Unknown run")?;
+        let report: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(workspace.join(&record.report_path)).map_err(|e| e.to_string())?,
+        )
+        .map_err(|e| e.to_string())?;
+        let relative = PathBuf::from(
+            report
+                .get("unconverged_checkpoint")
+                .and_then(|v| v.as_str())
+                .ok_or("This failed run has no retained diagnostic artifact")?,
+        );
+        if relative.as_os_str().is_empty()
+            || relative
+                .components()
+                .any(|c| !matches!(c, std::path::Component::Normal(_)))
+        {
+            return Err("Unsafe diagnostic artifact path".into());
+        }
+        let mesh = &self
+            .workbench
+            .mesh()
+            .ok_or("Restore the matching mesh before loading this diagnostic sample")?
+            .mesh;
+        let (iteration, fields) =
+            flursys::workbench::checkpoint::load(&workspace.join(relative), mesh)?;
+        let dataset = diagnostic_dataset(mesh, iteration, fields, run_id)?;
+        self.install_result_dataset(dataset)?;
+        self.post.health = report
+            .get("sampled_field_health")
+            .and_then(|v| serde_json::from_value(v.clone()).ok());
+        self.post.iteration = iteration;
+        Ok(())
+    }
+
+    /// Diagnostic only: does not install a solution or mark a run converged.
+    pub(super) fn activate_retained_sample(&mut self) -> Result<(), String> {
+        let mesh = &self.workbench.mesh().ok_or("No mesh")?.mesh;
+        let (iteration, initial) = self
+            .workbench_jobs
+            .retained_fields(mesh.id())
+            .ok_or("No completed sample retained")?;
+        let dataset = diagnostic_dataset(mesh, iteration, initial, "live")?;
+        self.install_result_dataset(dataset)?;
+        self.post.iteration = iteration;
+        self.log(format!("Results now shows UNCONVERGED retained sample {iteration}; it is not the failed iteration or a validated solution."));
+        Ok(())
+    }
+
     pub(super) fn ensure_result_active(&mut self) -> Result<(), String> {
         if self.active_result.is_some() {
             return Ok(());
@@ -117,28 +175,32 @@ pub(super) fn refresh(ui: &MainWindow, state: &AppState) {
             .runs
             .iter()
             .find(|r| r.id == result.run_id());
-        let summary = record
-            .map(|r| {
-                format!(
-                    "Run {} · {}\nIterations / steps {}\nFinal continuity {}{}",
-                    r.id,
-                    if r.physical_time.is_some() {
-                        "Time interval complete"
-                    } else {
-                        run_status_label(&r.status)
-                    },
-                    r.iterations.map_or("—".into(), |i| i.to_string()),
-                    r.continuity_residual
-                        .map_or("—".into(), |v| format!("{v:.3e}")),
-                    r.physical_time
-                        .map(|t| format!(
-                            "\nPhysical time {t:.9e} s\nAccepted steps {}",
-                            r.time_steps
-                        ))
-                        .unwrap_or_default()
-                )
-            })
-            .unwrap_or_else(|| solution_summary_text(&state.workbench));
+        let summary = if result.run_id().starts_with("UNCONVERGED-") {
+            format!("UNCONVERGED DIAGNOSTIC FIELD\n{}\nRetained completed sample; not the failed iterate. Do not use as a converged result.",result.run_id())
+        } else {
+            record
+                .map(|r| {
+                    format!(
+                        "Run {} · {}\nIterations / steps {}\nFinal continuity {}{}",
+                        r.id,
+                        if r.physical_time.is_some() {
+                            "Time interval complete"
+                        } else {
+                            run_status_label(&r.status)
+                        },
+                        r.iterations.map_or("—".into(), |i| i.to_string()),
+                        r.continuity_residual
+                            .map_or("—".into(), |v| format!("{v:.3e}")),
+                        r.physical_time
+                            .map(|t| format!(
+                                "\nPhysical time {t:.9e} s\nAccepted steps {}",
+                                r.time_steps
+                            ))
+                            .unwrap_or_default()
+                    )
+                })
+                .unwrap_or_else(|| solution_summary_text(&state.workbench))
+        };
         ui.set_residual_summary(summary.into());
         ui.set_field_summary(
             format!(
@@ -389,4 +451,35 @@ mod tests {
             "Small residuals must span the graph rather than collapse onto the border: {rows} rows"
         );
     }
+}
+
+fn diagnostic_dataset(
+    mesh: &flursys::UnstructuredMesh,
+    iteration: usize,
+    initial: flursys::IncompressibleInitialConditions,
+    run: &str,
+) -> Result<ResultDataset, String> {
+    let (velocity, pressure, temperature, turbulence) = match initial {
+        flursys::IncompressibleInitialConditions::Restart {
+            velocity,
+            pressure,
+            temperature,
+            turbulence,
+            ..
+        } => (velocity, pressure, temperature, turbulence),
+        flursys::IncompressibleInitialConditions::Fields { velocity, pressure } => {
+            (velocity, pressure, None, None)
+        }
+        _ => return Err("No sampled fields".into()),
+    };
+    ResultDataset::from_values(
+        format!("UNCONVERGED-{run}-sample-{iteration}"),
+        mesh,
+        pressure.values().to_vec(),
+        velocity.values().to_vec(),
+    )
+    .map_err(|e| e.to_string())?
+    .with_turbulence(turbulence.as_ref())
+    .with_temperature(temperature.map(|t| t.values().to_vec()))
+    .map_err(|e| e.to_string())
 }

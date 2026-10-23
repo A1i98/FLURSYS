@@ -26,13 +26,14 @@ export component PlaneMonitorPanel inherits VerticalLayout {
     in property <bool> busy;
     in property <string> details;
     in property <string> status;
+    callback manage-plane(int);
     callback profile(string,string,string,string,int,int);
     callback select(int);callback apply();callback view();callback style();callback export(int);
     vertical-stretch:0;spacing:7px;
     Label {text:"SECTION";color:UiTheme.accent;font-weight:700;}
     ComboBox {model:root.names;current-index <=> root.index;max-height:32px;min-width:0px;selected(value)=>{root.select(self.current-index);}}
     Label {text:root.details;}
-    SectionProperties {field <=> root.field;plot <=> root.plot;palette <=> root.palette;density <=> root.density;scale <=> root.scale;levels <=> root.levels;streamlines <=> root.streamlines;vectors <=> root.vectors;edges <=> root.edges;normalize <=> root.normalize;normal-marks <=> root.normal-marks;range-min <=> root.range-min;range-max <=> root.range-max;every <=> root.every;record <=> root.record;busy:root.busy;style=>{root.style();}apply=>{root.apply();}export(i)=>{root.export(i);}profile(a,b,c,d,n,k)=>{root.profile(a,b,c,d,n,k);}}
+    SectionProperties {manage(i)=>{root.manage-plane(i);}field <=> root.field;plot <=> root.plot;palette <=> root.palette;density <=> root.density;scale <=> root.scale;levels <=> root.levels;streamlines <=> root.streamlines;vectors <=> root.vectors;edges <=> root.edges;normalize <=> root.normalize;normal-marks <=> root.normal-marks;range-min <=> root.range-min;range-max <=> root.range-max;every <=> root.every;record <=> root.record;busy:root.busy;style=>{root.style();}apply=>{root.apply();}export(i)=>{root.export(i);}profile(a,b,c,d,n,k)=>{root.profile(a,b,c,d,n,k);}}
     Action {text:"Show section";enabled:root.names.length>0;clicked=>{root.view();}}
     Label {text:root.status;max-height:68px;overflow:elide;}
 }

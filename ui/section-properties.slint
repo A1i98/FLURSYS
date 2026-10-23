@@ -27,6 +27,7 @@ export component SectionProperties inherits VerticalLayout {
     private property <string> end-v;
     private property <int> samples:201;
     callback profile(string,string,string,string,int,int);
+    callback manage(int);
     callback style();callback apply();callback export(int);
     spacing:7px;vertical-stretch:0;
     Label {text:"FIELD AND LAYERS";color:UiTheme.accent;font-weight:700;}
@@ -55,6 +56,9 @@ export component SectionProperties inherits VerticalLayout {
     CheckBox {text:"Record pressure and velocity";checked <=> root.record;enabled:!root.busy;}
     Label {text:"Every N completed iterations / physical time steps";}
     SpinBox {minimum:1;maximum:1000000;value <=> root.every;max-height:32px;enabled:!root.busy;}
+    Action {text:"Disable this recording";enabled:!root.busy;clicked=>{root.record=false;root.apply();}}
+    Action {text:"Disable all plane recordings";enabled:!root.busy;clicked=>{root.manage(0);}}
+    Action {text:"Reset this monitor";enabled:!root.busy;clicked=>{root.manage(1);}}
     Action {text:"Save recording settings";enabled:!root.busy;clicked=>{root.apply();}}
     Label {text:"Recording preserves cell geometry and all U components and p/ρ. Display changes do not require solving again.";}
     HorizontalLayout {spacing:4px;Action {text:"CSV";icon:@image-url("assets/icons/export_tray.svg");clicked=>{root.export(0);}}Action {text:"PNG";icon:@image-url("assets/icons/export_tray.svg");clicked=>{root.export(1);}}Action {text:"SVG";icon:@image-url("assets/icons/export_tray.svg");clicked=>{root.export(2);}}}
