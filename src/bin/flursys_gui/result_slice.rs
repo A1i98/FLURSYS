@@ -8,6 +8,11 @@ pub(crate) fn render_result_slice(
     percent: i32,
     colormap: i32,
     display_range: Option<(f64, f64)>,
+    plot: i32,
+    levels: usize,
+    edges: bool,
+    vector_density: i32,
+    vector_scale: &str,
 ) -> Image {
     let axis = match plane {
         1 => 2,
@@ -30,6 +35,81 @@ pub(crate) fn render_result_slice(
         }
     }
     let coordinate = lo[axis] + (hi[axis] - lo[axis]) * f64::from(percent.clamp(1, 99)) / 100.0;
+    let plane_field = match field {
+        ResultFieldKind::VelocityMagnitude => Some(0),
+        ResultFieldKind::Pressure => Some(1),
+        ResultFieldKind::VelocityX => Some(2),
+        ResultFieldKind::VelocityY => Some(3),
+        ResultFieldKind::VelocityZ => Some(4),
+        _ => Some(0),
+    };
+    if let Some(plane_field_index) = plane_field {
+        use flursys::workbench::plane_monitor::{self, FlowPlaneMonitor, PlaneDisplay};
+        let unit = |i| match i {
+            0 => Vec3::new(1., 0., 0.),
+            1 => Vec3::new(0., 1., 0.),
+            _ => Vec3::new(0., 0., 1.),
+        };
+        let mut origin = Vec3::new(0., 0., 0.);
+        match axis {
+            0 => origin.x = coordinate,
+            1 => origin.y = coordinate,
+            _ => origin.z = coordinate,
+        };
+        let style = PlaneDisplay {
+            field: plane_field_index,
+            plot: if plot == 3 {
+                3
+            } else if plot == 1 || plot == 2 {
+                2
+            } else {
+                0
+            },
+            vector_density: match vector_density {
+                0 => 150,
+                2 => 1200,
+                _ => 600,
+            },
+            vector_scale: vector_scale
+                .parse::<f64>()
+                .ok()
+                .filter(|v| v.is_finite() && *v > 0.0)
+                .unwrap_or(1.0),
+            levels: levels.clamp(3, 32),
+            vectors: plot == 2 || plot == 3,
+            edges,
+            range: display_range.map(|(a, b)| [a, b]),
+            ..Default::default()
+        };
+        let plane = FlowPlaneMonitor {
+            id: format!("section-{axis}"),
+            name: format!("{} · {:.6e} m", ["YZ", "XZ", "XY"][axis], coordinate),
+            origin,
+            u: unit(axes.0),
+            v: unit(axes.1),
+            enabled: false,
+            every: 1,
+            display: style.clone(),
+        };
+        if let Ok(cells) = plane_monitor::intersect(dataset.mesh(), &plane) {
+            if let Ok(snapshot) =
+                plane_monitor::sample(&plane, &cells, 0, dataset.velocity(), dataset.pressure())
+            {
+                let palette = |t: f64| scalar_color(t as f32, colormap);
+                if let Ok(image) = Image::load_from_svg_data(
+                    plane_monitor::section_viewport_with_scalar(
+                        &snapshot,
+                        &style,
+                        Some((dataset.scalar_values(field), field.label())),
+                        Some(&palette),
+                    )
+                    .as_bytes(),
+                ) {
+                    return image;
+                }
+            }
+        }
+    }
     let Ok(polygons) = dataset.plane_slice(axis, coordinate) else {
         return render_empty_image();
     };

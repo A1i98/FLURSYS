@@ -13,6 +13,7 @@ const COLORS: [&str; 4] = ["#58c4f6", "#f5b85b", "#65d49c", "#c49bff"];
 #[derive(Clone)]
 pub(super) struct Options {
     pub kind: i32,
+    pub plane_index: usize,
     pub visible: [bool; 4],
     pub logarithmic: bool,
     pub normalized: bool,
@@ -25,6 +26,7 @@ impl Options {
     pub fn from_ui(ui: &MainWindow) -> Self {
         Self {
             kind: ui.get_wb_chart_kind(),
+            plane_index: ui.get_flow_plane_index().max(0) as usize,
             visible: [
                 ui.get_chart_continuity(),
                 ui.get_chart_momentum(),
@@ -168,6 +170,12 @@ fn x_range(curves: &[Curve]) -> (f64, f64) {
     (first, last.max(first + 1.))
 }
 pub(super) fn build(state: &AppState, options: &Options) -> Plot {
+    if (5..=7).contains(&options.kind) {
+        return match monitor_history::chart(state,options.plane_index,(options.kind-5) as usize) {
+            Ok((svg,caption))=>Plot{svg,caption},
+            Err(e)=>Plot{svg:format!("<svg xmlns='http://www.w3.org/2000/svg' width='1100' height='650'><rect width='100%' height='100%' fill='#20242c'/><text x='40' y='80' fill='white' font-family='sans-serif'>{}</text></svg>",e.replace('&',"&amp;").replace('<',"&lt;").replace('>',"&gt;")),caption:e},
+        };
+    }
     let curves = curves(state, options);
     let (x0, x1) = x_range(&curves);
     let (w, h) = (options.width as f64, options.height as f64);
@@ -375,6 +383,9 @@ pub(super) fn build(state: &AppState, options: &Options) -> Plot {
     Plot { svg, caption }
 }
 pub(super) fn readout(state: &AppState, options: &Options, x: f64) -> String {
+    if options.kind >= 5 {
+        return "Section monitor: use CSV export for exact recorded coordinates and values.".into();
+    }
     let curves = curves(state, options);
     let (x0, x1) = x_range(&curves);
     let right = options.width as f64 - 24.;

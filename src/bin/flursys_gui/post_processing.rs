@@ -13,13 +13,26 @@ pub(super) struct State {
         std::collections::BTreeMap<String, flursys::workbench::plane_monitor::PlaneSnapshot>,
     pub profile: Vec<result_analysis::ProfilePoint>,
     pub profile_label: String,
+    pub comparison: profile_comparison::State,
+    pub monitors: monitor_history::State,
     pub boundary_summary: String,
     pub wall_report_index: Option<usize>,
     pub wall_report_time: Option<f64>,
     pub wall_reports: Vec<flursys::workbench::wall_reports::WallPatchReport>,
     pub boundary_reports: Vec<flursys::workbench::boundary_reports::BoundaryFlowReport>,
     pub plane_frames: Vec<PathBuf>,
+    pub plane_range_job:
+        Option<std::sync::mpsc::Receiver<Result<(String, usize, [f64; 2]), String>>>,
+    pub plane_statistics_job: Option<std::sync::mpsc::Receiver<Result<String, String>>>,
     pub plane_frame: usize,
+    pub section_probe: RefCell<Option<Vec3>>,
+    pub section_camera: RefCell<flursys::workbench::plane_monitor::SectionCamera>,
+    pub section_archive: RefCell<
+        Option<(
+            PathBuf,
+            std::sync::Arc<flursys::workbench::plane_monitor::PlaneSnapshot>,
+        )>,
+    >,
     pub plane_playing: bool,
     pub plane_tick: Option<std::time::Instant>,
     pub playing: bool,
@@ -37,6 +50,8 @@ pub(super) struct State {
 }
 impl State {
     pub fn reset_result(&mut self) {
+        self.iteration = 0;
+        self.limit = 0;
         self.playing = false;
         self.phase = 0.0;
         self.probes.clear();
@@ -51,18 +66,32 @@ impl State {
         self.metric_histories = Default::default();
         self.continuity_full.clear();
         self.plane_samples.clear();
+        self.monitors.clear();
         self.plane_frames.clear();
+        *self.section_probe.borrow_mut() = None;
+        *self.section_archive.borrow_mut() = None;
+        *self.section_camera.borrow_mut() = Default::default();
+        self.plane_statistics_job = None;
+        self.plane_range_job = None;
         self.plane_playing = false;
         *self.base.get_mut() = None;
     }
-    pub fn start_solve(&mut self) {
+    pub fn start_solve(&mut self, continuing: bool) {
         self.started = Some(std::time::Instant::now());
         self.elapsed = 0.0;
-        self.iteration = 0;
-        self.metric_histories = Default::default();
-        self.continuity_full.clear();
+        if !continuing {
+            self.iteration = 0;
+            self.metric_histories = Default::default();
+            self.continuity_full.clear();
+        }
         self.plane_samples.clear();
+        self.monitors.clear();
         self.plane_frames.clear();
+        *self.section_probe.borrow_mut() = None;
+        *self.section_archive.borrow_mut() = None;
+        *self.section_camera.borrow_mut() = Default::default();
+        self.plane_statistics_job = None;
+        self.plane_range_job = None;
         self.plane_playing = false;
         self.playing = false;
     }
@@ -125,7 +154,7 @@ fn markers(traces: &[TimedPath], phase: f64) -> Vec<(f64, f64)> {
         })
         .collect()
 }
-fn field(index: i32) -> ResultFieldKind {
+pub(super) fn field(index: i32) -> ResultFieldKind {
     match index {
         1 => ResultFieldKind::Pressure,
         2 => ResultFieldKind::VorticityMagnitude,
@@ -137,6 +166,9 @@ fn field(index: i32) -> ResultFieldKind {
         8 => ResultFieldKind::TurbulentK,
         9 => ResultFieldKind::SpecificDissipation,
         10 => ResultFieldKind::TurbulentViscosity,
+        11 => ResultFieldKind::QCriterion,
+        12 => ResultFieldKind::FlowType,
+        13 => ResultFieldKind::StrainRate,
         _ => ResultFieldKind::VelocityMagnitude,
     }
 }
@@ -477,6 +509,7 @@ pub(super) fn bind(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
             0 => ("field.png", "png"),
             1 => ("flow-tracers.gif", "gif"),
             2 => ("probes.csv", "csv"),
+            3 if state.current_step==3 && ui.get_wb_chart_kind()>=5 => ("section-monitor.csv","csv"),
             3 => ("convergence.csv", "csv"),
             5 => ("run-report.json", "json"),
             6 => ("convergence.png", "png"),
@@ -559,6 +592,7 @@ pub(super) fn bind(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
                     Ok(())
                 }
                 2 => write_probes(&path, &state.post.probes),
+                3 if state.current_step==3 && ui.get_wb_chart_kind()>=5 => result_analysis::atomic_text(&path,&monitor_history::csv(&state,ui.get_flow_plane_index().max(0) as usize)?),
                 3 => {
                     let history=result_analysis::histories(&state);
                     let count=history.iter().map(Vec::len).max().unwrap_or(0);
@@ -626,14 +660,22 @@ pub(super) fn bind(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
 
 pub(super) fn tick(ui: &MainWindow, state: &mut AppState) -> bool {
     ui.set_solver_paused(state.solving && state.workbench_jobs.is_paused());
-    if state.post.plane_playing && state.current_step == 4 && ui.get_post_tab() == 5 {
+    if state.post.plane_playing
+        && ((state.current_step == 4 && ui.get_result_slice_axis() >= 4)
+            || (state.current_step == 3 && ui.get_solution_show_plane()))
+    {
         let now = std::time::Instant::now();
         if state.post.plane_tick.is_none_or(|t| {
             now.duration_since(t).as_millis() >= (1000 / ui.get_flow_plane_fps().max(1)) as u128
         }) {
             state.post.plane_tick = Some(now);
-            if state.post.plane_frame + 1 < state.post.plane_frames.len() {
+            let (first, last) = plane_monitors::playback_bounds(ui, state.post.plane_frames.len());
+            if state.post.plane_frame < first || state.post.plane_frame > last {
+                state.post.plane_frame = first;
+            } else if state.post.plane_frame < last {
                 state.post.plane_frame += 1;
+            } else if ui.get_flow_plane_loop() && !state.post.plane_frames.is_empty() {
+                state.post.plane_frame = first;
             } else {
                 state.post.plane_playing = false;
             }
@@ -642,6 +684,56 @@ pub(super) fn tick(ui: &MainWindow, state: &mut AppState) -> bool {
     }
 
     let mut changed = false;
+    if let Some(result) = state.post.monitors.poll() {
+        if let Err(e) = result {
+            state.log(format!("Monitor history: {e}"));
+        }
+        changed = true;
+    }
+    if let Some(rx) = state.post.plane_range_job.take() {
+        match rx.try_recv() {
+            Ok(Ok((id, field, range))) => {
+                if let Some((index, plane)) = state
+                    .workbench_project
+                    .plane_monitors
+                    .iter_mut()
+                    .enumerate()
+                    .find(|(_, p)| p.id == id && p.display.field == field)
+                {
+                    plane.display.range = Some(range);
+                    if ui.get_flow_plane_index() == index as i32 {
+                        ui.set_flow_plane_min(range[0].to_string().into());
+                        ui.set_flow_plane_max(range[1].to_string().into());
+                        ui.set_result_range_min(range[0].to_string().into());
+                        ui.set_result_range_max(range[1].to_string().into());
+                        ui.set_flow_plane_render_key("".into());
+                    }
+                    state.mark_workbench_dirty();
+                    plane_monitors::show_latest(ui, state);
+                }
+            }
+            Ok(Err(e)) => {
+                ui.set_flow_plane_status(format!("Colour range failed: {e}").into());
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => state.post.plane_range_job = Some(rx),
+            Err(_) => {
+                state.log("Colour range worker disconnected");
+            }
+        }
+    }
+    if let Some(rx) = state.post.plane_statistics_job.take() {
+        match rx.try_recv() {
+            Ok(result) => {
+                let message = result.unwrap_or_else(|e| format!("Plane statistics failed: {e}"));
+                ui.set_flow_plane_status(message.clone().into());
+                state.log(message);
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => state.post.plane_statistics_job = Some(rx),
+            Err(_) => {
+                state.log("Plane statistics worker disconnected");
+            }
+        }
+    }
     if let Some(rx) = state.post.export.take() {
         match rx.try_recv() {
             Ok(result) => {
@@ -725,6 +817,9 @@ pub(super) fn refresh(ui: &MainWindow, state: &AppState) {
         convergence_plot::refresh(ui, state);
     } else {
         ui.set_continuity_chart_caption(chart_caption(state, ui.get_wb_chart_kind()).into());
+    }
+    if state.current_step == 4 && ui.get_post_plot_mode() == 2 {
+        profile_comparison::show_monitors(ui, state);
     }
     ui.set_post_has_result(state.active_result().is_some());
     ui.set_post_is_3d(

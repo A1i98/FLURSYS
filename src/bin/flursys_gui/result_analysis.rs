@@ -26,6 +26,9 @@ pub(super) fn sample_line(
     }
     let locator = StreamlineField::from_dataset(data).map_err(|e| e.to_string())?;
     let values = data.scalar_values(field);
+    if values.len() != data.mesh().cell_count() {
+        return Err("The selected run has no data for this field".into());
+    }
     Ok((0..count.clamp(2, 2000))
         .map(|i| {
             let t = i as f64 / (count.clamp(2, 2000) - 1) as f64;
@@ -35,7 +38,9 @@ pub(super) fn sample_line(
                 distance: t * length,
                 position,
                 cell,
-                value: cell.map(|c| values[c]),
+                value: cell
+                    .and_then(|c| values.get(c).copied())
+                    .filter(|v| v.is_finite()),
             }
         })
         .collect())
@@ -263,6 +268,13 @@ pub(super) fn engineering_summary_csv(state: &AppState) -> Result<String, String
         ResultFieldKind::VelocityZ,
         ResultFieldKind::VorticityMagnitude,
         ResultFieldKind::VelocityDivergence,
+        ResultFieldKind::QCriterion,
+        ResultFieldKind::FlowType,
+        ResultFieldKind::StrainRate,
+        ResultFieldKind::Temperature,
+        ResultFieldKind::TurbulentK,
+        ResultFieldKind::SpecificDissipation,
+        ResultFieldKind::TurbulentViscosity,
     ] {
         if let Ok((lo, hi)) = data.scalar_range(field) {
             out.push_str(&format!(
@@ -288,6 +300,13 @@ pub(super) fn report(state: &AppState) -> Result<String, String> {
         ResultFieldKind::VelocityZ,
         ResultFieldKind::VorticityMagnitude,
         ResultFieldKind::VelocityDivergence,
+        ResultFieldKind::QCriterion,
+        ResultFieldKind::FlowType,
+        ResultFieldKind::StrainRate,
+        ResultFieldKind::Temperature,
+        ResultFieldKind::TurbulentK,
+        ResultFieldKind::SpecificDissipation,
+        ResultFieldKind::TurbulentViscosity,
     ] {
         if let Ok((lo, hi)) = d.scalar_range(f) {
             out.push_str(&format!(

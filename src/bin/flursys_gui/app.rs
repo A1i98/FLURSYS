@@ -1,3 +1,7 @@
+#[cfg(test)]
+#[path = "section_ui_tests.rs"]
+mod section_ui_tests;
+use slint::Model;
 #[path = "native_cad.rs"]
 mod native_cad;
 use flursys::app::{JobProgress, WorkbenchJobEvent, WorkbenchJobExecutor};
@@ -33,6 +37,10 @@ mod plane_monitors;
 mod post_processing;
 #[path = "result_activation.rs"]
 mod result_activation;
+#[path = "monitor_history.rs"]
+mod monitor_history;
+#[path = "profile_comparison.rs"]
+mod profile_comparison;
 #[path = "result_analysis.rs"]
 mod result_analysis;
 
@@ -706,9 +714,13 @@ impl AppState {
                     }
                     changed = true;
                 }
-                WorkbenchJobEvent::SolveProgress(JobProgress::Started) => {
-                    self.wb_residual_history.clear();
-                    self.post.start_solve();
+                WorkbenchJobEvent::SolveProgress(JobProgress::StartedAt { iteration }) => {
+                    let continuing = iteration > 0;
+                    self.post.iteration = iteration;
+                    if !continuing {
+                        self.wb_residual_history.clear();
+                    }
+                    self.post.start_solve(continuing);
                     self.log("Solve worker started.");
                     changed = true;
                 }
@@ -780,6 +792,7 @@ impl AppState {
                     changed = true;
                 }
                 WorkbenchJobEvent::PlaneSample(snapshot) => {
+                    if let Err(e)=self.post.monitors.record(&snapshot) {self.log(format!("Section monitor: {e}"));}
                     self.post
                         .plane_samples
                         .insert(snapshot.plane.id.clone(), snapshot);
@@ -787,6 +800,10 @@ impl AppState {
                 }
                 WorkbenchJobEvent::SolveCompleted(outcome) => {
                     let plane_samples = std::mem::take(&mut self.post.plane_samples);
+                    let monitors=std::mem::take(&mut self.post.monitors);
+                    let histories = std::mem::take(&mut self.post.metric_histories);
+                    let continuity = std::mem::take(&mut self.post.continuity_full);
+                    let residuals = self.wb_residual_history.clone();
                     self.solving = false;
                     self.post.finish_solve();
                     match &outcome {
@@ -813,7 +830,20 @@ impl AppState {
                     if let Err(error) = self.persist_completed_workbench_run() {
                         self.log(format!("Could not persist workbench run: {error}"));
                     }
+                    if !continuity.is_empty() {
+                        self.post.metric_histories = histories;
+                        self.post.continuity_full = continuity;
+                        self.wb_residual_history = residuals;
+                    }
+                    if let Some(solution) = self.workbench.solution() {
+                        self.post.iteration = if solution.physical_time.is_some() {
+                            solution.completed_time_steps
+                        } else {
+                            solution.report.outer_iterations
+                        };
+                    }
                     self.post.plane_samples = plane_samples;
+                    self.post.monitors=monitors;
                     self.tree_dirty = true;
                     changed = true;
                 }
@@ -2033,6 +2063,7 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
     volume_setup::bind(ui, state);
     cyclic_setup::bind(ui, state);
     post_processing::bind(ui, state);
+    profile_comparison::bind(ui,state);
     convergence_plot::bind(ui, state);
     plane_monitors::bind(ui, state);
     viewport::bind(ui, state);
@@ -3778,9 +3809,11 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
         };
         let mut state=results_state.borrow_mut();
         let selected=match index {8=>Some(ResultFieldKind::TurbulentK),9=>Some(ResultFieldKind::SpecificDissipation),10=>Some(ResultFieldKind::TurbulentViscosity),_=>None};
-        if selected.is_some_and(|f|state.active_result().is_none_or(|d|d.scalar_values(f).is_empty())) {
+        if (11..=13).contains(&index) && state.active_result().is_none() {
+            state.log("Gradient diagnostics require a full archived mesh dataset. Showing velocity magnitude.");ui.set_result_field_index(0);
+        } else if selected.is_some_and(|f|state.active_result().is_none_or(|d|d.scalar_values(f).is_empty())) {
             state.log("The selected run has no data for this turbulence field. Showing velocity magnitude.");ui.set_result_field_index(0);
-        }else{ui.set_result_field_index(index.clamp(0,10));}
+        }else{ui.set_result_field_index(index.clamp(0,13));}
         state.result_manual_range=None;
         state.show_mesh = false;
         state.show_geometry_3d = false;
@@ -4442,6 +4475,8 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
         };
         if let Some(solution) = state.workbench.solution() {
             case.initial_conditions = solution.restart();
+            let completed = if case.solver.time.is_transient() { solution.completed_time_steps } else { solution.report.outer_iterations };
+            state.workbench_jobs.set_continuation_fields(case.mesh.id(), case.initial_conditions.clone(), completed);
             state.log("Continuing retained fields with the current settings and an additional iteration / time-step budget; convergence may end the run earlier.");
         }
         state.log(flursys::workbench::diagnostics::mesh_preflight(&case.mesh).summary());
@@ -6184,6 +6219,7 @@ fn recent_project_labels(state: &AppState) -> Vec<SharedString> {
 }
 
 fn refresh_ui(ui: &MainWindow, state: &AppState) {
+    plane_monitors::refresh_locations(ui, state);
     let selected = match ui.get_result_field_index() {
         8 => Some(ResultFieldKind::TurbulentK),
         9 => Some(ResultFieldKind::SpecificDissipation),
@@ -6884,6 +6920,13 @@ fn refresh_ui(ui: &MainWindow, state: &AppState) {
                 ResultFieldKind::VorticityMagnitude,
                 None,
             ),
+            11 => ("RECONSTRUCTED Q INVARIANT · 1/s²", ResultFieldKind::QCriterion, None),
+            12 => ("FLOW TYPE · +1 ROTATION / -1 STRAIN", ResultFieldKind::FlowType, None),
+            13 => ("RECONSTRUCTED STRAIN RATE · 1/s", ResultFieldKind::StrainRate, None),
+            8 => ("TURBULENT KINETIC ENERGY", ResultFieldKind::TurbulentK, None),
+            9 => ("SPECIFIC DISSIPATION", ResultFieldKind::SpecificDissipation, None),
+            10 => ("TURBULENT VISCOSITY", ResultFieldKind::TurbulentViscosity, None),
+            3 if !result.scalar_values(ResultFieldKind::Temperature).is_empty() => ("TEMPERATURE · K", ResultFieldKind::Temperature, None),
             7 => (
                 "RECONSTRUCTED VELOCITY DIVERGENCE",
                 ResultFieldKind::VelocityDivergence,
@@ -6939,8 +6982,10 @@ fn refresh_ui(ui: &MainWindow, state: &AppState) {
         )));
         ui.set_visualization_image(match unavailable {
             Some(_) => render_empty_image(),
+            None if ui.get_result_slice_axis() >= 4 => ui.get_flow_plane_image(),
             None if result.mesh().dimension() == MeshDimension::ThreeD
-                && ui.get_result_slice_axis() > 0 =>
+                && ui.get_result_slice_axis() > 0
+                && ui.get_result_slice_axis() < 4 =>
             {
                 render::render_result_slice(
                     result,
@@ -6949,6 +6994,11 @@ fn refresh_ui(ui: &MainWindow, state: &AppState) {
                     ui.get_result_slice_percent(),
                     colormap,
                     state.result_display_range(),
+                    plot,
+                    ui.get_result_contour_levels().clamp(3, 32) as usize,
+                    ui.get_post_edges(),
+                    ui.get_result_vector_density(),
+                    ui.get_result_vector_scale().as_str(),
                 )
             }
             None => render_persisted_result(

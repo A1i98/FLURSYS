@@ -191,6 +191,7 @@ pub(super) fn render_persisted_result(
         edges,
         width,
         height,
+        levels,
     );
     if cache.mesh_cache().dimension() == MeshDimension::TwoD && matches!(plot, 1 | 2) {
         draw_result_contours(
@@ -238,6 +239,7 @@ fn render_persisted_pixels(
         false,
         width,
         height,
+        12,
     )
 }
 

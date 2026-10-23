@@ -469,6 +469,7 @@ pub(super) fn results(
     edges: bool,
     width: u32,
     height: u32,
+    levels: usize,
 ) -> Vec<u8> {
     let mesh = cache.mesh_cache();
     let three = mesh.dimension() == MeshDimension::ThreeD;
@@ -497,6 +498,44 @@ pub(super) fn results(
             );
             if edges {
                 scene.line(&[p[0], p[1], p[2], p[0]], [25, 35, 45, 255], 0.8, false);
+            }
+        }
+        if matches!(plot, 1 | 2) && hi > lo {
+            let mut node_values = vec![(0.0_f64, 0usize); mesh.positions().len()];
+            for (triangle, &face) in mesh.surface_triangles().iter().zip(mesh.triangle_faces()) {
+                if let Some(value) = cache.scalar_for_face(field, face) {
+                    for &node in triangle {
+                        node_values[node].0 += value;
+                        node_values[node].1 += 1;
+                    }
+                }
+            }
+            let offset = (mesh.bounds().1 - mesh.bounds().0).norm() * 1e-5;
+            for triangle in mesh.surface_triangles() {
+                let points = triangle.map(|n| mesh.positions()[n]);
+                let normal = (points[1] - points[0]).cross(points[2] - points[0]);
+                let normal = normal * (offset / normal.norm().max(1e-30));
+                for level in 1..levels.clamp(3, 32) {
+                    let target = lo + (hi - lo) * level as f64 / levels.clamp(3, 32) as f64;
+                    let mut cuts = Vec::with_capacity(3);
+                    for edge in 0..3 {
+                        let a = triangle[edge];
+                        let b = triangle[(edge + 1) % 3];
+                        let va = node_values[a].0 / node_values[a].1.max(1) as f64;
+                        let vb = node_values[b].0 / node_values[b].1.max(1) as f64;
+                        if (va <= target && vb > target) || (vb <= target && va > target) {
+                            cuts.push(
+                                mesh.positions()[a]
+                                    + (mesh.positions()[b] - mesh.positions()[a])
+                                        * ((target - va) / (vb - va))
+                                    + normal,
+                            );
+                        }
+                    }
+                    if cuts.len() == 2 {
+                        scene.line(&cuts, [235, 241, 247, 255], 0.9, false);
+                    }
+                }
             }
         }
     } else {

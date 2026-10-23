@@ -2,6 +2,55 @@
 use super::*;
 use flursys::workbench::plane_monitor::{self, FlowPlaneMonitor};
 
+pub(super) fn refresh_locations(ui: &MainWindow, state: &AppState) {
+    let mut names: Vec<SharedString> = ["3D surface", "XY section", "XZ section", "YZ section"]
+        .into_iter()
+        .map(SharedString::from)
+        .collect();
+    let mut indices = Vec::new();
+    for (i, p) in state.workbench_project.plane_monitors.iter().enumerate() {
+        if matches!(p.name.as_str(), "XY" | "XZ" | "YZ") && p.origin.norm() < 1e-12 {
+            continue;
+        }
+        names.push(p.name.clone().into());
+        indices.push(i as i32);
+    }
+    if ui.get_result_section_names().iter().collect::<Vec<_>>() != names
+        || ui
+            .get_result_section_plane_indices()
+            .iter()
+            .collect::<Vec<_>>()
+            != indices
+    {
+        ui.set_result_section_names(ModelRc::new(VecModel::from(names)));
+        ui.set_result_section_plane_indices(ModelRc::new(VecModel::from(indices)));
+    }
+}
+fn load_display(ui: &MainWindow, state: &AppState) {
+    let Some(p) = selected(ui, state) else { return };
+    ui.set_result_plot_index(if p.display.plot == 3 {
+        3
+    } else if p.display.vectors {
+        2
+    } else if p.display.plot > 0 {
+        1
+    } else {
+        0
+    });
+    ui.set_result_contour_levels(p.display.levels as i32);
+    ui.set_result_colormap_index(p.display.palette as i32);
+    ui.set_post_edges(p.display.edges);
+    ui.set_result_vector_density(if p.display.vector_density <= 150 {
+        0
+    } else if p.display.vector_density >= 1200 {
+        2
+    } else {
+        1
+    });
+    ui.set_result_vector_scale(p.display.vector_scale.to_string().into());
+    ui.set_result_range_min(ui.get_flow_plane_min());
+    ui.set_result_range_max(ui.get_flow_plane_max());
+}
 pub(super) fn refresh_catalog(
     ui: &MainWindow,
     state: &mut AppState,
@@ -39,6 +88,7 @@ pub(super) fn refresh_catalog(
         .iter()
         .map(|p| SharedString::from(p.name.clone()))
         .collect::<Vec<_>>();
+    refresh_locations(ui, state);
     ui.set_flow_plane_names(ModelRc::new(VecModel::from(items)));
     ui.set_cad_flow_plane_selected(selected.is_some());
     if let Some(id) = selected.clone() {
@@ -63,6 +113,18 @@ fn selected(ui: &MainWindow, state: &AppState) -> Option<FlowPlaneMonitor> {
 fn load(ui: &MainWindow, state: &AppState) {
     ui.set_flow_plane_error("".into());
     if let Some(p) = selected(ui, state) {
+        ui.set_flow_plane_palette(p.display.palette as i32);
+        ui.set_flow_plane_density(if p.display.vector_density <= 150 {
+            0
+        } else if p.display.vector_density >= 1200 {
+            2
+        } else {
+            1
+        });
+        ui.set_flow_plane_scale(p.display.vector_scale.to_string().into());
+        ui.set_flow_plane_plot(p.display.plot as i32);
+        ui.set_flow_plane_levels(p.display.levels as i32);
+        ui.set_flow_plane_streamlines(p.display.streamlines);
         ui.set_flow_plane_field(p.display.field as i32);
         ui.set_flow_plane_vectors(p.display.vectors);
         ui.set_flow_plane_edges(p.display.edges);
@@ -99,25 +161,110 @@ fn load(ui: &MainWindow, state: &AppState) {
     }
     show_latest(ui, state);
 }
+pub(super) fn playback_bounds(ui: &MainWindow, count: usize) -> (usize, usize) {
+    let maximum = count.saturating_sub(1);
+    let first = (ui.get_flow_plane_first().max(1) as usize - 1).min(maximum);
+    let last = if ui.get_flow_plane_last() <= 0 {
+        maximum
+    } else {
+        (ui.get_flow_plane_last() as usize - 1).min(maximum)
+    };
+    (first.min(last), last)
+}
+fn validate_recorded_plane(
+    ui: &MainWindow,
+    state: &AppState,
+    sample: &plane_monitor::PlaneSnapshot,
+) -> Result<(), String> {
+    sample.plane.validate()?;
+    let expected = selected(ui, state).ok_or("Select the recorded plane")?;
+    if sample.plane.id != expected.id
+        || sample.plane.origin != expected.origin
+        || sample.plane.u != expected.u
+        || sample.plane.v != expected.v
+    {
+        return Err("Recording belongs to a different plane or its geometry has changed. Select the matching plane/recording.".into());
+    }
+    Ok(())
+}
+fn current_snapshot(
+    ui: &MainWindow,
+    state: &AppState,
+) -> Result<std::sync::Arc<plane_monitor::PlaneSnapshot>, String> {
+    if let Some(path) = state.post.plane_frames.get(state.post.plane_frame) {
+        let mut cached = state.post.section_archive.borrow_mut();
+        if let Some((key, sample)) = cached.as_ref() {
+            if key == path {
+                validate_recorded_plane(ui, state, sample)?;
+                return Ok(sample.clone());
+            }
+        }
+        let sample: plane_monitor::PlaneSnapshot =
+            serde_json::from_slice(&std::fs::read(path).map_err(|e| e.to_string())?)
+                .map_err(|e| format!("Raw frame unavailable: {e}"))?;
+        validate_recorded_plane(ui, state, &sample)?;
+        let sample = std::sync::Arc::new(sample);
+        *cached = Some((path.clone(), sample.clone()));
+        return Ok(sample);
+    }
+    let plane = selected(ui, state).ok_or("Select a section")?;
+    state
+        .post
+        .plane_samples
+        .get(&plane.id)
+        .cloned()
+        .map(std::sync::Arc::new)
+        .ok_or_else(|| "No section field data".to_string())
+}
 pub(super) fn show_latest(ui: &MainWindow, state: &AppState) {
+    if state.post.section_probe.borrow().is_none() {
+        ui.set_flow_plane_readout("".into());
+    }
+    if let Some(point) = *state.post.section_probe.borrow() {
+        if let Ok(snapshot) = current_snapshot(ui, state) {
+            let text=plane_monitor::probe_world(&snapshot,point).map(|sample|format!("Cell {} · U=({:.5e}, {:.5e}, {:.5e}) m/s · |U|={:.5e} m/s · p/ρ={:.5e} m²/s²",sample.geometry.cell,sample.velocity.x,sample.velocity.y,sample.velocity.z,sample.velocity.norm(),sample.pressure)).unwrap_or_else(||"Probe is outside this frame's section".into());
+            ui.set_flow_plane_readout(text.into());
+        }
+    }
+
     ui.set_flow_plane_playing(state.post.plane_playing);
     ui.set_flow_plane_frame(state.post.plane_frame as i32);
     ui.set_flow_plane_count(state.post.plane_frames.len() as i32);
     if let Some(path) = state.post.plane_frames.get(state.post.plane_frame) {
         let style = selected(ui, state).map(|p| p.display).unwrap_or_default();
-        let key = format!("replay:{path:?}:{style:?}");
+        let key = format!(
+            "replay:{path:?}:{style:?}:{:?}:{:?}",
+            state.post.section_camera.borrow(),
+            state.post.section_probe.borrow()
+        );
         if ui.get_flow_plane_render_key() != key {
             let rendered = if path.extension().is_some_and(|e| e == "json") {
-                std::fs::read(path)
-                    .map_err(|e| e.to_string())
-                    .and_then(|bytes| {
-                        let sample: plane_monitor::PlaneSnapshot =
-                            serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
-                        slint::Image::load_from_svg_data(
-                            plane_monitor::section_svg(&sample, &style).as_bytes(),
+                current_snapshot(ui, state).and_then(|sample| {
+                    let clock = sample
+                        .physical_time
+                        .map(|t| format!("physical time {t:.6e} s"))
+                        .unwrap_or_else(|| "steady iteration, not physical time".into());
+                    ui.set_flow_plane_status(
+                        format!(
+                            "Frame {}/{} · iteration {} · {}",
+                            state.post.plane_frame + 1,
+                            state.post.plane_frames.len(),
+                            sample.iteration,
+                            clock
                         )
-                        .map_err(|e| e.to_string())
-                    })
+                        .into(),
+                    );
+                    slint::Image::load_from_svg_data(
+                        plane_monitor::section_interactive_probe_svg(
+                            &sample,
+                            &style,
+                            &state.post.section_camera.borrow(),
+                            *state.post.section_probe.borrow(),
+                        )
+                        .as_bytes(),
+                    )
+                    .map_err(|e| e.to_string())
+                })
             } else {
                 slint::Image::load_from_path(path).map_err(|e| e.to_string())
             };
@@ -127,25 +274,25 @@ pub(super) fn show_latest(ui: &MainWindow, state: &AppState) {
                     ui.set_flow_plane_render_key(key.into());
                 }
                 Err(e) => {
+                    ui.set_flow_plane_image(Default::default());
+                    ui.set_flow_plane_render_key("".into());
+                    ui.set_flow_plane_readout("".into());
                     ui.set_flow_plane_status(format!("Cannot load frame: {e}").into());
                     return;
                 }
             }
         }
-        ui.set_flow_plane_status(
-            format!(
-                "Frame {}/{} · {} · recorded field history{}",
-                state.post.plane_frame + 1,
-                state.post.plane_frames.len(),
-                path.file_stem().unwrap_or_default().to_string_lossy(),
-                if path.extension().is_some_and(|e| e == "svg") {
-                    " · legacy SVG: recorded appearance"
-                } else {
-                    ""
-                }
-            )
-            .into(),
-        );
+        if path.extension().is_some_and(|e| e == "svg") {
+            ui.set_flow_plane_status(
+                format!(
+                    "Frame {}/{} · {} · legacy SVG: recorded appearance",
+                    state.post.plane_frame + 1,
+                    state.post.plane_frames.len(),
+                    path.file_stem().unwrap_or_default().to_string_lossy()
+                )
+                .into(),
+            );
+        }
         return;
     }
     let error = ui.get_flow_plane_error();
@@ -161,12 +308,23 @@ pub(super) fn show_latest(ui: &MainWindow, state: &AppState) {
     };
     if let Some(snapshot) = state.post.plane_samples.get(&plane.id) {
         let key = format!(
-            "{}:{}:{:?}:{:?}",
-            plane.id, snapshot.iteration, snapshot.path, plane.display
+            "{}:{}:{:?}:{:?}:{:?}:{:?}",
+            plane.id,
+            snapshot.iteration,
+            snapshot.path,
+            plane.display,
+            state.post.section_camera.borrow(),
+            state.post.section_probe.borrow()
         );
         if ui.get_flow_plane_render_key() != key {
             if let Ok(image) = slint::Image::load_from_svg_data(
-                plane_monitor::section_svg(snapshot, &plane.display).as_bytes(),
+                plane_monitor::section_interactive_probe_svg(
+                    snapshot,
+                    &plane.display,
+                    &state.post.section_camera.borrow(),
+                    *state.post.section_probe.borrow(),
+                )
+                .as_bytes(),
             ) {
                 ui.set_flow_plane_image(image);
                 ui.set_flow_plane_render_key(key.into());
@@ -235,14 +393,9 @@ fn export(ui: &MainWindow, state: &AppState, kind: i32) -> Result<(), String> {
     let plane = selected(ui, state).ok_or("Select a monitor plane")?;
     let archived = if let Some(path) = state.post.plane_frames.get(state.post.plane_frame) {
         if path.extension().is_some_and(|e| e == "json") {
-            Some(
-                serde_json::from_slice::<plane_monitor::PlaneSnapshot>(
-                    &std::fs::read(path).map_err(|e| e.to_string())?,
-                )
-                .map_err(|e| e.to_string())?,
-            )
+            Some(current_snapshot(ui, state)?)
         } else {
-            if kind == 0 {
+            if matches!(kind, 0 | 3 | 4 | 5) {
                 return Err("Legacy SVG recordings have no replayable field data. Export the adjacent CSV directly.".into());
             }
             if kind == 2 {
@@ -261,7 +414,7 @@ fn export(ui: &MainWindow, state: &AppState, kind: i32) -> Result<(), String> {
         None
     };
     let snapshot = archived
-        .as_ref()
+        .as_deref()
         .or_else(|| state.post.plane_samples.get(&plane.id));
     if snapshot.is_none() && kind != 1 {
         return Err("No plane sample is available yet".into());
@@ -277,7 +430,17 @@ fn export(ui: &MainWindow, state: &AppState, kind: i32) -> Result<(), String> {
     };
     let Some(path) = rfd::FileDialog::new()
         .add_filter("Plane snapshot", &[extension])
-        .set_file_name(format!("plane-iteration-{}.{}", iteration, extension))
+        .set_file_name(format!(
+            "plane-{}-iteration-{}.{}",
+            match kind {
+                3 => "statistics",
+                4 => "horizontal-profile",
+                5 => "vertical-profile",
+                _ => "field",
+            },
+            iteration,
+            extension
+        ))
         .save_file()
     else {
         return Ok(());
@@ -302,6 +465,22 @@ fn export(ui: &MainWindow, state: &AppState, kind: i32) -> Result<(), String> {
             file.persist(path).map_err(|e| e.to_string())?;
             Ok(())
         }
+        4 | 5 => result_analysis::atomic_text(
+            &path,
+            &flursys::workbench::plane_statistics::centreline_csv(
+                snapshot.ok_or("No field snapshot")?,
+                kind == 5,
+                201,
+                plane.display.field,
+            )?,
+        ),
+        3 => result_analysis::atomic_text(
+            &path,
+            &plane_monitor::section_statistics_csv(
+                snapshot.ok_or("No field snapshot")?,
+                plane.display.field,
+            )?,
+        ),
         2 => result_analysis::atomic_text(
             &path,
             &plane_monitor::section_svg(snapshot.ok_or("No field snapshot")?, &plane.display),
@@ -328,12 +507,26 @@ fn display(ui: &MainWindow) -> Result<plane_monitor::PlaneDisplay, String> {
         ])
     };
     let style = plane_monitor::PlaneDisplay {
+        palette: ui.get_flow_plane_palette().clamp(0, 3) as usize,
+        vector_density: match ui.get_flow_plane_density() {
+            0 => 150,
+            2 => 1200,
+            _ => 600,
+        },
+        vector_scale: ui
+            .get_flow_plane_scale()
+            .parse::<f64>()
+            .map_err(|_| "Enter a positive vector scale")?,
+        plot: ui.get_flow_plane_plot().max(0) as usize,
+        levels: ui.get_flow_plane_levels().max(3) as usize,
+        streamlines: ui.get_flow_plane_streamlines(),
         field: ui.get_flow_plane_field().max(0) as usize,
         vectors: ui.get_flow_plane_vectors(),
         edges: ui.get_flow_plane_edges(),
         normalized_vectors: ui.get_flow_plane_normalize(),
         normal_markers: ui.get_flow_plane_normal_marks(),
         range,
+        ..Default::default()
     };
     style.validate()?;
     Ok(style)
@@ -430,6 +623,14 @@ fn historical_folder(
     (candidates.len() == 1).then(|| candidates[0].clone())
 }
 pub(super) fn refresh_selected(ui: &MainWindow, state: &mut AppState) {
+    *state.post.section_archive.borrow_mut() = None;
+    *state.post.section_probe.borrow_mut() = None;
+    {
+        let mut camera = state.post.section_camera.borrow_mut();
+        camera.zoom = 1.;
+        camera.pan = [0.; 2];
+    }
+    ui.set_flow_plane_readout("".into());
     state.post.plane_frames.clear();
     state.post.plane_playing = false;
     if let Err(e) = sample_selected(ui, state) {
@@ -459,6 +660,10 @@ pub(super) fn refresh_selected(ui: &MainWindow, state: &mut AppState) {
                 if let Some(folder) = historical_folder(workspace, record, lower, &plane) {
                     state.post.plane_frames = frame_files(&folder);
                     state.post.plane_frame = state.post.plane_frames.len().saturating_sub(1);
+                    state
+                        .post
+                        .monitors
+                        .load(state.post.plane_frames.clone(), plane.clone());
                 }
             }
         }
@@ -467,6 +672,61 @@ pub(super) fn refresh_selected(ui: &MainWindow, state: &mut AppState) {
 }
 
 pub(super) fn bind(ui: &MainWindow, shared: &Rc<RefCell<AppState>>) {
+    let weak = ui.as_weak();
+    let display_state = shared.clone();
+    ui.on_plane_display_style(move || {
+        let Some(ui) = weak.upgrade() else { return };
+        let mut state = display_state.borrow_mut();
+        ui.set_flow_plane_plot(if ui.get_result_plot_index() == 3 {
+            3
+        } else if matches!(ui.get_result_plot_index(), 1 | 2) {
+            2
+        } else {
+            0
+        });
+        ui.set_flow_plane_vectors(matches!(ui.get_result_plot_index(), 2 | 3));
+        ui.set_flow_plane_levels(ui.get_result_contour_levels());
+        ui.set_flow_plane_edges(ui.get_post_edges());
+        ui.set_flow_plane_min(ui.get_result_range_min());
+        ui.set_flow_plane_max(ui.get_result_range_max());
+        let mut style = match display(&ui) {
+            Ok(s) => s,
+            Err(e) => {
+                ui.set_flow_plane_status(e.into());
+                return;
+            }
+        };
+        style.palette = ui.get_result_colormap_index().clamp(0, 3) as usize;
+        style.normalized_vectors = ui.get_flow_plane_normalize();
+        style.normal_markers = ui.get_flow_plane_normal_marks();
+        style.vectors = matches!(ui.get_result_plot_index(), 2 | 3);
+        style.vector_scale = if ui.get_result_vector_scale().trim().is_empty() {
+            1.0
+        } else {
+            match ui.get_result_vector_scale().trim().parse::<f64>() {
+                Ok(v) if v.is_finite() && v > 0.0 => v,
+                _ => {
+                    ui.set_flow_plane_status("Vector scale must be positive".into());
+                    return;
+                }
+            }
+        };
+        style.vector_density = match ui.get_result_vector_density() {
+            0 => 150,
+            2 => 1200,
+            _ => 600,
+        };
+        if let Some(p) = state
+            .workbench_project
+            .plane_monitors
+            .get_mut(ui.get_flow_plane_index().max(0) as usize)
+        {
+            p.display = style;
+        }
+        state.mark_workbench_dirty();
+        ui.set_flow_plane_render_key("".into());
+        show_latest(&ui, &state);
+    });
     let weak = ui.as_weak();
     let control_state = shared.clone();
     ui.on_solver_control(move |action| {
@@ -492,7 +752,7 @@ pub(super) fn bind(ui: &MainWindow, shared: &Rc<RefCell<AppState>>) {
             s.workbench_jobs.set_initial_fields(case.mesh.id(),flursys::IncompressibleInitialConditions::uniform(initial_velocity,values[3]));
             s.workbench.initialize_solution();
             s.active_result=None;
-            s.post.reset_result();ui.set_solver_paused(false);
+            s.post.reset_result();s.wb_residual_history.clear();ui.set_solver_paused(false);
             let velocity=vec![initial_velocity;case.mesh.cell_count()];
             let pressure=vec![values[3];case.mesh.cell_count()];
             for plane in s.workbench_project.plane_monitors.clone() {
@@ -507,12 +767,64 @@ pub(super) fn bind(ui: &MainWindow, shared: &Rc<RefCell<AppState>>) {
     });
 
     let weak = ui.as_weak();
+    let nav_state = shared.clone();
+    ui.on_flow_plane_navigate(move |action, x, y, w, h| {
+        let Some(ui) = weak.upgrade() else {
+            return;
+        };
+        let state = nav_state.borrow();
+        if action == 3 {
+            match current_snapshot(&ui, &state) {
+                Ok(snapshot) => {
+                    let camera = state.post.section_camera.borrow();
+                    if plane_monitor::probe_section(&snapshot, &camera, f64::from(x), f64::from(y))
+                        .is_some()
+                    {
+                        *state.post.section_probe.borrow_mut() =
+                            Some(camera.world_at(&snapshot, f64::from(x), f64::from(y)));
+                    } else {
+                        *state.post.section_probe.borrow_mut() = None;
+                        ui.set_flow_plane_readout("Outside sampled section".into());
+                    }
+                }
+                Err(e) => ui.set_flow_plane_readout(e.into()),
+            }
+            show_latest(&ui, &state);
+            return;
+        }
+        {
+            let mut camera = state.post.section_camera.borrow_mut();
+            camera.viewport = [f64::from(w).max(240.0), f64::from(h).max(160.0)];
+            match action {
+                0 => {
+                    let [width, height] = camera.viewport;
+                    camera.pan[0] += f64::from(x) / width;
+                    camera.pan[1] += f64::from(y) / height;
+                }
+                1 => {
+                    camera.zoom =
+                        (camera.zoom * if y > 0.0 { 1.12 } else { 1.0 / 1.12 }).clamp(0.1, 30.0);
+                }
+                2 => {
+                    camera.zoom = 1.0;
+                    camera.pan = [0.0; 2];
+                }
+                _ => {}
+            }
+        }
+        show_latest(&ui, &state);
+    });
+    let weak = ui.as_weak();
     let shared_state = shared.clone();
     ui.on_flow_plane_playback(move |action| {
         let Some(ui) = weak.upgrade() else {
             return;
         };
         let mut s = shared_state.borrow_mut();
+        if action==0 && s.solving {
+            ui.set_flow_plane_status("Stop the active solve before opening another recording; live monitor history remains attached to this solve.".into());
+            return;
+        }
         match action {
             0 => {
                 let current = selected(&ui, &s)
@@ -545,7 +857,9 @@ pub(super) fn bind(ui: &MainWindow, shared: &Rc<RefCell<AppState>>) {
                 let Some(folder) = dialog.pick_folder() else {
                     return;
                 };
+                *s.post.section_archive.borrow_mut()=None;
                 s.post.plane_frames = frame_files(&folder);
+                if let Some(plane)=selected(&ui,&s) {let paths=s.post.plane_frames.clone();s.post.monitors.load(paths,plane);}
                 s.post.plane_frame = 0;
                 s.post.plane_playing = false;
                 if s.post.plane_frames.is_empty() {
@@ -553,11 +867,52 @@ pub(super) fn bind(ui: &MainWindow, shared: &Rc<RefCell<AppState>>) {
                     return;
                 }
             }
+            6 | 7 => {
+                if s.post.plane_statistics_job.is_some() {
+                    ui.set_flow_plane_status("A time-statistics export is already running".into());return;
+                }
+                if s.post.plane_frames.len() < 2 {
+                    ui.set_flow_plane_status("Open a physical-time recording with at least two frames".into());return;
+                }
+                let (first, last) = playback_bounds(&ui, s.post.plane_frames.len());
+                let paths = s.post.plane_frames[first..=last].to_vec();
+                let point=*s.post.section_probe.borrow();
+                if action==7 && point.is_none() {ui.set_flow_plane_status("Click a point on the section first".into());return;}
+                let Some(target) = rfd::FileDialog::new().set_file_name(if action==7 {"plane-probe-history.csv"}else{"plane-time-statistics.csv"}).save_file() else {return;};
+                let (tx, rx) = std::sync::mpsc::channel();
+                s.post.plane_statistics_job = Some(rx);
+                std::thread::spawn(move || {
+                    let result = if action==7 {flursys::workbench::plane_statistics::probe_history_csv(&paths,point.expect("validated probe"))}
+                        else {flursys::workbench::plane_statistics::temporal_csv(&paths)};
+                    let result = result.and_then(|text| result_analysis::atomic_text(&target, &text))
+                        .map(|()| format!("Time statistics saved: {}", target.display()));
+                    let _ = tx.send(result);
+                });
+                ui.set_flow_plane_status("Computing physical-time means, RMS and velocity covariances…".into());
+                return;
+            }
+            5 => {
+                if s.post.plane_range_job.is_some() {
+                    ui.set_flow_plane_status("Colour-range calculation is already running".into());return;
+                }
+                let Some(plane) = selected(&ui, &s) else {return;};
+                let paths = s.post.plane_frames.clone();
+                let (tx, rx) = std::sync::mpsc::channel();
+                s.post.plane_range_job = Some(rx);
+                std::thread::spawn(move || {
+                    let result = flursys::workbench::plane_statistics::recorded_range(&paths, plane.display.field)
+                        .map(|range| (plane.id, plane.display.field, range));
+                    let _ = tx.send(result);
+                });
+                ui.set_flow_plane_status("Scanning recording colour range in background…".into());
+                return;
+            }
             1 => {
                 if s.post.plane_frames.is_empty() {refresh_selected(&ui,&mut s);}
                 if s.post.plane_frames.is_empty() {ui.set_flow_plane_status("No recording linked to this run/plane. Use Open recording to choose its plane folder.".into());return;}
-                if s.post.plane_frame + 1 >= s.post.plane_frames.len() {
-                    s.post.plane_frame = 0;
+                let (first, last) = playback_bounds(&ui, s.post.plane_frames.len());
+                if s.post.plane_frame < first || s.post.plane_frame >= last {
+                    s.post.plane_frame = first;
                 }
                 s.post.plane_playing = !s.post.plane_playing && !s.post.plane_frames.is_empty();
                 s.post.plane_tick = Some(std::time::Instant::now());
@@ -591,6 +946,14 @@ pub(super) fn bind(ui: &MainWindow, shared: &Rc<RefCell<AppState>>) {
             return;
         };
         let mut state = state.borrow_mut();
+        if selected(&ui, &state)
+            .is_some_and(|p| p.display.field != ui.get_flow_plane_field().max(0) as usize)
+        {
+            ui.set_flow_plane_min("".into());
+            ui.set_flow_plane_max("".into());
+            ui.set_result_range_min("".into());
+            ui.set_result_range_max("".into());
+        }
         let style = match display(&ui) {
             Ok(s) => s,
             Err(e) => {
@@ -613,6 +976,68 @@ pub(super) fn bind(ui: &MainWindow, shared: &Rc<RefCell<AppState>>) {
     });
 
     let weak = ui.as_weak();
+    let profile_state = shared.clone();
+    ui.on_flow_plane_profile(move |a, b, c, d, count, kind| {
+        let Some(ui) = weak.upgrade() else {
+            return;
+        };
+        let state = profile_state.borrow();
+        let result = (|| -> Result<(), String> {
+            let parse = |s: SharedString| {
+                s.trim()
+                    .parse::<f64>()
+                    .ok()
+                    .filter(|v| v.is_finite())
+                    .ok_or_else(|| {
+                        "Enter finite profile coordinates in plane u/v metres".to_string()
+                    })
+            };
+            let start = [parse(a)?, parse(b)?];
+            let end = [parse(c)?, parse(d)?];
+            let snapshot = current_snapshot(&ui, &state)?;
+            let field = selected(&ui, &state).ok_or("Select a plane")?.display.field;
+            let (text, extension) = if kind == 1 {
+                (
+                    flursys::workbench::plane_statistics::profile_svg(
+                        &snapshot,
+                        start,
+                        end,
+                        count.max(0) as usize,
+                        field,
+                    )?,
+                    "svg",
+                )
+            } else {
+                (
+                    flursys::workbench::plane_statistics::profile_csv(
+                        &snapshot,
+                        start,
+                        end,
+                        count.max(0) as usize,
+                        field,
+                    )?,
+                    "csv",
+                )
+            };
+            let Some(path) = rfd::FileDialog::new()
+                .set_file_name(format!(
+                    "plane-profile-iteration-{}.{extension}",
+                    snapshot.iteration
+                ))
+                .add_filter("Profile", &[extension])
+                .save_file()
+            else {
+                return Ok(());
+            };
+            result_analysis::atomic_text(&path, &text)?;
+            ui.set_flow_plane_status(format!("Profile saved: {}", path.display()).into());
+            Ok(())
+        })();
+        if let Err(e) = result {
+            ui.set_flow_plane_status(e.into());
+        }
+    });
+    let weak = ui.as_weak();
     let state = shared.clone();
     ui.on_flow_plane_export(move |kind| {
         let Some(ui) = weak.upgrade() else {
@@ -624,18 +1049,48 @@ pub(super) fn bind(ui: &MainWindow, shared: &Rc<RefCell<AppState>>) {
     });
 
     let weak = ui.as_weak();
+    let section_state = shared.clone();
+    ui.on_result_section_selected(move |index| {
+        let Some(ui) = weak.upgrade() else {
+            return;
+        };
+        let mut state = section_state.borrow_mut();
+        state.post.playing = false;
+        state.post.plane_playing = false;
+        state.animation_playing = false;
+        ui.set_post_playing(false);
+        ui.set_result_slice_axis(index);
+        if index >= 4 {
+            if let Some(plane_index) = ui
+                .get_result_section_plane_indices()
+                .row_data((index - 4) as usize)
+            {
+                ui.set_flow_plane_index(plane_index);
+            } else {
+                ui.set_result_slice_axis(0);
+                return;
+            }
+            load(&ui, &state);
+            load_display(&ui, &state);
+            refresh_selected(&ui, &mut state);
+        }
+    });
+    let weak = ui.as_weak();
     let state = shared.clone();
     ui.on_flow_plane_select(move |index| {
         let Some(ui) = weak.upgrade() else {
             return;
         };
         ui.set_flow_plane_index(index);
-        refresh_selected(&ui, &mut state.borrow_mut());
+        ui.set_flow_plane_readout("".into());
+        let mut state = state.borrow_mut();
+        load(&ui, &state);
+        refresh_selected(&ui, &mut state);
     });
     let weak = ui.as_weak();
     let state = shared.clone();
     ui.on_flow_plane_apply(move||{let Some(ui)=weak.upgrade()else{return;};let mut s=state.borrow_mut();if s.solving{return;}
-        let Some(mut plane)=selected(&ui,&s)else{return;};plane.display=match display(&ui) {Ok(d)=>d,Err(e)=>{ui.set_flow_plane_status(e.into());return;}};plane.every=ui.get_flow_plane_every().max(1) as usize;plane.enabled=ui.get_flow_plane_enabled();
+        let Some(mut plane)=selected(&ui,&s)else{return;};plane.every=ui.get_flow_plane_every().max(1) as usize;plane.enabled=ui.get_flow_plane_enabled();
         if let Err(e)=plane.validate(){ui.set_flow_plane_status(e.into());return;}
         if let Some(p)=s.workbench_project.plane_monitors.iter_mut().find(|p|p.id==plane.id){*p=plane.clone();}
         s.mark_workbench_dirty();ui.set_flow_plane_status(format!("{}: {}. Steady mode samples completed SIMPLE iterations; transient mode samples accepted physical time steps.",plane.name,if plane.enabled{format!("record every {} iterations",plane.every)}else{"recording disabled".into()}).into());
@@ -648,8 +1103,21 @@ pub(super) fn bind(ui: &MainWindow, shared: &Rc<RefCell<AppState>>) {
         };
         let mut s = state.borrow_mut();
         refresh_selected(&ui, &mut s);
-        ui.set_post_tab(5);
-        apply_workflow_step(&ui, &mut s, 4);
+        if s.current_step == 3 {
+            ui.set_solution_show_plane(true);
+        } else {
+            refresh_locations(&ui, &s);
+            if let Some(i) = ui
+                .get_result_section_plane_indices()
+                .iter()
+                .position(|p| p == ui.get_flow_plane_index())
+            {
+                ui.set_result_slice_axis(4 + i as i32);
+            }
+            load_display(&ui, &s);
+            ui.set_post_tab(0);
+            apply_workflow_step(&ui, &mut s, 4);
+        }
     });
 }
 
