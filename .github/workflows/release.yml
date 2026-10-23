@@ -8,6 +8,10 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   build:
     name: Build ${{ matrix.target }}
@@ -30,11 +34,17 @@ jobs:
         with:
           submodules: recursive
       - uses: dtolnay/rust-toolchain@stable
+      - name: Restore release build cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: flursys-release-${{ matrix.target }}
+          cache-workspace-crates: "true"
+          cache-on-failure: "true"
       - name: Install Linux GUI dependencies
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install --yes libfontconfig1-dev
       - name: Build CLI and desktop workbench
-        run: cargo build --locked --release --bin flursys --bin flursys-gui --features gui
+        run: cargo build -p flursys --locked --release --bin flursys --bin flursys-gui --features gui
       - name: Package Unix binaries
         if: matrix.archive == 'tar.gz'
         run: |
@@ -73,6 +83,7 @@ jobs:
           name: flursys-${{ matrix.target }}
           path: dist/*
           if-no-files-found: error
+          compression-level: 0
 
   publish:
     name: Publish GitHub release

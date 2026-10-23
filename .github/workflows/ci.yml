@@ -6,6 +6,13 @@ on:
       - "v*"
   pull_request:
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -16,9 +23,16 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+      - name: Restore Rust build cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: flursys-ci-gui
+          cache-workspace-crates: "true"
+          cache-on-failure: "true"
       - name: Install Linux GUI and meshing dependencies
         run: sudo apt-get update && sudo apt-get install --yes libfontconfig1-dev gmsh
       - run: cargo fmt -p flursys -- --check
-      - run: cargo check -p flursys --all-targets --features gui --locked
-      - run: cargo test -p flursys --all-targets --features gui --locked
-      - run: cargo clippy -p flursys --no-deps --all-targets --features gui --locked -- -D warnings
+      - name: Check all targets and Clippy
+        run: cargo clippy -p flursys --no-deps --all-targets --features gui --locked -- -D warnings
+      - name: Test all FLURSYS targets
+        run: cargo test -p flursys --all-targets --features gui --locked
