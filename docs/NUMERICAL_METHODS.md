@@ -1373,3 +1373,66 @@ sqrt(sum((v_j-r_j)^2))/sqrt(sum(r_j^2)). Norms accumulate with hypot to reduce
 intermediate square overflow. No relative percentage is reported for a zero
 reference norm, and no matches is reported explicitly. These are unweighted
 sample norms; imported data accuracy and unit consistency remain external inputs.
+
+#### Sampled solve-health reports
+
+Solve health reads retained complete restart fields and conservative face flux.
+Global inflow is minus the sum of negative exterior fluxes; outflow is the sum
+of positive exterior fluxes. Relative imbalance is abs(Qout-Qin)/max(Qin,Qout),
+undefined for zero throughflow. Pressure-outlet backflow counts inward faces
+separately from sum(-min(phi,0))/sum(abs(phi)) over outlet faces.
+These diagnostics are sampled, not an alternative convergence criterion.
+Failed-run checkpoints are explicitly unconverged and can precede the failing
+iteration; the sample index must accompany diagnostic interpretation.
+
+### Adaptive backward differentiation on the fixed unstructured mesh
+
+TimeIntegration::AdaptiveBackward uses the same accepted-step Courant control,
+rollback and retry path as adaptive Euler, with variable-step BDF2 after two
+physical levels exist. For r = dt[n+1]/dt[n], its coefficients are
+a0=(1+2r)/(1+r), a1=1+r and a2=-r²/(1+r).
+The implicit temporal interval is dt/a0; old velocity, face flux, temperature
+and transported turbulence fields use a1/a0 and a2/a0. A restarted invocation
+has no second old level and rebuilds history with one Euler step. Physical
+timestamps and last_dt always use physical dt, not the effective temporal
+interval. Positive step ratios below 1+sqrt(2) are required; adaptive growth
+controls retain their existing upper bound of two. This path is experimental;
+no new temporal-accuracy or coupled-turbulence validation was run for it.
+
+### Additional incoming-turbulence parameterizations
+
+IntensityDiameter stores intensity I, hydraulic diameter Dh and a configurable
+length ratio alpha. It evaluates L=alpha Dh and reuses the existing conversions
+k=1.5(I|Uin|)², omega=sqrt(k)/(0.09^0.25 L),
+epsilon=0.09^0.75 k^1.5/L. The initial UI ratio 0.07 is a user-editable estimate,
+not an inferred geometric quantity or a universal physical constant.
+
+IntensityViscosityRatio stores I and R=nut/nu, evaluating nut=R nu with the
+current saved fluid's molecular viscosity, k=1.5(I|Uin|)²,
+omega=k/nut and epsilon=0.09 k²/nut. It does not impose nut throughout the domain
+or override the local closure model. Both forms require positive incoming
+speed; direct positive turbulence values are required for zero-speed inflow.
+They apply only on incoming faces through the existing RANS inlet/backflow
+path, not SA's modified-viscosity input.
+
+The mixing-length conversion follows the relations documented by OpenCFD:
+[epsilon inlet](https://doc.openfoam.com/2306/tools/processing/boundary-conditions/rtm/derived/inletOutlet/turbulentMixingLengthDissipationRateInlet/)
+and [omega inlet](https://doc.openfoam.com/2312/tools/processing/boundary-conditions/rtm/derived/inletOutlet/turbulentMixingLengthFrequencyInlet/).
+FLURSYS currently uses a fixed inlet-conversion Cmu=0.09; this is not a
+spatially varying realizable-model coefficient.
+
+### Fixed-mesh field initialization transfer
+
+The field_mapping module constructs an axis-aligned cell-bounds BVH over a
+convex source mesh. Target cell centres are queried against source cell
+half-spaces using owner-oriented face normals. The boundary tolerance is
+1e-10 times the source bounding-box diagonal (with a 1e-12 m scale floor).
+Coincident boundary hits choose the smallest source cell index deterministically.
+A detected non-convex/non-planar source cell rejects the operation.
+
+For every covered target cell, U and p/rho are copied from the containing source
+cell. This preserves the range of copied cell values, not source integrals or
+divergence. It is intentionally an initial guess: new face fluxes must be
+constructed and pressure-velocity coupling must solve the target case.
+The box initializer assigns prescribed U and p/rho by target-centre membership;
+it does not prescribe boundary conditions or alter archived results.

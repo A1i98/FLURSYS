@@ -903,3 +903,117 @@ Opening another recording is blocked while a solve is active, to keep the live
 monitor attached to its solve. When reconstructing a replacement archive, old
 samples for that plane are cleared first; an invalid archive cannot leave an old
 history displayed as the newly selected source.
+
+### Case review, failed-run diagnostics and report refresh
+
+The Solution toolbar has **Review case**. It runs canonical readiness checks,
+resolves boundary conditions, checks fatal mesh geometry, and checks enabled
+3D plane/volume intersections before the solver starts. The Reports section
+shows errors and advisories with navigation to Mesh and Setup. Mesh quality
+warnings are advisory. A successful review is not scientific validation.
+
+A failed or stopped solve can expose a **UNCONVERGED** diagnostic dataset in
+Results. It comes from a retained completed sample, not necessarily the failed
+iteration. Steady solves retain the first completed iteration and then at a
+cadence no greater than ten iterations; that cadence divides the configured disk
+checkpoint interval. Accepted transient steps retain their complete restart
+state. Success replaces the retained state with the final complete solution.
+Non-finite field arrays are rejected by the Results dataset validator.
+
+The worker saves failed-last-sample.json for failed jobs under the job's
+monitors/solve-* directory, independently of periodic checkpoint settings.
+This does not change the run status to converged. The relative artifact path is
+recorded in the run report. Select that failed run in the Browser's Runs tree
+to reopen it; the restored mesh must match the checkpoint signature exactly.
+Old failed runs without this artifact remain unavailable.
+
+Field health uses conservative face fluxes. It reports inflow/outflow,
+relative boundary imbalance (N/A for zero throughflow), maximum speed and its
+zero-based cell index, pressure range, invalid cells, and two distinct backflow
+measures: inward outlet face count and inward outlet flux divided by absolute
+outlet flux. Flux is per unit depth in 2D. The worker saves field-health.csv;
+the run report includes sampled_field_health. Its sample iteration can differ
+from the last residual. Health diagnostics do not certify convergence.
+
+Section controls include disabling the selected recording, disabling all plane
+recordings, and resetting the selected monitor's display, interval and enabled
+flag. Existing files and CAD planes are retained.
+
+Box selection supports exterior 2D edges and exterior 3D faces. Complete
+projected entities must fit inside the rectangle. In 3D this includes occluded
+exterior faces. Shift/Ctrl adds entities. Selection is tied to the active domain.
+
+Convergence and monitor-history charts keep one decoded SVG image each on the
+UI thread. Exact SVG comparison controls reuse, preventing stale charts.
+Hidden convergence charts are not rebuilt. Full histories and vector exports
+are retained. The line-profile empty state no longer erases monitor/comparison
+charts. No end-to-end speedup factor has been measured.
+
+### Numerical regression automation
+
+The numerical-regression workflow is manual/weekly, separate from build checks.
+It runs analytic source-profile refinement, selected 2D/3D cavity regressions,
+solve-review checks and existing real-Gmsh production example smoke checks,
+uploading logs even on failure. Cylinder smoke checks cover finite fields and
+mass balance; they do not establish reference Drag/Lift/Strouhal accuracy.
+Reference-error studies, grid/time refinement and interactive UI verification
+remain separate acceptance requirements.
+
+### Additional transient and turbulence controls
+
+- Solution → Time includes **Transient · adaptive BDF2 Δt**. Set initial dt,
+  additional physical steps, maximum Courant, dt bounds and growth. As with
+  other new transient paths, compile success does not imply numerical accuracy.
+- Setup → Boundaries → Incoming turbulence includes **Intensity + hydraulic
+  diameter** and **Intensity + viscosity ratio**. Intensities are fractions,
+  diameters are metres, and viscosity ratios are dimensionless. Apply the
+  incoming-turbulence settings after editing. SA still uses modified viscosity.
+- Mesh → Refinement → Inflation includes a **First-layer estimate**. Supply
+  target y+ and a friction velocity from a prior run or an external estimate.
+  The helper uses saved molecular viscosity and h1=2 y+ nu/u_tau, assuming
+  a wall-normal layer whose cell centre lies halfway through its thickness.
+  It fills the first-height draft and switches to first-height mode; apply
+  inflation separately. Inspect actual y+ after solving.
+- The estimator does not implement arbitrary 3D prism layers. That backend
+  limitation remains explicit; 2D inflation and supported sweeps are distinct.
+
+### Initializing after remeshing and patching a region
+
+Solution → Initialize now offers:
+
+- **Map selected result**: use the currently selected archived/diagnostic dataset
+  as the source and the current Workbench mesh as the target.
+- **Map VTK file**: read the supported FLURSYS legacy ASCII VTK dialect in a
+  background worker. This does not import arbitrary OpenFOAM/ParaView formats.
+- **Patch U / p inside box**: use the velocity and kinematic pressure entered
+  above the button for cell centres inside the specified world-coordinate box.
+  Outside cells retain queued initial fields; if none exist they start at zero.
+  Bounds are in metres. For XY 2D cases Z min=Z max=0 is valid.
+- **Cancel mapping**: cooperatively cancel preparation. Replacing the project or
+  initialization cancels the pending task. An old target MeshId cannot receive
+  a completed operation after remeshing.
+
+Mapping requires matching mesh dimension, coordinates and physical domain;
+there is no rotation, translation, unit conversion or pressure-reference
+conversion. Source cells must be convex with planar faces within tolerance.
+Only target-centre coverage is checked; equal domain volume or wall topology
+is not proved. All target centres must belong to source cells, otherwise the
+whole operation is rejected, preserving previous initialization. Values use
+piecewise-constant source-cell injection, without smoothing or extrapolation.
+
+Both operations initialize only U and p/rho. They reset physical time and
+iteration count. Face fluxes and thermal/turbulence initialization are rebuilt
+by the solver. They are not conservative remapping, a continuation of accepted
+physical time, or a converged result. Use exact-mesh **Load restart** for that
+different workflow.
+
+For a saved workspace, the worker atomically archives prepared initial fields
+under initialization/fields-*.json before applying them. Load restart can reopen
+this file on the exact target mesh. Project Save does not automatically queue
+that file on a later application launch. The file path and the preparation
+description are logged. Preparation runs off the UI thread; source snapshots
+copy only mesh/U/p, excluding derived display arrays. BVH construction and file
+parsing can finish their current phase before cancellation is observed.
+
+No numerical validation or interactive runtime verification of these new paths
+was performed in this implementation step.
