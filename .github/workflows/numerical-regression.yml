@@ -1,0 +1,42 @@
+name: Numerical smoke regressions
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 3 * * 0"
+permissions:
+  contents: read
+concurrency:
+  group: numerical-regression-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  numerical:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: flursys-numerical
+      - run: sudo apt-get update && sudo apt-get install --yes gmsh
+      - name: Analytic and closed-cavity regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p numerical-logs
+          for filter in solve_review poiseuille_source_profile_converges_under_refinement low_reynolds_closed_cavity_simple_converges_without_wall_leakage thin_three_dimensional_tetrahedral_cavity_remains_bounded_and_converges; do
+            cargo test -p flursys --lib --locked "$filter" -- --nocapture --test-threads=1 2>&1 | tee "numerical-logs/$filter.log"
+          done
+      - name: Production channel, cavity and cylinder smoke checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test -p flursys --test example_integration --locked -- --ignored --nocapture --test-threads=1 2>&1 | tee numerical-logs/production-examples.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: numerical-regression-logs
+          path: numerical-logs/
+          if-no-files-found: warn
