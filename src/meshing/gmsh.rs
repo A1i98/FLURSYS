@@ -242,7 +242,20 @@ pub struct GmshMesher {
     executable: GmshExecutable,
 }
 
+static EXECUTABLE_OVERRIDE: std::sync::RwLock<Option<PathBuf>> = std::sync::RwLock::new(None);
 impl GmshMesher {
+    pub fn set_executable_override(path: Option<PathBuf>) {
+        if let Ok(mut selected) = EXECUTABLE_OVERRIDE.write() {
+            *selected = path;
+        }
+    }
+    fn auto_executable() -> PathBuf {
+        EXECUTABLE_OVERRIDE
+            .read()
+            .ok()
+            .and_then(|p| p.clone())
+            .unwrap_or_else(|| PathBuf::from("gmsh"))
+    }
     pub fn auto() -> Self {
         Self {
             executable: GmshExecutable::Auto,
@@ -482,14 +495,14 @@ impl GmshMesher {
 
     fn command(&self) -> Command {
         match &self.executable {
-            GmshExecutable::Auto => Command::new("gmsh"),
+            GmshExecutable::Auto => Command::new(Self::auto_executable()),
             GmshExecutable::Path(path) => Command::new(path),
         }
     }
 
     fn executable_label(&self) -> PathBuf {
         match &self.executable {
-            GmshExecutable::Auto => PathBuf::from("gmsh"),
+            GmshExecutable::Auto => Self::auto_executable(),
             GmshExecutable::Path(path) => path.clone(),
         }
     }

@@ -4,7 +4,7 @@ use crate::{
     SolveControl,
 };
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicUsize, Ordering},
     mpsc::{self, Receiver},
     Arc, Mutex,
 };
@@ -41,6 +41,9 @@ pub enum JobProgress {
         values: [f64; 4],
     },
     Started,
+    StartedAt {
+        iteration: usize,
+    },
     Message(String),
     Iteration {
         current: usize,
@@ -85,6 +88,7 @@ pub struct WorkbenchJobExecutor {
     paused: Arc<AtomicBool>,
     restart: Option<std::path::PathBuf>,
     checkpoint_every: usize,
+    completed: Arc<AtomicUsize>,
     retained: Arc<Mutex<Option<(crate::MeshId, crate::IncompressibleInitialConditions)>>>,
 }
 
@@ -111,14 +115,19 @@ impl WorkbenchJobExecutor {
             paused: Arc::new(AtomicBool::new(false)),
             restart: None,
             checkpoint_every: 100,
+            completed: Arc::new(AtomicUsize::new(0)),
             retained: Arc::new(Mutex::new(None)),
         }
     }
 
+    pub fn completed_iterations(&self) -> usize {
+        self.completed.load(Ordering::Acquire)
+    }
     pub fn set_checkpoint_interval(&mut self, every: usize) {
         self.checkpoint_every = every.min(1_000_000);
     }
     pub fn set_restart(&mut self, path: Option<std::path::PathBuf>) {
+        self.completed.store(0, Ordering::Release);
         self.restart = path;
         *self.retained.lock().unwrap() = None;
     }
@@ -127,8 +136,22 @@ impl WorkbenchJobExecutor {
         mesh: crate::MeshId,
         fields: crate::IncompressibleInitialConditions,
     ) {
+        self.completed.store(0, Ordering::Release);
         self.restart = None;
         *self.retained.lock().unwrap() = Some((mesh, fields));
+    }
+    pub fn set_continuation_fields(
+        &mut self,
+        mesh: crate::MeshId,
+        fields: crate::IncompressibleInitialConditions,
+        completed: usize,
+    ) {
+        // An explicitly selected checkpoint takes precedence over the visible result.
+        if self.restart.is_some() {
+            return;
+        }
+        self.set_initial_fields(mesh, fields);
+        self.completed.store(completed, Ordering::Release);
     }
     pub fn set_paused(&self, paused: bool) {
         self.paused.store(paused, Ordering::Release);
@@ -190,16 +213,21 @@ impl WorkbenchJobExecutor {
         if let Some((mesh, fields)) = self.retained.lock().unwrap().as_ref() {
             if *mesh == case.mesh.id() {
                 case.initial_conditions = fields.clone();
+            } else {
+                self.completed.store(0, Ordering::Release);
             }
         }
         if let Some(path) = self.restart.as_ref() {
-            case.initial_conditions = crate::workbench::checkpoint::load(path, &case.mesh)
+            let (iteration, fields) = crate::workbench::checkpoint::load(path, &case.mesh)
                 .map_err(|_| {
                     "checkpoint cannot be loaded for this mesh; choose it again or Initialize"
-                })?
-                .1;
+                })?;
+            self.completed.store(iteration, Ordering::Release);
+            case.initial_conditions = fields;
             self.restart = None;
         }
+        let offset = self.completed_iterations();
+        let completed_counter = self.completed.clone();
         let physical = case.solver.time.is_transient();
         let checkpoint_every = if folder.as_os_str().is_empty() {
             0
@@ -216,7 +244,7 @@ impl WorkbenchJobExecutor {
                 let completed_time=sample_time.clone();
                 let monitor_case=case.clone();let monitor_sender=sender.clone();
                 let message_sender=sender.clone();
-                let _ = sender.send(WorkbenchJobEvent::SolveProgress(JobProgress::Started));
+                let _ = sender.send(WorkbenchJobEvent::SolveProgress(JobProgress::StartedAt { iteration: offset }));
                 let progress_sender = sender.clone();
                 let control_cancellation = cancellation.clone();
                 let metrics_sender = sender.clone();
@@ -225,8 +253,8 @@ impl WorkbenchJobExecutor {
                     move |iteration, max, residual| {
                         let _ = progress_sender.send(WorkbenchJobEvent::SolveProgress(
                             JobProgress::Iteration {
-                                current: iteration,
-                                max,
+                                current: offset.saturating_add(iteration),
+                                max: offset.saturating_add(max),
                                 residual: Some(residual),
                             },
                         ));
@@ -234,7 +262,7 @@ impl WorkbenchJobExecutor {
                 )
                 .with_metrics(move |iteration, values| {
                     let _ = metrics_sender.send(WorkbenchJobEvent::SolveProgress(
-                        JobProgress::Metrics { iteration, values },
+                        JobProgress::Metrics { iteration: offset.saturating_add(iteration), values },
                     ));
                 });
                 let plans = planes
@@ -280,6 +308,8 @@ impl WorkbenchJobExecutor {
                 let iteration_retained=retained.clone();
                 let iteration_mesh=final_checkpoint_mesh.clone();let iteration_path=final_checkpoint_path.clone();let iteration_context=final_checkpoint_context.clone();let iteration_sender=sender.clone();
                 let completed_retained=retained.clone();
+                let step_counter=completed_counter.clone();
+                let final_counter=completed_counter.clone();
                 let completed_mesh=final_checkpoint_mesh.clone();
                 let completed_path=final_checkpoint_path.clone();
                 let completed_context=final_checkpoint_context.clone();
@@ -288,6 +318,7 @@ impl WorkbenchJobExecutor {
 
                 let control = control.with_message(move |message|{let _=message_sender.send(WorkbenchJobEvent::SolveProgress(JobProgress::Message(message)));});
                 let control = control.with_fields(move |iteration, velocity, pressure| {
+                    let iteration = offset.saturating_add(iteration);
                     if iteration==1 || iteration%10==0 {
                         if let Ok(walls)=crate::workbench::wall_reports::reports(&monitor_case,velocity,pressure,false) {let _=monitor_sender.send(WorkbenchJobEvent::WallReports{iteration,physical_time:*sample_time.lock().unwrap(),reports:walls});}
                     }
@@ -312,6 +343,8 @@ impl WorkbenchJobExecutor {
                     Ok(())
                 });
                 let control=control.with_restart_state(checkpoint_every,move |index,initial| {
+                    let index = offset.saturating_add(index);
+                    completed_counter.store(index, Ordering::Release);
                     if let Some(mesh)=iteration_mesh.as_ref().filter(|_|index==1||index%checkpoint_every==0) {
                         if let Err(error)=crate::workbench::checkpoint::write_restart(&iteration_path,mesh,index,&initial,false,&iteration_context) {
                             let _=iteration_sender.send(WorkbenchJobEvent::SolveProgress(JobProgress::Message(format!("Restart checkpoint failed: {error}"))));
@@ -320,6 +353,8 @@ impl WorkbenchJobExecutor {
                     *iteration_retained.lock().unwrap()=Some((retained_mesh,initial));Ok(())
                 });
                 let control=control.with_completed_step(move |index,solution| {
+                    let index = offset.saturating_add(index);
+                    step_counter.store(index, Ordering::Release);
                     if matches!(completed_case.solver.turbulence.wall_treatment,crate::turbulence::WallTreatment::EquilibriumKEpsilon|crate::turbulence::WallTreatment::EquilibriumKOmega) {
                         match crate::workbench::wall_reports::reports_with_turbulence(&completed_case,&solution.velocity,&solution.pressure,solution.turbulence.as_ref(),false){
                             Ok(reports)=>{
@@ -339,8 +374,13 @@ impl WorkbenchJobExecutor {
                     if let Some(time)=solution.physical_time {let _=completed_sender.send(WorkbenchJobEvent::SolveProgress(JobProgress::Message(format!("Completed physical time step {index}: t={time:.9e} s, dt={:.6e} s, nonlinear correctors={}, max Co={:.4e}, rejected steps={}",solution.last_time_step.unwrap_or(0.0),solution.report.outer_iterations,solution.max_courant.unwrap_or(0.0),solution.rejected_time_steps))));}
                     Ok(())
                 });
-                let result = solve_incompressible_with_control(&case, &control);
+                let mut result = solve_incompressible_with_control(&case, &control);
+                if let Ok(solution) = &mut result {
+                    if physical { solution.completed_time_steps = offset.saturating_add(solution.completed_time_steps); }
+                    else { solution.report.outer_iterations = offset.saturating_add(solution.report.outer_iterations); }
+                }
                 if let Ok(solution) = &result {
+                    final_counter.store(if physical { solution.completed_time_steps } else { solution.report.outer_iterations }, Ordering::Release);
                     if let Some(final_checkpoint_mesh) = final_checkpoint_mesh.as_ref() {
                         if let Err(error) = crate::workbench::checkpoint::write_solution(
                             &final_checkpoint_path, final_checkpoint_mesh,
@@ -514,6 +554,7 @@ mod tests {
             paused: Arc::new(AtomicBool::new(false)),
             restart: None,
             checkpoint_every: 100,
+            completed: Arc::new(AtomicUsize::new(0)),
             retained: Arc::new(Mutex::new(None)),
         };
         sender
