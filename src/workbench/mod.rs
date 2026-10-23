@@ -7,6 +7,8 @@
 pub mod boundary_reports;
 pub mod checkpoint;
 pub mod diagnostics;
+pub mod field_mapping;
+pub mod solve_review;
 pub mod editor;
 pub mod examples;
 pub mod legacy_import;

@@ -71,6 +71,7 @@ pub enum WorkbenchJobEvent {
     SolveProgress(JobProgress),
     SolveCompleted(Result<IncompressibleSolution, IncompressibleSolveError>),
     PlaneSample(crate::workbench::plane_monitor::PlaneSnapshot),
+    Health(crate::workbench::solve_review::SolveHealth),
     WallReports {
         iteration: usize,
         physical_time: Option<f64>,
@@ -120,6 +121,10 @@ impl WorkbenchJobExecutor {
         }
     }
 
+    pub fn retained_fields(&self, mesh: crate::MeshId) -> Option<(usize, crate::IncompressibleInitialConditions)> {
+        self.retained.lock().ok()?.as_ref().filter(|(id,_)|*id==mesh)
+            .map(|(_,fields)|(self.completed_iterations(),fields.clone()))
+    }
     pub fn completed_iterations(&self) -> usize {
         self.completed.load(Ordering::Acquire)
     }
@@ -210,11 +215,14 @@ impl WorkbenchJobExecutor {
         if self.is_running() {
             return Err("a workbench job is already running");
         }
-        if let Some((mesh, fields)) = self.retained.lock().unwrap().as_ref() {
-            if *mesh == case.mesh.id() {
-                case.initial_conditions = fields.clone();
-            } else {
-                self.completed.store(0, Ordering::Release);
+        {
+            let mut retained=self.retained.lock().unwrap();
+            if let Some((mesh, fields))=retained.as_ref() {
+                if *mesh==case.mesh.id() {case.initial_conditions=fields.clone();}
+                else {
+                    self.completed.store(0,Ordering::Release);
+                    *retained=None;
+                }
             }
         }
         if let Some(path) = self.restart.as_ref() {
@@ -265,9 +273,15 @@ impl WorkbenchJobExecutor {
                         JobProgress::Metrics { iteration: offset.saturating_add(iteration), values },
                     ));
                 });
+                let volume_monitors = case.mesh.dimension() == crate::MeshDimension::ThreeD;
+                if !volume_monitors && planes.iter().any(|p| p.enabled) {
+                    let _ = sender.send(WorkbenchJobEvent::SolveProgress(JobProgress::Message(
+                        "3D flow-plane recording skipped for this 2D mesh. Use the full-domain results display; saved plane settings are retained for 3D cases.".into()
+                    )));
+                }
                 let plans = planes
                     .into_iter()
-                    .filter(|p| p.enabled)
+                    .filter(|p| p.enabled && volume_monitors)
                     .map(|p| {
                         let cells = crate::workbench::plane_monitor::intersect(&case.mesh, &p)?;
                         if cells.is_empty() {
@@ -294,7 +308,7 @@ impl WorkbenchJobExecutor {
                 let plans = Arc::new(plans);
                 let observer_plans = plans.clone();
                 let recording_folder = folder.clone();
-                let checkpoint_mesh = (checkpoint_every > 0).then(|| {
+                let checkpoint_mesh = (!folder.as_os_str().is_empty()).then(|| {
                     Arc::new(crate::workbench::checkpoint::MeshSignature::new(&case.mesh))
                 });
                 let checkpoint_path = folder.join("checkpoint.json");
@@ -342,10 +356,17 @@ impl WorkbenchJobExecutor {
                     }
                     Ok(())
                 });
-                let control=control.with_restart_state(checkpoint_every,move |index,initial| {
+                let health_case=case.clone();
+                // Retention cadence divides the configured disk cadence, including odd intervals.
+                let retention_every=if checkpoint_every==0 {10} else {(1..=10).rev().find(|n|checkpoint_every%n==0).unwrap_or(1)};
+                let control=control.with_restart_state(retention_every,move |index,initial| {
+                    let local_index=index;
                     let index = offset.saturating_add(index);
                     completed_counter.store(index, Ordering::Release);
-                    if let Some(mesh)=iteration_mesh.as_ref().filter(|_|index==1||index%checkpoint_every==0) {
+                    if let Some(health)=crate::workbench::solve_review::health(&health_case,&initial,index) {
+                        let _=iteration_sender.send(WorkbenchJobEvent::Health(health));
+                    }
+                    if let Some(mesh)=iteration_mesh.as_ref().filter(|_|checkpoint_every>0 && (local_index==1||local_index%checkpoint_every==0)) {
                         if let Err(error)=crate::workbench::checkpoint::write_restart(&iteration_path,mesh,index,&initial,false,&iteration_context) {
                             let _=iteration_sender.send(WorkbenchJobEvent::SolveProgress(JobProgress::Message(format!("Restart checkpoint failed: {error}"))));
                         }
@@ -353,6 +374,7 @@ impl WorkbenchJobExecutor {
                     *iteration_retained.lock().unwrap()=Some((retained_mesh,initial));Ok(())
                 });
                 let control=control.with_completed_step(move |index,solution| {
+                    let local_index=index;
                     let index = offset.saturating_add(index);
                     step_counter.store(index, Ordering::Release);
                     if matches!(completed_case.solver.turbulence.wall_treatment,crate::turbulence::WallTreatment::EquilibriumKEpsilon|crate::turbulence::WallTreatment::EquilibriumKOmega) {
@@ -366,7 +388,7 @@ impl WorkbenchJobExecutor {
 
                     *completed_time.lock().unwrap()=solution.physical_time;
                     *completed_retained.lock().unwrap()=Some((retained_mesh,solution.restart()));
-                    if let Some(mesh)=completed_mesh.as_ref().filter(|_|index==1||index%checkpoint_every==0) {
+                    if let Some(mesh)=completed_mesh.as_ref().filter(|_|checkpoint_every>0 && (local_index==1||local_index%checkpoint_every==0)) {
                         if let Err(error)=crate::workbench::checkpoint::write_solution(&completed_path,mesh,index,solution,&completed_context) {
                             let _=completed_sender.send(WorkbenchJobEvent::SolveProgress(JobProgress::Message(format!("Complete-state checkpoint failed: {error}"))));
                         }
@@ -380,8 +402,9 @@ impl WorkbenchJobExecutor {
                     else { solution.report.outer_iterations = offset.saturating_add(solution.report.outer_iterations); }
                 }
                 if let Ok(solution) = &result {
+                    *retained.lock().unwrap()=Some((retained_mesh,solution.restart()));
                     final_counter.store(if physical { solution.completed_time_steps } else { solution.report.outer_iterations }, Ordering::Release);
-                    if let Some(final_checkpoint_mesh) = final_checkpoint_mesh.as_ref() {
+                    if let Some(final_checkpoint_mesh) = final_checkpoint_mesh.as_ref().filter(|_|checkpoint_every>0) {
                         if let Err(error) = crate::workbench::checkpoint::write_solution(
                             &final_checkpoint_path, final_checkpoint_mesh,
                             if physical {solution.completed_time_steps}else{solution.report.outer_iterations},
@@ -421,6 +444,38 @@ impl WorkbenchJobExecutor {
                             }
                         }
                     }
+                }
+                {
+                let retained_guard=retained.lock().unwrap();
+                if let Some((_,initial))=retained_guard.as_ref() {
+                    let index=final_counter.load(Ordering::Acquire);
+                    if let Some(health)=crate::workbench::solve_review::health(&case,&initial,index) {
+                        if !folder.as_os_str().is_empty() {
+                            let path=folder.join("field-health.csv");
+                            let saved=(|| -> std::io::Result<()> {
+                                std::fs::create_dir_all(&folder)?;
+                                let temporary=path.with_extension("csv.tmp");
+                                std::fs::write(&temporary,health.csv())?;
+                                std::fs::rename(temporary,&path)
+                            })();
+                            if let Err(e)=saved {let _=sender.send(WorkbenchJobEvent::SolveProgress(JobProgress::Message(format!("Field-health CSV failed: {e}"))));}
+                        }
+                        let _=sender.send(WorkbenchJobEvent::Health(health));
+                    }
+                }
+                if result.is_err() {
+                    if let Some((_,initial))=retained_guard.as_ref() {
+                        if let Some(signature)=final_checkpoint_mesh.as_ref() {
+                            let path=final_checkpoint_path.with_file_name("failed-last-sample.json");
+                            let index=final_counter.load(Ordering::Acquire);
+                            if let Err(e)=crate::workbench::checkpoint::write_restart(&path,signature,index,&initial,physical,&final_checkpoint_context) {
+                                let _=sender.send(WorkbenchJobEvent::SolveProgress(JobProgress::Message(format!("Failed-solve sample could not be archived: {e}"))));
+                            } else {
+                                let _=sender.send(WorkbenchJobEvent::SolveProgress(JobProgress::Message(format!("UNCONVERGED retained sample {index}: {}",path.display()))));
+                            }
+                        }
+                    }
+                }
                 }
                 let cancelled = cancellation.is_cancelled();
                 let _ = sender.send(WorkbenchJobEvent::SolveCompleted(result));
