@@ -38,6 +38,11 @@ pub enum TimeIntegration {
         steps: usize,
         controls: AdaptiveTimeStep,
     },
+    AdaptiveBackward {
+        dt: f64,
+        steps: usize,
+        controls: AdaptiveTimeStep,
+    },
 }
 impl TimeIntegration {
     pub fn is_transient(self) -> bool {
@@ -48,12 +53,15 @@ impl TimeIntegration {
             Self::Steady => None,
             Self::Euler { dt, steps }
             | Self::Backward { dt, steps }
-            | Self::AdaptiveEuler { dt, steps, .. } => Some((dt, steps)),
+            | Self::AdaptiveEuler { dt, steps, .. }
+            | Self::AdaptiveBackward { dt, steps, .. } => Some((dt, steps)),
         }
     }
     pub fn adaptive(self) -> Option<AdaptiveTimeStep> {
         match self {
-            Self::AdaptiveEuler { controls, .. } => Some(controls),
+            Self::AdaptiveEuler { controls, .. } | Self::AdaptiveBackward { controls, .. } => {
+                Some(controls)
+            }
             _ => None,
         }
     }
@@ -182,7 +190,10 @@ pub(super) fn solve_time_loop(
         cb(format!("Transient coupling {:?}: up to {} outer iterations per time step, {} inner pressure corrector(s), {} extra non-orthogonal pass(es), limiter {}. Physical history is frozen until acceptance.",
             coupling.algorithm,case.solver.max_outer_iterations,coupling.pressure_correctors,coupling.non_orthogonal_correctors,coupling.non_orthogonal_limiter));
     }
-    let backward = matches!(case.solver.time, TimeIntegration::Backward { .. });
+    let backward = matches!(
+        case.solver.time,
+        TimeIntegration::Backward { .. } | TimeIntegration::AdaptiveBackward { .. }
+    );
     if backward {
         if let Some(cb) = control.and_then(|c| c.on_message.as_ref()) {
             cb("BDF2: first step uses Euler; a restarted invocation rebuilds two-level history with one Euler step.".into());
@@ -280,15 +291,39 @@ pub(super) fn solve_time_loop(
                 || control.is_some_and(SolveControl::cancelled),
                 |_, _, _| {},
             );
+            // Variable-step BDF2: a0 U[n+1] = a1 U[n] + a2 U[n-1] + dt RHS.
+            // A restart has only one historical level and therefore starts with Euler.
+            let (effective_dt, history_weights) = if backward && older.is_some() {
+                let old_dt = match &step_case.initial_conditions {
+                    IncompressibleInitialConditions::Restart {
+                        last_dt: Some(v), ..
+                    } => *v,
+                    _ => dt,
+                };
+                let ratio = dt / old_dt;
+                if !ratio.is_finite() || ratio <= 0.0 || ratio >= 1.0 + 2.0_f64.sqrt() {
+                    return Err(SimpleError::PhysicalBoundary(
+                        "BDF2 step ratio must be positive and below 1+sqrt(2)".into(),
+                    )
+                    .into());
+                }
+                let a0 = (1.0 + 2.0 * ratio) / (1.0 + ratio);
+                (
+                    dt / a0,
+                    [(1.0 + ratio) / a0, -ratio * ratio / ((1.0 + ratio) * a0)],
+                )
+            } else {
+                (dt, [1.0, 0.0])
+            };
             let mut result = solve_incompressible_on_pool(
                 &step_case,
                 Some(&inner),
-                Some(if backward && older.is_some() {
-                    2.0 * dt / 3.0
+                Some(effective_dt),
+                if backward {
+                    older.as_ref().map(|old| (old, history_weights))
                 } else {
-                    dt
-                }),
-                if backward { older.as_ref() } else { None },
+                    None
+                },
             )?;
             initial_continuity.get_or_insert(result.report.initial_continuity_rms);
             correctors += result.report.outer_iterations;

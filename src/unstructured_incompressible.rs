@@ -942,7 +942,7 @@ fn solve_incompressible_on_pool(
     case: &IncompressibleCase,
     control: Option<&SolveControl<'_>>,
     time_step: Option<f64>,
-    older: Option<&IncompressibleInitialConditions>,
+    older: Option<(&IncompressibleInitialConditions, [f64;2])>,
 ) -> Result<IncompressibleSolution, IncompressibleSolveError> {
     if let Some(e) = &case.solver.equations {
         e.validate().map_err(SimpleError::PhysicalBoundary)?;
@@ -1136,7 +1136,7 @@ fn solve_incompressible_on_pool(
     }
     let mut temporal_velocity = time_step.map(|_| state.velocity.clone());
     let mut temporal_flux = time_step.map(|_| state.face_flux.clone());
-    if let Some(older) = older {
+    if let Some((older, weights)) = older {
         let (u, phi, t, turb) = match older {
             IncompressibleInitialConditions::Restart {
                 velocity,
@@ -1162,19 +1162,19 @@ fn solve_incompressible_on_pool(
         };
         if let Some(v) = &mut temporal_velocity {
             for (a, b) in v.values_mut().iter_mut().zip(u.values()) {
-                *a = *a * (4.0 / 3.0) - *b / 3.0;
+                *a = *a * weights[0] + *b * weights[1];
             }
         }
         if let Some(v) = &mut temporal_flux {
             for (a, b) in v.values_mut().iter_mut().zip(phi.values()) {
-                *a = *a * (4.0 / 3.0) - *b / 3.0;
+                *a = *a * weights[0] + *b * weights[1];
             }
         }
         if let Some(c) = &thermal {
-            c.lock().unwrap().backward_old(t.as_ref());
+            c.lock().unwrap().backward_old(t.as_ref(), weights);
         }
         if let Some(c) = &closure {
-            c.lock().unwrap().backward_old(turb.as_ref());
+            c.lock().unwrap().backward_old(turb.as_ref(), weights);
         }
     }
     options.time_step = time_step;

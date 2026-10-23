@@ -205,10 +205,10 @@ impl Closure {
             relative_change: f64::INFINITY,
         })
     }
-    pub fn backward_old(&mut self, older: Option<&CellField<f64>>) {
+    pub fn backward_old(&mut self, older: Option<&CellField<f64>>, weights: [f64;2]) {
         for i in 0..self.old.values().len() {
             let b = older.map_or(self.config.initial_temperature, |t| t[i]);
-            self.old[i] = (4.0 * self.old[i] - b) / 3.0;
+            self.old[i] = weights[0] * self.old[i] + weights[1] * b;
         }
     }
     pub fn field(&self) -> CellField<f64> {
