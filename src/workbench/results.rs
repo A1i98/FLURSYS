@@ -23,6 +23,9 @@ pub enum ResultFieldKind {
     VelocityZ,
     VorticityMagnitude,
     VelocityDivergence,
+    QCriterion,
+    FlowType,
+    StrainRate,
     TurbulentK,
     SpecificDissipation,
     TurbulentViscosity,
@@ -39,6 +42,9 @@ impl ResultFieldKind {
             Self::VelocityZ => "Velocity Z",
             Self::VorticityMagnitude => "Reconstructed vorticity magnitude",
             Self::VelocityDivergence => "Reconstructed velocity divergence",
+            Self::QCriterion => "Reconstructed Q invariant (1/s²)",
+            Self::FlowType => "Reconstructed flow type (+1 rotation, -1 strain)",
+            Self::StrainRate => "Reconstructed strain rate (1/s)",
             Self::TurbulentK => "Turbulent kinetic energy k (m2/s2)",
             Self::SpecificDissipation => "Specific dissipation omega (1/s)",
             Self::TurbulentViscosity => "Turbulent viscosity nu_t (m2/s)",
@@ -66,6 +72,9 @@ pub struct ResultDataset {
     velocity_components: [Vec<f64>; 3],
     vorticity: Vec<f64>,
     divergence: Vec<f64>,
+    q_criterion: Vec<f64>,
+    flow_type: Vec<f64>,
+    strain_rate: Vec<f64>,
     turbulence: Option<[Vec<f64>; 3]>,
     temperature: Option<Vec<f64>>,
 }
@@ -104,12 +113,16 @@ impl ResultDataset {
                 "velocity magnitude is non-finite".into(),
             ));
         }
-        let (vorticity, divergence) = derivatives::velocity_derivatives(mesh, &velocity);
+        let (vorticity, divergence, q_criterion, flow_type, strain_rate) =
+            derivatives::velocity_derivatives(mesh, &velocity);
         Ok(Self {
             turbulence: None,
             temperature: None,
             vorticity,
             divergence,
+            q_criterion,
+            flow_type,
+            strain_rate,
             run_id,
             mesh: mesh.clone(),
             pressure,
@@ -182,6 +195,9 @@ impl ResultDataset {
             ResultFieldKind::VelocityZ => &self.velocity_components[2],
             ResultFieldKind::VorticityMagnitude => &self.vorticity,
             ResultFieldKind::VelocityDivergence => &self.divergence,
+            ResultFieldKind::QCriterion => &self.q_criterion,
+            ResultFieldKind::FlowType => &self.flow_type,
+            ResultFieldKind::StrainRate => &self.strain_rate,
             ResultFieldKind::TurbulentK => {
                 self.turbulence.as_ref().map_or(&[], |v| v[0].as_slice())
             }
@@ -235,13 +251,13 @@ impl ResultDataset {
         let mut file = std::io::BufWriter::new(std::fs::File::create(path)?);
         writeln!(
             file,
-            "cell,x,y,z,cell_measure,p_over_rho,ux,uy,uz,speed,vorticity_lsq,div_u_lsq,turbulent_k,specific_dissipation,turbulent_viscosity,temperature_K"
+            "cell,x,y,z,cell_measure,p_over_rho,ux,uy,uz,speed,vorticity_lsq,div_u_lsq,turbulent_k,specific_dissipation,turbulent_viscosity,temperature_K,q_invariant_lsq_s_minus2,flow_type_lsq,strain_rate_lsq_s_minus1"
         )?;
         for (index, cell) in self.mesh.cells().iter().enumerate() {
             let u = self.velocity[index];
             writeln!(
                 file,
-                "{index},{:.17e},{:.17e},{:.17e},{:.17e},{:.17e},{:.17e},{:.17e},{:.17e},{:.17e},{:.17e},{:.17e},{},{},{},{}",
+                "{index},{:.17e},{:.17e},{:.17e},{:.17e},{:.17e},{:.17e},{:.17e},{:.17e},{:.17e},{:.17e},{:.17e},{},{},{},{},{:.17e},{:.17e},{:.17e}",
                 cell.center.x,
                 cell.center.y,
                 cell.center.z,
@@ -254,7 +270,7 @@ impl ResultDataset {
                 self.turbulence.as_ref().and_then(|v|v[0].get(index)).map(|x|format!("{x:.17e}")).unwrap_or_default(),
                 self.turbulence.as_ref().and_then(|v|v[1].get(index)).map(|x|format!("{x:.17e}")).unwrap_or_default(),
                 self.turbulence.as_ref().and_then(|v|v[2].get(index)).map(|x|format!("{x:.17e}")).unwrap_or_default(),
-                self.temperature.as_ref().and_then(|v|v.get(index)).map(|x|format!("{x:.17e}")).unwrap_or_default()
+                self.temperature.as_ref().and_then(|v|v.get(index)).map(|x|format!("{x:.17e}")).unwrap_or_default(),self.q_criterion[index],self.flow_type[index],self.strain_rate[index]
             )?;
         }
         file.flush()
@@ -285,6 +301,9 @@ pub struct ResultRenderCache {
     velocity_components: [Vec<f64>; 3],
     vorticity: Vec<f64>,
     divergence: Vec<f64>,
+    q_criterion: Vec<f64>,
+    flow_type: Vec<f64>,
+    strain_rate: Vec<f64>,
     turbulence: Option<[Vec<f64>; 3]>,
     temperature: Option<Vec<f64>>,
     face_owners: Vec<usize>,
@@ -305,6 +324,9 @@ impl ResultRenderCache {
             velocity_components: dataset.velocity_components.clone(),
             vorticity: dataset.vorticity.clone(),
             divergence: dataset.divergence.clone(),
+            q_criterion: dataset.q_criterion.clone(),
+            flow_type: dataset.flow_type.clone(),
+            strain_rate: dataset.strain_rate.clone(),
             turbulence: dataset.turbulence.clone(),
             temperature: dataset.temperature.clone(),
             face_owners: dataset.mesh.faces().iter().map(|face| face.owner).collect(),
@@ -342,6 +364,9 @@ impl ResultRenderCache {
             ResultFieldKind::VelocityZ => self.velocity_components[2].get(cell).copied(),
             ResultFieldKind::VorticityMagnitude => self.vorticity.get(cell).copied(),
             ResultFieldKind::VelocityDivergence => self.divergence.get(cell).copied(),
+            ResultFieldKind::QCriterion => self.q_criterion.get(cell).copied(),
+            ResultFieldKind::FlowType => self.flow_type.get(cell).copied(),
+            ResultFieldKind::StrainRate => self.strain_rate.get(cell).copied(),
             ResultFieldKind::TurbulentK => self
                 .turbulence
                 .as_ref()

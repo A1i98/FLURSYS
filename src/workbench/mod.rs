@@ -15,10 +15,13 @@ pub mod mesh_storage;
 pub mod mesh_viewport;
 pub mod picking;
 pub mod plane_monitor;
+pub mod plane_integrals;
+pub mod plane_statistics;
 pub mod project;
 mod result_slice;
 pub mod results;
 pub mod selection;
+pub mod series_plot;
 pub mod session;
 pub mod wall_reports;
 

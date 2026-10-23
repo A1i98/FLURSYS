@@ -2,7 +2,10 @@
 //! fluxes are present in the artifact: these are spatial LSQ reconstructions,
 //! not the solver's conservative continuity residual or wall-vorticity values.
 use crate::{MeshDimension, UnstructuredMesh, Vec3};
-pub(super) fn velocity_derivatives(mesh: &UnstructuredMesh, u: &[Vec3]) -> (Vec<f64>, Vec<f64>) {
+pub(super) fn velocity_derivatives(
+    mesh: &UnstructuredMesh,
+    u: &[Vec3],
+) -> (Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>) {
     let mut neighbors = vec![Vec::new(); mesh.cell_count()];
     for face in mesh.faces() {
         if let Some(n) = face.neighbour {
@@ -12,6 +15,9 @@ pub(super) fn velocity_derivatives(mesh: &UnstructuredMesh, u: &[Vec3]) -> (Vec<
     }
     let mut curl = Vec::with_capacity(u.len());
     let mut divergence = Vec::with_capacity(u.len());
+    let mut q = Vec::with_capacity(u.len());
+    let mut flow_type = Vec::with_capacity(u.len());
+    let mut strain_rate = Vec::with_capacity(u.len());
     for (i, adjacent) in neighbors.iter().enumerate() {
         let mut stencil = adjacent.clone();
         for &j in adjacent {
@@ -69,9 +75,37 @@ pub(super) fn velocity_derivatives(mesh: &UnstructuredMesh, u: &[Vec3]) -> (Vec<
             rhs[0][1] - rhs[1][0],
         );
         curl.push(rotation.norm());
-        divergence.push(rhs[0][0] + rhs[1][1] + rhs[2][2]);
+        let trace = rhs[0][0] + rhs[1][1] + rhs[2][2];
+        divergence.push(trace);
+        // Second invariant of the reconstructed velocity gradient, as defined
+        // by OpenFOAM Q. For divergence-free flow this is (|Omega|²-|S|²)/2.
+        let trace_square: f64 = (0..3)
+            .flat_map(|r| (0..3).map(move |c| rhs[r][c] * rhs[c][r]))
+            .sum();
+        q.push(0.5 * (trace * trace - trace_square));
+        let mut strain_squared = 0.0;
+        let mut dev_norm_squared = 0.0;
+        let mut dev_square_trace = 0.0;
+        for r in 0..3 {
+            for c in 0..3 {
+                let sym = 0.5 * (rhs[r][c] + rhs[c][r]);
+                strain_squared += sym * sym;
+                let diagonal = if r == c { trace / 3.0 } else { 0.0 };
+                let a = rhs[r][c] - diagonal;
+                let b = rhs[c][r] - diagonal;
+                dev_norm_squared += a * a;
+                dev_square_trace += a * b;
+            }
+        }
+        strain_rate.push((2.0 * strain_squared).sqrt());
+        // OpenFOAM-dev flowType convention: +1 rotation, -1 strain, 0 shear.
+        flow_type.push(if dev_norm_squared > 1e-150 {
+            (-dev_square_trace / dev_norm_squared).clamp(-1.0, 1.0)
+        } else {
+            0.0
+        });
     }
-    (curl, divergence)
+    (curl, divergence, q, flow_type, strain_rate)
 }
 
 #[cfg(test)]
@@ -102,7 +136,7 @@ mod tests {
                 )
             })
             .collect::<Vec<_>>();
-        let (curl, div) = velocity_derivatives(&mesh, &velocity);
+        let (curl, div, _, _, _) = velocity_derivatives(&mesh, &velocity);
         for value in curl {
             assert!((value - 4.0).abs() < 1e-9);
         }
