@@ -1326,3 +1326,50 @@ final outlet backflow validation remains active. A one-cell assembly regression
 checks its diagonal and source. The existing over-relaxed pressure operator and dimensional gradient choices
 are retained. The layered channel example remains a failing regression; this
 update does not establish stability on its anisotropic boundary-layer mesh.
+
+### Archived-field rotation/strain diagnostics
+
+The post-processing velocity gradient G is reconstructed from the archived cell
+velocities with the existing neighbour LSQ stencil and regularization, independently
+of the solver assembly. With S=(G+G^T)/2, the reported strain rate is
+`sqrt(2 S:S)` in s^-1, including any isotropic expansion component.
+
+The flow-type convention follows the inspected OpenFOAM-dev implementation:
+D=G-tr(G)I/3 and `flowType=-tr(D D)/(D:D)`. Here `D:D` denotes the Frobenius norm
+squared, whereas `tr(D D)` uses matrix multiplication. Rotation has index +1,
+pure deviatoric strain -1, simple shear 0. The result is clamped to [-1,1] for
+roundoff; it is set to zero when D:D <= 1e-150. This is not the alternate
+`(|S|-|Omega|)/(|S|+|Omega|)` convention. Pure isotropic expansion has D=0.
+Boundary and deficient-stencil accuracy inherit the LSQ limitations. These fields
+are diagnostic reconstructions, not turbulence closures, and have not received
+new benchmark validation in this change.
+
+### Stable archived time statistics
+
+For a physical-time interval dt, each endpoint contributes weight dt/2. Weighted
+online updates maintain the mean and central second moments directly. For old
+weight W and endpoint weight w, delta = x - mean, the new mean is
+`mean + delta*w/(W+w)` and the central-moment update is
+`w*(W/(W+w))*delta_i*delta_j`. Population covariance divides by total weight;
+RMS is the square root of its diagonal. The zero-old-weight endpoint initializes
+the mean and contributes no central spread. Geometry/time validation and fixed
+world-point sampling assumptions remain unchanged. This change has compiler
+coverage only; no new numerical benchmark or runtime verification is claimed.
+
+### Section monitor histories and profile comparison norms
+
+For polygon area A_i, section monitor means are sum(A_i p_i)/sum(A_i) and
+sum(A_i |U_i|)/sum(A_i). The estimated section volume flux is
+sum(A_i U_i dot n), with the selected plane's normal fixing the sign. All fields
+are sampled cell values, not boundary-face reconstructions. Physical-time plots
+require strictly increasing timestamps; steady histories use recorded iterations.
+History quantities are spatial integrals at each sample, not temporal averages.
+
+Profile comparison at reference positions x_j uses the target curve's linearly
+interpolated value v_j only if a finite bracketing segment exists (or an exact
+sample is present). Missing segments are excluded. For N matches,
+RMSE = sqrt(sum((v_j-r_j)^2)/N), max error = max |v_j-r_j|, and relative L2 =
+sqrt(sum((v_j-r_j)^2))/sqrt(sum(r_j^2)). Norms accumulate with hypot to reduce
+intermediate square overflow. No relative percentage is reported for a zero
+reference norm, and no matches is reported explicitly. These are unweighted
+sample norms; imported data accuracy and unit consistency remain external inputs.

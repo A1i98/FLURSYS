@@ -647,3 +647,259 @@ wall functions and inspect y+; refining to y+≈1 does not turn this into a
 low-Re model. Global rotating frames and equilibrium-Prt thermal walls are not
 supported for this model. Existing field restart and VTK ε/νt output are used.
 The model is implemented but has not been numerically validated.
+
+
+## Continued iteration numbering and shared section results
+
+Run / Continue adds the selected budget to the retained state. Progress, monitor
+filenames, sampling cadence, checkpoint iteration and run iteration metadata use
+the cumulative index; Initialize resets it. A loaded checkpoint resumes from its
+stored index. Physical time and the nonlinear corrector count remain distinct
+from the cumulative accepted-step index in transient mode. Each saved run retains
+its own convergence segment; live curves keep previous segments during Continue.
+
+Settings now contains an optional Gmsh executable path and a file picker. Leave it
+empty to use `gmsh` from PATH. The selection is stored in per-user interface
+preferences, not in a portable CFD project. It applies to automatic probes and
+future meshing jobs, including already-open projects.
+
+Geometry, Solution and Results share the same section controls. In Results,
+choose the CAD plane directly from the top selector. The Planes view can render
+speed, kinematic pressure, global velocity components or normal velocity from a
+recorded JSON frame or the selected run's final field. Choose filled contours,
+contour lines, or both; vectors and planar streamlines can overlay the field.
+Contours reconstruct vertex values by cell averaging; stored cell data is not
+modified. Streamlines use bounded-step integration of piecewise constant projected
+cell velocity and stop at the section boundary or stagnation. They are visualization
+approximations, not three-dimensional particle tracks or a new physical transient
+solution. Vector lengths are speed-scaled by default for new plane settings.
+
+Use the shared Open recording / Play frames controls in Solution or Results to
+replay saved iteration or physical-time frames. Section properties have Display,
+Recording and Export tabs. CFD buttons and captions now share one component style.
+A steady iteration animation is convergence history, not physical flow evolution.
+Existing SVG-only recordings retain their original appearance; changing fields
+requires JSON records or a final field dataset. Full 3D particle advection and a
+complete redesign of every CAD/native property editor are not included here.
+
+
+### Display location integration
+
+Results → Display → Location now lists the 3D surface, XY/XZ/YZ sections and
+project CAD planes together. CAD plane selection stays inside Display and uses
+the shared section controls and recorded-frame playback. Built-in axis sections
+use actual intersected volume-cell polygons and the same contour/vector engine;
+field selection (including temperature and turbulence scalars), colour range,
+colour map, contour level count, cell edges and vector visibility reach the
+section renderer. Section contour lines use vertex-averaged scalar reconstruction;
+these are not interpolated physical fields exported back into the solver.
+
+Surface contour modes also draw isolines reconstructed from vertex averages of
+boundary-face scalar values. Inlined CAD plane playback uses the same timer and
+frame controls as the Planes view. This change has compiler checks only; visual
+interaction and rendering still require runtime validation.
+
+
+### Single Results display panel
+
+Results now has one Location selector and one Display property editor for surfaces
+and CAD sections. The separate Planes tab, upper plane picker, nested plane picker
+and duplicate Display/Recording/Export sub-tabs are removed from Results. Recording
+settings appear inline for a CAD section; its saved-frame playback replaces the
+unrelated 3D slice-sweep/tracer bar. Walls remains a separate reports tab.
+Origin XY/XZ/YZ planes at zero offset are omitted from the CAD location entries
+because built-in axis sections already cover these orientations. Selection uses an
+explicit mapping to the CAD plane catalog, not an arithmetic index assumption.
+Palette, contour count, vector density/scale and range are consumed by the same
+Display controls. Saving recording cadence does not reset display styling.
+
+The live section canvas omits the publication figure title/axes and uses the
+workbench viewport background. Scientific SVG exports retain axes, units and
+iteration metadata. Location changes stop any animation from the previous view.
+
+### Section playback and quantitative post-processing
+
+The same planar navigation component is used for recorded sections in Solution
+and Results: drag to pan, wheel to zoom, double-click to reset. This is still a
+planar SVG viewport, not a replacement of the three-dimensional surface renderer.
+Vector normalization and normal-flow markers can be controlled from Display;
+normalized arrow lengths are not a speed measurement. Built-in volume sections
+also consume vector density/scale and respect the vectors-only mode.
+
+Playback has a first/last frame range, Loop and FPS. Last frame 0 means the end
+of the recording. Raw JSON playback reports the archived physical time when
+present, otherwise the actual steady iteration. Lock colour range scans all
+loaded raw frames in a background worker and stores one finite range in the
+plane's persisted display settings. Legacy SVG recordings cannot be recoloured.
+The colour lock is for the selected scalar; recompute it after changing fields.
+
+Section statistics CSV uses geometric intersection-polygon areas for area means
+and integrals. The signed volume-flow estimate integrates sampled cell U dot n;
+it is not the conservative solver face flux and is not a mass-flow report.
+
+Time statistics CSV uses the selected playback range, physical-time trapezoidal
+quadrature of U, p/rho and their products. It exports means, RMS fluctuations and
+velocity covariance components (m²/s², not density-scaled stresses). Only two
+frames are held during integration; missing/nonfinite/nonincreasing timestamps,
+legacy images and changing plane/sample geometry are rejected. No SIMPLE-iteration
+recording is interpreted as a physical-time average. Sampling frequency limits
+resolved fluctuation statistics. This offline export can be repeated after a
+restart if the loaded frame sequence is continuous; it does not checkpoint a
+live averaging accumulator. Numerical benchmark validation remains outstanding.
+
+The archived-result field selector additionally exposes the reconstructed second
+velocity-gradient invariant Q = (tr(G)² - tr(G G))/2, in s⁻². For solenoidal fields
+this equals (|Omega|² - |S|²)/2. It shares the existing cell-neighbour LSQ gradient
+reconstruction and is included in full cell CSV. Boundary reconstruction accuracy
+is limited by available archived cell data; Q is not a conservative diagnostic.
+Three-dimensional Q isosurfaces, physical pathlines, comparative run charts and
+video export of recorded plane sequences are not implemented by this change.
+
+### Unified interactive section display (October 2026)
+
+`SectionProperties` is now the one section editor used by Geometry, Solution and
+Results. Field, palette, contour layers, vector density/scale, streamlines,
+normalization, range, recording cadence and exports share the same callbacks and
+persisted `PlaneDisplay`. Results does not add a second field picker for CAD
+sections. Surface/axis-section controls remain distinct from this section editor.
+
+The section camera now changes the data-to-screen projection and redraws polygons
+and vectors at the viewport's current size. It does not magnify the previous
+bitmap. The legend and glyph widths remain in screen units. Clicks are transformed
+back to world coordinates and tested against the actual intersection polygons;
+probe readout uses the owning cell's archived U and p/rho. A selected probe has a
+marker and follows the same world point while frames change. Home resets the
+camera. The current raw JSON frame is cached separately from its rendered image.
+The display still rasterizes SVG geometry for Slint presentation: it is a planar
+data view, not an orbitable 3D context view. Scientific SVG export retains axes.
+
+The recording-actions menu can export the selected probe history over the chosen
+frame interval. CSV includes actual iteration/time, fixed world coordinates and
+sampled fields; missing coverage is a gap, not zero. This is cell sampling without
+spatial or temporal interpolation. Probe histories of steady iterations are
+labelled by iteration; physical-time statistics still require real timestamps.
+
+Validation: targeted manufactured-field tests cover camera inversion/probing,
+irregular-time quadrature, invalid recording rejection and area/range statistics.
+An opt-in `unified_section_real_window_smoke` test opens the real Slint interface,
+changes scalar fields, navigates/probes and checks frame advance/loop callbacks.
+It writes Results/Solution screenshots under `/tmp/flursys-section-ui`; run with
+`SLINT_BACKEND=winit-software` and `--ignored --test-threads=1`. Optional
+`FLURSYS_PREVIEW_FRAME` selects a raw JSON frame read-only for this smoke test.
+This does not validate a CFD solve, native CAD interaction, all historical project
+formats or every export dialog. Existing 3D Q-isosurface/pathline and comparative
+plot limitations remain as stated above.
+
+The smoke test additionally exercises a three-frame temporary replay, bounded
+looping, the persistent probe, and snapshots at wide/narrow requested sizes.
+Its temporary replay frames are manufactured variations even when initialized
+from an existing raw frame; this is UI/data-path verification, not CFD evidence.
+
+The final local run passed five targeted data tests and the real-window smoke
+initialized from a saved cavity JSON frame. A normal GUI build passed and the
+standalone software-backend application stayed open for 12 seconds without
+logged errors, then was deliberately terminated. The compositor constrained
+requested preview sizes to roughly 933–940 actual pixels; full-width responsive
+coverage is not claimed. The full numerical suite and all export dialogs were
+not exercised by this UI change.
+
+### Additional OpenFOAM-inspired post-processing
+
+For full archived meshes, Results > Display adds **Flow type** and **Strain rate**
+to the scalar selector. They use the existing LSQ reconstruction once when the
+result dataset is loaded, and are available to the surface/axis-section renderer,
+field statistics, HTML report and full cell CSV. These are not solver fields.
+Raw CAD-plane recordings do not contain the full neighbour stencil, so the new
+3D gradient quantities are not manufactured from those recordings.
+
+The shared section editor now exports horizontal/vertical centreline profiles in
+its plane u/v coordinates, using 201 uniformly spaced positions. These work on
+arbitrarily oriented CAD sections, including raw archived JSON frames, without
+rerunning the solver. CSV contains distance, u/v, world coordinates, cell, U,
+p/rho and the currently selected scalar. Samples outside the fluid remain blank;
+no boundary values or values across holes are extrapolated. The library also
+accepts arbitrary u/v endpoints and 2..2000 sample points.
+
+Section statistics include positive-normal and negative-normal volume fluxes,
+absolute flux, reverse absolute-flux fraction, and an absolute-flux-weighted mean
+of the selected scalar. Negative flux retains its sign. The mean is blank when
+absolute flux is zero. The estimates use geometric intersection areas and sampled
+cell velocity; they do not replace conservative mesh face-flux reports.
+
+Reference concepts were inspected in the local OpenFOAM-dev source:
+`src/functionObjects/field/flowType/flowType.C`,
+`src/functionObjects/field/fieldValues/surfaceFieldValue/`, and
+`src/sampling/sampledSet/sampledSets/`. These additions are independent Rust
+implementations and do not assert equivalent discretization or validation.
+
+### Custom section profiles and stable time moments
+
+In the shared section editor, enable **Custom profile line**, enter start/end u/v
+coordinates in metres and choose 2..2000 sample positions. **Profile CSV** exports
+the field samples; **Chart SVG** exports a labelled scientific chart with distance
+on the horizontal axis and the selected scalar/units on the vertical axis. Both
+consume exactly the same sampling routine. Missing fluid coverage breaks the
+curve; connecting line segments are display interpolation, not reconstructed
+solver values. These controls apply equally to Solution and Results and to raw
+recordings. The draft coordinates are local UI inputs, not saved CAD geometry.
+
+Time means, RMS and covariances now use weighted online central moments rather
+than subtracting the square of a large mean from a large second raw moment. The
+same physical-time trapezoidal endpoint weights are retained, including irregular
+time steps. Non-finite accumulation is rejected. This reduces cancellation for
+small fluctuations on a large mean, but cannot recover precision already lost in
+the stored fields or compensate for sparse temporal sampling.
+
+Raw-frame playback and quantitative exports now check plane identity and geometry
+against the selected plane. An unrelated/moved-plane recording produces an error
+instead of silently pairing its data with different section properties.
+
+### Live/replayed section monitors and run comparison
+
+**Solution > Convergence** adds Plane mean speed, Plane mean p/rho and Plane
+volume flux. Select the plane in the dropdown below the chart type; enable that
+plane's recording in Display before starting. Scalars are updated on each emitted
+section snapshot using intersection-polygon areas. History is scoped to the
+recording job; continuation iteration numbers retain their global offset. These
+plots use linear physical units, with actual physical timestamps for transient
+records and iteration numbers for steady records. Residual logarithm/normalization
+controls are hidden for the dimensional monitors. History CSV and chart SVG/PNG
+exports follow the selected monitor, rather than exporting unrelated residuals.
+
+**Results > Plots > Plane monitor history** shows the same quantities for the CAD
+plane selected in Location. Saved raw JSON frames are decoded one at a time in a
+background worker. Monitor scalars are reconstructed when selecting a recorded
+plane or opening its recording folder. Missing legacy/raw data and mixed or
+non-increasing time coordinates produce errors. CSV records area, mean pressure,
+mean speed, estimated volume flux and actual iteration/time. Flux integrates
+cell U dot n over section polygons; it is not the conservative face-flux balance.
+
+**Results > Plots > Compare runs · 2D** holds up to eight frozen profile curves,
+including one optional imported reference. Choose a saved workspace/run, field,
+line endpoints and sample count, then Add/update active run; select another Run
+and repeat. Field, endpoints and workspace must match. Curves persist while
+switching Runs in the current GUI session; comparison setup is not persisted in
+project.json. The generic chart engine draws every curve with a legend, shared
+axes/units and gaps for missing fluid samples. CSV/SVG exports preserve run labels
+and line context. CSV comment metadata includes the field and endpoints.
+
+Reference import accepts a simple two-column, unquoted CSV: distance_m,value,
+with an optional header, blank values for gaps, and optional # comments. Distances
+must increase strictly and values must use the selected field units; no unit
+conversion or reference validation is inferred. The importer limits input to 2 MB
+and 20000 positions. Comparison supports 2D full-mesh profiles; arbitrary CAD-plane
+profile comparisons are not added here.
+
+Errors are evaluated at finite baseline/reference positions with piecewise-linear
+interpolation of each target curve only inside finite segments. No extrapolation
+or interpolation across missing segments is performed. RMSE, maximum absolute
+error, relative L2 and matched count N are shown. Relative L2 is N/A for a zero
+reference norm. If no external reference was imported, the first curve is labelled
+a baseline, not a validated reference. These metrics are sample-weighted and are
+not volume-integrated CFD error norms. Compilation is checked; this addition has
+not received new runtime or numerical benchmark validation.
+
+Opening another recording is blocked while a solve is active, to keep the live
+monitor attached to its solve. When reconstructing a replacement archive, old
+samples for that plane are cleared first; an invalid archive cannot leave an old
+history displayed as the newly selected source.
