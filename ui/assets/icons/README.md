@@ -1,0 +1,1 @@
+Home, export_tray, lookat, undo, folder, eye, perspective, pan, zoom and play are adapted from the CAD workbench icon assets (MIT license included). Pause, stop, previous and next are FLURSYS icons using the same 64-unit stroke style.

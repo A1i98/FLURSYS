@@ -265,9 +265,9 @@ export component WorkflowControlCard inherits PropertiesPanel {
             background:UiTheme.toolbar;border-color:UiTheme.border;border-width:1px;border-radius:6px;
             HorizontalLayout {padding:3px;spacing:2px;
                 if !root.planar-navigation : Button {icon:@image-url("icons/rotate.svg");accessible-label:"Orbit · drag in viewport";checked:root.navigation-mode==0;checkable:true;min-width:28px;max-width:30px;clicked=>{root.navigation-mode=0;}}
-                Button {text:"✥";accessible-label:"Pan · drag in viewport";checked:root.navigation-mode==1;checkable:true;min-width:28px;max-width:30px;clicked=>{root.navigation-mode=1;}}
-                Button {text:"⌕";accessible-label:"Zoom · drag in viewport";checked:root.navigation-mode==2;checkable:true;min-width:28px;max-width:30px;clicked=>{root.navigation-mode=2;}}
-                if root.display-controls : Button {text:"⌖";accessible-label:"Look at selected face";min-width:28px;max-width:30px;clicked=>{root.normal-view();}}
+                Button {icon:@image-url("assets/icons/pan.svg");accessible-label:"Pan · drag in viewport";checked:root.navigation-mode==1;checkable:true;min-width:28px;max-width:30px;clicked=>{root.navigation-mode=1;}}
+                Button {icon:@image-url("assets/icons/zoom.svg");accessible-label:"Zoom · drag in viewport";checked:root.navigation-mode==2;checkable:true;min-width:28px;max-width:30px;clicked=>{root.navigation-mode=2;}}
+                if root.display-controls : Button {icon:@image-url("assets/icons/lookat.svg");accessible-label:"Look at selected face";min-width:28px;max-width:30px;clicked=>{root.normal-view();}}
                 ComboBox {model:["Right · X","Front · Y","Top · Z","Isometric","Left · −X","Back · −Y","Bottom · −Z","Custom"];current-index:root.view-axis;
                     min-width:0px;horizontal-stretch:1;selected(value)=>{if self.current-index<7{root.select-view-axis(self.current-index);}}}
                 if root.display-controls : ComboBox {model:["Edges","Shaded","Wireframe"];current-index <=> root.display-mode;min-width:0px;horizontal-stretch:1;selected(value)=>{root.display-changed();}}
@@ -366,3 +366,11 @@ export component WorkflowControlCard inherits PropertiesPanel {
         font-size: 11px;
         wrap: word-wrap;
     }
+
+// Shared CFD property controls; content never stretches individual widgets.
+export component PropertyAction inherits Button {
+    min-width:0px;min-height:30px;max-height:32px;vertical-stretch:0;
+}
+export component PropertyCaption inherits Text {
+    color:UiTheme.text-muted;font-size:11px;wrap:word-wrap;vertical-stretch:0;
+}

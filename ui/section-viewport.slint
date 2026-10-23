@@ -1,0 +1,33 @@
+import {UiTheme, PropertyCaption, PropertyAction} from "components.slint";
+// Display is redrawn from field geometry by the controller. No bitmap transforms.
+export component SectionViewport inherits Rectangle {
+    in property <image> source;
+    in property <string> readout;
+    callback navigate(int,float,float,float,float);
+    background:#2d3340;clip:true;min-width:240px;min-height:160px;
+    changed width=>{root.navigate(4,0,0,self.width/1px,self.height/1px);}
+    changed height=>{root.navigate(4,0,0,self.width/1px,self.height/1px);}
+    Image {source:root.source;image-fit:fill;width:parent.width;height:parent.height;}
+    TouchArea {
+        private property <length> last-x;
+        private property <length> last-y;
+        private property <length> start-x;
+        private property <length> start-y;
+        private property <bool> dragged:false;
+        mouse-cursor:self.pressed ? grabbing : crosshair;
+        pointer-event(event)=>{if event.kind==PointerEventKind.down {
+            self.start-x=self.mouse-x;self.start-y=self.mouse-y;
+            self.last-x=self.mouse-x;self.last-y=self.mouse-y;self.dragged=false;
+        }}
+        moved=>{if self.pressed {
+            if Math.abs((self.mouse-x - self.start-x)/1px)+Math.abs((self.mouse-y - self.start-y)/1px)>3 {self.dragged=true;}
+            if self.dragged {root.navigate(0,(self.mouse-x - self.last-x)/1px,(self.mouse-y - self.last-y)/1px,self.width/1px,self.height/1px);}
+            self.last-x=self.mouse-x;self.last-y=self.mouse-y;
+        }}
+        clicked=>{if !self.dragged {root.navigate(3,self.mouse-x/1px,self.mouse-y/1px,self.width/1px,self.height/1px);}}
+        scroll-event(event)=>{root.navigate(1,0,event.delta-y/1px,self.width/1px,self.height/1px);accept}
+        double-clicked=>{root.navigate(2,0,0,self.width/1px,self.height/1px);}
+    }
+    PropertyCaption {x:8px;y:4px;text:"CLICK: PROBE · DRAG: PAN · WHEEL: ZOOM";width:max(0px,parent.width - 100px);overflow:elide;font-size:9px;color:UiTheme.text-muted;}
+    PropertyAction {x:6px;y:parent.height - 34px;width:64px;text:"Home";icon:@image-url("assets/icons/home.svg");clicked=>{root.navigate(2,0,0,root.width/1px,root.height/1px);}}
+}

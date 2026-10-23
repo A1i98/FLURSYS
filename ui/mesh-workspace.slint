@@ -1,13 +1,10 @@
+import {PropertyAction, PropertyCaption} from "components.slint";
 import { EntitySelectionBar } from "entity-selection.slint";
 import { Button, ComboBox, LineEdit, SpinBox, ScrollView, ListView, ProgressIndicator, CheckBox } from "std-widgets.slint";
 import { UiTheme, PropertiesPanel, PropertyScroll, WorkspaceSections, InteractiveGeometryPreview } from "components.slint";
 
-component ToolButton inherits Button {
-    min-width:0px; min-height:30px; max-height:34px;
-}
-component Label inherits Text {
-    color:UiTheme.text-muted;font-size:11px;wrap:word-wrap;vertical-stretch:0;
-}
+component ToolButton inherits PropertyAction {}
+component Label inherits PropertyCaption {}
 component Field inherits VerticalLayout {
     in property <string> label;
     in-out property <string> value;

@@ -1,12 +1,21 @@
-import {PlaneMonitorPanel} from "plane-monitor-panel.slint";
-import {Button,ComboBox,LineEdit,SpinBox,Slider,ScrollView,ListView,TextEdit} from "std-widgets.slint";
+import {SectionProperties} from "section-properties.slint";
+import {PropertyAction, PropertyCaption} from "components.slint";
+import {SectionViewport} from "section-viewport.slint";
+import {PlanePlayback} from "plane-playback.slint";
+import {CheckBox,Button,ComboBox,LineEdit,SpinBox,Slider,ScrollView,ListView,TextEdit} from "std-widgets.slint";
 import {UiTheme, PropertiesPanel, PropertyScroll, WorkspaceSections,InteractiveGeometryPreview} from "components.slint";
-component Tool inherits Button {min-width:0px;min-height:30px;max-height:34px;}
-component Label inherits Text {color:UiTheme.text-muted;font-size:11px;wrap:word-wrap;}
+component Tool inherits PropertyAction {}
+component Label inherits PropertyCaption {}
 export component ResultsWorkspace inherits Rectangle {
     in property <string> wall-summary;
     in property <bool> has-wall-report;
     in property <bool> has-wall-samples;
+    in-out property <int> plane-palette:1;
+    in-out property <int> plane-density:1;
+    in-out property <string> plane-scale:"1";
+    in-out property <int> plane-plot:0;
+    in-out property <int> plane-levels:12;
+    in-out property <bool> plane-streamlines:false;
     in-out property <int> plane-field;
     in-out property <bool> plane-vectors;
     in-out property <bool> plane-edges;
@@ -14,14 +23,20 @@ export component ResultsWorkspace inherits Rectangle {
     in-out property <bool> plane-normal-marks;
     in-out property <string> plane-min;
     in-out property <string> plane-max;
+    callback plane-profile(string,string,string,string,int,int);
     callback style-plane();
 
     in property <int> plane-frame;
     in property <int> plane-count;
     in-out property <int> plane-fps:10;
+    in-out property <bool> plane-loop:false;
+    in-out property <int> plane-first:1;
+    in-out property <int> plane-last:0;
     in property <bool> plane-playing;
     callback playback(int);
     in property <image> plane-image;
+    in property <string> plane-readout;
+    callback plane-navigate(int,float,float,float,float);
     in property <[string]> plane-names;
     in-out property <int> plane-index;
     in-out property <int> plane-every;
@@ -38,6 +53,9 @@ export component ResultsWorkspace inherits Rectangle {
     in-out property <string> line-x1;
     in-out property <string> line-y1;
     in-out property <int> line-samples;
+    in-out property <int> plot-mode:0;
+    in-out property <int> monitor-kind:0;
+    callback compare(int);
     callback sample-line(int);
     in property <image> preview;
     in property <string> title;
@@ -66,6 +84,8 @@ export component ResultsWorkspace inherits Rectangle {
     in-out property <int> vector-density;
     in-out property <string> vector-scale;
     in-out property <bool> edges;
+    in property <[string]> section-names;
+    callback select-section(int);
     in-out property <int> slice-axis;
     in-out property <int> slice-percent;
     in-out property <int> animation-mode;
@@ -89,27 +109,24 @@ export component ResultsWorkspace inherits Rectangle {
             Label {text:"RUN";vertical-alignment:center;}
             ComboBox {model:root.runs;current-index:root.run-index;enabled:root.runs.length>0;min-width:0px;preferred-width:300px;selected(value)=>{root.select-run(self.current-index);}}
         }
-        WorkspaceSections {model:["Display","Flow","Probes","Information","Plots","Planes","Walls"];current-index <=> root.tab;selected(i)=>{if i==5 {root.view-plane();}}}
+        WorkspaceSections {model:["Display","Flow","Probes","Information","Plots","Walls"];current-index <=> root.tab;}
         HorizontalLayout {
             spacing:10px;
             PropertiesPanel {
                 VerticalLayout {
                     padding:8px;spacing:8px;
+                    if root.is-3d : VerticalLayout {vertical-stretch:0;spacing:5px;
+                        Label {text:"LOCATION · SURFACE / SECTION";}
+                        ComboBox {model:root.section-names;current-index <=> root.slice-axis;min-width:0px;max-height:32px;selected(value)=>{root.select-section(self.current-index);if self.current-index<4 {root.style();}}}
+                    }
                     PropertyScroll {section:root.tab;
-                            if root.tab==5 : PlaneMonitorPanel {
-                                names:root.plane-names;index <=> root.plane-index;every <=> root.plane-every;record <=> root.plane-enabled;
-                                busy:root.busy;details:root.plane-details;status:root.plane-status;
-                                select(i)=>{root.select-plane(i);}apply=>{root.apply-plane();}view=>{root.view-plane();}
-                                field <=> root.plane-field;vectors <=> root.plane-vectors;edges <=> root.plane-edges;normalize <=> root.plane-normalize;normal-marks <=> root.plane-normal-marks;range-min <=> root.plane-min;range-max <=> root.plane-max;
-                                style=>{root.style-plane();}export(i)=>{root.export-plane(i);}
-                            }
-                            if root.tab==0 : VerticalLayout {spacing:8px;
+                            if root.tab==0 && root.slice-axis<4 : VerticalLayout {spacing:8px;
                                 Label {text:"DISPLAY";color:UiTheme.accent;font-weight:700;}
                                 ComboBox {model:["Filled cells","Contours","Contours + vectors","Vectors only"];current-index <=> root.plot;min-width:0px;selected(value)=>{root.style();}}
                                 ComboBox {model:["Turbo","Viridis","Plasma","Blue–red"];current-index <=> root.palette;min-width:0px;selected(value)=>{root.style();}}
                                 Label {text:"Contour levels";}
                                 SpinBox {value <=> root.levels;minimum:3;maximum:32;edited=>{root.style();}}
-                                Tool {text:root.edges ? "✓ Cell edges" : "Cell edges";enabled:!root.is-3d;clicked=>{root.edges=!root.edges;root.style();}}
+                                Tool {text:"Cell edges";checkable:true;checked:root.edges;enabled:!root.is-3d || root.slice-axis>0;clicked=>{root.edges=!root.edges;root.style();}}
                                 Label {text:"COLOR RANGE";}
                                 HorizontalLayout {spacing:5px;
                                     LineEdit {text <=> root.range-min;placeholder-text:"Minimum";min-width:0px;}
@@ -120,18 +137,21 @@ export component ResultsWorkspace inherits Rectangle {
                                 ComboBox {model:["Sparse","Medium","Dense"];current-index <=> root.vector-density;min-width:0px;selected(value)=>{root.style();}}
                                 LineEdit {text <=> root.vector-scale;placeholder-text:"Auto scale or positive multiplier";min-width:0px;accepted=>{root.style();}}
                                 Tool {text:"Apply vector scale";clicked=>{root.style();}}
-                                if root.is-3d : VerticalLayout {spacing:7px;
-                                    Label {text:"SECTION PLANE";}
-                                    ComboBox {model:["3D surface","XY section","XZ section","YZ section"];current-index <=> root.slice-axis;min-width:0px;selected(value)=>{root.style();}}
+                                if root.is-3d && root.slice-axis>0 && root.slice-axis<4 : VerticalLayout {spacing:7px;
+
                                     Label {text:"Position across model extent (%)";}
                                     SpinBox {value <=> root.slice-percent;minimum:1;maximum:99;edited=>{root.style();}}
                                 }
+
                                 Label {text:"Cells retain the exported values. Contour lines use vertex-averaged interpolation. Reconstructed curl/divergence use neighbour LSQ gradients; div U is not the conservative face-flux residual.";}
                             }
-                            if root.tab==1 : VerticalLayout {spacing:8px;
+                            if root.tab==0 && root.slice-axis>=4 : SectionProperties {field <=> root.plane-field;plot <=> root.plane-plot;palette <=> root.plane-palette;density <=> root.plane-density;scale <=> root.plane-scale;
+    levels <=> root.plane-levels;streamlines <=> root.plane-streamlines;vectors <=> root.plane-vectors;edges <=> root.plane-edges;normalize <=> root.plane-normalize;normal-marks <=> root.plane-normal-marks;range-min <=> root.plane-min;range-max <=> root.plane-max;
+    every <=> root.plane-every;record <=> root.plane-enabled;busy:root.busy;style=>{root.style-plane();}apply=>{root.apply-plane();}export(i)=>{root.export-plane(i);}profile(a,b,c,d,n,k)=>{root.plane-profile(a,b,c,d,n,k);}}
+if root.tab==1 : VerticalLayout {spacing:8px;
                                 Label {text:"STREAMLINES & TRACERS";color:UiTheme.accent;font-weight:700;}
                                 Tool {text:"+ Seed grid";enabled:root.has-result && !root.is-3d;clicked=>{root.action(0);}}
-                                Tool {text:"⌖ Pick a seed in viewport";enabled:root.has-result && !root.is-3d;clicked=>{root.action(5);}}
+                                Tool {text:"Pick a seed in viewport";icon:@image-url("assets/icons/lookat.svg");enabled:root.has-result && !root.is-3d;clicked=>{root.action(5);}}
                                 Tool {text:"Clear streamlines";enabled:root.has-result;clicked=>{root.action(1);}}
                                 Label {text:"Paths integrate reconstructed steady velocity using RK4. Tracers loop along these paths; this is an illustrative steady-flow animation, not a transient simulation.";}
                                 Label {text:"In 3D, Play sweeps the selected section plane. Choose its orientation in Display. Section position is animated, not physical time.";}
@@ -146,13 +166,15 @@ export component ResultsWorkspace inherits Rectangle {
                                 Tool {text:"Export probes · CSV";enabled:root.probe-count>0;clicked=>{root.export(2);}}
                                 Tool {text:"Clear probes";clicked=>{root.action(4);}}
                             }
-                            if root.tab==6 : VerticalLayout {spacing:8px;vertical-stretch:0;
+                            if root.tab==5 : VerticalLayout {spacing:8px;vertical-stretch:0;
                                 Label {text:"WALL RESOLUTION AND LOADS";color:UiTheme.accent;font-weight:700;}
                                 Label {text:root.wall-summary;}
                                 Tool {text:"Export patch statistics · CSV";enabled:root.has-wall-report && !root.export-busy;clicked=>{root.export(13);}}
                                 Tool {text:"Export wall-face samples · CSV";enabled:root.has-wall-samples && !root.export-busy;clicked=>{root.export(14);}}
                             }
                             if root.tab==4 : VerticalLayout {spacing:8px;
+                                ComboBox {model:["Line profile · 2D","Compare runs · 2D","Plane monitor history"];current-index <=> root.plot-mode;min-width:0px;max-height:32px;selected(value)=>{if self.current-index==1 {root.compare(5);}if self.current-index==2 {root.compare(6);}}}
+                                if root.plot-mode<2 : VerticalLayout {vertical-stretch:0;spacing:7px;
                                 Label {text:"LINE PROFILE · 2D";color:UiTheme.accent;font-weight:700;}
                                 Label {text:"Samples the currently selected field on the active run. Update the profile after changing field.";}
                                 Label {text:"Start · X / Y (model coordinates)";}
@@ -161,12 +183,30 @@ export component ResultsWorkspace inherits Rectangle {
                                 HorizontalLayout {spacing:5px;LineEdit {text <=> root.line-x1;min-width:0px;}LineEdit {text <=> root.line-y1;min-width:0px;}}
                                 Label {text:"Sample count";}
                                 SpinBox {value <=> root.line-samples;minimum:2;maximum:2000;}
-                                Tool {text:"Plot selected field";enabled:root.has-result && !root.is-3d;clicked=>{root.sample-line(0);}}
-                                Tool {text:"Vertical centreline";enabled:root.has-result && !root.is-3d;clicked=>{root.sample-line(1);}}
-                                Tool {text:"Horizontal centreline";enabled:root.has-result && !root.is-3d;clicked=>{root.sample-line(2);}}
+                                if root.plot-mode==0 : Tool {text:"Plot selected field";enabled:root.has-result && !root.is-3d;clicked=>{root.sample-line(0);}}
+                                if root.plot-mode==0 : Tool {text:"Vertical centreline";enabled:root.has-result && !root.is-3d;clicked=>{root.sample-line(1);}}
+                                if root.plot-mode==0 : Tool {text:"Horizontal centreline";enabled:root.has-result && !root.is-3d;clicked=>{root.sample-line(2);}}
+                                if root.plot-mode==1 : VerticalLayout {vertical-stretch:0;spacing:6px;
+                                    Tool {text:"Add / update active run";enabled:root.has-result && !root.is-3d;clicked=>{root.compare(0);}}
+                                    Tool {text:"Import reference CSV…";clicked=>{root.compare(4);}}
+                                    Label {text:"Reference: two columns distance_m,value, using the selected field units. No unit conversion. Same field and line are required for run comparison.";}
+                                    HorizontalLayout {Tool {text:"CSV";icon:@image-url("assets/icons/export_tray.svg");clicked=>{root.compare(2);}}Tool {text:"SVG";icon:@image-url("assets/icons/export_tray.svg");clicked=>{root.compare(3);}}}
+                                    Tool {text:"Clear comparison";clicked=>{root.compare(1);}}
+                                    Label {text:"Choose another saved Run above, then add it. Errors use reference positions with linear interpolation only within finite curve segments; no extrapolation.";}
+                                }
                                 Label {text:"Owning-cell values without interpolation. Outside-domain points remain gaps; boundary values are not extrapolated.";}
-                                Tool {text:"Export profile · CSV";enabled:root.has-result;clicked=>{root.export(8);}}
-                                Tool {text:"Export labelled chart · SVG";enabled:root.has-result;clicked=>{root.export(9);}}
+                                if root.plot-mode==0 : Tool {text:"Export profile · CSV";enabled:root.has-result;clicked=>{root.export(8);}}
+                                if root.plot-mode==0 : Tool {text:"Export labelled chart · SVG";enabled:root.has-result;clicked=>{root.export(9);}}
+                                }
+                                if root.plot-mode==2 : VerticalLayout {vertical-stretch:0;spacing:7px;
+                                    Label {text:"PLANE MONITOR HISTORY";color:UiTheme.accent;font-weight:700;}
+                                    Label {text:"Choose a CAD plane in Location. Samples are recorded at its configured interval; loaded JSON history is reconstructed in the background.";}
+                                    ComboBox {model:["Area mean speed","Area mean p/ρ","Estimated volume flux"];current-index <=> root.monitor-kind;min-width:0px;max-height:32px;selected(value)=>{root.compare(6);}}
+                                    Tool {text:"Refresh monitor chart";clicked=>{root.compare(6);}}
+                                    HorizontalLayout {Tool {text:"History CSV";clicked=>{root.compare(7);}}Tool {text:"Chart SVG";clicked=>{root.compare(8);}}}
+                                    Label {text:"Section flux is estimated from cell velocity, not conservative face flux. Physical time and steady iteration are kept distinct.";}
+                                }
+
                             }
                             if root.tab==3 : VerticalLayout {spacing:9px;
                                 Label {text:"SELECTED FIELD";color:UiTheme.accent;font-weight:700;}
@@ -194,18 +234,16 @@ export component ResultsWorkspace inherits Rectangle {
                 spacing:7px;
                 HorizontalLayout {
                     height:34px;spacing:6px;
-                    if root.tab!=5 : ComboBox {model:["Speed |U|","Pressure p/ρ","Velocity X","Velocity Y","Velocity Z","Vorticity |curl U|","Divergence div U","Turbulent k","Specific dissipation ω","Turbulent viscosity νt","Temperature K"];min-width:0px;preferred-width:210px;enabled:root.has-result;
-                        current-index:root.field-index==3 ? 10 : root.field-index>=8 ? root.field-index - 1 : root.field-index==1 ? 1 : root.field-index==4 ? 2 : root.field-index==5 ? 3 : root.field-index==6 ? 4 : root.field-index==2 ? 5 : root.field-index==7 ? 6 : 0;
-                        selected(value)=>{root.select-field([0,1,4,5,6,2,7,8,9,10,3][self.current-index]);}
+                    if root.slice-axis<4 : ComboBox {model:root.slice-axis>=4 ? ["Speed |U|","Pressure p/ρ","Velocity X","Velocity Y","Velocity Z","Normal velocity"] : ["Speed |U|","Pressure p/ρ","Velocity X","Velocity Y","Velocity Z","Vorticity |curl U|","Divergence div U","Turbulent k","Specific dissipation ω","Turbulent viscosity νt","Temperature K","Q invariant · 1/s²","Flow type · rotation / strain","Strain rate · 1/s"];min-width:0px;preferred-width:210px;enabled:root.has-result;
+                        current-index:root.slice-axis>=4 ? root.plane-field : root.field-index>=11 ? root.field-index : root.field-index==3 ? 10 : root.field-index>=8 ? root.field-index - 1 : root.field-index==1 ? 1 : root.field-index==4 ? 2 : root.field-index==5 ? 3 : root.field-index==6 ? 4 : root.field-index==2 ? 5 : root.field-index==7 ? 6 : 0;
+                        selected(value)=>{if root.slice-axis>=4 {root.plane-field=self.current-index;root.style-plane();}else{root.select-field([0,1,4,5,6,2,7,8,9,10,3,11,12,13][self.current-index]);}}
                     }
-                    if root.tab!=5 : Tool {text:"▦ Mesh / field";enabled:root.has-result;clicked=>{root.action(6);}}
-                    Tool {text:root.tab==5 ? "● CAD section" : "CAD section";enabled:root.plane-names.length>0;clicked=>{root.tab=5;root.view-plane();}}
+                    if root.slice-axis<4 : Tool {text:"Mesh / field";icon:@image-url("assets/icons/perspective.svg");enabled:root.has-result;clicked=>{root.action(6);}}
                     Rectangle {horizontal-stretch:1;}
-                    if root.tab!=5 : Tool {text:"⊡ Fit";enabled:root.has-result;clicked=>{root.fit();}}
-                    Tool {text:"PNG ↓";enabled:root.has-result;clicked=>{if root.tab==5 {root.export-plane(1);}else{root.export(0);}}}
+                    Tool {text:"PNG";icon:@image-url("assets/icons/export_tray.svg");enabled:root.has-result;clicked=>{if root.slice-axis>=4 {root.export-plane(1);}else{root.export(0);}}}
                 }
-                Text {text:root.tab==5 ? "CAD SECTION · CELL-CENTRED FIELDS" : root.title;color:UiTheme.accent;font-size:11px;font-weight:700;overflow:elide;}
-                if root.tab!=4 && root.tab!=5 : InteractiveGeometryPreview {
+                Text {text:root.slice-axis>=4 ? "CAD SECTION · CELL-CENTRED FIELDS" : root.title;color:UiTheme.accent;font-size:11px;font-weight:700;overflow:elide;}
+                if root.tab!=4 && root.slice-axis<4 : InteractiveGeometryPreview {
                     vertical-stretch:1;preview-image:root.preview;
                     navigation-3d:root.is-3d && root.slice-axis==0;orientation-image:root.orientation;view-axis:root.view-axis;
                     select-view-axis(axis)=>{root.view(axis);}pick-orientation(x,y)=>{root.pick-orientation(x,y);}
@@ -216,35 +254,24 @@ export component ResultsWorkspace inherits Rectangle {
                     orbit(x,y,px,py)=>{root.drag(x,y,px,py,self.width/1px,self.height/1px);}
                     orbit-end=>{root.drag-end();}zoom(delta)=>{root.zoom(delta);}reset-view=>{root.fit();}
                 }
-                if root.tab==5 : VerticalLayout {
-                    HorizontalLayout {height:32px;spacing:5px;
-                        Tool {text:"Open recording…";clicked=>{root.playback(0);}}
-                        Tool {text:"|◀";clicked=>{root.playback(2);}}
-                        Tool {text:root.plane-playing ? "Ⅱ Pause" : "▶ Play frames";clicked=>{root.playback(1);}}
-                        Tool {text:"▶|";clicked=>{root.playback(3);}}
-                        Tool {text:"Latest field";clicked=>{root.playback(4);}}
-                    }
-                    HorizontalLayout {height:30px;spacing:6px;
-                        Label {text:"Frame "+(root.plane-count>0 ? root.plane-frame+1 : 0)+" / "+root.plane-count;}
-                        Slider {minimum:0;maximum:max(1,root.plane-count - 1);value:root.plane-frame;enabled:root.plane-count>1;changed(value)=>{root.playback(1000+round(value));}}
-                        Label {text:"FPS";}
-                        SpinBox {minimum:1;maximum:30;value <=> root.plane-fps;preferred-width:70px;}
-                    }
-                    Image {source:root.plane-image;vertical-stretch:1;image-fit:contain;}
-                    Text {text:root.plane-status;color:UiTheme.text-muted;wrap:word-wrap;font-size:10px;max-height:42px;overflow:elide;}
+                if root.tab!=4 && root.slice-axis>=4 : VerticalLayout {
+                    PlanePlayback {plane-frame:root.plane-frame;plane-count:root.plane-count;plane-playing:root.plane-playing;plane-fps <=> root.plane-fps;loop <=> root.plane-loop;first <=> root.plane-first;last <=> root.plane-last;playback(i)=>{root.playback(i);}}
+                    SectionViewport {source:root.plane-image;readout:root.plane-readout;navigate(a,x,y,w,h)=>{root.plane-navigate(a,x,y,w,h);}vertical-stretch:1;}
+                    Text {text:root.plane-status;color:UiTheme.text-muted;wrap:word-wrap;font-size:10px;max-height:30px;overflow:elide;}
+                    if root.plane-readout!="" : Text {text:root.plane-readout;color:UiTheme.text;wrap:word-wrap;font-size:10px;max-height:42px;overflow:elide;}
                 }
                 if root.tab==4 : VerticalLayout {
                     Image {source:root.profile-image;vertical-stretch:1;image-fit:contain;}
                     Text {text:root.profile-caption;color:UiTheme.text;wrap:word-wrap;font-size:12px;}
                 }
-                if root.tab!=5 : Text {text:root.legend;color:UiTheme.text-soft;font-size:11px;wrap:word-wrap;}
-                if root.tab!=5 : Text {text:root.probe;color:UiTheme.text;font-size:11px;wrap:word-wrap;max-height:42px;overflow:elide;}
-                if root.tab!=4 && root.tab!=5 : Rectangle {
+                if root.slice-axis<4 : Text {text:root.legend;color:UiTheme.text-soft;font-size:11px;wrap:word-wrap;}
+                if root.slice-axis<4 : Text {text:root.probe;color:UiTheme.text;font-size:11px;wrap:word-wrap;max-height:42px;overflow:elide;}
+                if root.tab!=4 && root.slice-axis<4 : Rectangle {
                     height:69px;background:UiTheme.toolbar;border-color:UiTheme.border;border-width:1px;border-radius:4px;
                     VerticalLayout {padding:6px;spacing:4px;
                         HorizontalLayout {spacing:6px;
-                            Tool {text:root.playing ? "Ⅱ Pause" : "▶ Play";enabled:root.has-result;clicked=>{root.action(2);}}
-                            Tool {text:"↶";enabled:root.has-result;clicked=>{root.action(3);}}
+                            Tool {text:root.playing ? "Pause" : "Play";icon:root.playing ? @image-url("assets/icons/pause.svg") : @image-url("assets/icons/play.svg");enabled:root.has-result;clicked=>{root.action(2);}}
+                            Tool {text:"Reset";icon:@image-url("assets/icons/undo.svg");enabled:root.has-result;clicked=>{root.action(3);}}
                             Label {text:root.is-3d ? "Slice sweep · 3D" : "Steady-flow tracers · 2D";horizontal-stretch:1;vertical-alignment:center;}
                             SpinBox {min-width:90px;preferred-width:100px;max-width:110px;value <=> root.animation-rate;minimum:10;maximum:400;}
                             Label {text:"%";vertical-alignment:center;}
@@ -256,7 +283,7 @@ export component ResultsWorkspace inherits Rectangle {
                         }
                     }
                 }
-                if root.tab!=5 : Text {text:root.feedback;color:UiTheme.text-soft;font-size:11px;wrap:word-wrap;max-height:32px;overflow:elide;}
+                if root.slice-axis<4 : Text {text:root.feedback;color:UiTheme.text-soft;font-size:11px;wrap:word-wrap;max-height:32px;overflow:elide;}
             }
 
         }

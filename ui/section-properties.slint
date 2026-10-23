@@ -1,0 +1,79 @@
+import {PropertyAction, PropertyCaption, UiTheme} from "components.slint";
+import {ComboBox,SpinBox,CheckBox,LineEdit} from "std-widgets.slint";
+component Label inherits PropertyCaption {}
+component Action inherits PropertyAction {}
+// Single editor for live and archived section data, in all workspaces.
+export component SectionProperties inherits VerticalLayout {
+    in-out property <int> field;
+    in-out property <int> plot;
+    in-out property <int> palette:1;
+    in-out property <int> density:1;
+    in-out property <string> scale:"1";
+    in-out property <int> levels:12;
+    in-out property <bool> streamlines:false;
+    in-out property <bool> vectors:true;
+    in-out property <bool> edges:false;
+    in-out property <bool> normalize:false;
+    in-out property <bool> normal-marks:false;
+    in-out property <string> range-min;
+    in-out property <string> range-max;
+    in-out property <int> every:10;
+    in-out property <bool> record:false;
+    in property <bool> busy;
+    private property <bool> custom-profile:false;
+    private property <string> start-u;
+    private property <string> start-v;
+    private property <string> end-u;
+    private property <string> end-v;
+    private property <int> samples:201;
+    callback profile(string,string,string,string,int,int);
+    callback style();callback apply();callback export(int);
+    spacing:7px;vertical-stretch:0;
+    Label {text:"FIELD AND LAYERS";color:UiTheme.accent;font-weight:700;}
+    ComboBox {model:["Speed |U| · m/s","Pressure p/ρ · m²/s²","Velocity X · m/s","Velocity Y · m/s","Velocity Z · m/s","Normal velocity · m/s"];current-index <=> root.field;min-width:0px;max-height:32px;selected(value)=>{root.style();}}
+    ComboBox {model:["Filled contours","Contour lines","Filled contours + lines","Vectors only"];current-index <=> root.plot;min-width:0px;max-height:32px;selected(value)=>{root.style();}}
+    ComboBox {model:["Turbo","Viridis","Plasma","Blue–red"];current-index <=> root.palette;min-width:0px;max-height:32px;selected(value)=>{root.style();}}
+    Label {text:"Contour levels";}
+    SpinBox {minimum:3;maximum:32;value <=> root.levels;max-height:32px;edited=>{root.style();}}
+    CheckBox {text:"Cell edges";checked <=> root.edges;toggled=>{root.style();}}
+    CheckBox {text:"Section streamlines";checked <=> root.streamlines;toggled=>{root.style();}}
+    Label {text:"Streamlines follow the projected section velocity, not 3D particle paths.";}
+    Label {text:"VECTORS";color:UiTheme.accent;font-weight:700;}
+    CheckBox {text:"Show vectors";checked <=> root.vectors;toggled=>{root.style();}}
+    ComboBox {model:["Sparse","Medium","Dense"];current-index <=> root.density;min-width:0px;max-height:32px;selected(value)=>{root.style();}}
+    LineEdit {text <=> root.scale;placeholder-text:"Positive length multiplier";min-width:0px;max-height:32px;accepted=>{root.style();}}
+    CheckBox {text:"Normalize arrow lengths";checked <=> root.normalize;toggled=>{root.style();}}
+    CheckBox {text:"Normal flow markers";checked <=> root.normal-marks;toggled=>{root.style();}}
+    Label {text:root.normalize ? "Arrow length shows direction only; colour gives the selected scalar." : "Arrow length is proportional to velocity using a common frame scale.";}
+    Label {text:"COLOUR RANGE";color:UiTheme.accent;font-weight:700;}
+    HorizontalLayout {spacing:4px;
+        LineEdit {text <=> root.range-min;placeholder-text:"Minimum";min-width:0px;max-height:32px;}
+        LineEdit {text <=> root.range-max;placeholder-text:"Maximum";min-width:0px;max-height:32px;}
+    }
+    HorizontalLayout {spacing:4px;Action {text:"Apply style";clicked=>{root.style();}}Action {text:"Auto range";clicked=>{root.range-min="";root.range-max="";root.style();}}}
+    Label {text:"RECORDING";color:UiTheme.accent;font-weight:700;}
+    CheckBox {text:"Record pressure and velocity";checked <=> root.record;enabled:!root.busy;}
+    Label {text:"Every N completed iterations / physical time steps";}
+    SpinBox {minimum:1;maximum:1000000;value <=> root.every;max-height:32px;enabled:!root.busy;}
+    Action {text:"Save recording settings";enabled:!root.busy;clicked=>{root.apply();}}
+    Label {text:"Recording preserves cell geometry and all U components and p/ρ. Display changes do not require solving again.";}
+    HorizontalLayout {spacing:4px;Action {text:"CSV";icon:@image-url("assets/icons/export_tray.svg");clicked=>{root.export(0);}}Action {text:"PNG";icon:@image-url("assets/icons/export_tray.svg");clicked=>{root.export(1);}}Action {text:"SVG";icon:@image-url("assets/icons/export_tray.svg");clicked=>{root.export(2);}}}
+    Label {text:"PROFILES · PLANE COORDINATES";color:UiTheme.accent;font-weight:700;}
+    Action {text:"Horizontal centreline · CSV";clicked=>{root.export(4);}}
+    Action {text:"Vertical centreline · CSV";clicked=>{root.export(5);}}
+    Label {text:"201 uniform positions, sampled from cell fields. Points outside fluid remain gaps. No boundary extrapolation.";}
+    CheckBox {text:"Custom profile line";checked <=> root.custom-profile;}
+    if root.custom-profile : VerticalLayout {vertical-stretch:0;spacing:5px;
+        Label {text:"Start u / v (m)";}
+        HorizontalLayout {spacing:4px;LineEdit {text <=> root.start-u;placeholder-text:"u0";min-width:0px;max-height:32px;}LineEdit {text <=> root.start-v;placeholder-text:"v0";min-width:0px;max-height:32px;}}
+        Label {text:"End u / v (m)";}
+        HorizontalLayout {spacing:4px;LineEdit {text <=> root.end-u;placeholder-text:"u1";min-width:0px;max-height:32px;}LineEdit {text <=> root.end-v;placeholder-text:"v1";min-width:0px;max-height:32px;}}
+        SpinBox {minimum:2;maximum:2000;value <=> root.samples;max-height:32px;}
+        HorizontalLayout {spacing:4px;
+            Action {text:"Profile CSV";clicked=>{root.profile(root.start-u,root.start-v,root.end-u,root.end-v,root.samples,0);}}
+            Action {text:"Chart SVG";clicked=>{root.profile(root.start-u,root.start-v,root.end-u,root.end-v,root.samples,1);}}
+        }
+    }
+    Action {text:"Section statistics · CSV";clicked=>{root.export(3);}}
+    Label {text:"Statistics use intersection areas. Section flux is estimated from sampled velocity, not conservative mesh face flux.";}
+}

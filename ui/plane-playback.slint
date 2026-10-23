@@ -1,0 +1,36 @@
+import {PropertyAction, PropertyCaption} from "components.slint";
+import {Slider, SpinBox, CheckBox, ComboBox} from "std-widgets.slint";
+component Tool inherits PropertyAction {}
+component Label inherits PropertyCaption {}
+export component PlanePlayback inherits VerticalLayout {
+    in property <int> plane-frame;
+    in property <int> plane-count;
+    in property <bool> plane-playing;
+    in-out property <int> plane-fps:10;
+    in-out property <bool> loop:false;
+    in-out property <int> first:1;
+    in-out property <int> last:0;
+    callback playback(int);
+    vertical-stretch:0;spacing:4px;
+    HorizontalLayout {height:30px;spacing:4px;
+        Tool {text:"Open recording…";icon:@image-url("assets/icons/folder.svg");min-width:0px;clicked=>{root.playback(0);}}
+        Tool {text:"";accessible-label:"Previous frame";icon:@image-url("assets/icons/previous.svg");min-width:30px;max-width:30px;enabled:root.plane-count>0;clicked=>{root.playback(2);}}
+        Tool {text:root.plane-playing ? "Pause" : "Play";icon:root.plane-playing ? @image-url("assets/icons/pause.svg") : @image-url("assets/icons/play.svg");min-width:0px;enabled:root.plane-count>0;clicked=>{root.playback(1);}}
+        Tool {text:"";accessible-label:"Next frame";icon:@image-url("assets/icons/next.svg");min-width:30px;max-width:30px;enabled:root.plane-count>0;clicked=>{root.playback(3);}}
+        Tool {text:"Latest";min-width:0px;clicked=>{root.playback(4);}}
+    }
+    HorizontalLayout {height:28px;spacing:4px;
+        Label {text:(root.plane-count>0 ? root.plane-frame+1 : 0)+" / "+root.plane-count;max-width:75px;vertical-alignment:center;}
+        Slider {minimum:0;maximum:max(1,root.plane-count - 1);value:root.plane-frame;enabled:root.plane-count>1;min-width:30px;horizontal-stretch:1;changed(value)=>{root.playback(1000+round(value));}}
+        Label {text:"FPS";vertical-alignment:center;}
+        SpinBox {minimum:1;maximum:30;value <=> root.plane-fps;preferred-width:65px;min-width:0px;max-width:65px;max-height:28px;}
+    }
+    HorizontalLayout {height:28px;spacing:4px;
+        Label {text:"From";vertical-alignment:center;}
+        SpinBox {minimum:1;maximum:max(1,root.plane-count);value <=> root.first;min-width:0px;preferred-width:60px;max-height:28px;}
+        Label {text:"To";vertical-alignment:center;}
+        SpinBox {minimum:0;maximum:max(1,root.plane-count);value <=> root.last;min-width:0px;preferred-width:60px;max-height:28px;}
+        CheckBox {text:"Loop";checked <=> root.loop;max-height:28px;}
+    }
+    ComboBox {model:["Recording actions · last 0 = final frame","Lock colour range across all frames","Export physical-time statistics · CSV","Export selected probe history · CSV"];current-index:0;min-width:0px;max-height:28px;enabled:root.plane-count>0;selected(value)=>{if self.current-index==1 {root.playback(5);}if self.current-index==2 {root.playback(6);}if self.current-index==3 {root.playback(7);}self.current-index=0;}}
+}

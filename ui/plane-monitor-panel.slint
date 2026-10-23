@@ -1,13 +1,22 @@
+import {SectionProperties} from "section-properties.slint";
+import {PropertyAction, PropertyCaption} from "components.slint";
 import {Button,ComboBox,SpinBox,CheckBox,LineEdit} from "std-widgets.slint";
-import {UiTheme} from "components.slint";
-component Label inherits Text {vertical-stretch:0;color:UiTheme.text-muted;font-size:10px;wrap:word-wrap;}
-component Action inherits Button {min-width:0px;min-height:30px;max-height:32px;}
+import {UiTheme, WorkspaceSections} from "components.slint";
+component Label inherits PropertyCaption {}
+component Action inherits PropertyAction {}
 export component PlaneMonitorPanel inherits VerticalLayout {
+    private property <int> section:0;
     in property <[string]> names;
     in-out property <int> index;
     in-out property <int> every:10;
     in-out property <bool> record:false;
     in-out property <int> field:0;
+    in-out property <int> palette:1;
+    in-out property <int> density:1;
+    in-out property <string> scale:"1";
+    in-out property <int> plot:0;
+    in-out property <int> levels:12;
+    in-out property <bool> streamlines:false;
     in-out property <bool> vectors:true;
     in-out property <bool> edges:false;
     in-out property <bool> normalize:true;
@@ -17,33 +26,13 @@ export component PlaneMonitorPanel inherits VerticalLayout {
     in property <bool> busy;
     in property <string> details;
     in property <string> status;
+    callback profile(string,string,string,string,int,int);
     callback select(int);callback apply();callback view();callback style();callback export(int);
     vertical-stretch:0;spacing:7px;
-    Text {text:"CAD SECTION · FIELDS";color:UiTheme.accent;font-size:11px;font-weight:700;vertical-stretch:0;}
+    Label {text:"SECTION";color:UiTheme.accent;font-weight:700;}
     ComboBox {model:root.names;current-index <=> root.index;max-height:32px;min-width:0px;selected(value)=>{root.select(self.current-index);}}
     Label {text:root.details;}
-    Label {text:"COLOUR FIELD";}
-    ComboBox {model:["Speed |U| · m/s","Pressure p/ρ · m²/s²","Velocity X · m/s","Velocity Y · m/s","Velocity Z · m/s","Normal velocity · m/s"];current-index <=> root.field;max-height:32px;min-width:0px;selected(value)=>{root.style();}}
-    HorizontalLayout {vertical-stretch:0;CheckBox {min-height:30px;max-height:30px;text:"Vectors";checked <=> root.vectors;toggled=>{root.style();}} CheckBox {min-height:30px;max-height:30px;text:"Cell edges";checked <=> root.edges;toggled=>{root.style();}}}
-    CheckBox {min-height:30px;max-height:30px;text:"Normalize arrow length";checked <=> root.normalize;toggled=>{root.style();}}
-    CheckBox {min-height:30px;max-height:30px;text:"Normal flow markers";checked <=> root.normal-marks;toggled=>{root.style();}}
-    Label {text:"COLOUR RANGE · empty = automatic";}
-    HorizontalLayout {vertical-stretch:0;spacing:4px;
-        LineEdit {min-width:0px;max-height:32px;text <=> root.range-min;placeholder-text:"Minimum";accepted=>{root.style();}}
-        LineEdit {min-width:0px;max-height:32px;text <=> root.range-max;placeholder-text:"Maximum";accepted=>{root.style();}}
-    }
-    HorizontalLayout {vertical-stretch:0;Action {text:"Apply range";clicked=>{root.style();}} Action {text:"Auto";clicked=>{root.range-min="";root.range-max="";root.style();}}}
-    Action {text:"Show section in Results";enabled:root.names.length>0;clicked=>{root.view();}}
-    HorizontalLayout {vertical-stretch:0;spacing:4px;
-        Action {text:"CSV ↓";clicked=>{root.export(0);}} Action {text:"PNG ↓";clicked=>{root.export(1);}} Action {text:"SVG ↓";clicked=>{root.export(2);}}
-    }
-    Rectangle {height:1px;background:UiTheme.border;}
-    CheckBox {min-height:30px;max-height:30px;text:"Record all velocity + pressure fields";checked <=> root.record;enabled:!root.busy;}
-    HorizontalLayout {vertical-stretch:0;spacing:6px;
-        Label {text:"Every N iterations / time steps";horizontal-stretch:1;}
-        SpinBox {value <=> root.every;minimum:1;maximum:1000000;max-height:32px;preferred-width:100px;min-width:0px;enabled:!root.busy;}
-    }
-    Action {text:"Apply recording settings";enabled:!root.busy && root.names.length>0;clicked=>{root.apply();}}
+    SectionProperties {field <=> root.field;plot <=> root.plot;palette <=> root.palette;density <=> root.density;scale <=> root.scale;levels <=> root.levels;streamlines <=> root.streamlines;vectors <=> root.vectors;edges <=> root.edges;normalize <=> root.normalize;normal-marks <=> root.normal-marks;range-min <=> root.range-min;range-max <=> root.range-max;every <=> root.every;record <=> root.record;busy:root.busy;style=>{root.style();}apply=>{root.apply();}export(i)=>{root.export(i);}profile(a,b,c,d,n,k)=>{root.profile(a,b,c,d,n,k);}}
+    Action {text:"Show section";enabled:root.names.length>0;clicked=>{root.view();}}
     Label {text:root.status;max-height:68px;overflow:elide;}
-    Label {text:"CSV always contains p/ρ and all three velocity components. Scheduled SVG uses the display selected before Run. Steady: iteration history. Transient: accepted physical time levels.";}
 }

@@ -148,6 +148,9 @@ export component MainWindow inherits Window {
     in-out property <int> preferences-panel-size:1;
     changed preferences-panel-size => {UiTheme.properties-width=root.preferences-panel-size==0 ? 270px : root.preferences-panel-size==2 ? 340px : 300px;}
     property <bool> settings-open:false;
+    in-out property <string> preferences-gmsh-path;
+    in-out property <string> gmsh-path-draft;
+    callback browse-gmsh();
     property <int> setup-section:0;
     callback save-preferences();
     in-out property <bool> compact-ui: true;
@@ -258,6 +261,9 @@ export component MainWindow inherits Window {
     in-out property <string> post-line-x1:"1";
     in-out property <string> post-line-y1:"1";
     in-out property <int> post-line-samples:200;
+    in-out property <int> post-plot-mode:0;
+    callback post-compare(int);
+    in-out property <int> post-monitor-kind:0;
     callback post-profile(int);
     in-out property <int> post-tab:0;
     in-out property <bool> solution-show-log:false;
@@ -280,6 +286,12 @@ export component MainWindow inherits Window {
     in-out property <float> wb-solve-progress:0;
     in-out property <string> wb-solve-monitor;
     in-out property <int> wb-chart-kind:4;
+    in-out property <int> flow-plane-palette:1;
+    in-out property <int> flow-plane-density:1;
+    in-out property <string> flow-plane-scale:"1";
+    in-out property <int> flow-plane-plot:0;
+    in-out property <int> flow-plane-levels:12;
+    in-out property <bool> flow-plane-streamlines:false;
     in-out property <int> flow-plane-field:0;
     in-out property <bool> flow-plane-vectors:true;
     in-out property <bool> flow-plane-edges:false;
@@ -289,10 +301,15 @@ export component MainWindow inherits Window {
     in-out property <string> flow-plane-max;
     in-out property <string> flow-plane-error;
     callback flow-plane-style();
+    callback flow-plane-navigate(int,float,float,float,float);
+    in-out property <string> flow-plane-readout;
     in-out property <bool> flow-plane-playing:false;
     in-out property <int> flow-plane-frame:0;
     in-out property <int> flow-plane-count:0;
     in-out property <int> flow-plane-fps:10;
+    in-out property <bool> flow-plane-loop:false;
+    in-out property <int> flow-plane-first:1;
+    in-out property <int> flow-plane-last:0;
     callback flow-plane-playback(int);
     in-out property <bool> solver-paused:false;
     in-out property <int> wb-checkpoint-every:100;
@@ -307,6 +324,7 @@ export component MainWindow inherits Window {
     in-out property <bool> flow-plane-enabled:false;
     in-out property <bool> cad-flow-plane-selected:false;
     in-out property <bool> solution-show-plane:false;
+    in-out property <int> solution-properties-section:0;
     in-out property <image> flow-plane-image;
     in-out property <string> flow-plane-render-key;
     in-out property <string> flow-plane-details;
@@ -315,6 +333,7 @@ export component MainWindow inherits Window {
     callback flow-plane-apply();
     callback flow-plane-view();
     callback flow-plane-export(int);
+    callback flow-plane-profile(string,string,string,string,int,int);
     in-out property <bool> chart-continuity:true;
     in-out property <bool> chart-momentum:true;
     in-out property <bool> chart-velocity:true;
@@ -718,6 +737,10 @@ export component MainWindow inherits Window {
     in-out property <string> wb-flow-feedback;
     callback export-result-csv();
     in-out property <string> result-probe-text:"Click a result cell to inspect pressure and velocity.";
+    in-out property <[string]> result-section-names:["3D surface","XY section","XZ section","YZ section"];
+    callback result-section-selected(int);
+    in-out property <[int]> result-section-plane-indices;
+    callback plane-display-style();
     in-out property <int> result-slice-axis:0;
     in-out property <int> result-slice-percent:50;
     callback add-local-size-wb();
@@ -736,7 +759,7 @@ export component MainWindow inherits Window {
     VerticalLayout {
         spacing: 0px;
         TopBar {
-            open-settings=>{root.settings-open=true;}
+            open-settings=>{root.gmsh-path-draft=root.preferences-gmsh-path;root.settings-open=true;}
             compact-ui: root.compact-ui;
             project-loaded: root.project-loaded;
             wb-busy: root.wb-busy;
@@ -853,8 +876,8 @@ export component MainWindow inherits Window {
                         background:UiTheme.sidebar;border-color:UiTheme.border;border-width:1px;border-radius:4px;
                         VerticalLayout {padding:0px;PropertyScroll {section:root.flow-plane-index;
 PlaneMonitorPanel {
-                                field <=> root.flow-plane-field;vectors <=> root.flow-plane-vectors;edges <=> root.flow-plane-edges;normalize <=> root.flow-plane-normalize;normal-marks <=> root.flow-plane-normal-marks;range-min <=> root.flow-plane-min;range-max <=> root.flow-plane-max;
-                                style=>{root.flow-plane-style();}export(i)=>{root.flow-plane-export(i);}
+                                palette <=> root.flow-plane-palette;density <=> root.flow-plane-density;scale <=> root.flow-plane-scale;plot <=> root.flow-plane-plot;levels <=> root.flow-plane-levels;streamlines <=> root.flow-plane-streamlines;field <=> root.flow-plane-field;vectors <=> root.flow-plane-vectors;edges <=> root.flow-plane-edges;normalize <=> root.flow-plane-normalize;normal-marks <=> root.flow-plane-normal-marks;range-min <=> root.flow-plane-min;range-max <=> root.flow-plane-max;
+                                style=>{root.flow-plane-style();}export(i)=>{root.flow-plane-export(i);}profile(a,b,c,d,n,k)=>{root.flow-plane-profile(a,b,c,d,n,k);}
                                 names:root.flow-plane-names;index <=> root.flow-plane-index;every <=> root.flow-plane-every;record <=> root.flow-plane-enabled;
                                 busy:root.wb-busy;details:root.flow-plane-details;status:root.flow-plane-status;
                                 select(i)=>{root.flow-plane-select(i);}apply=>{root.flow-plane-apply();}view=>{root.flow-plane-view();}
@@ -1093,12 +1116,13 @@ HorizontalLayout {height:32px;spacing:5px;
 
                 if !root.examples-open && root.current-step == 3 : SolutionWorkspace {
                     width:parent.width;height:parent.height;
-                    show-log <=> root.solution-show-log;chart-kind <=> root.wb-chart-kind;
-                    plane-field <=> root.flow-plane-field;plane-vectors <=> root.flow-plane-vectors;plane-edges <=> root.flow-plane-edges;plane-normalize <=> root.flow-plane-normalize;plane-normal-marks <=> root.flow-plane-normal-marks;plane-min <=> root.flow-plane-min;plane-max <=> root.flow-plane-max;style-plane=>{root.flow-plane-style();}
-                    show-plane <=> root.solution-show-plane;plane-image:root.flow-plane-image;
+                    properties-section <=> root.solution-properties-section;show-log <=> root.solution-show-log;chart-kind <=> root.wb-chart-kind;
+                    plane-palette <=> root.flow-plane-palette;plane-density <=> root.flow-plane-density;plane-scale <=> root.flow-plane-scale;plane-plot <=> root.flow-plane-plot;plane-levels <=> root.flow-plane-levels;plane-streamlines <=> root.flow-plane-streamlines;plane-field <=> root.flow-plane-field;plane-vectors <=> root.flow-plane-vectors;plane-edges <=> root.flow-plane-edges;plane-normalize <=> root.flow-plane-normalize;plane-normal-marks <=> root.flow-plane-normal-marks;plane-min <=> root.flow-plane-min;plane-max <=> root.flow-plane-max;style-plane=>{root.flow-plane-style();}
+                    show-plane <=> root.solution-show-plane;plane-image:root.flow-plane-image;plane-readout:root.flow-plane-readout;plane-navigate(a,x,y,w,h)=>{root.flow-plane-navigate(a,x,y,w,h);}
+                    plane-frame:root.flow-plane-frame;plane-count:root.flow-plane-count;plane-fps <=> root.flow-plane-fps;plane-loop <=> root.flow-plane-loop;plane-first <=> root.flow-plane-first;plane-last <=> root.flow-plane-last;plane-playing:root.flow-plane-playing;playback(i)=>{root.flow-plane-playback(i);}
                     plane-names:root.flow-plane-names;plane-index <=> root.flow-plane-index;plane-every <=> root.flow-plane-every;plane-enabled <=> root.flow-plane-enabled;
                     plane-details:root.flow-plane-details;plane-status:root.flow-plane-status;
-                    export-plane(i)=>{root.flow-plane-export(i);}
+                    export-plane(i)=>{root.flow-plane-export(i);}plane-profile(a,b,c,d,n,k)=>{root.flow-plane-profile(a,b,c,d,n,k);}
                     select-plane(i)=>{root.flow-plane-select(i);}apply-plane=>{root.flow-plane-apply();}view-plane=>{root.flow-plane-view();}
 
                     refresh-chart=>{root.post-refresh();}
@@ -1132,16 +1156,16 @@ HorizontalLayout {height:32px;spacing:5px;
                 }
                 if !root.examples-open && root.current-step == 4 : ResultsWorkspace {
                     width:parent.width;height:parent.height;
-                    plane-frame:root.flow-plane-frame;plane-count:root.flow-plane-count;plane-fps <=> root.flow-plane-fps;plane-playing:root.flow-plane-playing;playback(i)=>{root.flow-plane-playback(i);}
-                    plane-image:root.flow-plane-image;plane-names:root.flow-plane-names;plane-index <=> root.flow-plane-index;plane-every <=> root.flow-plane-every;plane-enabled <=> root.flow-plane-enabled;
+                    plane-frame:root.flow-plane-frame;plane-count:root.flow-plane-count;plane-fps <=> root.flow-plane-fps;plane-loop <=> root.flow-plane-loop;plane-first <=> root.flow-plane-first;plane-last <=> root.flow-plane-last;plane-playing:root.flow-plane-playing;playback(i)=>{root.flow-plane-playback(i);}
+                    plane-image:root.flow-plane-image;plane-readout:root.flow-plane-readout;plane-navigate(a,x,y,w,h)=>{root.flow-plane-navigate(a,x,y,w,h);}plane-names:root.flow-plane-names;plane-index <=> root.flow-plane-index;plane-every <=> root.flow-plane-every;plane-enabled <=> root.flow-plane-enabled;
                     busy:root.wb-busy;plane-details:root.flow-plane-details;plane-status:root.flow-plane-status;
-                    plane-field <=> root.flow-plane-field;plane-vectors <=> root.flow-plane-vectors;plane-edges <=> root.flow-plane-edges;plane-normalize <=> root.flow-plane-normalize;plane-normal-marks <=> root.flow-plane-normal-marks;plane-min <=> root.flow-plane-min;plane-max <=> root.flow-plane-max;
-                    style-plane=>{root.flow-plane-style();}select-plane(i)=>{root.flow-plane-select(i);}apply-plane=>{root.flow-plane-apply();}view-plane=>{root.flow-plane-view();}export-plane(i)=>{root.flow-plane-export(i);}
+                    plane-palette <=> root.flow-plane-palette;plane-density <=> root.flow-plane-density;plane-scale <=> root.flow-plane-scale;plane-plot <=> root.flow-plane-plot;plane-levels <=> root.flow-plane-levels;plane-streamlines <=> root.flow-plane-streamlines;plane-field <=> root.flow-plane-field;plane-vectors <=> root.flow-plane-vectors;plane-edges <=> root.flow-plane-edges;plane-normalize <=> root.flow-plane-normalize;plane-normal-marks <=> root.flow-plane-normal-marks;plane-min <=> root.flow-plane-min;plane-max <=> root.flow-plane-max;
+                    style-plane=>{root.flow-plane-style();}select-plane(i)=>{root.flow-plane-select(i);}apply-plane=>{root.flow-plane-apply();}view-plane=>{root.flow-plane-view();}export-plane(i)=>{root.flow-plane-export(i);}plane-profile(a,b,c,d,n,k)=>{root.flow-plane-profile(a,b,c,d,n,k);}
                     wall-summary:root.post-wall-summary;has-wall-report:root.post-has-wall-report;has-wall-samples:root.post-has-wall-samples;
                     tab <=> root.post-tab;
                     balance:root.post-balance;profile-image:root.post-profile-image;profile-caption:root.post-profile-caption;
                     line-x0 <=> root.post-line-x0;line-y0 <=> root.post-line-y0;line-x1 <=> root.post-line-x1;line-y1 <=> root.post-line-y1;line-samples <=> root.post-line-samples;
-                    sample-line(preset)=>{root.post-profile(preset);}
+                    monitor-kind <=> root.post-monitor-kind;plot-mode <=> root.post-plot-mode;compare(i)=>{root.post-compare(i);}sample-line(preset)=>{root.post-profile(preset);}
                     preview:root.visualization-image;title:root.visualization-title;summary:root.residual-summary;
                     legend:root.post-legend;probe:root.result-probe-text;statistics:root.post-statistics;log:root.log-text;
                     feedback:root.post-feedback;export-status:root.post-export-status;has-result:root.post-has-result;is-3d:root.post-is-3d;
@@ -1150,10 +1174,13 @@ HorizontalLayout {height:32px;spacing:5px;
                     plot <=> root.result-plot-index;palette <=> root.result-colormap-index;levels <=> root.result-contour-levels;
                     range-min <=> root.result-range-min;range-max <=> root.result-range-max;
                     vector-density <=> root.result-vector-density;vector-scale <=> root.result-vector-scale;edges <=> root.post-edges;
+                    section-names:root.result-section-names;select-section(i)=>{root.result-section-selected(i);}
                     slice-axis <=> root.result-slice-axis;slice-percent <=> root.result-slice-percent;
                     animation-mode <=> root.post-animation-mode;animation-rate <=> root.post-animation-rate;
                     select-run(index)=>{root.post-select-run(index);}select-field(index)=>{root.select-result-field(index);}
-                    style=>{root.apply-result-style();}apply-range=>{root.apply-result-range();}auto-range=>{root.reset-result-range();}
+                    style=>{if root.result-slice-axis>=4 {root.plane-display-style();}else{root.apply-result-style();}}
+                    apply-range=>{if root.result-slice-axis>=4 {root.plane-display-style();}else{root.apply-result-range();}}
+                    auto-range=>{if root.result-slice-axis>=4 {root.result-range-min="";root.result-range-max="";root.plane-display-style();}else{root.reset-result-range();}}
                     action(index)=>{root.post-action(index);}export(index)=>{root.post-export(index);}export-cells=>{root.export-result-csv();}
                     seek(value)=>{root.post-seek(value);}select-probe(index)=>{root.post-select-probe(index);}
                     pick(x,y,w,h)=>{root.pick-boundary(x,y,w,h);}hover(x,y,w,h)=>{root.mesh-hover(x,y,w,h);}
@@ -1238,8 +1265,11 @@ HorizontalLayout {height:32px;spacing:5px;
     if root.settings-open : SettingsDialog {
         browser:root.show-browser;topology:root.show-topology;
         panel-size:root.preferences-panel-size;
+        gmsh-path <=> root.gmsh-path-draft;
+        browse-gmsh=>{root.browse-gmsh();}
         cancel=>{root.settings-open=false;}
-        apply(browser,topology,size)=>{
+        apply(browser,topology,size,gmsh)=>{
+            root.preferences-gmsh-path=gmsh;
             root.show-browser=browser;root.show-topology=topology;
             root.preferences-panel-size=size;
             UiTheme.properties-width=size==0 ? 270px : size==2 ? 340px : 300px;

@@ -1,9 +1,26 @@
-import { PlaneMonitorPanel } from "plane-monitor-panel.slint";
+import {SectionProperties} from "section-properties.slint";
+import {PropertyAction, PropertyCaption} from "components.slint";
+import {SectionViewport} from "section-viewport.slint";
+import {PlanePlayback} from "plane-playback.slint";
 import {CheckBox,ComboBox,Button,LineEdit,SpinBox,ProgressIndicator,TextEdit,ScrollView} from "std-widgets.slint";
 import {UiTheme, PropertiesPanel, PropertyScroll, WorkspaceSections} from "components.slint";
-component Tool inherits Button {min-width:0px;min-height:30px;max-height:34px;}
-component Label inherits Text {vertical-stretch:0;font-size:11px;color:UiTheme.text-muted;wrap:word-wrap;}
+component Tool inherits PropertyAction {}
+component Label inherits PropertyCaption {}
 export component SolutionWorkspace inherits Rectangle {
+    in property <int> plane-frame;
+    in property <int> plane-count;
+    in property <bool> plane-playing;
+    in-out property <int> plane-fps:10;
+    in-out property <bool> plane-loop:false;
+    in-out property <int> plane-first:1;
+    in-out property <int> plane-last:0;
+    callback playback(int);
+    in-out property <int> plane-palette:1;
+    in-out property <int> plane-density:1;
+    in-out property <string> plane-scale:"1";
+    in-out property <int> plane-plot:0;
+    in-out property <int> plane-levels:12;
+    in-out property <bool> plane-streamlines:false;
     in-out property <int> plane-field;
     in-out property <bool> plane-vectors;
     in-out property <bool> plane-edges;
@@ -11,6 +28,7 @@ export component SolutionWorkspace inherits Rectangle {
     in-out property <bool> plane-normal-marks;
     in-out property <string> plane-min;
     in-out property <string> plane-max;
+    callback plane-profile(string,string,string,string,int,int);
     callback style-plane();
 
     in-out property <int> chart-kind;
@@ -28,6 +46,8 @@ export component SolutionWorkspace inherits Rectangle {
     callback hover-chart(float);
     in-out property <bool> show-plane:false;
     in property <image> plane-image;
+    in property <string> plane-readout;
+    callback plane-navigate(int,float,float,float,float);
     in property <[string]> plane-names;
     in-out property <int> plane-index;
     in-out property <int> plane-every;
@@ -51,7 +71,7 @@ export component SolutionWorkspace inherits Rectangle {
     in-out property <string> initial-y;
     in-out property <string> initial-z;
     in-out property <string> initial-p;
-    property <int> properties-section:0;
+    in-out property <int> properties-section:0;
     in property <string> wall-summary;
     in-out property <string> target-courant;
     in-out property <string> min-time-step;
@@ -94,13 +114,13 @@ export component SolutionWorkspace inherits Rectangle {
         HorizontalLayout {height:34px;spacing:8px;
             Rectangle {horizontal-stretch:1;}
             Tool {text:"Load restart…";enabled:root.can-run && !root.busy;clicked=>{root.control(2);}}
-            Tool {text:"Initialization ▾";enabled:root.can-run && !root.busy;clicked=>{root.properties-section=0;}}
-            Tool {text:root.paused ? "▶ Resume" : "Ⅱ Pause";enabled:root.busy;clicked=>{root.control(1);}}
-            Tool {text:"■ Stop · retain fields";enabled:root.busy;clicked=>{root.cancel();}}
-            Tool {text:root.busy ? "Solving…" : "▶ Run / Continue";enabled:root.can-run && !root.busy;clicked=>{root.run();}}
+            Tool {text:"Initialization";enabled:root.can-run && !root.busy;clicked=>{root.properties-section=0;}}
+            Tool {text:root.paused ? "Resume" : "Pause";icon:root.paused ? @image-url("assets/icons/play.svg") : @image-url("assets/icons/pause.svg");enabled:root.busy;clicked=>{root.control(1);}}
+            Tool {text:"Stop · retain fields";icon:@image-url("assets/icons/stop.svg");enabled:root.busy;clicked=>{root.cancel();}}
+            Tool {text:root.busy ? "Solving…" : "Run / Continue";icon:@image-url("assets/icons/play.svg");enabled:root.can-run && !root.busy;clicked=>{root.run();}}
         }
         Text {text:root.paused ? "PAUSED · solver state retained · use Resume to continue" : root.monitor;color:UiTheme.text;font-size:12px;max-height:28px;overflow:elide;vertical-stretch:0;}
-        WorkspaceSections {model:["Initialize","Models","Time","Methods","Reports","Planes"];current-index <=> root.properties-section;selected(i)=>{if i==5 {root.show-plane=true;root.show-log=false;}}}
+        WorkspaceSections {model:["Initialize","Models","Time","Methods","Reports","Display"];current-index <=> root.properties-section;selected(i)=>{if i==5 {root.show-plane=true;root.show-log=false;}}}
         HorizontalLayout {spacing:10px;
             PropertiesPanel {
                 VerticalLayout {padding:0px;spacing:0px;
@@ -223,12 +243,14 @@ if root.properties-section==4 : VerticalLayout {spacing:8px;vertical-stretch:0;
                         Text {text:root.summary;color:UiTheme.text;font-size:11px;wrap:word-wrap;}
                         Text {text:root.balance;color:UiTheme.text-soft;font-size:11px;wrap:word-wrap;}
                         }
-if root.properties-section==5 : PlaneMonitorPanel {names:root.plane-names;index <=> root.plane-index;every <=> root.plane-every;record <=> root.plane-enabled;
-                            field <=> root.plane-field;vectors <=> root.plane-vectors;edges <=> root.plane-edges;normalize <=> root.plane-normalize;normal-marks <=> root.plane-normal-marks;range-min <=> root.plane-min;range-max <=> root.plane-max;
-                            style=>{root.style-plane();}export(i)=>{root.export-plane(i);}
-                            busy:root.busy;details:root.plane-details;status:root.plane-status;
-                            select(i)=>{root.select-plane(i);}apply=>{root.apply-plane();}view=>{root.view-plane();}
-                        }
+if root.properties-section==5 : VerticalLayout {vertical-stretch:0;spacing:7px;
+    ComboBox {model:root.plane-names;current-index <=> root.plane-index;max-height:32px;min-width:0px;selected(value)=>{root.select-plane(self.current-index);}}
+    Label {text:root.plane-details;}
+SectionProperties {field <=> root.plane-field;plot <=> root.plane-plot;palette <=> root.plane-palette;density <=> root.plane-density;scale <=> root.plane-scale;
+    levels <=> root.plane-levels;streamlines <=> root.plane-streamlines;vectors <=> root.plane-vectors;edges <=> root.plane-edges;normalize <=> root.plane-normalize;normal-marks <=> root.plane-normal-marks;range-min <=> root.plane-min;range-max <=> root.plane-max;
+    every <=> root.plane-every;record <=> root.plane-enabled;busy:root.busy;style=>{root.style-plane();}apply=>{root.apply-plane();}export(i)=>{root.export-plane(i);}profile(a,b,c,d,n,k)=>{root.plane-profile(a,b,c,d,n,k);}}
+}
+
                     }
                     if root.properties-section>=1 && root.properties-section<=3 : Tool {
                         text:"Apply settings";enabled:!root.busy;min-height:34px;
@@ -239,20 +261,22 @@ if root.properties-section==5 : PlaneMonitorPanel {names:root.plane-names;index 
 
             VerticalLayout {spacing:8px;
                 HorizontalLayout {height:30px;spacing:6px;
-                    Tool {text:!root.show-log && !root.show-plane ? "● Convergence" : "Convergence";clicked=>{root.show-log=false;root.show-plane=false;}}
-                    Tool {text:root.show-plane ? "● Plane fields" : "Plane fields";clicked=>{root.show-log=false;root.show-plane=true;root.properties-section=5;}}
-                    Tool {text:root.show-log ? "● Solver log" : "Solver log";clicked=>{root.show-log=true;root.show-plane=false;}}
+                    Tool {text:"Convergence";checkable:true;checked:!root.show-log && !root.show-plane;clicked=>{root.show-log=false;root.show-plane=false;}}
+                    Tool {text:"Plane fields";checkable:true;checked:root.show-plane;clicked=>{root.show-log=false;root.show-plane=true;root.properties-section=5;}}
+                    Tool {text:"Solver log";checkable:true;checked:root.show-log;clicked=>{root.show-log=true;root.show-plane=false;}}
                     Rectangle {horizontal-stretch:1;}
-                    ComboBox {model:root.show-plane ? ["Plane CSV","Plane PNG","Plane SVG"] : ["History CSV","Chart PNG","Chart SVG"];current-index <=> root.export-format;min-width:0px;preferred-width:125px;max-height:30px;}
-                    Tool {text:"Export ↓";clicked=>{if root.show-plane {root.export-plane(root.export-format);}else if root.export-format==0 {root.export-history();}else if root.export-format==1 {root.export-chart();}else{root.export-vector();}}}
+                    if !root.show-plane : ComboBox {model:root.show-plane ? ["Plane CSV","Plane PNG","Plane SVG"] : ["History CSV","Chart PNG","Chart SVG"];current-index <=> root.export-format;min-width:0px;preferred-width:125px;max-height:30px;}
+                    if !root.show-plane : Tool {text:"Export";icon:@image-url("assets/icons/export_tray.svg");clicked=>{if root.show-plane {root.export-plane(root.export-format);}else if root.export-format==0 {root.export-history();}else if root.export-format==1 {root.export-chart();}else{root.export-vector();}}}
                 }
+                if root.show-plane : PlanePlayback {plane-frame:root.plane-frame;plane-count:root.plane-count;plane-playing:root.plane-playing;plane-fps <=> root.plane-fps;loop <=> root.plane-loop;first <=> root.plane-first;last <=> root.plane-last;playback(i)=>{root.playback(i);}}
                 if !root.show-log && !root.show-plane : HorizontalLayout {height:30px;spacing:5px;
-                    ComboBox {model:["Continuity RMS","Momentum relative","Velocity change","Pressure (inner)","All monitors"];current-index <=> root.chart-kind;min-width:0px;preferred-width:145px;max-height:30px;selected(value)=>{root.refresh-chart();}}
-                    CheckBox {text:"Log";checked <=> root.logarithmic;toggled=>{root.refresh-chart();}}
-                    CheckBox {text:"Normalize";checked <=> root.normalized;toggled=>{root.refresh-chart();}}
-                    ComboBox {model:["Full history","Last 400","Last 100"];current-index <=> root.history-window;min-width:0px;preferred-width:115px;max-height:30px;selected(value)=>{root.refresh-chart();}}
-                    CheckBox {text:"Legend";checked <=> root.legend;toggled=>{root.refresh-chart();}}
+                    ComboBox {model:["Continuity RMS","Momentum relative","Velocity change","Pressure (inner)","All residuals","Plane mean speed","Plane mean p/ρ","Plane volume flux"];current-index <=> root.chart-kind;min-width:0px;preferred-width:145px;max-height:30px;selected(value)=>{root.refresh-chart();}}
+                    if root.chart-kind<5 : CheckBox {text:"Log";checked <=> root.logarithmic;toggled=>{root.refresh-chart();}}
+                    if root.chart-kind<5 : CheckBox {text:"Normalize";checked <=> root.normalized;toggled=>{root.refresh-chart();}}
+                    if root.chart-kind<5 : ComboBox {model:["Full history","Last 400","Last 100"];current-index <=> root.history-window;min-width:0px;preferred-width:115px;max-height:30px;selected(value)=>{root.refresh-chart();}}
+                    if root.chart-kind<5 : CheckBox {text:"Legend";checked <=> root.legend;toggled=>{root.refresh-chart();}}
                 }
+                if !root.show-log && !root.show-plane && root.chart-kind>=5 : ComboBox {model:root.plane-names;current-index <=> root.plane-index;min-width:0px;max-height:32px;selected(value)=>{root.select-plane(self.current-index);root.refresh-chart();}}
                 if !root.show-log && !root.show-plane && root.chart-kind==4 : HorizontalLayout {height:28px;spacing:7px;
                     Rectangle {width:8px;height:8px;background:#58c4f6;}
                     CheckBox {text:"Continuity";checked <=> root.continuity;toggled=>{root.refresh-chart();}}
@@ -270,18 +294,19 @@ if root.properties-section==5 : PlaneMonitorPanel {names:root.plane-names;index 
                     if !root.show-log && !root.show-plane : Image {source:root.chart;width:parent.width;height:parent.height;image-fit:fill;}
                     if !root.show-log && !root.show-plane : TouchArea {
                         moved=>{root.hover-chart(self.mouse-x/1px);}
-                        if self.has-hover && self.mouse-x>96px && self.mouse-x<self.width - 24px : Rectangle {
+                        if root.chart-kind<5 && self.has-hover && self.mouse-x>96px && self.mouse-x<self.width - 24px : Rectangle {
                             x:parent.mouse-x;y:root.legend ? 100px : 44px;width:1px;height:max(0px,parent.height - self.y - 62px);background:#ffffff55;
                         }
                     }
-                    if root.show-plane : Image {source:root.plane-image;width:parent.width;height:parent.height;image-fit:contain;}
+                    if root.show-plane : SectionViewport {source:root.plane-image;readout:root.plane-readout;navigate(a,x,y,w,h)=>{root.plane-navigate(a,x,y,w,h);}width:parent.width;height:parent.height;}
 
                     if root.show-log : TextEdit {text:root.log;read-only:true;width:parent.width;height:parent.height;}
                 }
+                if root.show-plane && root.plane-readout!="" : Label {text:root.plane-readout;max-height:42px;overflow:elide;}
                 if root.show-plane : Label {text:root.plane-status;max-height:38px;overflow:elide;}
                 if !root.show-log && !root.show-plane : Label {text:root.readout;max-height:32px;overflow:elide;color:UiTheme.text;font-size:10px;}
                 if !root.show-log && !root.show-plane : Label {text:root.caption;max-height:38px;overflow:elide;font-size:10px;}
-                HorizontalLayout {height:16px;spacing:8px;
+                if !root.show-plane : HorizontalLayout {height:16px;spacing:8px;
                     Label {text:"Iteration budget";font-size:10px;vertical-alignment:center;}
                     ProgressIndicator {progress:root.progress;max-height:10px;horizontal-stretch:1;}
                     Label {text:"≠ convergence %";font-size:10px;vertical-alignment:center;}
