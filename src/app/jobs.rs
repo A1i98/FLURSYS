@@ -377,8 +377,9 @@ impl WorkbenchJobExecutor {
                     Ok(())
                 });
                 let health_case=case.clone();
-                // Retention cadence divides the configured disk cadence, including odd intervals.
-                let retention_every=if checkpoint_every==0 {10} else {(1..=10).rev().find(|n|checkpoint_every%n==0).unwrap_or(1)};
+                // Retain every accepted state: stopping between disk writes must not
+                // roll continuation backwards or skip absolute recording intervals.
+                let retention_every=1;
                 let control=control.with_restart_state(retention_every,move |index,initial| {
                     let local_index=index;
                     let index = offset.saturating_add(index);
@@ -389,6 +390,12 @@ impl WorkbenchJobExecutor {
                     if let Some(mesh)=iteration_mesh.as_ref().filter(|_|checkpoint_every>0 && (local_index==1||local_index%checkpoint_every==0)) {
                         if let Err(error)=crate::workbench::checkpoint::write_restart(&iteration_path,mesh,index,&initial,false,&iteration_context) {
                             let _=iteration_sender.send(WorkbenchJobEvent::SolveProgress(JobProgress::Message(format!("Restart checkpoint failed: {error}"))));
+                        }
+                    }
+                    if !physical && checkpoint_every > 0 && index % checkpoint_every == 0 {
+                        if let Some(mesh)=iteration_mesh.as_ref() {
+                            let path=iteration_path.parent().unwrap_or(std::path::Path::new(".")).join("fields").join(format!("iteration-{index:010}.json"));
+                            crate::workbench::checkpoint::write_restart(&path,mesh,index,&initial,false,&iteration_context).map_err(|e|format!("Field history: {e}"))?;
                         }
                     }
                     *iteration_retained.lock().unwrap()=Some((retained_mesh,initial));Ok(())
@@ -418,6 +425,12 @@ impl WorkbenchJobExecutor {
                             let _=completed_sender.send(WorkbenchJobEvent::SolveProgress(JobProgress::Message(format!("Complete-state checkpoint failed: {error}"))));
                         }
                     }
+                    if physical && checkpoint_every > 0 && index % checkpoint_every == 0 {
+                        if let Some(mesh)=completed_mesh.as_ref() {
+                            let path=completed_path.parent().unwrap_or(std::path::Path::new(".")).join("fields").join(format!("iteration-{index:010}.json"));
+                            crate::workbench::checkpoint::write_solution(&path,mesh,index,solution,&completed_context).map_err(|e|format!("Field history: {e}"))?;
+                        }
+                    }
                     if let Some(time)=solution.physical_time {let _=completed_sender.send(WorkbenchJobEvent::SolveProgress(JobProgress::Message(format!("Completed physical time step {index}: t={time:.9e} s, dt={:.6e} s, nonlinear correctors={}, max Co={:.4e}, rejected steps={}",solution.last_time_step.unwrap_or(0.0),solution.report.outer_iterations,solution.max_courant.unwrap_or(0.0),solution.rejected_time_steps))));}
                     Ok(())
                 });
@@ -429,7 +442,7 @@ impl WorkbenchJobExecutor {
                 if let Ok(solution) = &result {
                     *retained.lock().unwrap()=Some((retained_mesh,solution.restart()));
                     final_counter.store(if physical { solution.completed_time_steps } else { solution.report.outer_iterations }, Ordering::Release);
-                    if let Some(final_checkpoint_mesh) = final_checkpoint_mesh.as_ref().filter(|_|checkpoint_every>0) {
+                    if let Some(final_checkpoint_mesh) = final_checkpoint_mesh.as_ref() {
                         if let Err(error) = crate::workbench::checkpoint::write_solution(
                             &final_checkpoint_path, final_checkpoint_mesh,
                             if physical {solution.completed_time_steps}else{solution.report.outer_iterations},

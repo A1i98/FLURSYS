@@ -39,12 +39,13 @@ pub use mesh_viewport::{
 pub use picking::{CadPickMode, CadSelectionState};
 pub use project::{
     autosave_workspace, delete_workspace_run, discard_workspace_recovery, discover_templates,
-    discover_templates_from_roots, finalize_workspace_run, load_recent_projects, load_workspace,
-    load_workspace_result, recovery_is_newer, save_case_template, save_recent_projects,
-    save_workspace, BoundaryAssignment, BoundaryLayerControl, BoxRefinement, CaseTemplateManifest,
-    EdgeDivisionControl, LocalMeshSize, MeshControlTarget, MeshMethod, MeshRecipe, MeshTuning,
-    PhysicalBoundaryCondition, ProjectDocumentError, RecentProjectEntry, RecentProjects, RunRecord,
-    RunStatus, TemplateExpectations, ThresholdRefinement, WorkbenchMaterial, WorkbenchMeshSettings,
+    discover_templates_from_roots, finalize_workspace_run, finalize_workspace_run_continuing,
+    load_recent_projects, load_workspace, load_workspace_result, recovery_is_newer,
+    save_case_template, save_recent_projects, save_workspace, BoundaryAssignment,
+    BoundaryLayerControl, BoxRefinement, CaseTemplateManifest, EdgeDivisionControl, LocalMeshSize,
+    MeshControlTarget, MeshMethod, MeshRecipe, MeshTuning, PhysicalBoundaryCondition,
+    ProjectDocumentError, RecentProjectEntry, RecentProjects, RunRecord, RunStatus,
+    TemplateExpectations, ThresholdRefinement, WorkbenchMaterial, WorkbenchMeshSettings,
     WorkbenchProject, WorkbenchSolverSettings, PROJECT_DOCUMENT_FILE, RECENT_PROJECTS_FILE,
     WORKBENCH_PROJECT_FORMAT_VERSION,
 };

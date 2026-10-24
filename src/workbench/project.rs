@@ -921,13 +921,36 @@ pub fn finalize_workspace_run(
     project: &mut WorkbenchProject,
     session: &WorkbenchSession,
 ) -> Result<Option<RunRecord>, ProjectDocumentError> {
+    finalize_workspace_run_continuing(workspace, project, session, None)
+}
+
+/// Update the same persisted run after a continuation, or create its first record.
+/// Callers explicitly choose the continuation ID; historical runs are never guessed.
+pub fn finalize_workspace_run_continuing(
+    workspace: &Path,
+    project: &mut WorkbenchProject,
+    session: &WorkbenchSession,
+    continuation: Option<&str>,
+) -> Result<Option<RunRecord>, ProjectDocumentError> {
     let status = match session.status() {
         SolveStatus::Converged => RunStatus::Converged,
         SolveStatus::MaxIterations => RunStatus::MaxIterations,
         SolveStatus::Failed(_) => RunStatus::Failed,
         SolveStatus::Idle | SolveStatus::Solving => return Ok(None),
     };
-    let mut record = project.next_run(status);
+    let mut record = match continuation {
+        Some(id) => project
+            .runs
+            .iter()
+            .find(|r| r.id == id)
+            .cloned()
+            .ok_or_else(|| {
+                ProjectDocumentError::Invalid(format!("Continuation run {id:?} does not exist"))
+            })?,
+        None => project.next_run(status.clone()),
+    };
+    record.status = status;
+    record.failure_diagnostic = None;
     if let SolveStatus::Failed(diagnostic) = session.status() {
         record.failure_diagnostic = Some(diagnostic.clone());
     }
@@ -994,7 +1017,11 @@ pub fn finalize_workspace_run(
         })),
     });
     atomic_json_write(&run_directory.join("report.json"), &report)?;
-    project.runs.push(record.clone());
+    if let Some(existing) = project.runs.iter_mut().find(|r| r.id == record.id) {
+        *existing = record.clone();
+    } else {
+        project.runs.push(record.clone());
+    }
     save_workspace(workspace, project)?;
     Ok(Some(record))
 }
