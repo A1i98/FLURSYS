@@ -713,7 +713,8 @@ fn case_validation_rejects_unknown_physical_boundary_patch() {
 fn high_level_solver_propagates_a_configured_momentum_linear_failure() {
     let solver = IncompressibleSolverOptions {
         momentum_solver: flursys::LinearSolverOptions {
-            max_iterations: 0,
+            // One is a valid budget; zero is rejected by equation-control validation.
+            max_iterations: 1,
             ..flursys::LinearSolverOptions::default()
         },
         ..IncompressibleSolverOptions::default()
@@ -737,12 +738,17 @@ fn high_level_solver_propagates_a_configured_momentum_linear_failure() {
         },
         solver,
     );
-    assert!(matches!(
-        solve_incompressible(&case),
-        Err(flursys::IncompressibleSolveError::Simple(
-            flursys::SimpleError::MomentumLinearDidNotConverge
-        ))
-    ));
+    let result = solve_incompressible(&case);
+    assert!(
+        matches!(
+            result,
+            Err(flursys::IncompressibleSolveError::Simple(
+                flursys::SimpleError::MomentumLinearDidNotConverge
+            ))
+        ),
+        "unexpected result: {:?}",
+        result.as_ref().err()
+    );
 }
 
 #[test]
