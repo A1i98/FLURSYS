@@ -5,11 +5,10 @@
 //! remains in `crate::simple`.
 
 use crate::{
-    CellField, Diffusivity, FaceField, FieldError, LeastSquaresGradientStencil,
+    initial_face_flux, CellField, Diffusivity, FaceField, FieldError, LeastSquaresGradientStencil,
     LinearSolverOptions, NumericsError, ResolvedScalarBoundaryConditions,
     ResolvedVelocityBoundaryConditions, ScalarBoundaryCondition, SimpleError, SimpleOptions,
     SimpleReport, SimpleState, UnstructuredMesh, Vec3, VelocityBoundaryCondition,
-    initial_face_flux,
 };
 
 mod profiles;
@@ -74,6 +73,7 @@ pub struct IncompressibleSolverOptions {
     pub time: TimeIntegration,
     /// Absolute physical stopping time; the last step is shortened to land here.
     pub physical_end_time: Option<f64>,
+    pub force_analysis: crate::workbench::force_analysis::Settings,
     pub pressure_coupling: crate::simple::PressureCoupling,
     pub volume_models: crate::volume_models::VolumeModels,
     pub cyclic_pairs: Vec<crate::periodic::TranslationalCyclicPair>,
@@ -127,6 +127,7 @@ impl Default for IncompressibleSolverOptions {
             compute: Default::default(),
             time: TimeIntegration::Steady,
             physical_end_time: None,
+            force_analysis: Default::default(),
             pressure_coupling: Default::default(),
             volume_models: Default::default(),
             cyclic_pairs: Vec::new(),
@@ -790,6 +791,8 @@ impl IncompressibleSolveReport {
 
 #[derive(Clone, Debug)]
 pub struct IncompressibleSolution {
+    pub max_diffusion_number: Option<f64>,
+    pub budgets: Result<crate::workbench::budgets::Report, String>,
     pub nonlinear_iterations: usize,
     pub max_courant: Option<f64>,
     pub turbulence: Option<crate::turbulence::TurbulenceFields>,
@@ -862,9 +865,9 @@ impl<'a> SolveControl<'a> {
     pub fn with_fields(
         mut self,
         callback: impl Fn(usize, &CellField<Vec3>, &CellField<f64>) -> Result<(), String>
-        + Send
-        + Sync
-        + 'a,
+            + Send
+            + Sync
+            + 'a,
     ) -> Self {
         self.on_fields = Some(Box::new(callback));
         self
@@ -874,9 +877,9 @@ impl<'a> SolveControl<'a> {
         mut self,
         every: usize,
         callback: impl Fn(usize, IncompressibleInitialConditions) -> Result<(), String>
-        + Send
-        + Sync
-        + 'a,
+            + Send
+            + Sync
+            + 'a,
     ) -> Self {
         self.on_restart = Some(Box::new(callback));
         self.restart_every = every;
@@ -1480,7 +1483,9 @@ fn solve_incompressible_on_pool(
                 (inflow, outflow + flux)
             }
         });
-    Ok(IncompressibleSolution {
+    let mut solution = IncompressibleSolution {
+        max_diffusion_number: None,
+        budgets: Err("Budget calculation pending".into()),
         nonlinear_iterations: simple.outer_iterations,
         max_courant: None,
         turbulence: closure.as_ref().map(|c| c.lock().unwrap().fields()),
@@ -1505,7 +1510,11 @@ fn solve_incompressible_on_pool(
             net_boundary_flux: total_inflow + total_outflow,
             simple,
         },
-    })
+    };
+    if !case.solver.time.is_transient() {
+        solution.budgets = crate::workbench::budgets::evaluate(case, &solution, None);
+    }
+    Ok(solution)
 }
 
 #[cfg(test)]

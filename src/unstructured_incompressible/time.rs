@@ -6,6 +6,8 @@ use serde::{Deserialize, Serialize};
 #[serde(default)]
 pub struct AdaptiveTimeStep {
     pub target_courant: f64,
+    /// Optional diffusion-number accuracy bound for implicit transport.
+    pub max_diffusion: Option<f64>,
     pub min_dt: f64,
     pub max_dt: f64,
     pub max_growth: f64,
@@ -14,6 +16,7 @@ impl Default for AdaptiveTimeStep {
     fn default() -> Self {
         Self {
             target_courant: 0.5,
+            max_diffusion: None,
             min_dt: 1e-8,
             max_dt: 0.01,
             max_growth: 1.2,
@@ -76,6 +79,9 @@ impl TimeIntegration {
             );
         }
         if let Some(c) = self.adaptive() {
+            if c.max_diffusion.is_some_and(|v| !v.is_finite() || v <= 0.0) {
+                return Err("Maximum diffusion number must be finite positive or unset".into());
+            }
             if [c.target_courant, c.min_dt, c.max_dt, c.max_growth]
                 .iter()
                 .any(|v| !v.is_finite())
@@ -112,6 +118,35 @@ fn courant_rate(mesh: &UnstructuredMesh, flux: &FaceField<f64>) -> Result<f64, S
         ));
     }
     Ok(rate)
+}
+fn diffusion_rate(case: &IncompressibleCase, nut: f64) -> f64 {
+    let t = &case.solver.thermal;
+    let alpha = if t.enabled {
+        t.conductivity / (case.material.density * t.specific_heat) + nut / t.turbulent_prandtl
+    } else {
+        0.0
+    };
+    let diffusivity = (case.material.kinematic_viscosity + nut).max(alpha);
+    let mesh = &case.mesh;
+    let mut sum = vec![0.0; mesh.cell_count()];
+    for f in mesh.faces() {
+        let d = f
+            .neighbour
+            .map(|n| mesh.cells()[n].center - mesh.cells()[f.owner].center)
+            .unwrap_or(f.center - mesh.cells()[f.owner].center);
+        let projection = f.area_vector.dot(d).abs();
+        if projection > 0.0 {
+            let conductance = diffusivity * f.area_vector.norm_squared() / projection;
+            sum[f.owner] += conductance;
+            if let Some(n) = f.neighbour {
+                sum[n] += conductance;
+            }
+        }
+    }
+    sum.iter()
+        .zip(mesh.cells())
+        .map(|(s, c)| 0.5 * s / c.volume)
+        .fold(0.0, f64::max)
 }
 fn initial_rate(case: &IncompressibleCase) -> Result<f64, IncompressibleSolveError> {
     if let IncompressibleInitialConditions::Restart { face_flux, .. } = &case.initial_conditions {
@@ -305,6 +340,7 @@ pub(super) fn solve_time_loop(
     } else {
         0.0
     };
+    let mut diffusion_rate = diffusion_rate(case, 0.0);
     let mut last = None;
     let mut initial_continuity = None;
     let mut histories = Vec::new();
@@ -333,6 +369,25 @@ pub(super) fn solve_time_loop(
                     c.min_dt
                 ))
                 .into());
+            }
+        }
+        if let Some(max) = adaptive.and_then(|c| c.max_diffusion) {
+            if diffusion_rate > 0.0 {
+                let limit = max / diffusion_rate;
+                if limit < dt {
+                    dt = limit;
+                    if let Some(cb) = control.and_then(|c| c.on_message.as_ref()) {
+                        cb(format!(
+                            "Diffusion-number accuracy bound limits dt to {dt:.6e} s"
+                        ));
+                    }
+                }
+                if dt < adaptive.unwrap().min_dt {
+                    return Err(SimpleError::PhysicalBoundary(
+                        "Diffusion-number bound requires dt below configured minimum".into(),
+                    )
+                    .into());
+                }
             }
         }
         if let Some(end) = end_time {
@@ -396,26 +451,51 @@ pub(super) fn solve_time_loop(
                 )
                 .into());
             }
+            let next_diffusion_rate = self::diffusion_rate(
+                case,
+                result
+                    .turbulence
+                    .as_ref()
+                    .map(|t| t.nut.values().iter().copied().fold(0.0, f64::max))
+                    .unwrap_or(0.0),
+            );
+            let diffusion = dt * next_diffusion_rate;
+            if !diffusion.is_finite() {
+                return Err(SimpleError::PhysicalBoundary(
+                    "Diffusion number overflow; physical time was not advanced".into(),
+                )
+                .into());
+            }
             let reject = !result.report.converged()
-                || adaptive.is_some_and(|c| co > c.target_courant * (1.0 + 1e-6));
+                || adaptive.is_some_and(|c| {
+                    co > c.target_courant * (1.0 + 1e-6)
+                        || c.max_diffusion
+                            .is_some_and(|max| diffusion > max * (1.0 + 1e-6))
+                });
             if reject {
                 if let Some(c) = adaptive {
                     rejected += 1;
                     let factor = if result.report.converged() {
-                        (0.9 * c.target_courant / co).min(0.9)
+                        (0.9 * c.target_courant / co)
+                            .min(
+                                c.max_diffusion
+                                    .map(|max| 0.9 * max / diffusion)
+                                    .unwrap_or(0.9),
+                            )
+                            .min(0.9)
                     } else {
                         0.5
                     };
                     let smaller = (dt * factor).max(c.min_dt);
                     if let Some(cb) = control.and_then(|c| c.on_message.as_ref()) {
                         cb(format!(
-                            "Rejected time step {step}, attempt {}: dt={dt:e}, Co={co:.4e}, coupled_converged={}; retry dt={smaller:e}; fields and physical time rolled back",
+                            "Rejected time step {step}, attempt {}: dt={dt:e}, Co={co:.4e}, diffusion={diffusion:.4e}, coupled_converged={}; retry dt={smaller:e}; fields and physical time rolled back",
                             attempt + 1,
                             result.report.converged()
                         ));
                     }
                     if attempt == 8 || smaller >= dt {
-                        return Err(SimpleError::PhysicalBoundary(format!("Time step {step} cannot satisfy coupled convergence / Courant within adaptive limits; last accepted time is {time:e} s")).into());
+                        return Err(SimpleError::PhysicalBoundary(format!("Time step {step} cannot satisfy coupled convergence / Courant / diffusion within adaptive limits; last accepted time is {time:e} s")).into());
                     }
                     dt = smaller;
                     continue;
@@ -425,6 +505,18 @@ pub(super) fn solve_time_loop(
             result.physical_time = Some(next);
             result.last_time_step = Some(dt);
             result.rejected_time_steps = rejected;
+            result.budgets = crate::workbench::budgets::evaluate(
+                &step_case,
+                &result,
+                Some((
+                    &step_case.initial_conditions,
+                    older.as_ref(),
+                    effective_dt,
+                    history_weights,
+                )),
+            );
+            result.max_diffusion_number = Some(diffusion);
+            diffusion_rate = next_diffusion_rate;
             result.completed_time_steps = step;
             result.max_courant = Some(co);
             result.nonlinear_iterations = correctors;

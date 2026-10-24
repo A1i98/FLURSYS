@@ -1,12 +1,15 @@
 //! Canonical project, meshing, solver orchestration and results shared by GUI and headless clients.
 
 pub mod boundary_reports;
+pub mod budgets;
 pub mod catalogue;
 pub mod checkpoint;
+pub mod dfg;
 pub mod diagnostics;
 pub mod editor;
 pub mod examples;
 pub mod field_mapping;
+pub mod force_analysis;
 pub mod mesh_report;
 pub mod mesh_storage;
 pub mod mesh_viewport;

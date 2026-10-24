@@ -341,14 +341,20 @@ impl WorkbenchJobExecutor {
                 let completed_context=final_checkpoint_context.clone();
                 let completed_sender=sender.clone();
                 let completed_case=case.clone();
+                let load_path=(!folder.as_os_str().is_empty()).then(|| folder.join("force-history.jsonl"));
+                let sampled_load_path=load_path.clone();
 
                 let control = control.with_linear_control(move || wait_for_resume(&linear_paused,&linear_cancellation));
                 let control = control.with_performance(move |report| {let _=performance_sender.send(WorkbenchJobEvent::Performance(report));});
                 let control = control.with_message(move |message|{let _=message_sender.send(WorkbenchJobEvent::SolveProgress(JobProgress::Message(message)));});
                 let control = control.with_fields(move |iteration, velocity, pressure| {
                     let iteration = offset.saturating_add(iteration);
-                    if iteration==1 || iteration%10==0 {
-                        if let Ok(walls)=crate::workbench::wall_reports::reports(&monitor_case,velocity,pressure,false) {let _=monitor_sender.send(WorkbenchJobEvent::WallReports{iteration,physical_time:*sample_time.lock().unwrap(),reports:walls});}
+                    if !physical && (iteration==1 || iteration%10==0) {
+                        if let Ok(walls)=crate::workbench::wall_reports::reports(&monitor_case,velocity,pressure,false) {
+                            if !physical {if let Some(path)=&sampled_load_path {
+                                let sample=crate::workbench::force_analysis::Sample{index:iteration,time:None,density:monitor_case.material.density,reports:walls.clone()};
+                                if let Err(e)=crate::workbench::force_analysis::append(path,&sample){let _=monitor_sender.send(WorkbenchJobEvent::SolveProgress(JobProgress::Message(format!("Force archive: {e}"))));}
+                            }}let _=monitor_sender.send(WorkbenchJobEvent::WallReports{iteration,physical_time:*sample_time.lock().unwrap(),reports:walls});}
                     }
                     for (plane, cells) in observer_plans.iter() {
                         if iteration % plane.every != 0 {
@@ -400,6 +406,11 @@ impl WorkbenchJobExecutor {
                         }
                     }
 
+                    if let Ok(reports)=crate::workbench::wall_reports::reports_with_turbulence(&completed_case,&solution.velocity,&solution.pressure,solution.turbulence.as_ref(),false) {
+                        if let Some(path)=&load_path {let sample=crate::workbench::force_analysis::Sample{index,time:solution.physical_time,density:completed_case.material.density,reports:reports.clone()};
+                            crate::workbench::force_analysis::append(path,&sample).map_err(|e|format!("Force archive: {e}"))?;}
+                        let _=completed_sender.send(WorkbenchJobEvent::WallReports{iteration:index,physical_time:solution.physical_time,reports});
+                    }
                     *completed_time.lock().unwrap()=solution.physical_time;
                     *completed_retained.lock().unwrap()=Some((retained_mesh,solution.restart()));
                     if let Some(mesh)=completed_mesh.as_ref().filter(|_|checkpoint_every>0 && (local_index==1||local_index%checkpoint_every==0)) {

@@ -155,6 +155,10 @@ pub fn builtin_templates() -> Result<Vec<CaseTemplateManifest>, String> {
     ]);
     templates.push(entry);
     templates.extend(script_examples::templates()?);
+    templates.push(manifest("dfg-cylinder-2d-2","DFG cylinder 2D-2 · Re 100","Experimental transient benchmark",
+        "2.2 x 0.41 m channel, D=0.1 m cylinder, parabolic mean inlet 1 m/s, nu=0.001 m2/s, BDF2/PIMPLE.",
+        super::dfg::session()?,
+        "Source: https://wwwold.mathematik.tu-dortmund.de/~featflow/en/benchmarks/cfdbenchmarking/flow/dfg_benchmark2_re100.html . Geometry, viscosity and parabolic inlet follow DFG 2D-2. IMPORTANT: current strict zero-pressure outlet approximates the benchmark natural/do-nothing outlet; wall loads use first-cell reconstruction. Not reference validated or boundary-condition equivalent. Refine mesh/time step and compare only after periodic shedding is established. Force references: cylinder only, Umean=1, D=0.1. Pressure probes: (0.15,0.2), (0.25,0.2)."));
     for entry in &mut templates {
         entry.project_template.cad_document = cad_document(&entry.project_template)?;
         #[cfg(feature = "gui")]

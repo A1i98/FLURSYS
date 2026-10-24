@@ -11,12 +11,12 @@ use super::{
     WorkbenchProject,
 };
 use crate::{
-    BodyId, BoxEntities, CadExtrudeFeature, CadSketch, CadSketchId, CadSketchPlane,
-    CircleHoleEntities, EdgeId, FaceId, GeneratedMesh, GeometryError, GeometryGmshExport,
-    GeometryTopology, GmshGeometryExporter, GmshMeshOptions, GmshMesher,
+    output::write_unstructured_legacy_vtk, BodyId, BoxEntities, CadExtrudeFeature, CadSketch,
+    CadSketchId, CadSketchPlane, CircleHoleEntities, EdgeId, FaceId, GeneratedMesh, GeometryError,
+    GeometryGmshExport, GeometryTopology, GmshGeometryExporter, GmshMeshOptions, GmshMesher,
     IncompressibleBoundaryCondition, IncompressibleCase, IncompressibleCaseError,
     IncompressibleMaterial, IncompressibleSolution, IncompressibleSolverOptions, MeshDimension,
-    MeshingError, RectangleEntities, Vec3, output::write_unstructured_legacy_vtk,
+    MeshingError, RectangleEntities, Vec3,
 };
 use std::collections::BTreeMap;
 mod flow_domain;
@@ -184,6 +184,7 @@ impl WorkbenchSession {
         session.solver.thermal = project.solver.thermal.clone();
         session.solver.time = project.solver.time;
         session.solver.physical_end_time = project.solver.physical_end_time;
+        session.solver.force_analysis = project.solver.force_analysis.clone();
         session.solver.turbulence = project.solver.turbulence.clone();
         session.solver.coupling_relative_tolerance = project.solver.coupling_relative_tolerance;
         session.geometry.ensure_extrusion_edges()?;
@@ -275,6 +276,7 @@ impl WorkbenchSession {
         project.material.kinematic_viscosity = self.material.kinematic_viscosity;
         project.solver.time = self.solver.time;
         project.solver.physical_end_time = self.solver.physical_end_time;
+        project.solver.force_analysis = self.solver.force_analysis.clone();
         project.solver.turbulence = self.solver.turbulence.clone();
         project.solver.max_outer_iterations = self.solver.max_outer_iterations;
         project.solver.continuity_absolute_tolerance = self.solver.continuity_absolute_tolerance;
@@ -1592,6 +1594,15 @@ impl WorkbenchSession {
             self.status = SolveStatus::Idle;
         }
         self.solver.convection = convection;
+    }
+
+    pub fn set_force_analysis(
+        &mut self,
+        settings: super::force_analysis::Settings,
+    ) -> Result<(), String> {
+        settings.validate()?;
+        self.solver.force_analysis = settings;
+        Ok(())
     }
 
     pub fn set_physical_end_time(&mut self, time: Option<f64>) -> Result<(), WorkbenchError> {
