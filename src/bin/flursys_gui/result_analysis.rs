@@ -372,6 +372,7 @@ pub(super) fn report(state: &AppState) -> Result<String, String> {
             ("spatial_methods", "Spatial discretization"),
             ("mesh_preflight", "Mesh preflight"),
             ("conservation", "Conservative mass balance"),
+            ("surface_budgets", "Reconstructed momentum and sensible-energy budgets"),
         ] {
             if let Some(value) = saved.get(key).filter(|v| !v.is_null()) {
                 out.push_str(&format!(

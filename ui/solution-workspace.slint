@@ -79,6 +79,7 @@ export component SolutionWorkspace inherits Rectangle {
     in-out property <int> properties-section:0;
     in property <string> wall-summary;
     in-out property <string> target-courant;
+    in-out property <string> max-diffusion;
     in-out property <string> min-time-step;
     in-out property <string> max-time-step;
     in-out property <string> time-growth;
@@ -207,6 +208,8 @@ Label {text:"Time integration";}
                             if root.time-mode==2 || root.time-mode==4 : VerticalLayout {spacing:6px;vertical-stretch:0;
                                 Label {text:"Target maximum Courant number";}
                                 LineEdit {text <=> root.target-courant;enabled:!root.busy;min-width:0px;}
+                                Label {text:"Max diffusion number (blank = disabled)";}
+                                LineEdit {text <=> root.max-diffusion;enabled:!root.busy;min-width:0px;}
                                 Label {text:"Minimum / maximum Δt (s)";}
                                 HorizontalLayout {spacing:4px;LineEdit {text <=> root.min-time-step;min-width:0px;enabled:!root.busy;}LineEdit {text <=> root.max-time-step;min-width:0px;enabled:!root.busy;}}
                                 Label {text:"Maximum step growth factor (1–2)";}

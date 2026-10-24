@@ -519,6 +519,22 @@ export component MainWindow inherits Window {
     in-out property <string> wb-min-time-step:"1e-8";
     in-out property <string> wb-max-time-step:"0.01";
     in-out property <string> wb-time-growth:"1.2";
+    callback force-apply(int);
+    in-out property <[string]> force-patch-names;
+    in-out property <image> force-image;
+    in-out property <string> force-caption;
+    in-out property <bool> force-reattach:false;
+    in-out property <string> force-patches:"";
+    in-out property <string> force-frequency-start:"0";
+    in-out property <string> force-speed:"1";
+    in-out property <string> force-area:"1";
+    in-out property <string> force-length:"1";
+    in-out property <string> force-center:"0, 0, 0";
+    in-out property <string> force-drag:"1, 0, 0";
+    in-out property <string> force-lift:"0, 1, 0";
+    in-out property <string> force-start:"0, 0, 0";
+    in-out property <string> force-axis:"1, 0, 0";
+    in-out property <string> force-tolerance:"1e-6";
     in-out property <string> post-wall-summary;
     in-out property <bool> post-has-wall-report:false;
     in-out property <bool> post-has-wall-samples:false;
@@ -529,6 +545,7 @@ export component MainWindow inherits Window {
     in-out property <int> wb-time-mode:0;
     in-out property <string> wb-time-step:"0.001";
     in-out property <int> wb-time-steps:100;
+    in-out property <string> wb-max-diffusion:"";
     in-out property <string> wb-end-time:"";
     in-out property <int> wb-turbulence-model:0;
     in-out property <string> wb-turbulence-k:"0.0001";
@@ -1222,7 +1239,7 @@ HorizontalLayout {height:32px;spacing:5px;
                     target-courant <=> root.wb-target-courant;min-time-step <=> root.wb-min-time-step;max-time-step <=> root.wb-max-time-step;time-growth <=> root.wb-time-growth;
                     wall-summary:root.post-wall-summary;
                     coupling-algorithm <=> root.wb-coupling-algorithm;pressure-correctors <=> root.wb-pressure-correctors;nonorthogonal-correctors <=> root.wb-nonorthogonal-correctors;nonorthogonal-limiter <=> root.wb-nonorthogonal-limiter;
-                    end-time <=> root.wb-end-time;time-mode <=> root.wb-time-mode;time-step <=> root.wb-time-step;time-steps <=> root.wb-time-steps;
+                    max-diffusion <=> root.wb-max-diffusion;end-time <=> root.wb-end-time;time-mode <=> root.wb-time-mode;time-step <=> root.wb-time-step;time-steps <=> root.wb-time-steps;
                     edit-volume-models=>{root.open-volume-models();}
                     edit-equations=>{root.open-equation-controls();}
                     nu-tilda <=> root.wb-nu-tilda;
@@ -1242,6 +1259,8 @@ HorizontalLayout {height:32px;spacing:5px;
                     busy:root.wb-busy;plane-details:root.flow-plane-details;plane-status:root.flow-plane-status;
                     plane-palette <=> root.flow-plane-palette;plane-density <=> root.flow-plane-density;plane-scale <=> root.flow-plane-scale;plane-plot <=> root.flow-plane-plot;plane-levels <=> root.flow-plane-levels;plane-streamlines <=> root.flow-plane-streamlines;plane-field <=> root.flow-plane-field;plane-vectors <=> root.flow-plane-vectors;plane-edges <=> root.flow-plane-edges;plane-normalize <=> root.flow-plane-normalize;plane-normal-marks <=> root.flow-plane-normal-marks;plane-min <=> root.flow-plane-min;plane-max <=> root.flow-plane-max;
                     style-plane=>{root.flow-plane-style();}select-plane(i)=>{root.flow-plane-select(i);}apply-plane=>{root.flow-plane-apply();}view-plane=>{root.flow-plane-view();}export-plane(i)=>{root.flow-plane-export(i);}plane-profile(a,b,c,d,n,k)=>{root.flow-plane-profile(a,b,c,d,n,k);}
+                    force-patch-names:root.force-patch-names;force-apply(a)=>{root.force-apply(a);}force-image:root.force-image;force-caption:root.force-caption;force-reattach <=> root.force-reattach;
+                    force-patches <=> root.force-patches;force-frequency-start <=> root.force-frequency-start;force-speed <=> root.force-speed;force-area <=> root.force-area;force-length <=> root.force-length;force-center <=> root.force-center;force-drag <=> root.force-drag;force-lift <=> root.force-lift;force-start <=> root.force-start;force-axis <=> root.force-axis;force-tolerance <=> root.force-tolerance;
                     wall-summary:root.post-wall-summary;has-wall-report:root.post-has-wall-report;has-wall-samples:root.post-has-wall-samples;
                     tab <=> root.post-tab;
                     balance:root.post-balance;profile-image:root.post-profile-image;profile-caption:root.post-profile-caption;

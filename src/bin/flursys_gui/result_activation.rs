@@ -52,7 +52,9 @@ impl AppState {
             solution.report.simple.velocity_change_history.clone(),
             solution.report.simple.pressure_linear_history.clone(),
         ];
+        let force_history=std::mem::take(&mut self.post.force_history);
         self.install_result_dataset(dataset)?;
+        self.post.force_history=force_history;
         self.post.metric_histories = histories;
         if let Some((mesh, solution)) = self.workbench.mesh().zip(self.workbench.solution()) {
             let reports = flursys::workbench::boundary_reports::boundary_flow_reports(
@@ -79,6 +81,13 @@ impl AppState {
             );
             self.post.boundary_summary =
                 balance.summary() + "\n\n" + result_analysis::boundary_summary(&reports).as_str();
+            self.post.boundary_summary.push_str("\n\n");
+            self.post
+                .boundary_summary
+                .push_str(&match &solution.budgets {
+                    Ok(b) => b.summary(),
+                    Err(e) => format!("Surface budgets unavailable: {e}"),
+                });
             self.post.boundary_reports = reports;
         }
         Ok(())
@@ -248,8 +257,8 @@ fn range(result: &ResultDataset, field: ResultFieldKind) -> String {
 mod tests {
     use super::*;
     use slint::platform::{
-        Platform, WindowAdapter,
         software_renderer::{MinimalSoftwareWindow, RepaintBufferType},
+        Platform, WindowAdapter,
     };
     struct SoftwarePlatform(Rc<MinimalSoftwareWindow>);
     impl Platform for SoftwarePlatform {
@@ -408,12 +417,10 @@ mod tests {
             solution.report.simple.velocity_change_history.last(),
             Some(&solution.report.simple.final_velocity_relative_change)
         );
-        assert!(
-            directory
-                .path()
-                .join("runs/run-0001/solution.vtk")
-                .is_file()
-        );
+        assert!(directory
+            .path()
+            .join("runs/run-0001/solution.vtk")
+            .is_file());
         assert_eq!(state.active_result().unwrap().run_id(), "run-0001");
         assert_eq!(
             state.active_result().unwrap().pressure().len(),

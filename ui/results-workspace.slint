@@ -9,6 +9,22 @@ component Label inherits PropertyCaption {}
 export component ResultsWorkspace inherits Rectangle {
     in property <string> warning;
     callback manage-plane(int);
+    callback force-apply(int);
+    in property <[string]> force-patch-names;
+    in property <image> force-image;
+    in property <string> force-caption;
+    in-out property <bool> force-reattach;
+    in-out property <string> force-patches;
+    in-out property <string> force-speed;
+    in-out property <string> force-frequency-start;
+    in-out property <string> force-area;
+    in-out property <string> force-length;
+    in-out property <string> force-center;
+    in-out property <string> force-drag;
+    in-out property <string> force-lift;
+    in-out property <string> force-start;
+    in-out property <string> force-axis;
+    in-out property <string> force-tolerance;
     in property <string> wall-summary;
     in property <bool> has-wall-report;
     in property <bool> has-wall-samples;
@@ -172,11 +188,38 @@ if root.tab==1 : VerticalLayout {spacing:8px;
                             }
                             if root.tab==5 : VerticalLayout {spacing:8px;vertical-stretch:0;
                                 Label {text:"WALL RESOLUTION AND LOADS";color:UiTheme.accent;font-weight:700;}
+                                Label {text:"Patch names, comma-separated; blank = all walls";}
+                                ComboBox {model:root.force-patch-names;min-width:0px;max-height:32px;selected(value)=>{root.force-patches=root.force-patches=="" ? value : root.force-patches+", "+value;}}
+                                LineEdit {text <=> root.force-patches;min-width:0px;}
+                                Tool {text:"Select all walls";clicked=>{root.force-patches="";}}
+                                Label {text:"Reference speed (m/s)";}
+                                LineEdit {text <=> root.force-speed;min-width:0px;}
+                                Label {text:"Reference area (m²; 2D: length in m)";}
+                                LineEdit {text <=> root.force-area;min-width:0px;}
+                                Label {text:"Reference length (m)";}
+                                LineEdit {text <=> root.force-length;min-width:0px;}
+                                Label {text:"Moment center · x, y, z (m)";}
+                                LineEdit {text <=> root.force-center;min-width:0px;}
+                                Label {text:"Drag direction · x, y, z";}
+                                LineEdit {text <=> root.force-drag;min-width:0px;}
+                                Label {text:"Lift direction · x, y, z";}
+                                LineEdit {text <=> root.force-lift;min-width:0px;}
+                                CheckBox {text:"Wall shear / reattachment";checked <=> root.force-reattach;}
+                                if root.force-reattach : VerticalLayout {vertical-stretch:0;spacing:6px;
+                                    Label {text:"Straight wall start · x, y, z (m)";}LineEdit {text <=> root.force-start;min-width:0px;}
+                                    Label {text:"Downstream direction · x, y, z";}LineEdit {text <=> root.force-axis;min-width:0px;}
+                                    Label {text:"Transverse tolerance (m)";}LineEdit {text <=> root.force-tolerance;min-width:0px;}
+                                }
+                                Label {text:"Frequency estimate · discard samples before t (s)";}
+                                LineEdit {text <=> root.force-frequency-start;min-width:0px;}
+                                Tool {text:"Apply and plot";clicked=>{root.force-apply(0);}}
+                                Tool {text:"Export coefficient history · CSV";clicked=>{root.force-apply(1);}}
+                                Label {text:"Choose only one straight wall patch for reattachment. No crossing does not prove attached flow.";}
                                 Label {text:root.wall-summary;}
                                 Tool {text:"Export patch statistics · CSV";enabled:root.has-wall-report && !root.export-busy;clicked=>{root.export(13);}}
                                 Tool {text:"Export wall-face samples · CSV";enabled:root.has-wall-samples && !root.export-busy;clicked=>{root.export(14);}}
                             }
-                            if root.tab==4 : VerticalLayout {spacing:8px;
+                if root.tab==4 : VerticalLayout {spacing:8px;
                                 ComboBox {model:["Line profile · 2D","Compare runs · 2D","Plane monitor history"];current-index <=> root.plot-mode;min-width:0px;max-height:32px;selected(value)=>{if self.current-index==1 {root.compare(5);}if self.current-index==2 {root.compare(6);}}}
                                 if root.plot-mode<2 : VerticalLayout {vertical-stretch:0;spacing:7px;
                                 Label {text:"LINE PROFILE · 2D";color:UiTheme.accent;font-weight:700;}
@@ -247,7 +290,7 @@ if root.tab==1 : VerticalLayout {spacing:8px;
                     Tool {text:"PNG";icon:@image-url("assets/icons/export_tray.svg");enabled:root.has-result;clicked=>{if root.slice-axis>=4 {root.export-plane(1);}else{root.export(0);}}}
                 }
                 Text {text:root.slice-axis>=4 ? "CAD SECTION · CELL-CENTRED FIELDS" : root.title;color:UiTheme.accent;font-size:11px;font-weight:700;overflow:elide;}
-                if root.tab!=4 && root.slice-axis<4 : InteractiveGeometryPreview {
+                if root.tab!=4 && root.tab!=5 && root.slice-axis<4 : InteractiveGeometryPreview {
                     vertical-stretch:1;preview-image:root.preview;
                     navigation-3d:root.is-3d && root.slice-axis==0;orientation-image:root.orientation;view-axis:root.view-axis;
                     select-view-axis(axis)=>{root.view(axis);}pick-orientation(x,y)=>{root.pick-orientation(x,y);}
@@ -258,19 +301,20 @@ if root.tab==1 : VerticalLayout {spacing:8px;
                     orbit(x,y,px,py)=>{root.drag(x,y,px,py,self.width/1px,self.height/1px);}
                     orbit-end=>{root.drag-end();}zoom(delta)=>{root.zoom(delta);}reset-view=>{root.fit();}
                 }
-                if root.tab!=4 && root.slice-axis>=4 : VerticalLayout {
+                if root.tab!=4 && root.tab!=5 && root.slice-axis>=4 : VerticalLayout {
                     PlanePlayback {plane-frame:root.plane-frame;plane-count:root.plane-count;plane-playing:root.plane-playing;plane-fps <=> root.plane-fps;loop <=> root.plane-loop;first <=> root.plane-first;last <=> root.plane-last;playback(i)=>{root.playback(i);}}
                     SectionViewport {source:root.plane-image;readout:root.plane-readout;navigate(a,x,y,w,h)=>{root.plane-navigate(a,x,y,w,h);}vertical-stretch:1;}
                     Text {text:root.plane-status;color:UiTheme.text-muted;wrap:word-wrap;font-size:10px;max-height:30px;overflow:elide;}
                     if root.plane-readout!="" : Text {text:root.plane-readout;color:UiTheme.text;wrap:word-wrap;font-size:10px;max-height:42px;overflow:elide;}
                 }
+                if root.tab==5 : VerticalLayout {Image {source:root.force-image;vertical-stretch:1;image-fit:contain;}Text {text:root.force-caption;color:UiTheme.text;wrap:word-wrap;}}
                 if root.tab==4 : VerticalLayout {
                     Image {source:root.profile-image;vertical-stretch:1;image-fit:contain;}
                     Text {text:root.profile-caption;color:UiTheme.text;wrap:word-wrap;font-size:12px;}
                 }
                 if root.slice-axis<4 : Text {text:root.legend;color:UiTheme.text-soft;font-size:11px;wrap:word-wrap;}
                 if root.slice-axis<4 : Text {text:root.probe;color:UiTheme.text;font-size:11px;wrap:word-wrap;max-height:42px;overflow:elide;}
-                if root.tab!=4 && root.slice-axis<4 : Rectangle {
+                if root.tab!=4 && root.tab!=5 && root.slice-axis<4 : Rectangle {
                     height:69px;background:UiTheme.toolbar;border-color:UiTheme.border;border-width:1px;border-radius:4px;
                     VerticalLayout {padding:6px;spacing:4px;
                         HorizontalLayout {spacing:6px;

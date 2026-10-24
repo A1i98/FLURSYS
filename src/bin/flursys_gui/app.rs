@@ -5,7 +5,7 @@ use slint::Model;
 #[path = "native_cad.rs"]
 mod native_cad;
 use flursys::app::{JobProgress, WorkbenchJobEvent, WorkbenchJobExecutor};
-use flursys::workbench::{CaseTemplateManifest, discover_templates_from_roots, save_case_template};
+use flursys::workbench::{discover_templates_from_roots, save_case_template, CaseTemplateManifest};
 #[path = "ui_adapters.rs"]
 mod ui_adapters;
 use flursys::{
@@ -30,6 +30,8 @@ use ui_adapters::*;
 mod convergence_plot;
 #[path = "field_mapping.rs"]
 mod field_mapping;
+#[path = "force_setup.rs"]
+mod force_setup;
 #[path = "monitor_history.rs"]
 mod monitor_history;
 #[path = "plane_monitors.rs"]
@@ -543,6 +545,22 @@ impl AppState {
         if let Some(record) = self.workbench_project.runs.iter().find(|r| r.id == run_id) {
             if let Ok(text) = std::fs::read_to_string(workspace.join(&record.report_path)) {
                 if let Ok(report) = serde_json::from_str::<serde_json::Value>(&text) {
+                    if let Some(relative) = report
+                        .get("plane_recording_folder")
+                        .and_then(|v| v.as_str())
+                    {
+                        let path = std::path::Path::new(relative);
+                        if !path.is_absolute()
+                            && !path
+                                .components()
+                                .any(|c| matches!(c, std::path::Component::ParentDir))
+                        {
+                            self.post.force_history = flursys::workbench::force_analysis::load(
+                                &workspace.join(path).join("force-history.jsonl"),
+                            )
+                            .unwrap_or_default();
+                        }
+                    }
                     self.post.health = report
                         .get("sampled_field_health")
                         .and_then(|v| serde_json::from_value(v.clone()).ok());
@@ -568,6 +586,15 @@ impl AppState {
                                 self.post.boundary_summary = balance.summary()
                                     + "\n\n"
                                     + self.post.boundary_summary.as_str();
+                            }
+                            if let Some(Ok(budget)) = report.get("surface_budgets").and_then(|v| {
+                                serde_json::from_value::<
+                                    Result<flursys::workbench::budgets::Report, String>,
+                                >(v.clone())
+                                .ok()
+                            }) {
+                                self.post.boundary_summary.push_str("\n\n");
+                                self.post.boundary_summary.push_str(&budget.summary());
                             }
                             self.post.boundary_reports = reports;
                         }
@@ -813,6 +840,22 @@ impl AppState {
                     physical_time,
                     reports,
                 } => {
+                    let sample = flursys::workbench::force_analysis::Sample {
+                        index: iteration,
+                        time: physical_time,
+                        density: self.workbench.material().density,
+                        reports: reports.clone(),
+                    };
+                    if let Some(old) = self
+                        .post
+                        .force_history
+                        .last_mut()
+                        .filter(|s| s.index == iteration && s.time == physical_time)
+                    {
+                        *old = sample;
+                    } else {
+                        self.post.force_history.push(sample);
+                    }
                     self.post.wall_report_index = Some(iteration);
                     self.post.wall_report_time = physical_time;
                     self.post.wall_reports = reports;
@@ -2007,6 +2050,7 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
     equation_setup::bind(ui, state);
     volume_setup::bind(ui, state);
     cyclic_setup::bind(ui, state);
+    force_setup::bind(ui, state.clone());
     post_processing::bind(ui, state);
     profile_comparison::bind(ui, state);
     convergence_plot::bind(ui, state);
@@ -5191,6 +5235,7 @@ fn push_workbench_defaults(ui: &MainWindow, session: &WorkbenchSession) {
     )));
     let solver = session.solver_options();
     use flursys::unstructured_incompressible::TimeIntegration;
+    force_setup::push(ui, &solver.force_analysis);
     let pc = solver.pressure_coupling;
     ui.set_wb_coupling_algorithm(match pc.algorithm {
         flursys::simple::CouplingAlgorithm::Simple => 0,
@@ -5215,6 +5260,15 @@ fn push_workbench_defaults(ui: &MainWindow, session: &WorkbenchSession) {
     });
     let (dt, steps) = solver.time.parameters().unwrap_or((0.001, 100));
     ui.set_wb_time_step(dt.to_string().into());
+    ui.set_wb_max_diffusion(
+        solver
+            .time
+            .adaptive()
+            .and_then(|c| c.max_diffusion)
+            .map(|v| v.to_string())
+            .unwrap_or_default()
+            .into(),
+    );
     ui.set_wb_time_steps(steps as i32);
     ui.set_wb_end_time(
         solver
@@ -5409,6 +5463,11 @@ fn sync_solver_panel(ui: &MainWindow, session: &mut WorkbenchSession) -> Result<
             dt: parse_number(ui.get_wb_time_step().as_str(), f64::NAN),
             steps: ui.get_wb_time_steps().max(0) as usize,
             controls: flursys::unstructured_incompressible::AdaptiveTimeStep {
+                max_diffusion: if ui.get_wb_max_diffusion().trim().is_empty() {
+                    None
+                } else {
+                    Some(parse_number(ui.get_wb_max_diffusion().as_str(), f64::NAN))
+                },
                 target_courant: parse_number(ui.get_wb_target_courant().as_str(), f64::NAN),
                 min_dt: parse_number(ui.get_wb_min_time_step().as_str(), f64::NAN),
                 max_dt: parse_number(ui.get_wb_max_time_step().as_str(), f64::NAN),
@@ -5419,6 +5478,11 @@ fn sync_solver_panel(ui: &MainWindow, session: &mut WorkbenchSession) -> Result<
             dt: parse_number(ui.get_wb_time_step().as_str(), f64::NAN),
             steps: ui.get_wb_time_steps().max(0) as usize,
             controls: flursys::unstructured_incompressible::AdaptiveTimeStep {
+                max_diffusion: if ui.get_wb_max_diffusion().trim().is_empty() {
+                    None
+                } else {
+                    Some(parse_number(ui.get_wb_max_diffusion().as_str(), f64::NAN))
+                },
                 target_courant: parse_number(ui.get_wb_target_courant().as_str(), f64::NAN),
                 min_dt: parse_number(ui.get_wb_min_time_step().as_str(), f64::NAN),
                 max_dt: parse_number(ui.get_wb_max_time_step().as_str(), f64::NAN),
@@ -6730,10 +6794,10 @@ mod tests {
                 .unwrap(),
             std::path::PathBuf::from("/tmp/example")
         );
-        assert!(
-            super::workspace_from_project_file(std::path::Path::new("/tmp/example/random.json"))
-                .is_err()
-        );
+        assert!(super::workspace_from_project_file(std::path::Path::new(
+            "/tmp/example/random.json"
+        ))
+        .is_err());
     }
     use super::*;
     use flursys::{GeometrySketch, SketchPlane, SketchProfileKind};
@@ -7032,11 +7096,9 @@ mod tests {
         editor
             .click(state.workbench.geometry_mut(), (200.0, 210.0), false)
             .unwrap();
-        assert!(
-            editor
-                .click(state.workbench.geometry_mut(), (310.0, 100.0), false)
-                .unwrap()
-        );
+        assert!(editor
+            .click(state.workbench.geometry_mut(), (310.0, 100.0), false)
+            .unwrap());
         state.geometry_editor = editor;
         state.wb_selected_targets = state.geometry_editor.selection.clone();
         let face = state.workbench.geometry().faces().next().unwrap().id;
@@ -7063,11 +7125,9 @@ mod tests {
             Some(flursys::PreviewPrimitive::Rectangle(_, _))
         ));
         let mut editor = std::mem::take(&mut state.geometry_editor);
-        assert!(
-            editor
-                .click(state.workbench.geometry_mut(), (310.0, 100.0), false)
-                .unwrap()
-        );
+        assert!(editor
+            .click(state.workbench.geometry_mut(), (310.0, 100.0), false)
+            .unwrap());
         state.geometry_editor = editor;
         state.wb_selected_targets = state.geometry_editor.selection.clone();
         assert!(matches!(
@@ -7093,11 +7153,9 @@ mod tests {
             Some(flursys::PreviewPrimitive::Circle(_, _))
         ));
         let mut editor = std::mem::take(&mut state.geometry_editor);
-        assert!(
-            editor
-                .click(state.workbench.geometry_mut(), (310.0, 160.0), false)
-                .unwrap()
-        );
+        assert!(editor
+            .click(state.workbench.geometry_mut(), (310.0, 160.0), false)
+            .unwrap());
         state.geometry_editor = editor;
         state.wb_selected_targets = state.geometry_editor.selection.clone();
         assert!(matches!(
@@ -7117,11 +7175,9 @@ mod tests {
         assert_eq!(state.workbench.geometry().faces().count(), 0);
         assert!(!begin_geometry_stroke(&mut state, (310.0, 100.0)).unwrap());
         let mut editor = std::mem::take(&mut state.geometry_editor);
-        assert!(
-            editor
-                .click(state.workbench.geometry_mut(), (310.0, 100.0), false)
-                .unwrap()
-        );
+        assert!(editor
+            .click(state.workbench.geometry_mut(), (310.0, 100.0), false)
+            .unwrap());
         assert_eq!(state.workbench.geometry().faces().count(), 1);
     }
 
@@ -7237,11 +7293,9 @@ mod tests {
             )
             .unwrap();
         state.wb_selected_targets = vec![GeometrySelectionTarget::Edge(rectangle.bottom)];
-        assert!(
-            build_canonical_extrude(&mut state, "0.5")
-                .unwrap_err()
-                .contains("multiple faces")
-        );
+        assert!(build_canonical_extrude(&mut state, "0.5")
+            .unwrap_err()
+            .contains("multiple faces"));
         assert_eq!(state.workbench.geometry().bodies().count(), 0);
     }
 
@@ -7283,13 +7337,11 @@ mod tests {
             }
             build_canonical_extrude(&mut state, "0.2").unwrap();
             assert_eq!(state.workbench.geometry().bodies().count(), 2);
-            assert!(
-                state
-                    .workbench
-                    .geometry()
-                    .extrude_features()
-                    .any(|feature| feature.sketch == sketch_id && feature.source_face == profile)
-            );
+            assert!(state
+                .workbench
+                .geometry()
+                .extrude_features()
+                .any(|feature| feature.sketch == sketch_id && feature.source_face == profile));
             let document = serde_json::to_string(&state.workbench_project).unwrap();
             let restored: WorkbenchProject = serde_json::from_str(&document).unwrap();
             let reopened = WorkbenchSession::from_project(&restored).unwrap();

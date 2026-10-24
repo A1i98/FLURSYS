@@ -20,6 +20,8 @@ pub(super) struct State {
     pub boundary_summary: String,
     pub wall_report_index: Option<usize>,
     pub wall_report_time: Option<f64>,
+    pub force_chart_context: RefCell<Option<String>>,
+    pub force_history: Vec<flursys::workbench::force_analysis::Sample>,
     pub wall_reports: Vec<flursys::workbench::wall_reports::WallPatchReport>,
     pub boundary_reports: Vec<flursys::workbench::boundary_reports::BoundaryFlowReport>,
     pub plane_frames: Vec<PathBuf>,
@@ -64,6 +66,8 @@ impl State {
         self.boundary_summary.clear();
         self.boundary_reports.clear();
         self.wall_reports.clear();
+        self.force_history.clear();
+        *self.force_chart_context.borrow_mut() = None;
         self.wall_report_index = None;
         self.wall_report_time = None;
         self.traces.clear();
@@ -789,6 +793,27 @@ pub(super) fn tick(ui: &MainWindow, state: &mut AppState) -> bool {
 }
 
 pub(super) fn refresh(ui: &MainWindow, state: &AppState) {
+    if state.post.force_chart_context.borrow().is_none() {
+        ui.set_force_image(slint::Image::default());
+        ui.set_force_caption("Choose wall patches and reference values, then Apply and plot. Loads are first-cell estimates; use convergence studies before relying on coefficients.".into());
+        *state.post.force_chart_context.borrow_mut() = Some(String::new());
+    }
+    let names: Vec<SharedString> = state
+        .post
+        .wall_reports
+        .iter()
+        .map(|r| r.patch.clone().into())
+        .collect();
+    let model = ui.get_force_patch_names();
+    if model.row_count() != names.len()
+        || names
+            .iter()
+            .enumerate()
+            .any(|(i, n)| model.row_data(i).as_ref() != Some(n))
+    {
+        ui.set_force_patch_names(ModelRc::from(Rc::new(VecModel::from(names))));
+    }
+
     let identity = state
         .post
         .wall_report_time
@@ -1005,8 +1030,8 @@ fn decorate_probe(ui: &MainWindow, state: &AppState) {
 mod tests {
     use super::*;
     use slint::platform::{
-        Platform, WindowAdapter,
         software_renderer::{MinimalSoftwareWindow, RepaintBufferType},
+        Platform, WindowAdapter,
     };
     struct SoftwarePlatform(Rc<MinimalSoftwareWindow>);
     impl Platform for SoftwarePlatform {
@@ -1076,11 +1101,9 @@ mod tests {
         assert!(csv.starts_with("quantity,minimum,maximum,volume_weighted_mean\n"));
         assert!(csv.lines().count() > 4);
         std::fs::remove_file(path).unwrap();
-        assert!(
-            result_analysis::report(&state)
-                .unwrap()
-                .contains("Archived run settings unavailable")
-        );
+        assert!(result_analysis::report(&state)
+            .unwrap()
+            .contains("Archived run settings unavailable"));
     }
 
     #[test]
