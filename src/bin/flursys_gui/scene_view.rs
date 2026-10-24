@@ -181,21 +181,7 @@ impl SceneView {
                 opacity: 1.0,
             });
         }
-        let output = match cad_gpu::capture::headless() {
-            Ok(cad_gpu::capture::Headless::Gpu(c)) => if unlit {
-                c.rgba_unlit(&self.scene, &self.camera, width, height)
-            } else {
-                c.rgba(&self.scene, &self.camera, width, height)
-            }
-            .map_err(|e| e.to_string()),
-            Ok(cad_gpu::capture::Headless::Cpu) => Ok(if unlit {
-                cad_render::render_unlit(&self.scene, &self.camera, width as usize, height as usize)
-            } else {
-                cad_render::render(&self.scene, &self.camera, width as usize, height as usize)
-            }
-            .rgba),
-            Err(e) => Err(e),
-        };
+        let output = super::render_device::render(&self.scene, &self.camera, width, height, unlit);
         let mut pixels = output.unwrap_or_else(|error| {
             // A failed GPU picture must not blank the geometry. The fallback is
             // the CAD project's own raster pipeline, with the same scene/camera.

@@ -52,7 +52,7 @@ pub(super) struct State {
 }
 impl State {
     pub fn reset_result(&mut self) {
-        self.mapping=Default::default();
+        self.mapping = Default::default();
         self.iteration = 0;
         self.limit = 0;
         self.playing = false;
@@ -60,7 +60,7 @@ impl State {
         self.probes.clear();
         self.profile.clear();
         self.profile_label.clear();
-        self.health=None;
+        self.health = None;
         self.boundary_summary.clear();
         self.boundary_reports.clear();
         self.wall_reports.clear();
@@ -663,7 +663,9 @@ pub(super) fn bind(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
 }
 
 pub(super) fn tick(ui: &MainWindow, state: &mut AppState) -> bool {
-    if field_mapping::poll(ui,state) {return true;}
+    if field_mapping::poll(ui, state) {
+        return true;
+    }
     ui.set_solver_paused(state.solving && state.workbench_jobs.is_paused());
     if state.post.plane_playing
         && ((state.current_step == 4 && ui.get_result_slice_axis() >= 4)
@@ -826,7 +828,19 @@ pub(super) fn refresh(ui: &MainWindow, state: &AppState) {
     if state.current_step == 4 && ui.get_post_plot_mode() == 2 {
         profile_comparison::show_monitors(ui, state);
     }
-    ui.set_post_result_warning(state.active_result().filter(|r|r.run_id().starts_with("UNCONVERGED-")).map(|r|format!("UNCONVERGED DIAGNOSTIC · {} · retained sample, not a converged solution",r.run_id())).unwrap_or_default().into());
+    ui.set_post_result_warning(
+        state
+            .active_result()
+            .filter(|r| r.run_id().starts_with("UNCONVERGED-"))
+            .map(|r| {
+                format!(
+                    "UNCONVERGED DIAGNOSTIC · {} · retained sample, not a converged solution",
+                    r.run_id()
+                )
+            })
+            .unwrap_or_default()
+            .into(),
+    );
     ui.set_field_mapping_busy(state.post.mapping.busy());
     ui.set_post_has_result(state.active_result().is_some());
     ui.set_post_is_3d(
@@ -841,7 +855,7 @@ pub(super) fn refresh(ui: &MainWindow, state: &AppState) {
     ui.set_post_probe_count(state.post.probes.len() as i32);
     ui.set_post_balance((state.post.health.as_ref().map(|h|h.summary()+"\n\n").unwrap_or_default()+&result_analysis::balance(state)+"\n\n"+if state.solving{""}else if state.post.boundary_summary.is_empty(){"Patch details were not recorded for this archive. New solves save patch flow integrals."}else{&state.post.boundary_summary}).into());
     ui.set_post_convergence_summary(result_analysis::convergence_summary(state).into());
-    if ui.get_post_plot_mode()==0 && state.post.profile.is_empty() {
+    if ui.get_post_plot_mode() == 0 && state.post.profile.is_empty() {
         ui.set_post_profile_image(render::render_empty_image());
         ui.set_post_profile_caption(
             "Choose a line and sample the selected field. Profiles use the active archived mesh."

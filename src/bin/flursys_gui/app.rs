@@ -29,20 +29,20 @@ use std::time::Duration;
 #[cfg(test)]
 use flursys::{ExtrudedMesh3D, StructuredMesh2D};
 
-#[path = "field_mapping.rs"]
-mod field_mapping;
 #[path = "convergence_plot.rs"]
 mod convergence_plot;
+#[path = "field_mapping.rs"]
+mod field_mapping;
+#[path = "monitor_history.rs"]
+mod monitor_history;
 #[path = "plane_monitors.rs"]
 mod plane_monitors;
 #[path = "post_processing.rs"]
 mod post_processing;
-#[path = "result_activation.rs"]
-mod result_activation;
-#[path = "monitor_history.rs"]
-mod monitor_history;
 #[path = "profile_comparison.rs"]
 mod profile_comparison;
+#[path = "result_activation.rs"]
+mod result_activation;
 #[path = "result_analysis.rs"]
 mod result_analysis;
 
@@ -75,6 +75,9 @@ mod drawing;
 mod equation_setup;
 #[path = "flow_setup.rs"]
 mod flow_setup;
+mod hardware;
+#[path = "material_library.rs"]
+mod material_library;
 #[path = "measure.rs"]
 mod measure;
 #[path = "mesh_controls.rs"]
@@ -84,12 +87,15 @@ mod mesh_inspection;
 #[path = "mesh_setup.rs"]
 mod mesh_setup;
 mod preferences;
+mod render_device;
 #[path = "sketch_edit.rs"]
 mod sketch_edit;
 #[path = "thermal_setup.rs"]
 mod thermal_setup;
 #[path = "time_boundary_setup.rs"]
 mod time_boundary_setup;
+#[path = "transport_setup.rs"]
+mod transport_setup;
 #[path = "volume_setup.rs"]
 mod volume_setup;
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -403,7 +409,7 @@ impl AppState {
             sketch_undo: Vec::new(),
             sketch_redo: Vec::new(),
             workbench: WorkbenchSession::new(),
-            workbench_project: WorkbenchProject::blank("Untitled Project"),
+            workbench_project: WorkbenchProject::blank("New analysis"),
             workspace_path: None,
             saved_mesh_copies: BTreeMap::new(),
             cad_reload_generation: 0,
@@ -493,6 +499,8 @@ impl AppState {
 
         self.workbench = session;
         self.workbench_project = template.project_template;
+        self.workbench_project.project_id =
+            WorkbenchProject::blank(self.workbench_project.name.clone()).project_id;
         self.workspace_path = None;
         self.post.reset_result();
         self.active_result = None;
@@ -519,8 +527,8 @@ impl AppState {
 
     fn new_blank_workbench_project(&mut self, dimension: MeshDimension) {
         let name = match dimension {
-            MeshDimension::TwoD => "Untitled 2D Project",
-            MeshDimension::ThreeD => "Untitled 3D Project",
+            MeshDimension::TwoD => "New 2D analysis",
+            MeshDimension::ThreeD => "New 3D analysis",
         };
         let mut project = WorkbenchProject::blank(name);
         project.mesh.dimension = dimension;
@@ -783,9 +791,13 @@ impl AppState {
                     self.log("Solve cancellation requested.");
                     changed = true;
                 }
+                WorkbenchJobEvent::Performance(report) => {
+                    self.workbench.set_performance(report);
+                    changed = true;
+                }
                 WorkbenchJobEvent::Health(health) => {
-                    self.post.health=Some(health);
-                    changed=true;
+                    self.post.health = Some(health);
+                    changed = true;
                 }
                 WorkbenchJobEvent::WallReports {
                     iteration,
@@ -798,16 +810,18 @@ impl AppState {
                     changed = true;
                 }
                 WorkbenchJobEvent::PlaneSample(snapshot) => {
-                    if let Err(e)=self.post.monitors.record(&snapshot) {self.log(format!("Section monitor: {e}"));}
+                    if let Err(e) = self.post.monitors.record(&snapshot) {
+                        self.log(format!("Section monitor: {e}"));
+                    }
                     self.post
                         .plane_samples
                         .insert(snapshot.plane.id.clone(), snapshot);
                     changed = true;
                 }
                 WorkbenchJobEvent::SolveCompleted(outcome) => {
-                    let health=self.post.health.take();
+                    let health = self.post.health.take();
                     let plane_samples = std::mem::take(&mut self.post.plane_samples);
-                    let monitors=std::mem::take(&mut self.post.monitors);
+                    let monitors = std::mem::take(&mut self.post.monitors);
                     let histories = std::mem::take(&mut self.post.metric_histories);
                     let continuity = std::mem::take(&mut self.post.continuity_full);
                     let residuals = self.wb_residual_history.clone();
@@ -828,14 +842,16 @@ impl AppState {
                         Err(flursys::IncompressibleSolveError::Cancelled) => self.log("Workbench solve cancelled."),
                         Err(error) => self.log(format!("Workbench solve failed: {error}")),
                     }
-                    let incomplete=outcome.is_err();
+                    let incomplete = outcome.is_err();
                     self.workbench.complete_solve(outcome);
                     if incomplete {
-                        self.active_result=None;
-                        self.result_render_cache=None;
-                        if let Err(e)=self.activate_retained_sample() {self.log(format!("No finite retained diagnostic field: {e}"));}
+                        self.active_result = None;
+                        self.result_render_cache = None;
+                        if let Err(e) = self.activate_retained_sample() {
+                            self.log(format!("No finite retained diagnostic field: {e}"));
+                        }
                     }
-                    self.post.health=health.clone();
+                    self.post.health = health.clone();
                     if self.workbench.solution().is_some() {
                         if let Err(error) = self.activate_current_solution("current-solve") {
                             self.log(format!("Cannot display completed solution: {error}"));
@@ -857,8 +873,8 @@ impl AppState {
                         };
                     }
                     self.post.plane_samples = plane_samples;
-                    self.post.health=health;
-                    self.post.monitors=monitors;
+                    self.post.health = health;
+                    self.post.monitors = monitors;
                     self.tree_dirty = true;
                     changed = true;
                 }
@@ -952,7 +968,9 @@ impl AppState {
     }
 
     fn load_workbench_workspace(&mut self, workspace: PathBuf) -> Result<(), String> {
-        let document = flursys::load_workspace(&workspace).map_err(|error| error.to_string())?;
+        let mut document =
+            flursys::load_workspace(&workspace).map_err(|error| error.to_string())?;
+        flursys::workbench::catalogue::seed_cad_geometry_hash(&mut document)?;
         let mut session =
             WorkbenchSession::from_project(&document).map_err(|error| error.to_string())?;
         match flursys::workbench::mesh_storage::restore(&workspace, &document, &mut session) {
@@ -1073,19 +1091,31 @@ impl AppState {
         )
         .map_err(|error| error.to_string())?;
         if let Some(record) = finalized {
-            let path=workspace.join(&record.report_path);
-            let mut report:serde_json::Value=serde_json::from_slice(&std::fs::read(&path).map_err(|e|e.to_string())?).map_err(|e|e.to_string())?;
-            if let Some(health)=self.post.health.as_ref() {
-                report["sampled_field_health"]=serde_json::to_value(health).map_err(|e|e.to_string())?;
+            let path = workspace.join(&record.report_path);
+            let mut report: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(&path).map_err(|e| e.to_string())?)
+                    .map_err(|e| e.to_string())?;
+            if let Some(health) = self.post.health.as_ref() {
+                report["sampled_field_health"] =
+                    serde_json::to_value(health).map_err(|e| e.to_string())?;
             }
-            if let Some(folder)=self.active_plane_recording_folder.take().and_then(|p|p.strip_prefix(&workspace).ok().map(Path::to_path_buf)) {
-                report["plane_recording_folder"]=serde_json::to_value(&folder).map_err(|e|e.to_string())?;
-                let diagnostic=folder.join("failed-last-sample.json");
+            if let Some(folder) = self
+                .active_plane_recording_folder
+                .take()
+                .and_then(|p| p.strip_prefix(&workspace).ok().map(Path::to_path_buf))
+            {
+                report["plane_recording_folder"] =
+                    serde_json::to_value(&folder).map_err(|e| e.to_string())?;
+                let diagnostic = folder.join("failed-last-sample.json");
                 if record.solution_path.is_none() && workspace.join(&diagnostic).is_file() {
-                    report["unconverged_checkpoint"]=serde_json::to_value(diagnostic).map_err(|e|e.to_string())?;
+                    report["unconverged_checkpoint"] =
+                        serde_json::to_value(diagnostic).map_err(|e| e.to_string())?;
                 }
             }
-            result_analysis::atomic_text(&path,&serde_json::to_string_pretty(&report).map_err(|e|e.to_string())?)?;
+            result_analysis::atomic_text(
+                &path,
+                &serde_json::to_string_pretty(&report).map_err(|e| e.to_string())?,
+            )?;
             if record.solution_path.is_some() {
                 self.activate_current_solution(&record.id)?;
             }
@@ -1206,8 +1236,14 @@ impl AppState {
             .workspace_path
             .clone()
             .ok_or_else(|| "Open a saved workspace before loading a persisted run.".to_string())?;
-        if self.workbench_project.runs.iter().find(|r|r.id==run_id).is_some_and(|r|r.solution_path.is_none()) {
-            return self.activate_failed_archive(run_id,&workspace);
+        if self
+            .workbench_project
+            .runs
+            .iter()
+            .find(|r| r.id == run_id)
+            .is_some_and(|r| r.solution_path.is_none())
+        {
+            return self.activate_failed_archive(run_id, &workspace);
         }
         let dataset = flursys::load_workspace_result(&workspace, &self.workbench_project, run_id)
             .map_err(|error| error.to_string())?;
@@ -1216,7 +1252,9 @@ impl AppState {
         if let Some(record) = self.workbench_project.runs.iter().find(|r| r.id == run_id) {
             if let Ok(text) = std::fs::read_to_string(workspace.join(&record.report_path)) {
                 if let Ok(report) = serde_json::from_str::<serde_json::Value>(&text) {
-                    self.post.health=report.get("sampled_field_health").and_then(|v|serde_json::from_value(v.clone()).ok());
+                    self.post.health = report
+                        .get("sampled_field_health")
+                        .and_then(|v| serde_json::from_value(v.clone()).ok());
                     self.post.wall_report_index = record.iterations;
                     self.post.wall_report_time = record.physical_time;
                     self.post.wall_reports = report
@@ -1915,6 +1953,7 @@ pub fn run() -> Result<(), slint::PlatformError> {
     refresh_ui(&ui, &state.borrow());
 
     bind_callbacks(&ui, &state);
+    hardware::bind(&ui, &state);
     cad::bind(&ui, &state);
     flow_setup::bind(&ui, &state);
     let _design_host = native_cad::bind(&ui, &state);
@@ -1983,20 +2022,20 @@ pub fn run() -> Result<(), slint::PlatformError> {
 }
 
 fn gallery_templates() -> (Vec<CaseTemplateManifest>, Vec<String>) {
-    let built_in_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("cases/templates");
-    let roots = user_template_root()
-        .map(|user_root| vec![built_in_root.clone(), user_root])
-        .unwrap_or_else(|| vec![built_in_root]);
-    discover_templates_from_roots(&roots).into_iter().fold(
-        (Vec::new(), Vec::new()),
-        |(mut templates, mut errors), entry| {
+    let (mut templates, mut errors) = match flursys::workbench::catalogue::builtin_templates() {
+        Ok(templates) => (templates, Vec::new()),
+        Err(e) => (Vec::new(), vec![format!("Built-in catalogue: {e}")]),
+    };
+    if let Some(root) = user_template_root() {
+        for entry in discover_templates_from_roots([root]) {
             match entry {
-                Ok(template) => templates.push(template),
-                Err(error) => errors.push(error.to_string()),
+                Ok(template) if !templates.iter().any(|t|t.id==template.id)=>templates.push(template),
+                Ok(template)=>errors.push(format!("User template ID '{}' conflicts with a built-in recipe; rename the user template ID.",template.id)),
+                Err(e)=>errors.push(e.to_string()),
             }
-            (templates, errors)
-        },
-    )
+        }
+    }
+    (templates, errors)
 }
 
 fn gallery_descriptors(templates: &[CaseTemplateManifest]) -> Vec<ExampleDescriptor> {
@@ -2074,12 +2113,14 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
         true
     });
     thermal_setup::bind(ui, state);
+    transport_setup::bind(ui, state);
+    material_library::bind(ui);
     time_boundary_setup::bind(ui, state);
     equation_setup::bind(ui, state);
     volume_setup::bind(ui, state);
     cyclic_setup::bind(ui, state);
     post_processing::bind(ui, state);
-    profile_comparison::bind(ui,state);
+    profile_comparison::bind(ui, state);
     convergence_plot::bind(ui, state);
     plane_monitors::bind(ui, state);
     viewport::bind(ui, state);
@@ -3048,6 +3089,35 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
         refresh_ui(&ui, &state);
     });
 
+    let weak = ui.as_weak();
+    let shared = state.clone();
+    ui.on_apply_project_name(move |name| {
+        let Some(ui) = weak.upgrade() else {
+            return false;
+        };
+        let mut state = shared.borrow_mut();
+        if state.solving || state.meshing || state.post.mapping.busy() {
+            ui.set_project_name_feedback("Wait for the active job to finish.".into());
+            return false;
+        }
+        match flursys::workbench::catalogue::rename_project(
+            &mut state.workbench_project,
+            name.as_str(),
+        ) {
+            Ok(()) => {
+                state.project.name = state.workbench_project.name.clone();
+                state.mark_workbench_dirty();
+                ui.set_project_name_feedback("".into());
+                refresh_ui(&ui, &state);
+                true
+            }
+            Err(e) => {
+                ui.set_project_name_feedback(e.into());
+                false
+            }
+        }
+    });
+
     let weak_ui = ui.as_weak();
     let validate_state = state.clone();
     ui.on_validate_case(move || {
@@ -3057,8 +3127,12 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
         let mut state = validate_state.borrow_mut();
         state.preflight_summary = match state.workbench.readiness() {
             Ok(()) => match state.workbench.prepare_case() {
-                Ok(case)=>flursys::workbench::solve_review::review(&case,&state.workbench_project.plane_monitors).summary(),
-                Err(e)=>format!("BLOCKED\n{e}"),
+                Ok(case) => flursys::workbench::solve_review::review(
+                    &case,
+                    &state.workbench_project.plane_monitors,
+                )
+                .summary(),
+                Err(e) => format!("BLOCKED\n{e}"),
             },
             Err(reason) => format!("BLOCKED\n{reason}"),
         };
@@ -4509,7 +4583,7 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
         }
         state.log(flursys::workbench::diagnostics::mesh_preflight(&case.mesh).summary());
         let cells = case.mesh.cell_count();
-        let cpu_workers = if case.solver.threads == 0 {
+        let cpu_workers = if case.solver.compute.backend == flursys::compute::Backend::Serial { 1 } else if case.solver.threads == 0 {
             std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1)
         } else { case.solver.threads };
         state.log(format!("Integration: {:?}; momentum transport: {:?}. New transient/turbulence paths are experimental and not benchmark validated.",case.solver.time,case.solver.turbulence.model));
@@ -4786,22 +4860,32 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
             };
             let hover = if matches!(state.current_step, 1 | 2)
                 && state.workbench.mesh_dimension() == MeshDimension::TwoD
-                && ui.get_mesh_entity_mode() == 1 && state.workbench.fluid_face().is_some()
+                && ui.get_mesh_entity_mode() == 1
+                && state.workbench.fluid_face().is_some()
             {
-                render::pick_domain_edge(state.workbench.geometry(), state.view_3d, point,
-                    &state.workbench.boundary_geometry_targets().unwrap_or_default())
-            } else { pick_canonical_geometry_target(
-                state.workbench.geometry(),
-                state.view_3d,
-                point,
-                if state.current_step == 0 {
-                    state.geometry_pick_mode
-                } else if matches!(state.current_step, 1 | 2) {
-                    ui.get_mesh_entity_mode()
-                } else {
-                    0
-                },
-            ) };
+                render::pick_domain_edge(
+                    state.workbench.geometry(),
+                    state.view_3d,
+                    point,
+                    &state
+                        .workbench
+                        .boundary_geometry_targets()
+                        .unwrap_or_default(),
+                )
+            } else {
+                pick_canonical_geometry_target(
+                    state.workbench.geometry(),
+                    state.view_3d,
+                    point,
+                    if state.current_step == 0 {
+                        state.geometry_pick_mode
+                    } else if matches!(state.current_step, 1 | 2) {
+                        ui.get_mesh_entity_mode()
+                    } else {
+                        0
+                    },
+                )
+            };
             if state.geometry_editor.hover_target != hover {
                 state.geometry_editor.hover_target = hover;
                 refresh_ui(&ui, &state);
@@ -6001,7 +6085,11 @@ fn solution_summary_text(session: &WorkbenchSession) -> String {
                 .join("\n");
             let time=solution.physical_time.map(|t|format!("physical time {t:.9e} s\naccepted steps {}\nnonlinear correctors {}\nlast max Co {:.4e}\n",solution.completed_time_steps,solution.nonlinear_iterations,solution.max_courant.unwrap_or(0.0))).unwrap_or_default();
             format!(
-                "{frame}{time}last equation solves:\n{linear}\n\nstatus      {}\nCPU workers {}\niterations  {}\ninitial mass RMS {:.3e}\nfinal mass RMS   {:.3e}\nmomentum rel {:.3e}\nvelocity Δrel {:.3e}\ninflow      {:.5}\noutflow     {:.5}\nnet flux    {:+.3e}\n{}",
+                "Backend: {}\nPrecision: {}\nSolve {:.3}s · {:.3e} cell-iterations/s\n{frame}{time}last equation solves:\n{linear}\n\nstatus      {}\nCPU workers {}\niterations  {}\ninitial mass RMS {:.3e}\nfinal mass RMS   {:.3e}\nmomentum rel {:.3e}\nvelocity Δrel {:.3e}\ninflow      {:.5}\noutflow     {:.5}\nnet flux    {:+.3e}\n{}",
+                report.performance.actual_backend,
+                report.performance.precision,
+                report.performance.elapsed_seconds,
+                report.performance.cell_iterations_per_second,
                 status_label(session),
                 report.cpu_threads,
                 report.outer_iterations,
@@ -6325,15 +6413,17 @@ fn refresh_ui(ui: &MainWindow, state: &AppState) {
             .as_ref()
             .map_or_else(String::new, |workspace| workspace.display().to_string()),
     ));
-    let project_name = if state.workbench_dirty {
-        format!("{} *", state.workbench_project.name)
-    } else {
-        state.workbench_project.name.clone()
-    };
-    ui.set_project_name(SharedString::from(project_name));
-    if let Some(workspace) = &state.workspace_path {
-        ui.set_project_path(SharedString::from(workspace.display().to_string()));
-    }
+    ui.set_application_version(env!("CARGO_PKG_VERSION").into());
+    ui.set_project_name(state.workbench_project.name.clone().into());
+    ui.set_project_modified(state.workbench_dirty);
+    ui.set_project_path(
+        state
+            .workspace_path
+            .as_ref()
+            .map(|p| p.display().to_string())
+            .unwrap_or_default()
+            .into(),
+    );
     sync_example_gallery(ui, state);
     if !state.project_loaded {
         ui.set_geometry_parts_summary(SharedString::from(
@@ -6604,7 +6694,10 @@ fn refresh_ui(ui: &MainWindow, state: &AppState) {
         },
     );
     ui.set_can_run_workbench(
-        !busy && !state.post.mapping.busy() && state.workspace_path.is_some() && state.workbench.readiness().is_ok(),
+        !busy
+            && !state.post.mapping.busy()
+            && state.workspace_path.is_some()
+            && state.workbench.readiness().is_ok(),
     );
     ui.set_geometry_face_sketch_editing(state.face_sketch_host.is_some());
     ui.set_geometry_pick_mode(state.geometry_pick_mode);
@@ -6965,13 +7058,42 @@ fn refresh_ui(ui: &MainWindow, state: &AppState) {
                 ResultFieldKind::VorticityMagnitude,
                 None,
             ),
-            11 => ("RECONSTRUCTED Q INVARIANT · 1/s²", ResultFieldKind::QCriterion, None),
-            12 => ("FLOW TYPE · +1 ROTATION / -1 STRAIN", ResultFieldKind::FlowType, None),
-            13 => ("RECONSTRUCTED STRAIN RATE · 1/s", ResultFieldKind::StrainRate, None),
-            8 => ("TURBULENT KINETIC ENERGY", ResultFieldKind::TurbulentK, None),
-            9 => ("SPECIFIC DISSIPATION", ResultFieldKind::SpecificDissipation, None),
-            10 => ("TURBULENT VISCOSITY", ResultFieldKind::TurbulentViscosity, None),
-            3 if !result.scalar_values(ResultFieldKind::Temperature).is_empty() => ("TEMPERATURE · K", ResultFieldKind::Temperature, None),
+            11 => (
+                "RECONSTRUCTED Q INVARIANT · 1/s²",
+                ResultFieldKind::QCriterion,
+                None,
+            ),
+            12 => (
+                "FLOW TYPE · +1 ROTATION / -1 STRAIN",
+                ResultFieldKind::FlowType,
+                None,
+            ),
+            13 => (
+                "RECONSTRUCTED STRAIN RATE · 1/s",
+                ResultFieldKind::StrainRate,
+                None,
+            ),
+            8 => (
+                "TURBULENT KINETIC ENERGY",
+                ResultFieldKind::TurbulentK,
+                None,
+            ),
+            9 => (
+                "SPECIFIC DISSIPATION",
+                ResultFieldKind::SpecificDissipation,
+                None,
+            ),
+            10 => (
+                "TURBULENT VISCOSITY",
+                ResultFieldKind::TurbulentViscosity,
+                None,
+            ),
+            3 if !result
+                .scalar_values(ResultFieldKind::Temperature)
+                .is_empty() =>
+            {
+                ("TEMPERATURE · K", ResultFieldKind::Temperature, None)
+            }
             7 => (
                 "RECONSTRUCTED VELOCITY DIVERGENCE",
                 ResultFieldKind::VelocityDivergence,
@@ -7547,7 +7669,7 @@ mod tests {
             errors.is_empty(),
             "built-in templates must all be valid: {errors:?}"
         );
-        assert_eq!(templates.len(), 7);
+        assert_eq!(templates.len(), 9);
         for id in [
             "blank-2d",
             "blank-3d",
@@ -7577,8 +7699,8 @@ mod tests {
 
         let title = state.open_gallery_template(1).unwrap();
 
-        assert_eq!(title, "Blank 3D Project");
-        assert_eq!(state.workbench_project.name, "Blank 3D Project");
+        assert_eq!(title, "New 3D analysis");
+        assert_eq!(state.workbench_project.name, "New 3D analysis");
         assert_eq!(state.workbench.mesh_dimension(), MeshDimension::ThreeD);
         assert!(state.workspace_path.is_none());
         assert!(state.workbench_dirty);
@@ -7650,7 +7772,7 @@ mod tests {
     fn gui_starts_with_a_new_editable_project() {
         let state = AppState::new();
         assert!(state.project_loaded);
-        assert_eq!(state.workbench_project.name, "Untitled Project");
+        assert_eq!(state.workbench_project.name, "New analysis");
         assert!(state.workbench_dirty);
     }
 
@@ -8265,7 +8387,7 @@ mod tests {
 
         state.new_blank_workbench_project(MeshDimension::ThreeD);
 
-        assert_eq!(state.workbench_project.name, "Untitled 3D Project");
+        assert_eq!(state.workbench_project.name, "New 3D analysis");
         assert_eq!(state.workbench.mesh_dimension(), MeshDimension::ThreeD);
         assert_eq!(state.workbench.geometry().faces().count(), 0);
         assert!(state.patch_names.is_empty());

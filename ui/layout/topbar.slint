@@ -25,6 +25,8 @@ export component TopBar inherits Rectangle {
     in property <bool> project-loaded;
     in property <bool> wb-busy;
     in property <string> project-name;
+    in property <bool> project-modified;
+    callback rename-project();
     in property <string> status;
     in property <int> current-step;
     in property <[string]> recent-project-model;
@@ -53,8 +55,8 @@ export component TopBar inherits Rectangle {
             MenuLabel {text:"Settings";width:66px;clicked=>{root.open-settings();}}
             tools-button := MenuLabel {text:"Tools";clicked=>{tools-menu.show();}}
             Rectangle {width:1px;height:22px;background:UiTheme.border;}
-            Text {text:root.project-loaded ? root.project-name : "Untitled Project";color:UiTheme.text-project;font-size:11px;min-width:0px;horizontal-stretch:1;overflow:elide;horizontal-alignment:right;vertical-alignment:center;}
-            if root.project-loaded : Text {text:"●";color:UiTheme.accent;font-size:9px;vertical-alignment:center;}
+            Text {text:root.project-loaded ? root.project-name : "No project open";color:UiTheme.text-project;font-size:11px;min-width:0px;horizontal-stretch:1;overflow:elide;horizontal-alignment:right;vertical-alignment:center;}
+            if root.project-loaded && root.project-modified : Rectangle {width:6px;height:6px;border-radius:3px;background:UiTheme.accent;}
         }
         HorizontalLayout {
             height:33px;spacing:2px;padding-left:10px;padding-right:8px;
@@ -72,7 +74,7 @@ export component TopBar inherits Rectangle {
     }
 
     file-menu := PopupWindow {
-        x:file-button.x;y:36px;width:245px;height:root.recent-project-model.length>0 ? 310px : 230px;close-policy:close-on-click-outside;
+        x:file-button.x;y:36px;width:245px;height:root.recent-project-model.length>0 ? 340px : 260px;close-policy:close-on-click-outside;
         Rectangle {background:UiTheme.sidebar;border-width:1px;border-color:UiTheme.border-strong;border-radius:4px;
             VerticalLayout {padding:6px;spacing:1px;
                 MenuItem {text:"New project";enabled:!root.wb-busy;clicked=>{file-menu.close();root.new-project();}}
@@ -80,6 +82,7 @@ export component TopBar inherits Rectangle {
                 Rectangle {height:1px;background:UiTheme.border;}
                 MenuItem {text:"Save";clicked=>{file-menu.close();root.save-project();}}
                 MenuItem {text:"Save as…";clicked=>{file-menu.close();root.save-project-as();}}
+                MenuItem {text:"Rename project…";enabled:root.project-loaded && !root.wb-busy;clicked=>{file-menu.close();root.rename-project();}}
                 MenuItem {text:"Save template…";clicked=>{file-menu.close();root.save-template();}}
                 Rectangle {height:1px;background:UiTheme.border;}
                 MenuItem {text:"Examples…";enabled:!root.wb-busy;clicked=>{file-menu.close();root.show-examples();}}

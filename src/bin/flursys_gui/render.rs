@@ -800,24 +800,48 @@ pub(super) fn pick_domain_edge(
 
 /// Window selection: the complete sampled edge must lie inside the rectangle.
 pub(super) fn domain_edges_in_box(
-    topology: &GeometryTopology, view: View3d, a: (f64,f64), b: (f64,f64),
+    topology: &GeometryTopology,
+    view: View3d,
+    a: (f64, f64),
+    b: (f64, f64),
     targets: &[GeometrySelectionTarget],
 ) -> Vec<GeometrySelectionTarget> {
-    let Some(camera)=canonical_camera(topology,view) else {return Vec::new()};
-    let inside=|p:Vec3| {
-        let p=camera.screen(p);
-        p.0>=a.0.min(b.0) && p.0<=a.0.max(b.0) && p.1>=a.1.min(b.1) && p.1<=a.1.max(b.1)
+    let Some(camera) = canonical_camera(topology, view) else {
+        return Vec::new();
     };
-    let surfaces=if targets.iter().any(|t|matches!(t,GeometrySelectionTarget::Face(_))) {topology.renderable_faces()} else {Vec::new()};
-    targets.iter().copied().filter(|target|match target {
-        GeometrySelectionTarget::Edge(id)=>topology.edge(*id).and_then(|edge|canonical_edge_path(topology,&edge.geometry))
-            .is_some_and(|path|!path.is_empty() && path.into_iter().all(&inside)),
-        GeometrySelectionTarget::Face(id)=>{
-            let pieces=surfaces.iter().filter(|s|s.face==*id).collect::<Vec<_>>();
-            !pieces.is_empty() && pieces.iter().all(|s|!s.vertices.is_empty() && s.vertices.iter().copied().all(&inside))
-        },
-        _=>false,
-    }).collect()
+    let inside = |p: Vec3| {
+        let p = camera.screen(p);
+        p.0 >= a.0.min(b.0) && p.0 <= a.0.max(b.0) && p.1 >= a.1.min(b.1) && p.1 <= a.1.max(b.1)
+    };
+    let surfaces = if targets
+        .iter()
+        .any(|t| matches!(t, GeometrySelectionTarget::Face(_)))
+    {
+        topology.renderable_faces()
+    } else {
+        Vec::new()
+    };
+    targets
+        .iter()
+        .copied()
+        .filter(|target| match target {
+            GeometrySelectionTarget::Edge(id) => topology
+                .edge(*id)
+                .and_then(|edge| canonical_edge_path(topology, &edge.geometry))
+                .is_some_and(|path| !path.is_empty() && path.into_iter().all(&inside)),
+            GeometrySelectionTarget::Face(id) => {
+                let pieces = surfaces
+                    .iter()
+                    .filter(|s| s.face == *id)
+                    .collect::<Vec<_>>();
+                !pieces.is_empty()
+                    && pieces
+                        .iter()
+                        .all(|s| !s.vertices.is_empty() && s.vertices.iter().copied().all(&inside))
+            }
+            _ => false,
+        })
+        .collect()
 }
 
 pub(super) fn pick_canonical_geometry_target(

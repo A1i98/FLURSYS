@@ -133,11 +133,12 @@ pub(super) fn show_monitors(ui: &MainWindow, state: &AppState) {
     ) {
         Ok((svg, caption)) => {
             MONITOR_IMAGE.with(|cache| {
-                let mut cache=cache.borrow_mut();
-                if let Some((_,image))=cache.as_ref().filter(|(old,_)|old==&svg) {
+                let mut cache = cache.borrow_mut();
+                if let Some((_, image)) = cache.as_ref().filter(|(old, _)| old == &svg) {
                     ui.set_post_profile_image(image.clone());
-                } else if let Ok(image)=slint::Image::load_from_svg_data(svg.as_bytes()) {
-                    ui.set_post_profile_image(image.clone());*cache=Some((svg,image));
+                } else if let Ok(image) = slint::Image::load_from_svg_data(svg.as_bytes()) {
+                    ui.set_post_profile_image(image.clone());
+                    *cache = Some((svg, image));
                 }
             });
             ui.set_post_profile_caption(caption.into());

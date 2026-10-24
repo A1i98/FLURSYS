@@ -10,18 +10,44 @@ fn number(s: SharedString, label: &str) -> Result<f64, String> {
     }
     Ok(x)
 }
+fn catalog_id(ui: &MainWindow) -> Result<String, String> {
+    ui.get_material_catalog_ids()
+        .row_data(ui.get_material_catalog_index().max(0) as usize)
+        .filter(|id| !id.is_empty())
+        .map(|id| id.to_string())
+        .ok_or_else(|| "Select a catalogue material".into())
+}
+fn set_catalog_choices(
+    ui: &MainWindow,
+    entries: &[flursys::database::Entry],
+    selected: Option<&str>,
+) {
+    let mut names = vec![SharedString::from("User-defined")];
+    let mut ids = vec![SharedString::from("")];
+    names.extend(entries.iter().map(|e| SharedString::from(e.name.as_str())));
+    ids.extend(entries.iter().map(|e| SharedString::from(e.id.as_str())));
+    ui.set_material_catalog_names(ModelRc::from(Rc::new(VecModel::from(names))));
+    ui.set_material_catalog_ids(ModelRc::from(Rc::new(VecModel::from(ids))));
+    ui.set_material_catalog_index(
+        selected
+            .and_then(|id| entries.iter().position(|e| e.id == id))
+            .map_or(0, |i| i as i32 + 1),
+    );
+}
 pub(super) fn push(ui: &MainWindow, s: &WorkbenchSession) {
+    let entries = match flursys::materials::catalog_entries() {
+        Ok(v) => v,
+        Err(e) => {
+            ui.set_material_dialog_feedback(format!("Material database: {e}").into());
+            Vec::new()
+        }
+    };
+    let selected = s.to_project("material").material.catalog.map(|m| m.id);
+    set_catalog_choices(ui, &entries, selected.as_deref());
     let t = &s.solver_options().thermal;
     let p = s.to_project("material");
     ui.set_material_draft_density(s.material().density.to_string().into());
     ui.set_material_draft_viscosity(s.material().kinematic_viscosity.to_string().into());
-    ui.set_material_catalog_index(
-        p.material
-            .catalog
-            .as_ref()
-            .and_then(|m| flursys::materials::IDS.iter().position(|id| *id == m.id))
-            .map_or(0, |i| i as i32 + 1),
-    );
     ui.set_material_eval_temperature(
         p.material
             .catalog
@@ -55,6 +81,7 @@ pub(super) fn push(ui: &MainWindow, s: &WorkbenchSession) {
     ui.set_thermal_volume_source(t.source_w_m3.to_string().into());
     ui.set_thermal_buoyancy(t.buoyancy);
     ui.set_thermal_beta(t.expansion.to_string().into());
+    ui.set_thermal_max_fraction(t.max_boussinesq_fraction.to_string().into());
     ui.set_thermal_reference(t.reference_temperature.to_string().into());
     ui.set_thermal_gx(t.gravity.x.to_string().into());
     ui.set_thermal_gy(t.gravity.y.to_string().into());
@@ -85,6 +112,10 @@ pub(super) fn apply(
     t.source_w_m3 = number(ui.get_thermal_volume_source(), "Volumetric heat source")?;
     t.expansion = number(ui.get_thermal_beta(), "Expansion coefficient")?;
     t.reference_temperature = number(ui.get_thermal_reference(), "Reference temperature")?;
+    t.max_boussinesq_fraction = number(
+        ui.get_thermal_max_fraction(),
+        "Maximum relative Boussinesq density variation",
+    )?;
     t.gravity = Vec3::new(
         number(ui.get_thermal_gx(), "Gravity X")?,
         number(ui.get_thermal_gy(), "Gravity Y")?,
@@ -103,6 +134,15 @@ pub(super) fn apply(
     t.turbulent_prandtl = number(ui.get_thermal_prt(), "Turbulent Prandtl")?;
     t.validate()?;
     if t.enabled
+        && t.buoyancy
+        && s.mesh_dimension() == MeshDimension::TwoD
+        && t.gravity.z.abs() > 1e-12 * t.gravity.norm().max(1.0)
+    {
+        return Err(
+            "2D XY buoyancy requires gz=0. Choose in-plane gravity or a 3D project.".into(),
+        );
+    }
+    if t.enabled
         && t.wall_treatment == flursys::thermal::ThermalWallTreatment::EquilibriumPrt
         && (s.solver_options().turbulence.model != flursys::turbulence::TurbulenceModel::KEpsilon
             || s.solver_options().turbulence.wall_treatment
@@ -116,11 +156,9 @@ pub(super) fn apply(
         return Err("Require density > 0 and viscosity ≥ 0".into());
     }
     let catalog = if ui.get_material_catalog_index() > 0 {
-        let id = flursys::materials::IDS
-            .get(ui.get_material_catalog_index() as usize - 1)
-            .ok_or("Unknown material")?;
+        let id = catalog_id(ui)?;
         let m = flursys::materials::evaluate(
-            id,
+            &id,
             number(ui.get_material_eval_temperature(), "Catalog T")?,
             number(ui.get_material_eval_pressure(), "Catalog p")?,
         )?;
@@ -208,6 +246,10 @@ pub(super) fn push_boundary(ui: &MainWindow, s: &WorkbenchSession, name: &str) {
             incoming_temperature,
         }) => (2, incoming_temperature, 0.0),
         Some(B::HeatFlux { inward_flux }) => (3, inward_flux, 0.0),
+        Some(B::Radiation {
+            emissivity,
+            ambient_temperature,
+        }) => (5, emissivity, ambient_temperature),
         Some(B::Convection {
             coefficient,
             ambient_temperature,
@@ -226,6 +268,55 @@ pub(super) fn push_boundary(ui: &MainWindow, s: &WorkbenchSession, name: &str) {
     );
 }
 pub(super) fn bind(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
+    let weak = ui.as_weak();
+    ui.on_import_material_catalog(move||{
+        let Some(ui)=weak.upgrade() else{return};
+        if ui.get_wb_busy() || ui.get_material_catalog_busy(){return;}
+        let Some(path)=rfd::FileDialog::new().set_title("Import FLURSYS catalogue JSON pack").add_filter("JSON library",&["json"]).pick_file() else{return};
+        ui.set_material_catalog_busy(true);ui.set_material_dialog_feedback("Importing catalogue…".into());
+        let weak=ui.as_weak();
+        std::thread::spawn(move||{
+            let result=(||->Result<Vec<flursys::database::Entry>,String>{
+                if std::fs::metadata(&path).map_err(|e|e.to_string())?.len()>64*1024*1024{return Err("Use the CLI for library packs larger than 64 MiB".into());}
+                let pack:flursys::database::Pack=serde_json::from_slice(&std::fs::read(path).map_err(|e|e.to_string())?).map_err(|e|e.to_string())?;
+                let mut db=flursys::database::Database::open_default().map_err(|e|e.to_string())?;
+                db.import(&pack).map_err(|e|e.to_string())?;db.entries(false).map_err(|e|e.to_string())
+            })();
+            let _=weak.upgrade_in_event_loop(move|ui|{
+                ui.set_material_catalog_busy(false);
+                match result{Ok(entries)=>{let selected=catalog_id(&ui).ok();set_catalog_choices(&ui,&entries,selected.as_deref());ui.set_material_dialog_feedback("Library imported atomically. Select a material and load its values; current project properties were not changed.".into());},Err(e)=>ui.set_material_dialog_feedback(format!("Catalogue import failed: {e}").into())}
+            });
+        });
+    });
+    let weak = ui.as_weak();
+    ui.on_backup_material_catalog(move || {
+        let Some(ui) = weak.upgrade() else { return };
+        if ui.get_wb_busy() || ui.get_material_catalog_busy() {
+            return;
+        }
+        let Some(path) = rfd::FileDialog::new()
+            .set_title("Save catalogue backup to a new file")
+            .set_file_name("flursys-catalog-backup.sqlite3")
+            .save_file()
+        else {
+            return;
+        };
+        ui.set_material_catalog_busy(true);
+        let weak = ui.as_weak();
+        std::thread::spawn(move || {
+            let result = flursys::database::Database::open_default()
+                .and_then(|db| db.backup(&path))
+                .map_err(|e| e.to_string());
+            let _ = weak.upgrade_in_event_loop(move |ui| {
+                ui.set_material_catalog_busy(false);
+                ui.set_material_dialog_feedback(match result {
+                    Ok(()) => "Catalogue backup saved.".into(),
+                    Err(e) => format!("Catalogue backup failed: {e}").into(),
+                });
+            });
+        });
+    });
+
     let weak = ui.as_weak();
     let shared = state.clone();
     ui.on_apply_turbulence_patch(move || {
@@ -302,7 +393,7 @@ pub(super) fn bind(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
     ui.on_load_material_catalog(move||{
         let Some(ui)=weak.upgrade()else{return};
         if ui.get_material_catalog_index()==0{ui.set_material_source("User-defined properties. Supply physical data and units explicitly.".into());return}
-        let result=(||->Result<flursys::materials::MaterialSnapshot,String>{let id=flursys::materials::IDS.get(ui.get_material_catalog_index() as usize-1).ok_or("Unknown catalog ID")?;flursys::materials::evaluate(id,number(ui.get_material_eval_temperature(),"Catalog T")?,number(ui.get_material_eval_pressure(),"Catalog p")?)})();
+        let result=(||->Result<flursys::materials::MaterialSnapshot,String>{let id=catalog_id(&ui)?;flursys::materials::evaluate(&id,number(ui.get_material_eval_temperature(),"Catalog T")?,number(ui.get_material_eval_pressure(),"Catalog p")?)})();
         match result {Ok(m)=>{ui.set_material_draft_density(m.density.to_string().into());ui.set_material_draft_viscosity(m.kinematic_viscosity().to_string().into());ui.set_thermal_cp(m.specific_heat.to_string().into());ui.set_thermal_kappa(m.conductivity.to_string().into());ui.set_thermal_beta(m.expansion.to_string().into());ui.set_thermal_reference(m.temperature.to_string().into());ui.set_thermal_initial(m.temperature.to_string().into());ui.set_material_source(format!("{}\n{}",m.source,m.note).into());ui.set_material_dialog_feedback("Properties loaded into draft; Apply to save. Properties are frozen at this evaluation state during the solve.".into());},Err(e)=>ui.set_material_dialog_feedback(e.into())}
     });
     let weak = ui.as_weak();
@@ -332,6 +423,13 @@ pub(super) fn bind(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
                     incoming_temperature: a,
                 },
                 3 => B::HeatFlux { inward_flux: a },
+                5 => B::Radiation {
+                    emissivity: a,
+                    ambient_temperature: number(
+                        ui.get_thermal_bc_ambient(),
+                        "Radiation enclosure temperature",
+                    )?,
+                },
                 _ => B::Convection {
                     coefficient: a,
                     ambient_temperature: number(

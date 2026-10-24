@@ -1,5 +1,5 @@
-import { Button, LineEdit, CheckBox, ComboBox, SpinBox } from "std-widgets.slint";
-import { UiTheme, PropertyScroll, WorkspaceSections } from "../components.slint";
+import { Button, LineEdit, CheckBox, ComboBox, SpinBox, Slider } from "std-widgets.slint";
+import { UiTheme, PropertyScroll, WorkspaceSections, InteractiveGeometryPreview } from "../components.slint";
 
 // Window-sized modal scrim; dialogs never participate in workspace layout.
 component ModalFrame inherits Rectangle {
@@ -59,34 +59,41 @@ export component LegacyImportDialog inherits ModalFrame {
 }
 
 component MaterialField inherits VerticalLayout {
-    in property <string> label;in-out property <string> value;
+    in property <string> label;in-out property <string> value;in property <bool> editable:true;
     vertical-stretch:0;spacing:4px;min-width:0px;
     Text {text:root.label;color:UiTheme.text-muted;font-size:11px;wrap:word-wrap;vertical-stretch:0;}
-    LineEdit {text <=> root.value;min-height:32px;max-height:32px;min-width:0px;}
+    LineEdit {text <=> root.value;enabled:root.editable;min-height:32px;max-height:32px;min-width:0px;}
 }
 export component FluidMaterialDialog inherits ModalFrame {
     close-requested=>{root.cancel();}
     in-out property <string> density;in-out property <string> viscosity;
     in property <string> feedback;in property <bool> busy;
     in-out property <int> catalog-index;
+    in property <[string]> catalog-names;
     in-out property <string> eval-temperature;in-out property <string> eval-pressure;
     in property <string> source;
     in-out property <bool> enabled-energy;in-out property <bool> buoyancy;
+    in property <bool> three-d;
+    in-out property <string> max-fraction;
     in-out property <int> wall-treatment;
     in-out property <string> relaxation;in-out property <string> tolerance;
     in-out property <string> initial;in-out property <string> cp;in-out property <string> kappa;in-out property <string> heat-source;in-out property <string> prt;
     in-out property <string> reference;in-out property <string> beta;in-out property <string> gx;in-out property <string> gy;in-out property <string> gz;
     private property <int> section:0;
-    callback apply();callback cancel();callback load-catalog();
+    callback apply();callback cancel();callback load-catalog();callback import-catalog();callback backup-catalog();
     panel-width:560px;panel-height:690px;
     Text {text:"Fluid material & thermal physics";color:UiTheme.text-title;font-size:17px;font-weight:700;vertical-stretch:0;}
     WorkspaceSections {model:["Material","Heat transfer","Buoyancy"];current-index <=> root.section;}
     PropertyScroll {section:root.section;
         if root.section==0 : VerticalLayout {spacing:8px;vertical-stretch:0;
-            ComboBox {model:["User-defined","Air · idealized tutorial model","Water · liquid correlation","Ethanol · liquid correlation"];current-index <=> root.catalog-index;min-width:0px;max-height:32px;enabled:!root.busy;selected(value)=>{root.load-catalog();}}
+            ComboBox {model:root.catalog-names;current-index <=> root.catalog-index;min-width:0px;max-height:32px;enabled:!root.busy;selected(value)=>{root.load-catalog();}}
+            HorizontalLayout {spacing:6px;vertical-stretch:0;
+                Button {text:"Import JSON library…";enabled:!root.busy;clicked=>{root.import-catalog();}}
+                Button {text:"Back up catalogue…";enabled:!root.busy;clicked=>{root.backup-catalog();}}
+            }
             if root.catalog-index>0 : VerticalLayout {spacing:6px;vertical-stretch:0;
-                MaterialField {label:"Evaluate at T (K) · restricted 280–330 K";value <=> root.eval-temperature;}
-                MaterialField {label:"Reference pressure (Pa) · 95000–105000 Pa";value <=> root.eval-pressure;}
+                MaterialField {label:"Evaluate at T (K) · within model validity";value <=> root.eval-temperature;}
+                MaterialField {label:"Reference pressure (Pa) · within model validity";value <=> root.eval-pressure;}
                 Button {text:"Load property values";enabled:!root.busy;clicked=>{root.load-catalog();}}
             }
             MaterialField {label:"Density ρ (kg/m³)";value <=> root.density;}
@@ -109,6 +116,23 @@ export component FluidMaterialDialog inherits ModalFrame {
         }
         if root.section==2 : VerticalLayout {spacing:8px;vertical-stretch:0;
             CheckBox {text:"Boussinesq buoyancy";checked <=> root.buoyancy;enabled:root.enabled-energy;}
+            Text {text:"Gravity uses model coordinates, independent of the camera. Set the direction in which a freely falling object accelerates.";color:UiTheme.text-secondary;wrap:word-wrap;vertical-stretch:0;}
+            ComboBox {
+                model:root.three-d ? ["Set gravity direction…","Down −Y","Down −X","Down −Z","Down +Y","Down +X","Down +Z","Zero gravity"] : ["Set gravity direction…","Down −Y","Down −X","Down +Y","Down +X","Zero gravity"];
+                current-index:0;enabled:!root.busy;min-width:0px;max-height:32px;
+                selected(index)=>{
+                    if index>0 {
+                        root.gx="0";root.gy="0";root.gz="0";
+                        if index==1 {root.gy="-9.81";}
+                        else if index==2 {root.gx="-9.81";}
+                        else if root.three-d && index==3 {root.gz="-9.81";}
+                        else if (root.three-d && index==4) || (!root.three-d && index==3) {root.gy="9.81";}
+                        else if (root.three-d && index==5) || (!root.three-d && index==4) {root.gx="9.81";}
+                        else if root.three-d && index==6 {root.gz="9.81";}
+                        self.current-index=0;
+                    }
+                }
+            }
             MaterialField {label:"Reference temperature (K)";value <=> root.reference;}
             MaterialField {label:"Volumetric expansion β (1/K)";value <=> root.beta;}
             HorizontalLayout {spacing:6px;vertical-stretch:0;
@@ -116,7 +140,10 @@ export component FluidMaterialDialog inherits ModalFrame {
                 MaterialField {label:"gy (m/s²)";value <=> root.gy;}
                 MaterialField {label:"gz (m/s²)";value <=> root.gz;}
             }
-            Text {text:"Adds g[1 − β(T − Tref)], including reference gravity. Pressure remains kinematic gauge pressure. |βΔT| above 0.1 is rejected. This is not a compressible density or phase-change model.";color:UiTheme.text-secondary;wrap:word-wrap;vertical-stretch:0;}
+            MaterialField {label:"Maximum |β(T − Tref)| (0–0.2; default 0.1)";value <=> root.max-fraction;}
+            Text {text:root.three-d ? "Hotter fluid (β>0) has a relative buoyancy force opposite g; colder fluid follows g. Jet inlet momentum can initially dominate the trajectory." : "2D is the XY plane: gz must be zero. Hotter fluid (β>0) rises opposite g; changing the camera does not change gravity.";color:UiTheme.text-secondary;wrap:word-wrap;vertical-stretch:0;}
+            Text {text:"The solver uses g[1 − β(T − Tref)], including reference gravity balanced by hydrostatic pressure. Pressure is p/ρref, not p_rgh. The density-variation limit is checked for initial, prescribed and solved temperatures. No variable-density or phase-change model.";color:UiTheme.text-secondary;wrap:word-wrap;vertical-stretch:0;}
+
         }
     }
     Text {text:root.feedback;color:UiTheme.accent;font-size:11px;wrap:word-wrap;vertical-stretch:0;}
@@ -143,19 +170,21 @@ export component SketchPlaneDialog inherits ModalFrame {
 export component SettingsDialog inherits ModalFrame {
     in-out property <string> gmsh-path;
     callback browse-gmsh();
+    callback compute();
     in-out property <bool> browser:true;
     in-out property <bool> topology:false;
     in-out property <int> panel-size:1;
     callback cancel();
     callback apply(bool,bool,int,string);
     close-requested=>{root.cancel();}
-    panel-width:540px;panel-height:510px;
+    panel-width:540px;panel-height:560px;
     Text {text:"Settings";font-size:20px;font-weight:700;color:UiTheme.text-title;}
     Text {text:"Application preferences · saved for this user";font-size:12px;color:UiTheme.text-muted;}
     Rectangle {height:1px;background:UiTheme.border;}
     Text {text:"GMSH EXECUTABLE";font-size:11px;font-weight:700;color:UiTheme.accent;}
     HorizontalLayout {spacing:6px; LineEdit {text <=> root.gmsh-path;placeholder-text:"Automatic · gmsh on PATH";min-width:0px;} Button {text:"Browse…";clicked=>{root.browse-gmsh();}} }
     Text {text:"Select gmsh.exe on Windows or the gmsh executable on Linux/macOS. Leave empty for automatic discovery.";font-size:11px;color:UiTheme.text-muted;wrap:word-wrap;}
+    Button {text:"Compute & rendering…";clicked=>{root.compute();}}
     Text {text:"WORKSPACE LAYOUT";font-size:11px;font-weight:700;color:UiTheme.accent;}
     CheckBox {text:"Show Browser";checked <=> root.browser;}
     CheckBox {text:"Show topology inspector";checked <=> root.topology;}
@@ -319,4 +348,249 @@ export component CyclicPairsDialog inherits ModalFrame {
     }
     Text {text:root.feedback;color:UiTheme.accent;wrap:word-wrap;vertical-stretch:0;}
     HorizontalLayout {spacing:8px;vertical-stretch:0;Rectangle {horizontal-stretch:1;}Button {text:"Cancel";clicked=>{root.cancel();}}Button {text:"Apply pairs";enabled:!root.busy;clicked=>{root.apply();}}}
+}
+
+export component ProjectNameDialog inherits ModalFrame {
+    in-out property <string> name;
+    in property <string> feedback;
+    callback cancel();callback apply();
+    panel-width:460px;panel-height:240px;close-requested=>{root.cancel();}
+    Text {text:"Project name";font-size:20px;font-weight:700;color:UiTheme.text-title;}
+    LineEdit {text <=> root.name;placeholder-text:"Analysis name";min-width:0px;accepted=>{root.apply();}}
+    Text {text:"Changes the analysis title, not its workspace folder.";color:UiTheme.text-muted;font-size:11px;wrap:word-wrap;}
+    Text {text:root.feedback;color:UiTheme.accent;font-size:11px;wrap:word-wrap;}
+    Rectangle {vertical-stretch:1;}
+    HorizontalLayout {Rectangle {horizontal-stretch:1;}Button {text:"Cancel";clicked=>{root.cancel();}}Button {text:"Rename";clicked=>{root.apply();}}}
+}
+
+export component ComputeDialog inherits ModalFrame {
+    in-out property <int> backend;
+    in-out property <int> threads;
+    in-out property <int> gpu-index;
+    in-out property <bool> fallback;
+    in-out property <int> parallel-rows;
+    in-out property <int> gpu-rows;
+    in-out property <int> preconditioner;
+    in-out property <int> restart;
+    in-out property <int> inner;
+    in-out property <int> sweeps;
+    in-out property <int> timeout;
+    in-out property <int> basis-mb;
+    in-out property <int> memory-percent;
+    in-out property <bool> cpu-display;
+    in-out property <int> display-index;
+    in-out property <int> fps;
+    in property <[string]> adapters;
+    in property <string> information;
+    in property <string> feedback;
+    callback apply();callback cancel();
+    close-requested=>{root.cancel();}
+    panel-width:650px;panel-height:760px;
+    Text {text:"Compute & rendering";font-size:20px;font-weight:700;color:UiTheme.text-title;vertical-stretch:0;}
+    PropertyScroll {
+        VerticalLayout {spacing:10px;vertical-stretch:0;
+            Text {text:"SOLVER · SAVED WITH PROJECT";color:UiTheme.accent;font-weight:700;vertical-stretch:0;}
+            ComboBox {model:["CPU · serial · f64","CPU · parallel · f64","GPU · mixed precision · experimental"];current-index <=> root.backend;min-height:32px;max-height:32px;}
+            Text {text:"CPU workers (0 = automatic)";color:UiTheme.text-secondary;vertical-stretch:0;}
+            SpinBox {value <=> root.threads;minimum:0;maximum:1024;min-height:32px;max-height:32px;}
+            Text {text:"Compute GPU";color:UiTheme.text-secondary;vertical-stretch:0;}
+            ComboBox {model:root.adapters;current-index <=> root.gpu-index;min-height:32px;max-height:32px;}
+            CheckBox {text:"Allow CPU fallback for small systems / GPU failures";checked <=> root.fallback;}
+            Text {text:"CPU f64 FGMRES verifies the original residual. GPU AMG preconditions eligible pressure systems; GPU Krylov preconditions transport. Assembly stays on CPU. CPU fallback uses configured equation methods.";color:UiTheme.text-muted;wrap:word-wrap;vertical-stretch:0;}
+            Text {text:"GPU preconditioner";color:UiTheme.text-secondary;vertical-stretch:0;}
+            ComboBox {model:["Auto · AMG symmetric / Krylov transport","Jacobi / Krylov for all equations"];current-index <=> root.preconditioner;min-height:32px;max-height:32px;}
+            HorizontalLayout {spacing:8px;
+                VerticalLayout {vertical-stretch:0;Text {text:"FGMRES restart length";color:UiTheme.text-secondary;wrap:word-wrap;}SpinBox {value <=> root.restart;minimum:2;maximum:64;min-height:32px;max-height:32px;}}
+                VerticalLayout {vertical-stretch:0;Text {text:"GPU inner iterations";color:UiTheme.text-secondary;wrap:word-wrap;}SpinBox {value <=> root.inner;minimum:1;maximum:64;min-height:32px;max-height:32px;}}
+            }
+            HorizontalLayout {spacing:8px;
+                VerticalLayout {vertical-stretch:0;Text {text:"AMG pre/post sweeps";color:UiTheme.text-secondary;wrap:word-wrap;}SpinBox {value <=> root.sweeps;minimum:1;maximum:8;min-height:32px;max-height:32px;}}
+                VerticalLayout {vertical-stretch:0;Text {text:"Device timeout (ms)";color:UiTheme.text-secondary;wrap:word-wrap;}SpinBox {value <=> root.timeout;minimum:100;maximum:60000;min-height:32px;max-height:32px;}}
+            }
+            HorizontalLayout {spacing:8px;
+                VerticalLayout {vertical-stretch:0;Text {text:"CPU parallel minimum rows";color:UiTheme.text-secondary;wrap:word-wrap;}SpinBox {value <=> root.parallel-rows;minimum:1;maximum:10000000;min-height:32px;max-height:32px;}}
+                VerticalLayout {vertical-stretch:0;Text {text:"CPU crossover rows (fallback only)";color:UiTheme.text-secondary;wrap:word-wrap;}SpinBox {value <=> root.gpu-rows;minimum:1;maximum:10000000;min-height:32px;max-height:32px;}}
+            }
+            Text {text:"CPU FGMRES basis budget (MiB)";color:UiTheme.text-secondary;vertical-stretch:0;}
+            SpinBox {value <=> root.basis-mb;minimum:16;maximum:16384;min-height:32px;max-height:32px;}
+            Text {text:"GPU resource budget (% of adapter buffer limit; not free VRAM)";color:UiTheme.text-secondary;wrap:word-wrap;vertical-stretch:0;}
+            SpinBox {value <=> root.memory-percent;minimum:1;maximum:100;min-height:32px;max-height:32px;}
+            Rectangle {height:1px;background:UiTheme.border;}
+            Text {text:"DISPLAY · SAVED FOR THIS USER";color:UiTheme.accent;font-weight:700;vertical-stretch:0;}
+            CheckBox {text:"CPU rendering for CFD views";checked <=> root.cpu-display;}
+            ComboBox {model:root.adapters;current-index <=> root.display-index;min-height:32px;max-height:32px;}
+            Text {text:"Maximum CAD frame rate";color:UiTheme.text-secondary;vertical-stretch:0;}
+            SpinBox {value <=> root.fps;minimum:5;maximum:120;min-height:32px;max-height:32px;}
+            Text {text:"Display selection is independent of the solver. Restart to switch the CAD adapter; CFD views switch immediately. CAD requires a graphics adapter. Frames still pass through the Slint image bridge.";color:UiTheme.text-muted;wrap:word-wrap;vertical-stretch:0;}
+            Text {text:root.information;color:UiTheme.text-secondary;wrap:word-wrap;vertical-stretch:0;}
+        }
+    }
+    Text {text:root.feedback;color:UiTheme.text-secondary;wrap:word-wrap;vertical-stretch:0;}
+    HorizontalLayout {Rectangle {horizontal-stretch:1;}Button {text:"Cancel";clicked=>{root.cancel();}}Button {text:"Apply";clicked=>{root.apply();}}}
+}
+
+export struct TransportDraft {
+    coordinates:int, origin:string, dt:string, steps:int, every:int,
+    alpha:string, temperature:string,
+    rho1:string, cp1:string, k1:string, rho2:string, cp2:string, k2:string,
+    courant:string, subcycles:int,
+}
+export struct TransportBoundaryDraft {name:string, kind:int, value:string, ambient:string, incoming:string}
+export struct TransportRegionDraft {solid:bool, xmin:string,ymin:string,zmin:string,xmax:string,ymax:string,zmax:string,alpha:string,temperature:string,rho:string,cp:string,k:string,source:string}
+export struct TransportContactDraft {face:string,resistance:string}
+export component TransportDialog inherits ModalFrame {
+    in-out property <TransportDraft> draft;
+    in-out property <[TransportBoundaryDraft]> boundaries;
+    in-out property <[TransportRegionDraft]> regions;
+    in-out property <[TransportContactDraft]> contacts;
+    in property <bool> running;in property <bool> paused;in property <bool> three-d;in property <bool> ready;
+    in property <string> status;in property <string> progress;in property <string> output;
+    in property <bool> has-restart;
+    in property <image> preview;in property <image> orientation;in-out property <int> view-axis:3;
+    in-out property <int> field:0;in-out property <bool> edges:false;
+    in-out property <int> cut:0;in-out property <float> cut-position:50;in-out property <bool> cut-reverse:false;
+    in-out property <int> frame:0;in property <int> frames:0;
+    in-out property <bool> playing:false;
+    in-out property <string> range-min;in-out property <string> range-max;
+    private property <int> section:0;
+    callback close();callback apply();callback start();callback stop();callback pause();callback resume();callback initialize();
+    callback import-settings();callback export-settings();callback use-flow();callback load-restart();callback open-archive();
+    callback add-region();callback remove-region(int);callback add-contact();callback remove-contact(int);
+    callback refresh-view();callback show-frame(int);callback orbit(float,float,float,float);callback zoom(float);callback home();callback pick-orientation(float,float);callback orbit-end();callback pan(float,float,float,float);callback axis(int);
+    panel-width:1000px;panel-height:760px;
+    close-requested=>{root.close();}
+    Text {text:"Phase & heat transport";color:UiTheme.text-title;font-size:17px;font-weight:700;vertical-stretch:0;}
+    WorkspaceSections {model:["Domain","Fluids","Regions","Boundaries","Contacts","Run","Results"];current-index <=> root.section;}
+    Text {text:"Prescribed-flow scalar transport · phase fraction and solid/fluid energy. No variable-density momentum, capillary force or axisymmetric momentum coupling.";color:UiTheme.text-secondary;wrap:word-wrap;vertical-stretch:0;}
+    if root.section!=6 : PropertyScroll {section:root.section;
+        VerticalLayout {spacing:8px;vertical-stretch:0;
+            if root.section==0 : VerticalLayout {spacing:8px;vertical-stretch:0;
+                Text {text:"Coordinate system";color:UiTheme.text-secondary;}
+                ComboBox {model:["Cartesian","Axisymmetric · around X (radius Y)","Axisymmetric · around Y (radius X)"];current-index <=> root.draft.coordinates;enabled:!root.running && root.ready;max-height:32px;}
+                if root.draft.coordinates!=0 : MaterialField {editable:!root.running;label:"Radial origin (m); entire meridian must have nonnegative radius";value <=> root.draft.origin;}
+                Text {text:root.three-d ? "A 3D mesh supports Cartesian transport. Axisymmetric scalar transport requires a 2D XY meridian." : "2D Cartesian inventories are per unit depth. Axisymmetric inventories use the complete 2π revolution.";color:UiTheme.text-muted;wrap:word-wrap;}
+                HorizontalLayout {spacing:8px;Button {text:"Load settings…";enabled:!root.running && root.ready;clicked=>{root.import-settings();}}Button {text:"Save settings…";enabled:!root.running && root.ready;clicked=>{root.export-settings();}}}
+                Button {text:"Use completed CFD face flux";enabled:!root.running && root.ready;clicked=>{root.use-flow();}}
+                Text {text:"Without a supplied flux, the run is quiescent conduction. A copied CFD flux stays fixed throughout transport; buoyancy and phase density do not change it.";color:UiTheme.text-muted;wrap:word-wrap;}
+            }
+            if root.section==1 : VerticalLayout {spacing:8px;vertical-stretch:0;
+                Text {text:"Phase 1 · SI properties";color:UiTheme.accent;}
+                MaterialField {editable:!root.running;label:"Density (kg/m³)";value <=> root.draft.rho1;}
+                MaterialField {editable:!root.running;label:"Specific heat (J/kg/K)";value <=> root.draft.cp1;}
+                MaterialField {editable:!root.running;label:"Conductivity (W/m/K)";value <=> root.draft.k1;}
+                Text {text:"Phase 2 · SI properties";color:UiTheme.accent;}
+                MaterialField {editable:!root.running;label:"Density (kg/m³)";value <=> root.draft.rho2;}
+                MaterialField {editable:!root.running;label:"Specific heat (J/kg/K)";value <=> root.draft.cp2;}
+                MaterialField {editable:!root.running;label:"Conductivity (W/m/K)";value <=> root.draft.k2;}
+                Text {text:"Catalogue selections loaded from settings are evaluated and frozen before editing these explicit values.";color:UiTheme.text-muted;wrap:word-wrap;}
+            }
+            if root.section==2 : VerticalLayout {spacing:8px;vertical-stretch:0;
+                MaterialField {editable:!root.running;label:"Default phase-1 fraction (0–1)";value <=> root.draft.alpha;}
+                MaterialField {editable:!root.running;label:"Default temperature (K)";value <=> root.draft.temperature;}
+                Button {text:"Add box region";enabled:!root.running && root.ready;clicked=>{root.add-region();}}
+                Text {text:"Regions select existing cells by their centres; they do not cut the mesh. Material interfaces must align with mesh faces. Overlapping boxes are rejected.";color:UiTheme.text-muted;wrap:word-wrap;}
+                for row[index] in root.regions : VerticalLayout {spacing:5px;vertical-stretch:0;
+                    HorizontalLayout {CheckBox {text:"Solid region " + (index+1);checked <=> row.solid;enabled:!root.running && root.ready;}Button {text:"Remove";enabled:!root.running && root.ready;clicked=>{root.remove-region(index);}}}
+                    HorizontalLayout {MaterialField {editable:!root.running;label:"Min X (m)";value <=> row.xmin;}MaterialField {editable:!root.running;label:"Min Y (m)";value <=> row.ymin;}MaterialField {editable:!root.running;label:"Min Z (m)";value <=> row.zmin;}}
+                    HorizontalLayout {MaterialField {editable:!root.running;label:"Max X (m)";value <=> row.xmax;}MaterialField {editable:!root.running;label:"Max Y (m)";value <=> row.ymax;}MaterialField {editable:!root.running;label:"Max Z (m)";value <=> row.zmax;}}
+                    HorizontalLayout {MaterialField {editable:!root.running;label:"Initial T (K)";value <=> row.temperature;}MaterialField {editable:!root.running;label:"Phase-1 fraction";value <=> row.alpha;}MaterialField {editable:!root.running;label:"Heat source (W/m³)";value <=> row.source;}}
+                    if row.solid : HorizontalLayout {MaterialField {editable:!root.running;label:"Solid density";value <=> row.rho;}MaterialField {editable:!root.running;label:"Solid Cp";value <=> row.cp;}MaterialField {editable:!root.running;label:"Solid conductivity";value <=> row.k;}}
+                }
+            }
+            if root.section==3 : VerticalLayout {spacing:8px;vertical-stretch:0;
+                for row[index] in root.boundaries : VerticalLayout {spacing:5px;vertical-stretch:0;
+                    Text {text:row.name;color:UiTheme.accent;}
+                    ComboBox {model:["Adiabatic","Fixed temperature","Inlet / outlet temperature","Inward heat flux","External convection","Enclosure radiation"];current-index <=> row.kind;enabled:!root.running && root.ready;max-height:32px;}
+                    if row.kind!=0 : MaterialField {editable:!root.running;label:row.kind==3 ? "Inward heat flux (W/m²)" : row.kind==4 ? "Film coefficient (W/m²/K)" : row.kind==5 ? "Emissivity (0–1)" : "Temperature (K)";value <=> row.value;}
+                    if row.kind>=4 : MaterialField {editable:!root.running;label:"Ambient temperature (K)";value <=> row.ambient;}
+                    MaterialField {editable:!root.running;label:"Incoming phase-1 fraction (for inflow/backflow)";value <=> row.incoming;}
+                }
+            }
+            if root.section==4 : VerticalLayout {spacing:8px;vertical-stretch:0;
+                Button {text:"Add thermal contact";enabled:!root.running && root.ready;clicked=>{root.add-contact();}}
+                Text {text:"Advanced: assign a conformal internal mesh face. Resistance is area-specific, m² K/W; zero means perfect thermal contact. A boundary face is not an internal solid/fluid interface.";color:UiTheme.text-muted;wrap:word-wrap;}
+                for row[index] in root.contacts : HorizontalLayout {MaterialField {editable:!root.running;label:"Internal face index";value <=> row.face;}MaterialField {editable:!root.running;label:"Resistance (m² K/W)";value <=> row.resistance;}Button {text:"Remove";enabled:!root.running && root.ready;clicked=>{root.remove-contact(index);}}}
+            }
+            if root.section==5 : VerticalLayout {spacing:8px;vertical-stretch:0;
+                MaterialField {editable:!root.running;label:"Time step (s)";value <=> root.draft.dt;}
+                Text {text:"Additional physical steps";color:UiTheme.text-secondary;}SpinBox {value <=> root.draft.steps;minimum:1;maximum:1000000;enabled:!root.running && root.ready;}
+                Text {text:"Record every N accepted steps";color:UiTheme.text-secondary;}SpinBox {value <=> root.draft.every;minimum:1;maximum:1000000;enabled:!root.running && root.ready;}
+                MaterialField {editable:!root.running;label:"Maximum phase Courant number (0–1)";value <=> root.draft.courant;}
+                Text {text:"Maximum phase subcycles";color:UiTheme.text-secondary;}SpinBox {value <=> root.draft.subcycles;minimum:1;maximum:100000;enabled:!root.running && root.ready;}
+                HorizontalLayout {Button {text:"Load restart…";enabled:!root.running && root.ready;clicked=>{root.load-restart();}}Button {text:"Reset initial state";enabled:!root.running && root.ready;clicked=>{root.initialize();}}}
+                Text {text:root.has-restart ? "Restart retained: next Run adds steps and physical time. Changing dt/output budget is allowed; changing physics requires reset." : "Next Run starts from the configured initial fields.";color:UiTheme.text-secondary;wrap:word-wrap;}
+                Text {text:"Output: " + root.output;color:UiTheme.text-muted;wrap:word-wrap;}
+            }
+        }
+    }
+    if root.section==6 : VerticalLayout {spacing:6px;
+        HorizontalLayout {ComboBox {model:["Temperature (K)","Phase-1 fraction","Density (kg/m³)","Solid regions"];current-index <=> root.field;selected(value)=>{root.refresh-view();}}CheckBox {text:"Cell edges";checked <=> root.edges;toggled=>{root.refresh-view();}}Button {text:"Open archive…";enabled:!root.running;clicked=>{root.open-archive();}}}
+        HorizontalLayout {MaterialField {label:"Colour minimum (empty = archive range)";value <=> root.range-min;}MaterialField {label:"Colour maximum";value <=> root.range-max;}Button {text:"Apply range";clicked=>{root.refresh-view();}}Button {text:"Auto";clicked=>{root.range-min="";root.range-max="";root.refresh-view();}}}
+        if root.three-d : HorizontalLayout {
+            ComboBox {model:["Surface","Whole-cell cutaway · XY","Whole-cell cutaway · XZ","Whole-cell cutaway · YZ"];current-index <=> root.cut;selected(value)=>{root.refresh-view();}}
+            Slider {minimum:0;maximum:100;value <=> root.cut-position;changed(value)=>{root.refresh-view();}enabled:root.cut!=0;}
+            CheckBox {text:"Reverse cut";checked <=> root.cut-reverse;toggled=>{root.refresh-view();}enabled:root.cut!=0;}
+        }
+        Rectangle {height:12px;vertical-stretch:0;background:@linear-gradient(90deg,rgb(68,1,84) 0%,rgb(59,82,139) 25%,rgb(33,145,140) 50%,rgb(94,201,98) 75%,rgb(253,231,37) 100%);}
+        InteractiveGeometryPreview {preview-image:root.preview;orientation-image:root.orientation;view-axis:root.view-axis;navigation-3d:true;planar-navigation:!root.three-d;show-fit-control:false;help-text:root.three-d ? "SCALAR FIELDS · DRAG: ORBIT · WHEEL: ZOOM · HOME: RESET" : "SCALAR FIELDS · DRAG: PAN · WHEEL: ZOOM · HOME: RESET";orbit(x,y,w,h)=>{root.orbit(x,y,w,h);}zoom(delta)=>{root.zoom(delta);}reset-view=>{root.home();}orbit-end=>{root.orbit-end();}pan(x,y,w,h)=>{root.pan(x,y,w,h);}select-view-axis(axis)=>{root.axis(axis);}pick-orientation(x,y)=>{root.pick-orientation(x,y);}}
+        HorizontalLayout {Button {text:root.playing ? "Pause frames" : "Play frames";enabled:root.frames>1;clicked=>{root.playing=!root.playing;}}Slider {minimum:0;maximum:max(0,root.frames - 1);value:root.frame;changed(value)=>{root.show-frame(round(value));}}Text {text:(root.frames>0 ? root.frame+1 : 0)+" / "+root.frames;color:UiTheme.text-secondary;}}
+    }
+    Text {text:root.progress;color:UiTheme.text-secondary;wrap:word-wrap;vertical-stretch:0;}
+    Text {text:root.status;color:UiTheme.accent;wrap:word-wrap;vertical-stretch:0;}
+    HorizontalLayout {spacing:6px;vertical-stretch:0;
+        Button {text:"Close";clicked=>{root.close();}}
+        Rectangle {horizontal-stretch:1;}
+        Button {text:"Save setup";enabled:!root.running && root.ready;clicked=>{root.apply();}}
+        Button {text:"Stop · retain checkpoint";enabled:root.running;clicked=>{root.stop();}}
+        Button {text:root.paused ? "Resume" : "Pause";enabled:root.running;clicked=>{if root.paused {root.resume();}else{root.pause();}}}
+        Button {text:root.has-restart ? "Run / Continue" : "Run";enabled:!root.running && root.ready;clicked=>{root.start();}}
+    }
+}
+export struct LibraryMaterialDraft {name:string,phase:int,rho:string,mu:string,cp:string,k:string,beta:string,tmin:string,tmax:string,pmin:string,pmax:string,citation:string,url:string,revision:string,note:string}
+export component MaterialLibraryDialog inherits ModalFrame {
+    in-out property <[string]> entries;in-out property <int> selected;
+    in-out property <string> filter;in property <string> details;in property <string> feedback;in property <bool> busy;
+    in-out property <LibraryMaterialDraft> draft;
+    in-out property <int> quantity:0;in-out property <string> tmin;in-out property <string> tmax;in-out property <string> pressure;
+    in property <image> curve;
+    private property <int> section:0;
+    callback close();callback refresh();callback choose();callback evaluate();callback create();callback copy();
+    panel-width:880px;panel-height:750px;close-requested=>{root.close();}
+    Text {text:"Material library";color:UiTheme.text-title;font-size:17px;font-weight:700;vertical-stretch:0;}
+    WorkspaceSections {model:["Browse & sources","Property curve","New revision"];current-index <=> root.section;}
+    if root.section!=2 : HorizontalLayout {spacing:6px;vertical-stretch:0;
+        LineEdit {placeholder-text:"Filter material names";text <=> root.filter;accepted=>{root.refresh();}}
+        Button {text:"Filter";enabled:!root.busy;clicked=>{root.refresh();}}
+        ComboBox {model:root.entries;current-index <=> root.selected;enabled:!root.busy;selected(value)=>{root.choose();}min-width:240px;}
+    }
+    PropertyScroll {section:root.section;
+        if root.section==0 : VerticalLayout {spacing:8px;vertical-stretch:0;
+            Text {text:root.details;color:UiTheme.text-secondary;wrap:word-wrap;vertical-stretch:0;}
+            Button {text:"Copy values into a new revision";enabled:!root.busy;clicked=>{root.copy();root.section=2;}}
+            Text {text:"Catalogue records are immutable. A new revision creates new IDs and retains existing project snapshots.";color:UiTheme.text-muted;wrap:word-wrap;vertical-stretch:0;}
+        }
+        if root.section==1 : VerticalLayout {spacing:8px;vertical-stretch:0;
+            ComboBox {model:["Density · kg/m³","Dynamic viscosity · Pa·s","Specific heat · J/kg/K","Conductivity · W/m/K","Volumetric expansion · 1/K"];current-index <=> root.quantity;enabled:!root.busy;max-height:32px;}
+            HorizontalLayout {MaterialField {label:"Minimum T (K)";value <=> root.tmin;}MaterialField {label:"Maximum T (K)";value <=> root.tmax;}MaterialField {label:"Pressure (Pa)";value <=> root.pressure;}}
+            Button {text:"Evaluate property curve";enabled:!root.busy;clicked=>{root.evaluate();}}
+            Image {source:root.curve;image-fit:contain;min-height:280px;max-height:350px;}
+            Text {text:"This previews the stored property model. It does not enable variable properties during a flow solve. No extrapolation is performed.";color:UiTheme.text-muted;wrap:word-wrap;}
+        }
+        if root.section==2 : VerticalLayout {spacing:6px;vertical-stretch:0;
+            MaterialField {label:"Material name";value <=> root.draft.name;editable:!root.busy;}
+            ComboBox {model:["Gas","Liquid","Solid"];current-index <=> root.draft.phase;enabled:!root.busy;max-height:32px;}
+            HorizontalLayout {MaterialField {label:"Density (kg/m³)";value <=> root.draft.rho;editable:!root.busy;}MaterialField {label:"Cp (J/kg/K)";value <=> root.draft.cp;editable:!root.busy;}MaterialField {label:"Conductivity (W/m/K)";value <=> root.draft.k;editable:!root.busy;}}
+            if root.draft.phase!=2 : HorizontalLayout {MaterialField {label:"Dynamic viscosity (Pa·s)";value <=> root.draft.mu;editable:!root.busy;}MaterialField {label:"Expansion (1/K)";value <=> root.draft.beta;editable:!root.busy;}}
+            HorizontalLayout {MaterialField {label:"Valid T minimum (K)";value <=> root.draft.tmin;editable:!root.busy;}MaterialField {label:"Valid T maximum (K)";value <=> root.draft.tmax;editable:!root.busy;}}
+            HorizontalLayout {MaterialField {label:"Valid p minimum (Pa)";value <=> root.draft.pmin;editable:!root.busy;}MaterialField {label:"Valid p maximum (Pa)";value <=> root.draft.pmax;editable:!root.busy;}}
+            MaterialField {label:"Source / citation (required)";value <=> root.draft.citation;editable:!root.busy;}
+            MaterialField {label:"Source URL (optional)";value <=> root.draft.url;editable:!root.busy;}
+            MaterialField {label:"Revision";value <=> root.draft.revision;editable:!root.busy;}
+            MaterialField {label:"Model limitations / notes";value <=> root.draft.note;editable:!root.busy;}
+            Text {text:"Creates constant, isotropic properties in SI units. Use library import for T/p sample tables, contacts, pair properties and reference data. Unknown uncertainty/licence remain unknown.";color:UiTheme.text-muted;wrap:word-wrap;}
+            Button {text:"Create material revision";enabled:!root.busy;clicked=>{root.create();}}
+        }
+    }
+    Text {text:root.feedback;color:UiTheme.accent;wrap:word-wrap;vertical-stretch:0;}
+    Button {text:"Close";clicked=>{root.close();}vertical-stretch:0;}
 }

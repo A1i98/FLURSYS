@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Serialize, Deserialize)]
 #[serde(default)]
 struct Preferences {
+    render: super::render_device::Options,
     gmsh_path: String,
     browser: bool,
     topology: bool,
@@ -13,6 +14,7 @@ struct Preferences {
 impl Default for Preferences {
     fn default() -> Self {
         Self {
+            render: Default::default(),
             gmsh_path: String::new(),
             browser: true,
             topology: false,
@@ -27,6 +29,10 @@ pub(super) fn bind(ui: &MainWindow) {
         match std::fs::read(path) {
             Ok(bytes) => match serde_json::from_slice::<Preferences>(&bytes) {
                 Ok(prefs) => {
+                    ui.set_preferences_render_adapter(prefs.render.adapter.clone().into());
+                    ui.set_preferences_cpu_display(prefs.render.cpu);
+                    ui.set_preferences_display_fps(prefs.render.fps.clamp(5, 120) as i32);
+                    super::render_device::configure(prefs.render.clone());
                     ui.set_preferences_gmsh_path(prefs.gmsh_path.clone().into());
                     GmshMesher::set_executable_override(
                         (!prefs.gmsh_path.is_empty()).then(|| PathBuf::from(&prefs.gmsh_path)),
@@ -59,11 +65,17 @@ pub(super) fn bind(ui: &MainWindow) {
             return;
         };
         let prefs = Preferences {
+            render: super::render_device::Options {
+                cpu: ui.get_preferences_cpu_display(),
+                adapter: ui.get_preferences_render_adapter().to_string(),
+                fps: ui.get_preferences_display_fps().clamp(5, 120) as u32,
+            },
             gmsh_path: ui.get_preferences_gmsh_path().trim().to_string(),
             browser: ui.get_show_browser(),
             topology: ui.get_show_topology(),
             panel_size: ui.get_preferences_panel_size(),
         };
+        super::render_device::configure(prefs.render.clone());
         GmshMesher::set_executable_override(
             (!prefs.gmsh_path.is_empty()).then(|| PathBuf::from(&prefs.gmsh_path)),
         );

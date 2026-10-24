@@ -10,6 +10,7 @@ enum Request {
     Resize(u32, u32),
     Visible(bool),
     Project(String, Option<String>),
+    Rename(String, String),
     Publish(i32, Option<String>),
     Browser(bool),
     Fit,
@@ -30,7 +31,30 @@ enum Reply {
     ),
     Error(String),
 }
+struct FrameTarget {
+    size: (u32, u32),
+    texture: wgpu::Texture,
+    view: wgpu::TextureView,
+    read: wgpu::Buffer,
+    stride: u32,
+}
+struct PendingFrame {
+    read: wgpu::Buffer,
+    ready: Receiver<Result<(), wgpu::BufferAsyncError>>,
+    width: u32,
+    height: u32,
+    stride: u32,
+    started: Instant,
+}
+impl Drop for PendingFrame {
+    fn drop(&mut self) {
+        self.read.unmap();
+    }
+}
 struct Gpu {
+    pending: Option<PendingFrame>,
+    target: Option<FrameTarget>,
+    adapter_name: String,
     device: wgpu::Device,
     queue: wgpu::Queue,
     renderer: egui_wgpu::Renderer,
@@ -41,10 +65,8 @@ struct Gpu {
 }
 impl Gpu {
     fn new() -> Result<Self, String> {
-        let instance =
-            wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
-        let adapter = pollster::block_on(instance.request_adapter(&Default::default()))
-            .map_err(|e| e.to_string())?;
+        let adapter = super::render_device::adapter(&super::render_device::options().adapter)?;
+        let adapter_name = adapter.get_info().name;
         let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
             required_limits: wgpu::Limits::downlevel_defaults().using_resolution(adapter.limits()),
             ..Default::default()
@@ -74,6 +96,9 @@ impl Gpu {
         app.viewport.gpu = Some(target);
         app.preferences.timeline_left = true;
         Ok(Self {
+            target: None,
+            pending: None,
+            adapter_name,
             device,
             queue,
             renderer,
@@ -84,6 +109,7 @@ impl Gpu {
         })
     }
     fn project(&mut self, document: Option<String>) -> Result<(), String> {
+        self.pending = None;
         let doc = match document {
             Some(s) => cad_engine::doc::Document::from_json(&s).map_err(|e| e.to_string())?,
             None => Default::default(),
@@ -99,14 +125,13 @@ impl Gpu {
             samples: 1,
             tess: false,
         });
+        self.app.fit_view();
         Ok(())
     }
-    fn frame(
-        &mut self,
-        width: u32,
-        height: u32,
-        events: Vec<egui::Event>,
-    ) -> Result<Vec<u8>, String> {
+    fn frame(&mut self, width: u32, height: u32, events: Vec<egui::Event>) -> Result<(), String> {
+        if self.pending.is_some() {
+            return Err("CAD frame already in flight".into());
+        }
         for event in &events {
             match event {
                 egui::Event::ModifiersChanged(m)
@@ -149,22 +174,52 @@ impl Gpu {
                     .update_texture(&self.device, &self.queue, *id, delta);
             }
         }
+        let started = Instant::now();
         let size = wgpu::Extent3d {
             width,
             height,
             depth_or_array_layers: 1,
         };
-        let texture = self.device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("CAD workbench frame"),
-            size,
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8Unorm,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
-            view_formats: &[],
-        });
-        let view = texture.create_view(&Default::default());
+        if self
+            .target
+            .as_ref()
+            .is_none_or(|t| t.size != (width, height))
+        {
+            let texture = self.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("Reusable CAD frame"),
+                size,
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba8Unorm,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+                view_formats: &[],
+            });
+            let view = texture.create_view(&Default::default());
+            let stride = (width * 4).div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT)
+                * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+            let read = self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("Reusable CAD readback"),
+                size: u64::from(stride) * u64::from(height),
+                usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            self.target = Some(FrameTarget {
+                size: (width, height),
+                texture,
+                view,
+                read,
+                stride,
+            });
+        }
+        let target = self
+            .target
+            .as_ref()
+            .ok_or("CAD render target unavailable")?;
+        let view = &target.view;
+        let texture = &target.texture;
+        let read = &target.read;
+        let stride = target.stride;
         let mut encoder = self.device.create_command_encoder(&Default::default());
         let screen = egui_wgpu::ScreenDescriptor {
             size_in_pixels: [width, height],
@@ -190,14 +245,6 @@ impl Gpu {
             self.renderer
                 .render(&mut pass.forget_lifetime(), &jobs, &screen);
         }
-        let stride = (width * 4).div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT)
-            * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
-        let read = self.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("CAD frame readback"),
-            size: u64::from(stride) * u64::from(height),
-            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
         encoder.copy_texture_to_buffer(
             texture.as_image_copy(),
             wgpu::TexelCopyBufferInfo {
@@ -210,7 +257,7 @@ impl Gpu {
             },
             size,
         );
-        let submission = self.queue.submit(
+        self.queue.submit(
             commands
                 .into_iter()
                 .chain(std::iter::once(encoder.finish())),
@@ -220,27 +267,54 @@ impl Gpu {
         slice.map_async(wgpu::MapMode::Read, move |r| {
             let _ = tx.send(r);
         });
-        self.device
-            .poll(wgpu::PollType::Wait {
-                submission_index: Some(submission),
-                timeout: Some(Duration::from_secs(10)),
-            })
-            .map_err(|e| e.to_string())?;
-        rx.recv_timeout(Duration::from_secs(1))
-            .map_err(|e| e.to_string())?
-            .map_err(|e| e.to_string())?;
-        let bytes = slice.get_mapped_range().map_err(|e| e.to_string())?;
-        let mut rgba = Vec::with_capacity((width * height * 4) as usize);
-        for row in bytes.chunks(stride as usize).take(height as usize) {
-            rgba.extend_from_slice(&row[..(width * 4) as usize]);
-        }
-        drop(bytes);
-        read.unmap();
+        self.pending = Some(PendingFrame {
+            read: read.clone(),
+            ready: rx,
+            width,
+            height,
+            stride,
+            started,
+        });
         for id in &out.textures_delta.free {
             self.renderer.free_texture(id);
         }
         out.textures_delta.clear();
-        Ok(rgba)
+        Ok(())
+    }
+    fn poll_frame(&mut self) -> Result<Option<(u32, u32, Vec<u8>)>, String> {
+        let Some(pending) = self.pending.as_ref() else {
+            return Ok(None);
+        };
+        self.device
+            .poll(wgpu::PollType::Poll)
+            .map_err(|e| e.to_string())?;
+        match pending.ready.try_recv() {
+            Ok(result) => result.map_err(|e| e.to_string())?,
+            Err(mpsc::TryRecvError::Empty) => {
+                if pending.started.elapsed() > Duration::from_secs(5) {
+                    self.pending = None;
+                    return Err("CAD GPU readback exceeded five seconds".into());
+                }
+                return Ok(None);
+            }
+            Err(mpsc::TryRecvError::Disconnected) => {
+                self.pending = None;
+                return Err("CAD frame callback disconnected".into());
+            }
+        }
+        let pending = self.pending.take().ok_or("CAD frame unavailable")?;
+        let slice = pending.read.slice(..);
+        let bytes = slice.get_mapped_range().map_err(|e| e.to_string())?;
+        let mut rgba = Vec::with_capacity((pending.width * pending.height * 4) as usize);
+        for row in bytes
+            .chunks(pending.stride as usize)
+            .take(pending.height as usize)
+        {
+            rgba.extend_from_slice(&row[..(pending.width * 4) as usize]);
+        }
+        drop(bytes);
+        super::render_device::record(pending.started, rgba.len(), &self.adapter_name);
+        Ok(Some((pending.width, pending.height, rgba)))
     }
     fn plane_catalog(
         &self,
@@ -396,6 +470,7 @@ fn worker(rx: Receiver<Request>, tx: SyncSender<Reply>) {
     };
     let (mut width, mut height) = (1100, 760);
     let mut visible = true;
+    let mut last_frame = Instant::now();
     let mut project = String::new();
     let mut revision = u64::MAX;
     let mut events = Vec::new();
@@ -407,7 +482,7 @@ fn worker(rx: Receiver<Request>, tx: SyncSender<Reply>) {
     let mut capture = std::env::var_os("FLURSYS_CAD_DEBUG_CAPTURE");
     loop {
         let first = match rx.recv_timeout(if visible {
-            Duration::from_millis(24)
+            Duration::from_secs_f64(1.0 / f64::from(super::render_device::options().fps))
         } else {
             Duration::from_millis(200)
         }) {
@@ -416,6 +491,7 @@ fn worker(rx: Receiver<Request>, tx: SyncSender<Reply>) {
             Err(_) => return,
         };
         let requests = first.into_iter().chain(rx.try_iter()).collect::<Vec<_>>();
+        let had_requests = !requests.is_empty();
         for request in requests {
             match request {
                 Request::Input(e) => events.push(e),
@@ -435,18 +511,21 @@ fn worker(rx: Receiver<Request>, tx: SyncSender<Reply>) {
                         let _ = tx.send(Reply::Error(e));
                     }
                 }
+                Request::Rename(id, name) => {
+                    if id == project && gpu.app.session.doc.name != name {
+                        std::sync::Arc::make_mut(&mut gpu.app.session.doc).name = name;
+                        gpu.app.session.revision = gpu.app.session.revision.wrapping_add(1);
+                    }
+                }
                 Request::Publish(step, hash) => publish.push((step, hash)),
             }
         }
-        if !visible {
-            continue;
-        }
-        match gpu.frame(width, height, std::mem::take(&mut events)) {
-            Ok(rgba) => {
+        match gpu.poll_frame() {
+            Ok(Some((frame_width, frame_height, rgba))) => {
                 #[cfg(debug_assertions)]
                 if let Some(path) = capture.take() {
                     if let Ok(file) = std::fs::File::create(path) {
-                        let mut png = png::Encoder::new(file, width, height);
+                        let mut png = png::Encoder::new(file, frame_width, frame_height);
                         png.set_color(png::ColorType::Rgba);
                         png.set_depth(png::BitDepth::Eight);
                         if let Ok(mut writer) = png.write_header() {
@@ -454,12 +533,42 @@ fn worker(rx: Receiver<Request>, tx: SyncSender<Reply>) {
                         }
                     }
                 }
-                let _ = tx.try_send(Reply::Frame(width, height, rgba));
+                if visible {
+                    let _ = tx.try_send(Reply::Frame(frame_width, frame_height, rgba));
+                }
             }
-            Err(e) => {
-                let _ = tx.send(Reply::Error(format!("CAD rendering failed: {e}")));
+            Ok(None) => {}
+            Err(error) => {
+                gpu.pending = None;
+                gpu.target = None;
+                let _ = tx.send(Reply::Error(format!("CAD GPU readback failed: {error}")));
                 visible = false;
             }
+        }
+        if !visible || gpu.pending.is_some() {
+            continue;
+        }
+        // Background evaluation gets a heartbeat without redrawing an idle
+        // viewport at full FPS. Input and egui repaint requests draw promptly.
+        if !had_requests
+            && events.is_empty()
+            && publish.is_empty()
+            && !gpu.ctx.has_requested_repaint()
+            && last_frame.elapsed() < Duration::from_millis(250)
+        {
+            continue;
+        }
+        let frame_period =
+            Duration::from_secs_f64(1.0 / f64::from(super::render_device::options().fps));
+        if let Some(delay) = frame_period.checked_sub(last_frame.elapsed()) {
+            std::thread::sleep(delay);
+        }
+        last_frame = Instant::now();
+        if let Err(error) = gpu.frame(width, height, std::mem::take(&mut events)) {
+            gpu.pending = None;
+            gpu.target = None;
+            let _ = tx.send(Reply::Error(format!("CAD rendering failed: {error}")));
+            visible = false;
         }
         if gpu.app.session.revision != revision {
             revision = gpu.app.session.revision;
@@ -680,6 +789,7 @@ pub(super) fn bind(ui: &MainWindow, state: &Rc<RefCell<AppState>>) -> Timer {
     let weak = ui.as_weak();
     let shared = state.clone();
     let mut project = String::new();
+    let mut sent_title = None;
     let mut was_visible = false;
     let mut browser = true;
     timer.start(TimerMode::Repeated, Duration::from_millis(16), move || {
@@ -696,6 +806,11 @@ pub(super) fn bind(ui: &MainWindow, state: &Rc<RefCell<AppState>>) -> Timer {
                 state.workbench_project.cad_document.clone(),
             ));
             ui.set_cad_native_feedback("".into());
+        }
+        let title=(project.clone(),state.workbench_project.name.clone());
+        if sent_title.as_ref()!=Some(&title) {
+            let _=tx.send(Request::Rename(title.0.clone(),title.1.clone()));
+            sent_title=Some(title);
         }
         let visible = state.current_step == 0 && !ui.get_examples_open();
         if visible != was_visible {

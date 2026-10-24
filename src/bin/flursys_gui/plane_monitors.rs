@@ -1095,22 +1095,38 @@ pub(super) fn bind(ui: &MainWindow, shared: &Rc<RefCell<AppState>>) {
         load(&ui, &state);
         refresh_selected(&ui, &mut state);
     });
-    let weak=ui.as_weak();
-    let state=shared.clone();
+    let weak = ui.as_weak();
+    let state = shared.clone();
     ui.on_flow_plane_manage(move |action| {
-        let Some(ui)=weak.upgrade() else {return};
-        let mut state=state.borrow_mut();
-        if state.solving || state.meshing {return;}
-        if action==0 {
-            for p in &mut state.workbench_project.plane_monitors {p.enabled=false;}
-        } else if action==1 {
-            let Some(p)=state.workbench_project.plane_monitors.get_mut(ui.get_flow_plane_index().max(0) as usize) else {return};
-            p.enabled=false;p.every=10;p.display=Default::default();
-        } else {return;}
+        let Some(ui) = weak.upgrade() else { return };
+        let mut state = state.borrow_mut();
+        if state.solving || state.meshing {
+            return;
+        }
+        if action == 0 {
+            for p in &mut state.workbench_project.plane_monitors {
+                p.enabled = false;
+            }
+        } else if action == 1 {
+            let Some(p) = state
+                .workbench_project
+                .plane_monitors
+                .get_mut(ui.get_flow_plane_index().max(0) as usize)
+            else {
+                return;
+            };
+            p.enabled = false;
+            p.every = 10;
+            p.display = Default::default();
+        } else {
+            return;
+        }
         state.mark_workbench_dirty();
-        load(&ui,&state);
-        ui.set_flow_plane_status("Monitor settings updated; existing recorded files were retained.".into());
-        refresh_ui(&ui,&state);
+        load(&ui, &state);
+        ui.set_flow_plane_status(
+            "Monitor settings updated; existing recorded files were retained.".into(),
+        );
+        refresh_ui(&ui, &state);
     });
     let weak = ui.as_weak();
     let state = shared.clone();

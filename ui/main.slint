@@ -11,11 +11,11 @@ import { TopBar } from "layout/topbar.slint";
 import { ProjectTree } from "layout/project_tree.slint";
 import { ExampleGallery, ExampleDescriptor } from "layout/example_gallery.slint";
 import { StatusBar } from "layout/status_bar.slint";
-import { LegacyImportDialog, RecoveryDialog, UnsavedChangesDialog, FluidMaterialDialog, SettingsDialog, EquationControlsDialog, EquationDraft, VolumeModelsDialog, VolumeModelDraft, CyclicPairsDialog } from "layout/project_dialogs.slint";
+import { MaterialLibraryDialog, LibraryMaterialDraft, TransportDialog, TransportDraft, TransportBoundaryDraft, TransportRegionDraft, TransportContactDraft, ComputeDialog, ProjectNameDialog, LegacyImportDialog, RecoveryDialog, UnsavedChangesDialog, FluidMaterialDialog, SettingsDialog, EquationControlsDialog, EquationDraft, VolumeModelsDialog, VolumeModelDraft, CyclicPairsDialog } from "layout/project_dialogs.slint";
 
 export component MainWindow inherits Window {
     init => { Palette.color-scheme = ColorScheme.dark; UiTheme.cad-active=true; }
-    title: root.project-loaded ? "FLURSYS — " + root.project-name : "FLURSYS — CFD Workbench";
+    title: root.project-loaded ? root.project-name + (root.project-modified ? " *" : "") + " — FLURSYS " + root.application-version : "FLURSYS " + root.application-version + " — CFD Workbench";
     icon: @image-url("assets/flursys-logo.svg");
     preferred-width: 1440px;
     preferred-height: 900px;
@@ -148,6 +148,31 @@ export component MainWindow inherits Window {
     in-out property <int> preferences-panel-size:1;
     changed preferences-panel-size => {UiTheme.properties-width=root.preferences-panel-size==0 ? 270px : root.preferences-panel-size==2 ? 340px : 300px;}
     property <bool> settings-open:false;
+    in-out property <bool> compute-open:false;
+    in-out property <int> compute-backend:1;
+    in-out property <int> compute-threads:0;
+    in-out property <int> compute-gpu-index:0;
+    in-out property <int> compute-display-index:0;
+    in-out property <bool> compute-fallback:true;
+    in-out property <int> compute-parallel-rows:4096;
+    in-out property <int> compute-gpu-rows:16384;
+    in-out property <int> compute-preconditioner:0;
+    in-out property <int> compute-restart:24;
+    in-out property <int> compute-inner:8;
+    in-out property <int> compute-sweeps:2;
+    in-out property <int> compute-timeout:10000;
+    in-out property <int> compute-basis-mb:256;
+    in-out property <int> compute-memory-percent:80;
+    in-out property <bool> compute-cpu-display:false;
+    in-out property <int> compute-fps:30;
+    in-out property <[string]> compute-adapters:["Automatic"];
+    in-out property <string> compute-information;
+    in-out property <string> compute-feedback;
+    in-out property <string> preferences-render-adapter;
+    in-out property <bool> preferences-cpu-display:false;
+    in-out property <int> preferences-display-fps:30;
+    callback open-compute();
+    callback apply-compute()->bool;
     in-out property <string> preferences-gmsh-path;
     in-out property <string> gmsh-path-draft;
     callback browse-gmsh();
@@ -217,7 +242,13 @@ export component MainWindow inherits Window {
     in-out property <bool> geometry-feature-open: true;
     in-out property <string> status: "Idle";
     in-out property <string> project-path: "case.flursys.json";
-    in-out property <string> project-name: "Lid-driven cavity";
+    in-out property <string> project-name: "New analysis";
+    in property <string> application-version;
+    in property <bool> project-modified;
+    in-out property <bool> project-name-open:false;
+    in-out property <string> project-name-draft;
+    in-out property <string> project-name-feedback;
+    callback apply-project-name(string)->bool;
     in-out property <string> case-name: "Lid-driven cavity";
     in-out property <int> nx: 64;
     in-out property <int> ny: 64;
@@ -706,6 +737,11 @@ export component MainWindow inherits Window {
     callback prepare-material-editor();
     callback load-material-catalog();
     callback apply-workbench-thermal-boundary();
+    callback import-material-catalog();
+    callback backup-material-catalog();
+    in-out property <[string]> material-catalog-names:["User-defined"];
+    in-out property <[string]> material-catalog-ids:[""];
+    in-out property <bool> material-catalog-busy:false;
     in-out property <int> material-catalog-index:0;
     in-out property <string> material-eval-temperature:"293.15";
     in-out property <string> material-eval-pressure:"101325";
@@ -722,6 +758,7 @@ export component MainWindow inherits Window {
     in-out property <bool> thermal-buoyancy:false;
     in-out property <string> thermal-reference:"293.15";
     in-out property <string> thermal-beta:"0";
+    in-out property <string> thermal-max-fraction:"0.1";
     in-out property <string> thermal-gx:"0";
     in-out property <string> thermal-gy:"-9.81";
     in-out property <string> thermal-gz:"0";
@@ -729,6 +766,37 @@ export component MainWindow inherits Window {
     in-out property <string> thermal-bc-value:"293.15";
     in-out property <string> thermal-bc-ambient:"293.15";
     in-out property <string> thermal-bc-status;
+    in-out property <bool> library-open:false;in-out property <bool> library-busy:false;
+    in-out property <[string]> library-entries;in-out property <[string]> library-ids;
+    in-out property <int> library-selected:0;in-out property <int> library-quantity:0;
+    in-out property <string> library-filter;in-out property <string> library-details;in-out property <string> library-feedback;
+    in-out property <string> library-tmin:"293.15";in-out property <string> library-tmax:"293.15";in-out property <string> library-pressure:"101325";
+    in-out property <image> library-curve;in-out property <LibraryMaterialDraft> library-draft;
+    callback open-library();callback refresh-library();callback select-library();callback evaluate-library();callback create-library-material();callback copy-library-material();
+    in-out property <bool> transport-open:false;in-out property <bool> transport-ready:false;
+    in-out property <TransportDraft> transport-draft;
+    in-out property <[TransportBoundaryDraft]> transport-boundaries;
+    in-out property <[TransportRegionDraft]> transport-regions;
+    in-out property <[TransportContactDraft]> transport-contacts;
+    in-out property <bool> transport-running:false;
+    in-out property <bool> transport-paused:false;
+    in-out property <bool> transport-has-restart:false;
+    in-out property <bool> transport-three-d:false;
+    in-out property <bool> transport-playing:false;
+    in-out property <string> transport-status;
+    in-out property <string> transport-progress;
+    in-out property <string> transport-output;
+    in-out property <image> transport-image;in-out property <image> transport-orientation;in-out property <int> transport-view-axis:3;
+    in-out property <int> transport-field:0;
+    in-out property <int> transport-cut:0;in-out property <float> transport-cut-position:50;in-out property <bool> transport-cut-reverse:false;
+    in-out property <string> transport-range-min;in-out property <string> transport-range-max;
+    in-out property <bool> transport-edges:false;
+    in-out property <int> transport-frame:0;
+    in-out property <int> transport-frames:0;
+    callback open-transport();callback save-transport();callback run-transport();callback stop-transport();callback pause-transport();callback resume-transport();callback reset-transport();
+    callback import-transport();callback export-transport();callback use-transport-flow();callback load-transport-restart();callback open-transport-archive();
+    callback add-transport-region();callback remove-transport-region(int);callback add-transport-contact();callback remove-transport-contact(int);
+    callback refresh-transport();callback select-transport-frame(int);callback orbit-transport(float,float,float,float);callback zoom-transport(float);callback home-transport();callback end-transport-orbit();callback pan-transport(float,float,float,float);callback axis-transport(int);callback pick-transport-orientation(float,float);callback update-transport-job();
     in-out property <bool> material-dialog-open:false;
     in-out property <string> material-draft-density;
     in-out property <string> material-draft-viscosity;
@@ -783,7 +851,8 @@ export component MainWindow inherits Window {
             compact-ui: root.compact-ui;
             project-loaded: root.project-loaded;
             wb-busy: root.wb-busy;
-            project-name: root.project-name;
+            project-name: root.project-name;project-modified:root.project-modified;
+            rename-project=>{root.project-name-draft=root.project-name;root.project-name-feedback="";root.project-name-open=true;}
             status: root.status;
             current-step: root.current-step;
             show-browser <=> root.show-browser;show-history <=> root.show-history;show-topology <=> root.show-topology;
@@ -999,7 +1068,7 @@ PlaneMonitorPanel {manage-plane(i)=>{root.flow-plane-manage(i);}
                     width:parent.width;height:parent.height;
                     VerticalLayout {
                         padding:12px;spacing:8px;
-                        WorkspaceSections {model:["Boundaries","Material","Readiness"];current-index <=> root.setup-section;}
+                        WorkspaceSections {model:["Boundaries","Material","Readiness","Multiphysics"];current-index <=> root.setup-section;}
                         HorizontalLayout {
                             spacing:10px;
                             WorkflowControlCard {section:root.setup-section;
@@ -1093,14 +1162,15 @@ PlaneMonitorPanel {manage-plane(i)=>{root.flow-plane-manage(i);}
                                     Button {text:"Apply incoming turbulence";enabled:!root.wb-busy && root.patch-model.length>0;clicked=>{root.apply-turbulence-patch();}}
                                     InspectorLabel {text:root.turb-patch-status;wrap:word-wrap;}
                                     InspectorLabel {text:"TEMPERATURE / HEAT TRANSFER";}
-                                    ComboBox {model:["Adiabatic / zero diffusive flux","Fixed temperature","Inlet / outlet temperature","Imposed inward heat flux","External convection"];current-index <=> root.thermal-bc-kind;enabled:!root.wb-busy;min-width:0px;max-height:32px;}
+                                    ComboBox {model:["Adiabatic / zero diffusive flux","Fixed temperature","Inlet / outlet temperature","Imposed inward heat flux","External convection","Enclosure radiation"];current-index <=> root.thermal-bc-kind;enabled:!root.wb-busy;min-width:0px;max-height:32px;}
                                     if root.thermal-bc-kind!=0 : VerticalLayout {spacing:4px;vertical-stretch:0;
-                                        InspectorLabel {text:root.thermal-bc-kind==3 ? "INWARD HEAT FLUX (W/m²)" : root.thermal-bc-kind==4 ? "FILM COEFFICIENT h (W/m²/K)" : "TEMPERATURE (K)";}
+                                        InspectorLabel {text:root.thermal-bc-kind==5 ? "EMISSIVITY (0–1)" : root.thermal-bc-kind==3 ? "INWARD HEAT FLUX (W/m²)" : root.thermal-bc-kind==4 ? "FILM COEFFICIENT h (W/m²/K)" : "TEMPERATURE (K)";}
                                         LineEdit {text <=> root.thermal-bc-value;min-width:0px;}
                                     }
-                                    if root.thermal-bc-kind==4 : VerticalLayout {spacing:4px;vertical-stretch:0;
+                                    if root.thermal-bc-kind>=4 : VerticalLayout {spacing:4px;vertical-stretch:0;
                                         InspectorLabel {text:"AMBIENT TEMPERATURE (K)";}LineEdit {text <=> root.thermal-bc-ambient;min-width:0px;}
                                     }
+                                    if root.thermal-bc-kind==5 : InspectorLabel {text:"Diffuse-grey radiation to a large enclosure; no participating-media or view-factor model.";wrap:word-wrap;}
                                     Button {text:"Apply thermal condition";enabled:!root.wb-busy && root.patch-model.length>0;clicked=>{root.apply-workbench-thermal-boundary();}}
                                     InspectorLabel {text:root.thermal-bc-status;wrap:word-wrap;}
                                     InspectorLabel {text:"Enable heat transport in Fluid material. Assign every thermal patch; incoming flow needs a temperature.";wrap:word-wrap;}
@@ -1114,8 +1184,19 @@ PlaneMonitorPanel {manage-plane(i)=>{root.flow-plane-manage(i);}
                                 Text {text:"FLUID MATERIAL";color:UiTheme.accent;font-size:11px;font-weight:700;}
                                 InspectorValue {text:"ρ="+root.material-density+" · ν="+root.material-viscosity;}
                                 Button {text:"Edit fluid material…";enabled:!root.wb-busy;clicked=>{root.open-material-editor();}}
+                                Button {text:"Material library & property curves…";enabled:!root.wb-busy;clicked=>{root.open-library();}}
 
 
+
+                                }
+                                if root.setup-section==3 : VerticalLayout {spacing:8px;vertical-stretch:0;
+                                    Text {text:"PHASE & HEAT TRANSPORT";color:UiTheme.accent;font-size:11px;font-weight:700;}
+                                    InspectorLabel {text:"Configure two-phase scalar transport, conformal solid/fluid energy, thermal contacts and meridian coordinates.";wrap:word-wrap;}
+                                    Button {text:"Open phase & heat workspace…";enabled:!root.wb-busy || root.transport-running;clicked=>{root.open-transport();}}
+                                    InspectorLabel {text:root.transport-running ? "A scalar job is active. Open the workspace to pause or stop it." : "Runs use a fixed prescribed flow and their own archive. They do not replace the CFD pressure/velocity job.";wrap:word-wrap;}
+                                    Rectangle {height:1px;background:UiTheme.border;}
+                                    InspectorLabel {text:"Available: temperature, phase fraction, solid/fluid conduction, contact resistance, enclosure radiation and scalar axisymmetry.";wrap:word-wrap;}
+                                    InspectorLabel {text:"Not coupled here: variable-density momentum, capillary VOF, swirl and axisymmetric Navier–Stokes. The CFD buoyancy solver still uses full kinematic pressure, not p_rgh.";wrap:word-wrap;}
                                 }
                                 if root.setup-section==2 : VerticalLayout {spacing:8px;vertical-stretch:0;
                                     Text {text:"BOUNDARY READINESS";color:UiTheme.accent;font-size:11px;font-weight:700;}
@@ -1284,20 +1365,55 @@ HorizontalLayout {height:32px;spacing:5px;
         rows <=> root.equation-drafts;feedback:root.equation-feedback;busy:root.wb-busy;
         apply=>{root.apply-equation-controls();}cancel=>{root.equation-controls-open=false;}
     }
+    if root.library-open : MaterialLibraryDialog {
+        x:0px;y:0px;width:root.width;height:root.height;
+        entries <=> root.library-entries;selected <=> root.library-selected;filter <=> root.library-filter;
+        details:root.library-details;feedback:root.library-feedback;busy:root.library-busy;draft <=> root.library-draft;
+        quantity <=> root.library-quantity;tmin <=> root.library-tmin;tmax <=> root.library-tmax;pressure <=> root.library-pressure;curve:root.library-curve;
+        close=>{root.library-open=false;}refresh=>{root.refresh-library();}choose=>{root.select-library();}evaluate=>{root.evaluate-library();}create=>{root.create-library-material();}copy=>{root.copy-library-material();}
+    }
+    if root.transport-open : TransportDialog {
+        x:0px;y:0px;width:root.width;height:root.height;
+        draft <=> root.transport-draft;boundaries <=> root.transport-boundaries;regions <=> root.transport-regions;contacts <=> root.transport-contacts;
+        ready:root.transport-ready;orientation:root.transport-orientation;view-axis <=> root.transport-view-axis;running:root.transport-running;paused:root.transport-paused;has-restart:root.transport-has-restart;three-d:root.transport-three-d;
+        status:root.transport-status;progress:root.transport-progress;output:root.transport-output;preview:root.transport-image;
+        cut <=> root.transport-cut;cut-position <=> root.transport-cut-position;cut-reverse <=> root.transport-cut-reverse;range-min <=> root.transport-range-min;range-max <=> root.transport-range-max;field <=> root.transport-field;edges <=> root.transport-edges;frame <=> root.transport-frame;frames:root.transport-frames;playing <=> root.transport-playing;
+        close=>{root.transport-open=false;root.transport-playing=false;}
+        apply=>{root.save-transport();}start=>{root.run-transport();}stop=>{root.stop-transport();}pause=>{root.pause-transport();}resume=>{root.resume-transport();}initialize=>{root.reset-transport();}
+        import-settings=>{root.import-transport();}export-settings=>{root.export-transport();}use-flow=>{root.use-transport-flow();}load-restart=>{root.load-transport-restart();}open-archive=>{root.open-transport-archive();}
+        add-region=>{root.add-transport-region();}remove-region(index)=>{root.remove-transport-region(index);}add-contact=>{root.add-transport-contact();}remove-contact(index)=>{root.remove-transport-contact(index);}
+        refresh-view=>{root.refresh-transport();}show-frame(index)=>{root.select-transport-frame(index);}orbit(x,y,w,h)=>{root.orbit-transport(x,y,w,h);}zoom(delta)=>{root.zoom-transport(delta);}home=>{root.home-transport();}orbit-end=>{root.end-transport-orbit();}pan(x,y,w,h)=>{root.pan-transport(x,y,w,h);}axis(index)=>{root.axis-transport(index);}pick-orientation(x,y)=>{root.pick-transport-orientation(x,y);}
+    }
     if root.material-dialog-open : FluidMaterialDialog {
         x:0px;y:0px;width:root.width;height:root.height;
         density <=> root.material-draft-density;viscosity <=> root.material-draft-viscosity;
-        catalog-index <=> root.material-catalog-index;eval-temperature <=> root.material-eval-temperature;eval-pressure <=> root.material-eval-pressure;source:root.material-source;
+        catalog-names:root.material-catalog-names;catalog-index <=> root.material-catalog-index;eval-temperature <=> root.material-eval-temperature;eval-pressure <=> root.material-eval-pressure;source:root.material-source;
         enabled-energy <=> root.thermal-enabled;initial <=> root.thermal-initial;cp <=> root.thermal-cp;kappa <=> root.thermal-kappa;heat-source <=> root.thermal-volume-source;wall-treatment <=> root.thermal-wall-treatment;prt <=> root.thermal-prt;relaxation <=> root.thermal-relaxation;tolerance <=> root.thermal-tolerance;
-        buoyancy <=> root.thermal-buoyancy;reference <=> root.thermal-reference;beta <=> root.thermal-beta;gx <=> root.thermal-gx;gy <=> root.thermal-gy;gz <=> root.thermal-gz;
+        max-fraction <=> root.thermal-max-fraction;three-d:root.mesh-dimension-index==1;buoyancy <=> root.thermal-buoyancy;reference <=> root.thermal-reference;beta <=> root.thermal-beta;gx <=> root.thermal-gx;gy <=> root.thermal-gy;gz <=> root.thermal-gz;
         load-catalog=>{root.load-material-catalog();}
-        feedback:root.material-dialog-feedback;busy:root.wb-busy;
+        import-catalog=>{root.import-material-catalog();}
+        backup-catalog=>{root.backup-material-catalog();}
+        feedback:root.material-dialog-feedback;busy:root.wb-busy || root.material-catalog-busy;
         cancel=>{root.material-dialog-open=false;}
         apply=>{if root.apply-fluid-material(root.material-draft-density,root.material-draft-viscosity) {root.material-dialog-open=false;}}
     }
 
 
+    if root.project-name-open : ProjectNameDialog {
+        name <=> root.project-name-draft;feedback:root.project-name-feedback;
+        cancel=>{root.project-name-open=false;}
+        apply=>{if root.apply-project-name(root.project-name-draft) {root.project-name-open=false;}}
+    }
+    if root.compute-open : ComputeDialog {
+        backend <=> root.compute-backend;threads <=> root.compute-threads;gpu-index <=> root.compute-gpu-index;
+        display-index <=> root.compute-display-index;fallback <=> root.compute-fallback;parallel-rows <=> root.compute-parallel-rows;
+        basis-mb <=> root.compute-basis-mb;preconditioner <=> root.compute-preconditioner;restart <=> root.compute-restart;inner <=> root.compute-inner;sweeps <=> root.compute-sweeps;timeout <=> root.compute-timeout;
+        gpu-rows <=> root.compute-gpu-rows;memory-percent <=> root.compute-memory-percent;cpu-display <=> root.compute-cpu-display;
+        fps <=> root.compute-fps;adapters:root.compute-adapters;information:root.compute-information;feedback:root.compute-feedback;
+        cancel=>{root.compute-open=false;}apply=>{if root.apply-compute() {root.compute-open=false;}}
+    }
     if root.settings-open : SettingsDialog {
+        compute=>{root.settings-open=false;root.open-compute();}
         browser:root.show-browser;topology:root.show-topology;
         panel-size:root.preferences-panel-size;
         gmsh-path <=> root.gmsh-path-draft;
