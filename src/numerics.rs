@@ -636,8 +636,9 @@ pub fn interpolate_scalar_into(
 ) -> Result<(), NumericsError> {
     cells.ensure_mesh(mesh)?;
     output.ensure_mesh(mesh)?;
-    for (index, face) in mesh.faces().iter().enumerate() {
-        output[index] = match face.neighbour {
+    crate::compute::try_for_each(output.values_mut(), |index, output| {
+        let face = &mesh.faces()[index];
+        *output = match face.neighbour {
             Some(neighbour) => {
                 let lambda = weight(mesh, index)?;
                 (1.0 - lambda) * cells[face.owner] + lambda * cells[neighbour]
@@ -647,8 +648,8 @@ pub fn interpolate_scalar_into(
                 ScalarBoundaryValue::FixedValue(value) => value,
             },
         };
-    }
-    Ok(())
+        Ok(())
+    })
 }
 pub fn interpolate_scalar(
     mesh: &UnstructuredMesh,
@@ -667,8 +668,9 @@ pub fn interpolate_vector_into(
 ) -> Result<(), NumericsError> {
     cells.ensure_mesh(mesh)?;
     output.ensure_mesh(mesh)?;
-    for (index, face) in mesh.faces().iter().enumerate() {
-        output[index] = match face.neighbour {
+    crate::compute::try_for_each(output.values_mut(), |index, output| {
+        let face = &mesh.faces()[index];
+        *output = match face.neighbour {
             Some(neighbour) => {
                 let lambda = weight(mesh, index)?;
                 cells[face.owner] * (1.0 - lambda) + cells[neighbour] * lambda
@@ -678,8 +680,8 @@ pub fn interpolate_vector_into(
                 ScalarBoundaryValue::FixedValue(value) => Vec3::new(value, value, value),
             },
         };
-    }
-    Ok(())
+        Ok(())
+    })
 }
 pub fn face_flux_into(
     mesh: &UnstructuredMesh,
@@ -688,10 +690,10 @@ pub fn face_flux_into(
 ) -> Result<(), NumericsError> {
     velocity.ensure_mesh(mesh)?;
     output.ensure_mesh(mesh)?;
-    for (index, face) in mesh.faces().iter().enumerate() {
-        output[index] = velocity[index].dot(face.area_vector);
-    }
-    Ok(())
+    crate::compute::try_for_each(output.values_mut(), |index, output| {
+        *output = velocity[index].dot(mesh.faces()[index].area_vector);
+        Ok(())
+    })
 }
 pub fn face_flux(
     mesh: &UnstructuredMesh,
@@ -708,6 +710,22 @@ pub fn integrated_divergence_into(
 ) -> Result<(), NumericsError> {
     flux.ensure_mesh(mesh)?;
     output.ensure_mesh(mesh)?;
+    if crate::compute::parallel_rows(mesh.cell_count()) {
+        return crate::compute::try_for_each(output.values_mut(), |cell, output| {
+            *output = mesh.cells()[cell]
+                .faces
+                .iter()
+                .map(|&f| {
+                    if mesh.faces()[f].owner == cell {
+                        flux[f]
+                    } else {
+                        -flux[f]
+                    }
+                })
+                .sum();
+            Ok(())
+        });
+    }
     output.fill(0.0);
     for (index, face) in mesh.faces().iter().enumerate() {
         output[face.owner] += flux[index];
@@ -753,6 +771,18 @@ pub fn gauss_gradient_from_faces_into(
     check_cell_measure(mesh)?;
     face_values.ensure_mesh(mesh)?;
     output.ensure_mesh(mesh)?;
+    if crate::compute::parallel_rows(mesh.cell_count()) {
+        return crate::compute::try_for_each(output.values_mut(), |cell, output| {
+            let mut sum = Vec3::ZERO;
+            for &index in &mesh.cells()[cell].faces {
+                let face = &mesh.faces()[index];
+                let value = face.area_vector * face_values[index];
+                sum += if face.owner == cell { value } else { -value };
+            }
+            *output = sum / mesh.cells()[cell].volume;
+            Ok(())
+        });
+    }
     output.fill(Vec3::ZERO);
     for (index, face) in mesh.faces().iter().enumerate() {
         output[face.owner] += face.area_vector * face_values[index];
@@ -789,12 +819,9 @@ pub fn least_squares_gradient_into(
     stencil.ensure_mesh(mesh)?;
     values.ensure_mesh(mesh)?;
     output.ensure_mesh(mesh)?;
-    for (cell, (equations, inverse)) in stencil
-        .equations
-        .iter()
-        .zip(&stencil.inverse_normal_matrices)
-        .enumerate()
-    {
+    crate::compute::try_for_each(output.values_mut(), |cell, output| {
+        let equations = &stencil.equations[cell];
+        let inverse = &stencil.inverse_normal_matrices[cell];
         let mut rhs = Vec3::ZERO;
         for equation in equations {
             let adjacent = match equation.source {
@@ -804,13 +831,13 @@ pub fn least_squares_gradient_into(
             };
             rhs += equation.rhs_coefficient * (adjacent - values[cell]);
         }
-        output[cell] = Vec3::new(
+        *output = Vec3::new(
             inverse[0] * rhs.x + inverse[1] * rhs.y + inverse[2] * rhs.z,
             inverse[3] * rhs.x + inverse[4] * rhs.y + inverse[5] * rhs.z,
             inverse[6] * rhs.x + inverse[7] * rhs.y + inverse[8] * rhs.z,
         );
-    }
-    Ok(())
+        Ok(())
+    })
 }
 
 /// Allocates and reconstructs cell-centred scalar gradients with weighted LSQ.

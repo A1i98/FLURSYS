@@ -172,6 +172,10 @@ fn solve_cg_with_workspace(
             });
         }
     }
+    if let Some(result) = crate::compute::try_gpu(matrix, rhs, solution, options) {
+        return result;
+    }
+    let _timer = crate::compute::Timer::linear();
     let mut profile = super::profile::CgProfileSession::new();
     let n = matrix.nrows();
     workspace.resize(n);
@@ -196,6 +200,7 @@ fn solve_cg_with_workspace(
     }
     let mut rho = dot(residual, preconditioned)?;
     for iteration in 1..=options.max_iterations {
+        crate::compute::checkpoint()?;
         profile.iteration();
         profile.measure(false, || matrix.spmv_into(direction, product))?;
         let denominator = dot(direction, product)?;
@@ -343,6 +348,10 @@ fn solve_bicgstab_with_workspace(
             });
         }
     }
+    if let Some(result) = crate::compute::try_gpu(matrix, rhs, solution, options) {
+        return result;
+    }
+    let _timer = crate::compute::Timer::linear();
     workspace.resize(n, preconditioner.is_some());
     let BiCgStabWorkspace {
         r,
@@ -368,6 +377,7 @@ fn solve_bicgstab_with_workspace(
     let mut alpha = 1.0;
     let mut omega = 1.0;
     for iteration in 1..=options.max_iterations {
+        crate::compute::checkpoint()?;
         let rho = dot(r_hat, r)?;
         if !rho.is_finite() || rho.abs() <= BREAKDOWN_EPSILON {
             return Err(LinearAlgebraError::Breakdown {
@@ -467,7 +477,7 @@ fn solve_bicgstab_with_workspace(
     ))
 }
 
-fn validate_solve_inputs(
+pub(crate) fn validate_solve_inputs(
     matrix: &CsrMatrix,
     rhs: &[f64],
     solution: &[f64],

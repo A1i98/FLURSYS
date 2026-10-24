@@ -1,13 +1,21 @@
 use super::{CsrMatrix, LinearAlgebraError};
 use crate::linear::csr::ensure_len;
+use rayon::prelude::*;
 
 pub fn dot(left: &[f64], right: &[f64]) -> Result<f64, LinearAlgebraError> {
     ensure_len(left.len(), right.len())?;
-    let value: f64 = left
-        .iter()
-        .zip(right)
-        .map(|(left, right)| left * right)
-        .sum();
+    // Fixed chunks keep the reduction order independent of worker scheduling.
+    let chunk = |(a, b): (&[f64], &[f64])| a.iter().zip(b).map(|(a, b)| a * b).sum::<f64>();
+    let value: f64 = if crate::compute::parallel_rows(left.len()) {
+        left.par_chunks(1024)
+            .zip(right.par_chunks(1024))
+            .map(chunk)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .sum()
+    } else {
+        left.chunks(1024).zip(right.chunks(1024)).map(chunk).sum()
+    };
     if value.is_finite() {
         Ok(value)
     } else {
@@ -54,16 +62,30 @@ pub fn axpy(alpha: f64, input: &[f64], output: &mut [f64]) -> Result<(), LinearA
             index: 0,
         });
     }
-    for (index, (input, output)) in input.iter().zip(output).enumerate() {
-        *output += alpha * input;
-        if !output.is_finite() {
-            return Err(LinearAlgebraError::NonFiniteValue {
-                context: "AXPY output",
-                index,
-            });
-        }
+    let apply =
+        |(index, (input, output)): (usize, (&f64, &mut f64))| -> Result<(), LinearAlgebraError> {
+            *output += alpha * input;
+            if !output.is_finite() {
+                return Err(LinearAlgebraError::NonFiniteValue {
+                    context: "AXPY output",
+                    index,
+                });
+            }
+            Ok(())
+        };
+    if crate::compute::parallel_rows(output.len()) {
+        input
+            .par_iter()
+            .zip(output.par_iter_mut())
+            .enumerate()
+            .try_for_each(apply)
+    } else {
+        input
+            .iter()
+            .zip(output.iter_mut())
+            .enumerate()
+            .try_for_each(apply)
     }
-    Ok(())
 }
 
 pub fn scale(alpha: f64, values: &mut [f64]) -> Result<(), LinearAlgebraError> {
@@ -73,7 +95,7 @@ pub fn scale(alpha: f64, values: &mut [f64]) -> Result<(), LinearAlgebraError> {
             index: 0,
         });
     }
-    for (index, value) in values.iter_mut().enumerate() {
+    let apply = |(index, value): (usize, &mut f64)| -> Result<(), LinearAlgebraError> {
         *value *= alpha;
         if !value.is_finite() {
             return Err(LinearAlgebraError::NonFiniteValue {
@@ -81,8 +103,13 @@ pub fn scale(alpha: f64, values: &mut [f64]) -> Result<(), LinearAlgebraError> {
                 index,
             });
         }
+        Ok(())
+    };
+    if crate::compute::parallel_rows(values.len()) {
+        values.par_iter_mut().enumerate().try_for_each(apply)
+    } else {
+        values.iter_mut().enumerate().try_for_each(apply)
     }
-    Ok(())
 }
 
 pub fn copy_into(input: &[f64], output: &mut [f64]) -> Result<(), LinearAlgebraError> {

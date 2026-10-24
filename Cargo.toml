@@ -146,7 +146,8 @@ required-features = ["gui"]
 
 [features]
 default = ["gui"]
-gui = ["dep:rfd", "dep:slint", "dep:png", "dep:gif", "dep:cad-workbench", "dep:cad-engine", "dep:cad-kernel", "dep:cad-render", "dep:cad-gpu", "dep:egui", "dep:egui-wgpu", "dep:pollster", "dep:arboard"]
+gpu-compute = ["dep:egui-wgpu", "dep:pollster"]
+gui = ["gpu-compute", "dep:rfd", "dep:slint", "dep:png", "dep:gif", "dep:cad-workbench", "dep:cad-engine", "dep:cad-kernel", "dep:cad-render", "dep:cad-gpu", "dep:egui", "dep:egui-wgpu", "dep:pollster", "dep:arboard"]
 gui-live-preview = ["gui", "slint/live-preview"]
 
 # Slint and its rendering dependencies make full debug info and incremental
@@ -191,8 +192,10 @@ truck-modeling = "0.6"
 truck-meshalgo = { version = "0.4", default-features = false, features = ["tessellation", "filters"] }
 truck-shapeops = { version = "0.4", default-features = false }
 truck-stepio = "0.3"
+rusqlite = { version = "0.40.2", features = ["bundled"] }
 
 [build-dependencies]
+naga = { workspace = true, features = ["wgsl-in"] }
 embed-resource = "3.0.11"
 slint-build = "1.17"
 

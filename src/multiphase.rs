@@ -72,3 +72,31 @@ impl TwoPhaseDefinition {
         Ok(m)
     }
 }
+
+impl TwoPhaseDefinition {
+    /// Pair-specific catalogue data; never substitute a liquid/vapour coefficient
+    /// for an arbitrary fluid pair. This does not enable a capillary flow solver.
+    pub fn from_catalog(
+        db: &crate::database::Database,
+        pair_id: &str,
+        temperature: f64,
+        pressure: f64,
+    ) -> Result<Self, String> {
+        let (first, second) = db.pair_materials(pair_id).map_err(|e| e.to_string())?;
+        Ok(Self {
+            first: db
+                .evaluate(&first, temperature, pressure)
+                .map_err(|e| e.to_string())?,
+            second: db
+                .evaluate(&second, temperature, pressure)
+                .map_err(|e| e.to_string())?,
+            interfacial_tension: db
+                .pair_property(
+                    pair_id,
+                    crate::database::PairQuantity::SurfaceTension,
+                    temperature,
+                )
+                .map_err(|e| e.to_string())?,
+        })
+    }
+}

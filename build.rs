@@ -1,4 +1,16 @@
 fn main() {
+    for path in ["src/compute/linear.wgsl", "src/compute/amg.wgsl"] {
+        println!("cargo:rerun-if-changed={path}");
+        let source = std::fs::read_to_string(path).expect("compute shader source");
+        let module = naga::front::wgsl::parse_str(&source)
+            .unwrap_or_else(|error| panic!("invalid {path}: {}", error.emit_to_string(&source)));
+        naga::valid::Validator::new(
+            naga::valid::ValidationFlags::all(),
+            naga::valid::Capabilities::empty(),
+        )
+        .validate(&module)
+        .unwrap_or_else(|error| panic!("invalid {path}: {error:?}"));
+    }
     println!("cargo:rerun-if-changed=packaging/windows/flursys.ico");
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
         let out =

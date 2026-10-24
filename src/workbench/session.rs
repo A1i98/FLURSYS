@@ -112,8 +112,11 @@ pub struct WorkbenchSession {
     boundaries: BTreeMap<String, IncompressibleBoundaryCondition>,
     material: IncompressibleMaterial,
     catalog_material: Option<crate::materials::MaterialSnapshot>,
+    catalog_history: Vec<serde_json::Value>,
+    scalar_transport: Option<crate::multiphysics::Options>,
     solver: IncompressibleSolverOptions,
     solution: Option<IncompressibleSolution>,
+    performance: Option<crate::compute::PerformanceReport>,
     status: SolveStatus,
 }
 
@@ -145,12 +148,18 @@ impl WorkbenchSession {
             mesh_hover: None,
             boundaries: BTreeMap::new(),
             catalog_material: None,
+            catalog_history: Vec::new(),
+            scalar_transport: None,
             material: IncompressibleMaterial {
                 density: 1.0,
                 kinematic_viscosity: 0.01,
             },
-            solver: IncompressibleSolverOptions::default(),
+            solver: IncompressibleSolverOptions {
+                threads: 0,
+                ..Default::default()
+            },
             solution: None,
+            performance: None,
             status: SolveStatus::Idle,
         }
     }
@@ -187,6 +196,12 @@ impl WorkbenchSession {
         session.mesh_recipe = project.mesh_recipe.clone();
         session.mesh_threads = project.mesh.threads;
         session.set_cpu_threads(project.solver.threads);
+        project
+            .solver
+            .compute
+            .validate()
+            .map_err(|message| WorkbenchError::InvalidGrouping { message })?;
+        session.solver.compute = project.solver.compute.clone();
         session.set_convection(project.solver.convection);
         session.set_coupling_tolerance(project.solver.coupling_relative_tolerance)?;
         session.set_material(
@@ -194,6 +209,8 @@ impl WorkbenchSession {
             project.material.kinematic_viscosity,
         )?;
         session.catalog_material = project.material.catalog.clone();
+        session.catalog_history = project.catalog_history.clone();
+        session.scalar_transport = project.scalar_transport.clone();
         session.set_solver_controls(
             project.solver.max_outer_iterations,
             project.solver.velocity_relaxation,
@@ -243,6 +260,8 @@ impl WorkbenchSession {
         project.mesh.element_order = self.element_order;
         project.mesh_recipe = self.mesh_recipe.clone();
         project.material.catalog = self.catalog_material.clone();
+        project.catalog_history = self.catalog_history.clone();
+        project.scalar_transport = self.scalar_transport.clone();
         project.solver.equations = self.solver.equations.clone();
         project.solver.pressure_coupling = self.solver.pressure_coupling;
         project.solver.volume_models = self.solver.volume_models;
@@ -259,6 +278,7 @@ impl WorkbenchSession {
         project.solver.velocity_relaxation = self.solver.velocity_relaxation;
         project.solver.pressure_relaxation = self.solver.pressure_relaxation;
         project.solver.threads = self.solver.threads;
+        project.solver.compute = self.solver.compute.clone();
         project.solver.convection = self.solver.convection;
         project.boundaries = self
             .boundaries
@@ -1151,6 +1171,12 @@ impl WorkbenchSession {
         self.mesh = Some(generated);
     }
 
+    pub fn scalar_transport(&self) -> Option<&crate::multiphysics::Options> {
+        self.scalar_transport.as_ref()
+    }
+    pub fn set_scalar_transport(&mut self, options: crate::multiphysics::Options) {
+        self.scalar_transport = Some(options);
+    }
     pub fn mesh(&self) -> Option<&GeneratedMesh> {
         self.mesh.as_ref()
     }
@@ -1430,13 +1456,22 @@ impl WorkbenchSession {
         material
             .validate()
             .map_err(|message| WorkbenchError::InvalidGrouping { message })?;
-        self.set_material(material.density, material.kinematic_viscosity())?;
         let mut thermal = self.solver.thermal.clone();
         thermal.specific_heat = material.specific_heat;
         thermal.conductivity = material.conductivity;
         thermal.expansion = material.expansion;
         thermal.reference_temperature = material.temperature;
+        // Validate before modifying either the fluid or thermal state.
+        thermal
+            .validate()
+            .map_err(|message| WorkbenchError::InvalidGrouping { message })?;
+        let changed = self.catalog_material.as_ref() != Some(&material);
+        self.set_material(material.density, material.kinematic_viscosity())?;
         self.set_thermal(thermal)?;
+        if changed {
+            self.catalog_history
+                .push(serde_json::json!({"kind":"fluid-material","evaluated_snapshot":material}));
+        }
         self.catalog_material = Some(material);
         Ok(())
     }
@@ -1472,6 +1507,15 @@ impl WorkbenchSession {
     }
 
     /// Zero selects all CPUs available to this process. The limit applies per solve.
+    pub fn set_compute_options(
+        &mut self,
+        options: crate::compute::ComputeOptions,
+    ) -> Result<(), String> {
+        options.validate()?;
+        self.solver.compute = options;
+        Ok(())
+    }
+
     pub fn set_cpu_threads(&mut self, threads: usize) {
         self.solver.threads = threads;
     }
@@ -1778,11 +1822,13 @@ impl WorkbenchSession {
 
     /// Clear the current solution while retaining geometry, mesh and boundary setup.
     pub fn initialize_solution(&mut self) {
+        self.performance = None;
         self.solution = None;
         self.status = SolveStatus::Idle;
     }
 
     pub fn mark_solving(&mut self) {
+        self.performance = None;
         self.status = SolveStatus::Solving;
     }
 
@@ -1792,6 +1838,7 @@ impl WorkbenchSession {
     ) {
         match outcome {
             Ok(solution) => {
+                self.performance = Some(solution.report.performance.clone());
                 self.status = if solution.report.converged() {
                     SolveStatus::Converged
                 } else {
@@ -1808,6 +1855,13 @@ impl WorkbenchSession {
 
     pub fn status(&self) -> &SolveStatus {
         &self.status
+    }
+
+    pub fn performance(&self) -> Option<&crate::compute::PerformanceReport> {
+        self.performance.as_ref()
+    }
+    pub fn set_performance(&mut self, performance: crate::compute::PerformanceReport) {
+        self.performance = Some(performance);
     }
 
     pub fn solution(&self) -> Option<&IncompressibleSolution> {

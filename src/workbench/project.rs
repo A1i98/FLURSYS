@@ -405,6 +405,8 @@ impl Default for WorkbenchMaterial {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct WorkbenchSolverSettings {
     #[serde(default)]
+    pub compute: crate::compute::ComputeOptions,
+    #[serde(default)]
     pub pressure_coupling: crate::simple::PressureCoupling,
     #[serde(default)]
     pub volume_models: crate::volume_models::VolumeModels,
@@ -435,6 +437,7 @@ pub struct WorkbenchSolverSettings {
 impl Default for WorkbenchSolverSettings {
     fn default() -> Self {
         Self {
+            compute: Default::default(),
             equations: None,
             pressure_coupling: Default::default(),
             volume_models: Default::default(),
@@ -444,7 +447,7 @@ impl Default for WorkbenchSolverSettings {
             time: Default::default(),
             turbulence: Default::default(),
             convection: crate::momentum::MomentumConvection::Upwind,
-            threads: 1,
+            threads: 0,
             max_outer_iterations: 1000,
             continuity_absolute_tolerance: 1.0e-10,
             coupling_relative_tolerance: default_coupling_tolerance(),
@@ -500,6 +503,11 @@ pub struct WorkbenchProject {
     pub format_version: u32,
     pub project_id: String,
     pub name: String,
+    /// Applied catalogue provenance history; current physical values remain explicit.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub catalog_history: Vec<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scalar_transport: Option<crate::multiphysics::Options>,
     pub geometry: GeometryTopology,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cad_document: Option<String>,
@@ -533,6 +541,8 @@ impl WorkbenchProject {
             format_version: WORKBENCH_PROJECT_FORMAT_VERSION,
             project_id: unique_id("project"),
             name: name.into(),
+            catalog_history: Vec::new(),
+            scalar_transport: None,
             geometry: GeometryTopology::new(),
             cad_document: None,
             cad_geometry_hash: None,
@@ -805,6 +815,15 @@ pub fn save_workspace(
     fs::create_dir_all(workspace.join("runs")).map_err(io_error)?;
     let destination = workspace.join(PROJECT_DOCUMENT_FILE);
     atomic_json_write(&destination, project)?;
+    // JSON is portable and authoritative. Index failure must state that the
+    // project was already saved rather than implying the user's data was lost.
+    crate::database::Database::open(&workspace.join("workspace.sqlite3"))
+        .and_then(|mut db| db.index_project(workspace, project))
+        .map_err(|e| {
+            ProjectDocumentError::Io(format!(
+                "Project JSON saved, but SQLite metadata indexing failed: {e}"
+            ))
+        })?;
     let recovery = workspace.join("autosave").join(PROJECT_DOCUMENT_FILE);
     if recovery.exists() {
         fs::remove_file(recovery).map_err(io_error)?;
@@ -946,6 +965,7 @@ pub fn finalize_workspace_run(
             "validation":"experimental; not benchmark validated"
         })),
         "cpu_worker_threads": session.solution().map(|s| s.report.cpu_threads),
+        "performance": session.performance(),
         "boundaries": &project.boundaries,
         "spatial_methods": session.mesh().map(|m| if m.mesh.dimension()==MeshDimension::ThreeD {serde_json::json!({"pressure_gradient":"Gauss with bounded face-pressure interpolation","momentum_nonorthogonal":"limited correction: abs(explicit flux) <= abs(two-point flux)","rhie_chow":"interpolated cell pressure response; response-gradient covariance retained"})}else{serde_json::json!({"pressure_gradient":"least squares","momentum_nonorthogonal":"explicit Gauss correction","rhie_chow":"interpolated cell pressure response; response-gradient covariance retained"})}),
         "mesh_preflight": session.mesh().map(|m|super::diagnostics::mesh_preflight(&m.mesh)),

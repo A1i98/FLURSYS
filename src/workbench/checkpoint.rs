@@ -79,6 +79,7 @@ pub fn write_restart(
     physical: bool,
     context: &str,
 ) -> Result<(), String> {
+    let _timer = crate::compute::StageTimer::new(crate::compute::Stage::MonitorOutput);
     let IncompressibleInitialConditions::Restart {
         velocity,
         pressure,

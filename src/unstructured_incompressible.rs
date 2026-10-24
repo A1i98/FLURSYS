@@ -69,6 +69,7 @@ pub struct IncompressibleMaterial {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct IncompressibleSolverOptions {
+    pub compute: crate::compute::ComputeOptions,
     pub time: TimeIntegration,
     pub pressure_coupling: crate::simple::PressureCoupling,
     pub volume_models: crate::volume_models::VolumeModels,
@@ -119,6 +120,7 @@ impl IncompressibleSolverOptions {
 impl Default for IncompressibleSolverOptions {
     fn default() -> Self {
         Self {
+            compute: Default::default(),
             time: TimeIntegration::Steady,
             pressure_coupling: Default::default(),
             volume_models: Default::default(),
@@ -702,6 +704,7 @@ pub enum IncompressibleSolveStatus {
 
 #[derive(Clone, Debug)]
 pub struct IncompressibleSolveReport {
+    pub performance: crate::compute::PerformanceReport,
     pub cpu_threads: usize,
     pub status: IncompressibleSolveStatus,
     pub initial_continuity_rms: f64,
@@ -761,6 +764,8 @@ pub struct SolveControl<'a> {
     >,
     restart_every: usize,
     on_message: Option<Box<dyn Fn(String) + Send + Sync + 'a>>,
+    on_performance: Option<Box<dyn Fn(crate::compute::PerformanceReport) + Send + Sync + 'a>>,
+    linear_control: Option<crate::compute::LinearControl>,
     on_fields: Option<
         Box<
             dyn Fn(usize, &CellField<Vec3>, &CellField<f64>) -> Result<(), String>
@@ -784,6 +789,8 @@ impl<'a> SolveControl<'a> {
             on_restart: None,
             restart_every: 0,
             on_message: None,
+            on_performance: None,
+            linear_control: None,
             on_fields: None,
         }
     }
@@ -815,6 +822,20 @@ impl<'a> SolveControl<'a> {
     ) -> Self {
         self.on_restart = Some(Box::new(callback));
         self.restart_every = every;
+        self
+    }
+    pub fn with_linear_control(
+        mut self,
+        callback: impl Fn() -> bool + Send + Sync + 'static,
+    ) -> Self {
+        self.linear_control = Some(std::sync::Arc::new(callback));
+        self
+    }
+    pub fn with_performance(
+        mut self,
+        callback: impl Fn(crate::compute::PerformanceReport) + Send + Sync + 'a,
+    ) -> Self {
+        self.on_performance = Some(Box::new(callback));
         self
     }
     pub fn with_message(mut self, callback: impl Fn(String) + Send + Sync + 'a) -> Self {
@@ -863,6 +884,7 @@ pub enum IncompressibleSolveError {
     Case(IncompressibleCaseError),
     Simple(SimpleError),
     ThreadPool(String),
+    Compute(String),
     BackflowAtPressureOutlet {
         patch: String,
         face: usize,
@@ -873,6 +895,9 @@ pub enum IncompressibleSolveError {
 impl std::fmt::Display for IncompressibleSolveError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let guidance = match self {
+            Self::Compute(_) => "Compute backend could not start. Check device selection, resource limits and CPU fallback settings.",
+            Self::Simple(SimpleError::Linear(crate::LinearAlgebraError::Backend { message })) if message.contains("FGMRES exhausted") => "GPU-preconditioned linear solve did not reach the requested true residual. The final L2, target and method are reported below. Review the preconditioner and linear iteration budget; CPU fallback is available without changing tolerances.",
+            Self::Simple(SimpleError::Linear(crate::LinearAlgebraError::Backend { .. })) => "Compute backend failed. Check GPU availability, working-buffer limits and recorded fallback policy.",
             Self::Cancelled => "Solve cancelled by the user.",
             Self::Simple(SimpleError::Linear(crate::LinearAlgebraError::IncompleteCholeskyPivot {..})) => "Pressure IC(0) factorization failed. The failing row, pivot and diagonal are included below. Inspect pressure-system scaling and definiteness, plus preceding velocity/momentum growth; a small continuity residual alone does not establish a stable solution.",
             Self::Simple(SimpleError::MomentumLinearDidNotConverge) => "Momentum linear solver did not reach tolerance. Check mesh non-orthogonality and size transitions, inlet speed and viscosity; try lower velocity relaxation and first-order upwind. This does not identify a unique cause.",
@@ -924,29 +949,82 @@ fn solve_incompressible_impl(
     case: &IncompressibleCase,
     control: Option<&SolveControl<'_>>,
 ) -> Result<IncompressibleSolution, IncompressibleSolveError> {
-    let threads = if case.solver.threads == 0 {
+    let execution = crate::compute::Execution::controlled(
+        case.solver.compute.clone(),
+        control.and_then(|c| c.linear_control.clone()),
+    )
+    .map_err(IncompressibleSolveError::Compute)?;
+    let threads = if case.solver.compute.backend == crate::compute::Backend::Serial {
+        1
+    } else if case.solver.threads == 0 {
         std::thread::available_parallelism()
             .map(|n| n.get())
             .unwrap_or(1)
     } else {
         case.solver.threads
     };
+    if let Some(message) = control.and_then(|c| c.on_message.as_ref()) {
+        message(format!(
+            "Compute: {:?} · {} CPU workers · GPU corrections use f64 residual acceptance",
+            case.solver.compute.backend, threads
+        ));
+    }
+    let worker_execution = execution.clone();
     let pool = rayon::ThreadPoolBuilder::new()
+        .start_handler(move |_| crate::compute::install(Some(worker_execution.clone())))
         .num_threads(threads)
         .build()
         .map_err(|e| IncompressibleSolveError::ThreadPool(e.to_string()))?;
-    pool.install(|| time::solve_time_loop(case, control))
+    let result = pool.install(|| {
+        let _scope = crate::compute::Scope::enter(execution.clone());
+        time::solve_time_loop(case, control)
+    });
+    let result = if execution.cancelled() {
+        Err(IncompressibleSolveError::Cancelled)
+    } else {
+        result
+    };
+    let performance = execution.report(
+        threads,
+        case.mesh.cell_count(),
+        result.as_ref().map_or(0, |s| s.nonlinear_iterations),
+    );
+    if let Some(callback) = control.and_then(|c| c.on_performance.as_ref()) {
+        callback(performance.clone());
+    }
+    if let Some(message) = control.and_then(|c| c.on_message.as_ref()) {
+        message(format!(
+            "Compute: {} · {:.3}s · {:.3e} cell-iterations/s · {} CPU fallbacks{}",
+            performance.actual_backend,
+            performance.elapsed_seconds,
+            performance.cell_iterations_per_second,
+            performance.cpu_fallbacks,
+            if performance.fallback_reasons.is_empty() {
+                String::new()
+            } else {
+                format!(" · {}", performance.fallback_reasons.join("; "))
+            }
+        ));
+    }
+    result.map(|mut solution| {
+        solution.report.performance = performance;
+        solution
+    })
 }
 
 fn solve_incompressible_on_pool(
     case: &IncompressibleCase,
     control: Option<&SolveControl<'_>>,
     time_step: Option<f64>,
-    older: Option<(&IncompressibleInitialConditions, [f64;2])>,
+    older: Option<(&IncompressibleInitialConditions, [f64; 2])>,
 ) -> Result<IncompressibleSolution, IncompressibleSolveError> {
     if let Some(e) = &case.solver.equations {
         e.validate().map_err(SimpleError::PhysicalBoundary)?;
     }
+    case.solver
+        .thermal
+        .validate_for_case(case)
+        .map_err(SimpleError::PhysicalBoundary)?;
     let resolved = case.resolve_boundaries()?;
     let prescribed_flux = case
         .mesh
@@ -1328,6 +1406,7 @@ fn solve_incompressible_on_pool(
         pressure: state.pressure,
         face_flux: state.face_flux,
         report: IncompressibleSolveReport {
+            performance: Default::default(),
             cpu_threads: rayon::current_num_threads(),
             status,
             initial_continuity_rms: simple.initial_continuity_rms,

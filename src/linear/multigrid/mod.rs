@@ -4,6 +4,10 @@
 mod acceleration;
 mod aggregation;
 mod coarse;
+#[cfg(feature = "gpu-compute")]
+mod device_hierarchy;
+#[cfg(feature = "gpu-compute")]
+pub(crate) use device_hierarchy::DeviceHierarchy;
 mod cycle;
 mod hierarchy;
 mod matrix;
@@ -74,6 +78,7 @@ impl AlgebraicMultigrid {
         options: MultigridOptions,
         weights: Option<&[f64]>,
     ) -> Result<Self, LinearAlgebraError> {
+        let _timer = crate::compute::StageTimer::new(crate::compute::Stage::PreconditionerSetup);
         let (levels, scratch) = hierarchy::build(matrix, options, weights)?;
         let statistics = levels
             .iter()
@@ -101,6 +106,7 @@ impl AlgebraicMultigrid {
 
     /// Refresh coefficients/factors without changing the cached connectivity.
     pub fn update_values(&mut self, matrix: &CsrMatrix) -> Result<(), LinearAlgebraError> {
+        let _timer = crate::compute::StageTimer::new(crate::compute::Stage::PreconditionerSetup);
         hierarchy::update(&mut self.levels, matrix)?;
         self.acceleration.reset();
         if self.options.residual_norm == MultigridResidualNorm::NormalizedL1 {
@@ -119,6 +125,7 @@ impl AlgebraicMultigrid {
         x: &mut [f64],
         options: LinearSolverOptions,
     ) -> Result<LinearSolveReport, LinearAlgebraError> {
+        let _timer = crate::compute::Timer::linear();
         let n = self.product.len();
         for size in [rhs.len(), x.len()] {
             if size != n {
@@ -180,6 +187,7 @@ impl AlgebraicMultigrid {
             return Ok(report(LinearSolverStatus::Converged, 0, initial));
         }
         for iteration in 1..=options.max_iterations {
+            crate::compute::checkpoint()?;
             self.correction.fill(0.0);
             cycle::cycle(
                 &self.levels,

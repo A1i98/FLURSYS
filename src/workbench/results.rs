@@ -82,7 +82,7 @@ pub struct ResultDataset {
 impl ResultDataset {
     /// Consume an archive for initialization without copying derived display fields.
     pub fn into_primary_fields(self) -> (UnstructuredMesh, Vec<f64>, Vec<Vec3>) {
-        (self.mesh,self.pressure,self.velocity)
+        (self.mesh, self.pressure, self.velocity)
     }
     pub fn from_values(
         run_id: impl Into<String>,

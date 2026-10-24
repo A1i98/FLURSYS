@@ -1,4 +1,5 @@
 use super::{CsrMatrix, LinearAlgebraError};
+use rayon::prelude::*;
 use std::cell::RefCell;
 
 pub trait Preconditioner {
@@ -17,6 +18,7 @@ pub struct JacobiPreconditioner {
 
 impl JacobiPreconditioner {
     pub fn new(matrix: &CsrMatrix) -> Result<Self, LinearAlgebraError> {
+        let _timer = crate::compute::StageTimer::new(crate::compute::Stage::PreconditionerSetup);
         let inverse_diagonal = matrix
             .diagonal()?
             .into_iter()
@@ -61,21 +63,27 @@ impl JacobiPreconditioner {
                 actual: output.len(),
             });
         }
-        for (index, ((residual, inverse), output)) in residual
-            .iter()
-            .zip(&self.inverse_diagonal)
-            .zip(output)
-            .enumerate()
-        {
-            *output = residual * inverse;
-            if !output.is_finite() {
-                return Err(LinearAlgebraError::NonFiniteValue {
-                    context: "preconditioned residual",
-                    index,
-                });
-            }
+        let _timer = crate::compute::StageTimer::new(crate::compute::Stage::PreconditionerApply);
+        let apply=|(index, ((residual,inverse),output)): (usize,((&f64,&f64),&mut f64))|->Result<(),LinearAlgebraError> {
+            *output=residual*inverse;
+            if !output.is_finite(){return Err(LinearAlgebraError::NonFiniteValue{context:"preconditioned residual",index});}
+            Ok(())
+        };
+        if crate::compute::parallel_rows(output.len()) {
+            residual
+                .par_iter()
+                .zip(self.inverse_diagonal.par_iter())
+                .zip(output.par_iter_mut())
+                .enumerate()
+                .try_for_each(apply)
+        } else {
+            residual
+                .iter()
+                .zip(&self.inverse_diagonal)
+                .zip(output.iter_mut())
+                .enumerate()
+                .try_for_each(apply)
         }
-        Ok(())
     }
 }
 
@@ -100,6 +108,7 @@ pub struct SymmetricGaussSeidelPreconditioner<'a> {
 
 impl<'a> SymmetricGaussSeidelPreconditioner<'a> {
     pub fn new(matrix: &'a CsrMatrix) -> Result<Self, LinearAlgebraError> {
+        let _timer = crate::compute::StageTimer::new(crate::compute::Stage::PreconditionerSetup);
         if matrix.nrows() != matrix.ncols() {
             return Err(LinearAlgebraError::DimensionMismatch {
                 expected: matrix.nrows(),
@@ -143,6 +152,7 @@ impl Preconditioner for SymmetricGaussSeidelPreconditioner<'_> {
     }
 
     fn apply_into(&self, residual: &[f64], output: &mut [f64]) -> Result<(), LinearAlgebraError> {
+        let _timer = crate::compute::StageTimer::new(crate::compute::Stage::PreconditionerApply);
         let n = self.len();
         if residual.len() != n {
             return Err(LinearAlgebraError::DimensionMismatch {
@@ -194,6 +204,7 @@ pub struct IncompleteCholeskyPreconditioner {
 
 impl IncompleteCholeskyPreconditioner {
     pub fn new(matrix: &CsrMatrix) -> Result<Self, LinearAlgebraError> {
+        let _timer = crate::compute::StageTimer::new(crate::compute::Stage::PreconditionerSetup);
         if matrix.nrows() != matrix.ncols() {
             return Err(LinearAlgebraError::DimensionMismatch {
                 expected: matrix.nrows(),
@@ -292,6 +303,7 @@ impl Preconditioner for IncompleteCholeskyPreconditioner {
     }
 
     fn apply_into(&self, residual: &[f64], output: &mut [f64]) -> Result<(), LinearAlgebraError> {
+        let _timer = crate::compute::StageTimer::new(crate::compute::Stage::PreconditionerApply);
         let n = self.diagonal.len();
         if residual.len() != n {
             return Err(LinearAlgebraError::DimensionMismatch {
@@ -634,6 +646,7 @@ impl Preconditioner for StructuredMultigridPreconditioner {
     }
 
     fn apply_into(&self, residual: &[f64], output: &mut [f64]) -> Result<(), LinearAlgebraError> {
+        let _timer = crate::compute::StageTimer::new(crate::compute::Stage::PreconditionerApply);
         let expected = self.len();
         if residual.len() != expected {
             return Err(LinearAlgebraError::DimensionMismatch {

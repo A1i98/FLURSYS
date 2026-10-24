@@ -7,6 +7,8 @@
 pub mod app;
 pub mod cases;
 pub mod compressible;
+pub mod compute;
+pub mod database;
 pub mod equations;
 pub mod field;
 pub mod fields;
@@ -20,6 +22,7 @@ pub mod mesh_artifact;
 pub mod meshing;
 pub mod momentum;
 pub mod multiphase;
+pub mod multiphysics;
 pub mod numerics;
 pub mod output;
 pub mod periodic;

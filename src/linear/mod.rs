@@ -1,10 +1,16 @@
-//! Solver-independent serial sparse linear algebra primitives.
+//! Solver-independent parallel sparse linear algebra primitives.
 //!
 //! The final matrix storage is compact CSR with strictly ascending column indices
 //! in every row. `CsrBuilder` accepts arbitrary insertion order, sums duplicate
 //! entries deterministically at finalization, and omits only exact zero sums.
 
 mod csr;
+#[cfg(feature = "gpu-compute")]
+mod flexible;
+#[cfg(feature = "gpu-compute")]
+pub(crate) use flexible::fgmres;
+#[cfg(feature = "gpu-compute")]
+pub(crate) use multigrid::DeviceHierarchy;
 mod multigrid;
 pub use multigrid::{
     AlgebraicMultigrid, MultigridCoarseSolver, MultigridLevelStatistics, MultigridOptions,
@@ -14,6 +20,7 @@ mod preconditioner;
 mod profile;
 mod solver;
 pub use profile::{cg_profile_snapshot, CgProfileSnapshot};
+pub(crate) use solver::validate_solve_inputs;
 mod vector;
 
 pub use csr::{CsrBuilder, CsrMatrix};
@@ -30,6 +37,9 @@ pub use vector::{axpy, copy_into, dot, norm_inf, norm_l2, residual, residual_int
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum LinearAlgebraError {
+    Backend {
+        message: String,
+    },
     DimensionMismatch {
         expected: usize,
         actual: usize,
@@ -64,6 +74,7 @@ pub enum LinearAlgebraError {
 impl std::fmt::Display for LinearAlgebraError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::Backend { message } => write!(formatter, "compute backend: {message}"),
             Self::DimensionMismatch { expected, actual } => {
                 write!(
                     formatter,

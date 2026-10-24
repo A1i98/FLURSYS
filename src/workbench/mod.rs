@@ -5,19 +5,19 @@
 //! of a concrete numerical backend.
 
 pub mod boundary_reports;
+pub mod catalogue;
 pub mod checkpoint;
 pub mod diagnostics;
-pub mod field_mapping;
-pub mod solve_review;
 pub mod editor;
 pub mod examples;
+pub mod field_mapping;
 pub mod legacy_import;
 pub mod mesh_report;
 pub mod mesh_storage;
 pub mod mesh_viewport;
 pub mod picking;
-pub mod plane_monitor;
 pub mod plane_integrals;
+pub mod plane_monitor;
 pub mod plane_statistics;
 pub mod project;
 mod result_slice;
@@ -25,6 +25,7 @@ pub mod results;
 pub mod selection;
 pub mod series_plot;
 pub mod session;
+pub mod solve_review;
 pub mod wall_reports;
 
 pub use editor::{GeometryEditorState, GeometryTool, PreviewPrimitive, ViewTransform};

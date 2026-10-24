@@ -76,6 +76,26 @@ impl EquationControl {
             .map_err(|_| LinearAlgebraError::Breakdown {
                 reason: "invalid equation solver controls",
             })?;
+        crate::linear::validate_solve_inputs(a, b, x, self.options())?;
+        if !(pressure
+            && matches!(
+                self.preconditioner,
+                EquationPreconditioner::Gamg | EquationPreconditioner::Auto
+            ))
+        {
+            if let Some(result) = crate::compute::try_gpu(a, b, x, self.options()) {
+                return result;
+            }
+        }
+        let _cpu = if !(pressure
+            && matches!(
+                self.preconditioner,
+                EquationPreconditioner::Gamg | EquationPreconditioner::Auto
+            )) {
+            Some(crate::compute::CpuLinearScope::enter())
+        } else {
+            None
+        };
         if pressure
             && matches!(
                 self.preconditioner,
@@ -152,6 +172,10 @@ impl EquationSolvers {
 #[derive(Default)]
 pub(crate) struct PressureWorkspace {
     multigrid: Option<AlgebraicMultigrid>,
+    ic0: Option<(
+        CsrMatrix,
+        Result<IncompleteCholeskyPreconditioner, LinearAlgebraError>,
+    )>,
     topology: Option<(Vec<usize>, Vec<usize>)>,
     cg: CgWorkspace,
     warned_fallback: bool,
@@ -170,6 +194,11 @@ impl PressureWorkspace {
                 reason: "invalid pressure solver controls",
             })?;
         let options = control.options();
+        crate::linear::validate_solve_inputs(a, b, x, options)?;
+        if let Some(result) = crate::compute::try_gpu(a, b, x, options) {
+            return result;
+        }
+        let _cpu = crate::compute::CpuLinearScope::enter();
         match control.preconditioner {
             EquationPreconditioner::Gamg => {
                 let same = self.topology.as_ref().is_some_and(|(rows, cols)| {
@@ -203,9 +232,21 @@ impl PressureWorkspace {
                     .solve(b, x, options)
             }
             EquationPreconditioner::Ic0 | EquationPreconditioner::Auto => {
-                match IncompleteCholeskyPreconditioner::new(a) {
+                // Non-orthogonal passes change the RHS, not the matrix. Reuse
+                // factors only after exact topology AND coefficient equality.
+                if self.ic0.as_ref().is_none_or(|(matrix, _)| matrix != a) {
+                    self.ic0 = Some((a.clone(), IncompleteCholeskyPreconditioner::new(a)));
+                }
+                match &self
+                    .ic0
+                    .as_ref()
+                    .ok_or(LinearAlgebraError::Breakdown {
+                        reason: "missing cached pressure factor",
+                    })?
+                    .1
+                {
                     Ok(p) => {
-                        pcg_with_preconditioner_and_workspace(a, b, x, &p, options, &mut self.cg)
+                        pcg_with_preconditioner_and_workspace(a, b, x, p, options, &mut self.cg)
                     }
                     Err(LinearAlgebraError::IncompleteCholeskyPivot { .. })
                         if control.preconditioner == EquationPreconditioner::Auto =>
@@ -223,7 +264,7 @@ impl PressureWorkspace {
                             &mut self.cg,
                         )
                     }
-                    Err(e) => Err(e),
+                    Err(e) => Err(e.clone()),
                 }
             }
             EquationPreconditioner::Jacobi => pcg_with_preconditioner_and_workspace(

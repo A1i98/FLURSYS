@@ -1,4 +1,5 @@
 use super::LinearAlgebraError;
+use rayon::prelude::*;
 
 /// Immutable compressed-sparse-row matrix with strictly ascending row columns.
 #[derive(Clone, Debug, PartialEq)]
@@ -93,7 +94,8 @@ impl CsrMatrix {
     pub fn spmv_into(&self, input: &[f64], output: &mut [f64]) -> Result<(), LinearAlgebraError> {
         ensure_len(self.ncols, input.len())?;
         ensure_len(self.nrows, output.len())?;
-        for (row, output) in output.iter_mut().enumerate() {
+        let _timer = crate::compute::Timer::spmv();
+        let apply = |(row, output): (usize, &mut f64)| -> Result<(), LinearAlgebraError> {
             let start = self.row_offsets[row];
             let end = self.row_offsets[row + 1];
             let value = match end - start {
@@ -139,8 +141,13 @@ impl CsrMatrix {
                 });
             }
             *output = value;
+            Ok(())
+        };
+        if crate::compute::parallel_rows(self.nrows) {
+            output.par_iter_mut().enumerate().try_for_each(apply)
+        } else {
+            output.iter_mut().enumerate().try_for_each(apply)
         }
-        Ok(())
     }
 
     pub fn is_symmetric(&self, tolerance: f64) -> bool {

@@ -139,7 +139,10 @@ pub(super) fn project(
         ),
         None => assemble_pressure_correction(mesh, flux, coefficients, options.reference_cell),
     };
-    let mut system = assemble(predicted)?;
+    let mut system = {
+        let _timer = crate::compute::StageTimer::new(crate::compute::Stage::PressureAssembly);
+        assemble(predicted)?
+    };
     let base_rhs = system.rhs.clone();
     let control =
         options

@@ -236,6 +236,7 @@ pub(crate) fn assemble_momentum_component_with_sink(
     options: MomentumOptions<'_>,
     sink: Option<&CellField<f64>>,
 ) -> Result<MomentumSystem, MomentumError> {
+    let _timer = crate::compute::StageTimer::new(crate::compute::Stage::MomentumAssembly);
     if let Some(s) = sink {
         s.ensure_mesh(mesh)?;
     }
@@ -569,24 +570,32 @@ pub fn solve_momentum_velocity_with_controls(
     let mut x: Vec<f64> = velocity.values().iter().map(|value| value.x).collect();
     let mut y: Vec<f64> = velocity.values().iter().map(|value| value.y).collect();
     let mut z: Vec<f64> = velocity.values().iter().map(|value| value.z).collect();
-    let reports = if rayon::current_thread_index().is_some() && rayon::current_num_threads() > 1 {
-        let (rx, (ry, rz)) = rayon::join(
-            || controls.solve(systems[0].matrix(), systems[0].rhs(), &mut x, false),
-            || {
-                rayon::join(
-                    || controls.solve(systems[1].matrix(), systems[1].rhs(), &mut y, false),
-                    || controls.solve(systems[2].matrix(), systems[2].rhs(), &mut z, false),
-                )
-            },
-        );
-        [rx?, ry?, rz?]
-    } else {
-        [
-            controls.solve(systems[0].matrix(), systems[0].rhs(), &mut x, false)?,
-            controls.solve(systems[1].matrix(), systems[1].rhs(), &mut y, false)?,
-            controls.solve(systems[2].matrix(), systems[2].rhs(), &mut z, false)?,
-        ]
-    };
+    // One resident GPU workspace per analysis. Do not schedule nested GPU
+    // component solves while its owner uses Rayon for f64 Arnoldi kernels.
+    let gpu = crate::compute::current().is_some_and(|r| {
+        r.options.backend == crate::compute::Backend::Gpu
+            && r.gpu_enabled()
+            && (!r.options.cpu_fallback || systems[0].matrix().nrows() >= r.options.gpu_min_rows)
+    });
+    let reports =
+        if !gpu && rayon::current_thread_index().is_some() && rayon::current_num_threads() > 1 {
+            let (rx, (ry, rz)) = rayon::join(
+                || controls.solve(systems[0].matrix(), systems[0].rhs(), &mut x, false),
+                || {
+                    rayon::join(
+                        || controls.solve(systems[1].matrix(), systems[1].rhs(), &mut y, false),
+                        || controls.solve(systems[2].matrix(), systems[2].rhs(), &mut z, false),
+                    )
+                },
+            );
+            [rx?, ry?, rz?]
+        } else {
+            [
+                controls.solve(systems[0].matrix(), systems[0].rhs(), &mut x, false)?,
+                controls.solve(systems[1].matrix(), systems[1].rhs(), &mut y, false)?,
+                controls.solve(systems[2].matrix(), systems[2].rhs(), &mut z, false)?,
+            ]
+        };
     for (value, ((x, y), z)) in velocity
         .values_mut()
         .iter_mut()

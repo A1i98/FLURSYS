@@ -326,6 +326,7 @@ pub fn section_statistics_csv(snapshot: &PlaneSnapshot, field: usize) -> Result<
 }
 
 pub fn write_csv(snapshot: &PlaneSnapshot, folder: &Path) -> Result<std::path::PathBuf, String> {
+    let _timer = crate::compute::StageTimer::new(crate::compute::Stage::MonitorOutput);
     let id = snapshot
         .plane
         .id

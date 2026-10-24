@@ -61,6 +61,18 @@ pub const NAMES: [&str; 3] = [
     "Water · liquid correlation",
     "Ethanol · liquid correlation",
 ];
+/// Fluid choices from the versioned database, including imported custom data.
+pub fn catalog_entries() -> Result<Vec<crate::database::Entry>, String> {
+    crate::database::Database::open_default()
+        .and_then(|db| db.entries(false))
+        .map_err(|e| e.to_string())
+}
+/// Evaluate from database models; no extrapolation and no silent fallback.
+pub fn evaluate(id: &str, t: f64, p: f64) -> Result<MaterialSnapshot, String> {
+    crate::database::Database::open_default()
+        .and_then(|db| db.evaluate(id, t, p))
+        .map_err(|e| e.to_string())
+}
 const ROOT: &str =
     "https://github.com/OpenFOAM/OpenFOAM-dev/blob/421b7a1693061ead99502f0e607122e0e57c0513/";
 fn polynomial(t: f64, c: [f64; 6]) -> f64 {
@@ -80,7 +92,7 @@ fn viscosity(t: f64, c: [f64; 5]) -> f64 {
 }
 /// Application-restricted window 280–330 K and 0.095–0.105 MPa. These
 /// restrictions do not claim that the source's full correlation range is validated.
-pub fn evaluate(id: &str, t: f64, p: f64) -> Result<MaterialSnapshot, String> {
+pub(crate) fn evaluate_builtin(id: &str, t: f64, p: f64) -> Result<MaterialSnapshot, String> {
     if !t.is_finite()
         || !(280.0..=330.0).contains(&t)
         || !p.is_finite()

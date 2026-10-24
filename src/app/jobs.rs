@@ -72,6 +72,7 @@ pub enum WorkbenchJobEvent {
     SolveCompleted(Result<IncompressibleSolution, IncompressibleSolveError>),
     PlaneSample(crate::workbench::plane_monitor::PlaneSnapshot),
     Health(crate::workbench::solve_review::SolveHealth),
+    Performance(crate::compute::PerformanceReport),
     WallReports {
         iteration: usize,
         physical_time: Option<f64>,
@@ -121,9 +122,16 @@ impl WorkbenchJobExecutor {
         }
     }
 
-    pub fn retained_fields(&self, mesh: crate::MeshId) -> Option<(usize, crate::IncompressibleInitialConditions)> {
-        self.retained.lock().ok()?.as_ref().filter(|(id,_)|*id==mesh)
-            .map(|(_,fields)|(self.completed_iterations(),fields.clone()))
+    pub fn retained_fields(
+        &self,
+        mesh: crate::MeshId,
+    ) -> Option<(usize, crate::IncompressibleInitialConditions)> {
+        self.retained
+            .lock()
+            .ok()?
+            .as_ref()
+            .filter(|(id, _)| *id == mesh)
+            .map(|(_, fields)| (self.completed_iterations(), fields.clone()))
     }
     pub fn completed_iterations(&self) -> usize {
         self.completed.load(Ordering::Acquire)
@@ -216,12 +224,13 @@ impl WorkbenchJobExecutor {
             return Err("a workbench job is already running");
         }
         {
-            let mut retained=self.retained.lock().unwrap();
-            if let Some((mesh, fields))=retained.as_ref() {
-                if *mesh==case.mesh.id() {case.initial_conditions=fields.clone();}
-                else {
-                    self.completed.store(0,Ordering::Release);
-                    *retained=None;
+            let mut retained = self.retained.lock().unwrap();
+            if let Some((mesh, fields)) = retained.as_ref() {
+                if *mesh == case.mesh.id() {
+                    case.initial_conditions = fields.clone();
+                } else {
+                    self.completed.store(0, Ordering::Release);
+                    *retained = None;
                 }
             }
         }
@@ -252,9 +261,12 @@ impl WorkbenchJobExecutor {
                 let completed_time=sample_time.clone();
                 let monitor_case=case.clone();let monitor_sender=sender.clone();
                 let message_sender=sender.clone();
+                let performance_sender=sender.clone();
                 let _ = sender.send(WorkbenchJobEvent::SolveProgress(JobProgress::StartedAt { iteration: offset }));
                 let progress_sender = sender.clone();
                 let control_cancellation = cancellation.clone();
+                let linear_cancellation = cancellation.clone();
+                let linear_paused = paused.clone();
                 let metrics_sender = sender.clone();
                 let control = SolveControl::new(
                     move || wait_for_resume(&paused, &control_cancellation),
@@ -330,6 +342,8 @@ impl WorkbenchJobExecutor {
                 let completed_sender=sender.clone();
                 let completed_case=case.clone();
 
+                let control = control.with_linear_control(move || wait_for_resume(&linear_paused,&linear_cancellation));
+                let control = control.with_performance(move |report| {let _=performance_sender.send(WorkbenchJobEvent::Performance(report));});
                 let control = control.with_message(move |message|{let _=message_sender.send(WorkbenchJobEvent::SolveProgress(JobProgress::Message(message)));});
                 let control = control.with_fields(move |iteration, velocity, pressure| {
                     let iteration = offset.saturating_add(iteration);

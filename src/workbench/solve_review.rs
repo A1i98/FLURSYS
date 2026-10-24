@@ -32,6 +32,38 @@ pub fn review(case: &IncompressibleCase, planes: &[FlowPlaneMonitor]) -> CaseRev
     if let Err(e) = case.resolve_boundaries() {
         r.errors.push(format!("Case settings: {e:?}"));
     }
+    let thermal = &case.solver.thermal;
+    if let Err(e) = thermal.validate_for_case(case) {
+        r.errors.push(format!("Thermal settings: {e}"));
+    }
+    if thermal.enabled && thermal.buoyancy {
+        let g = thermal.gravity;
+        r.warnings.push(format!("Boussinesq model coordinates: g=({:.6e}, {:.6e}, {:.6e}) m/s²; beta={:.6e} 1/K, Tref={:.6} K, maximum |beta*dT|={:.4e}. Pressure retains reference-density hydrostatics.",g.x,g.y,g.z,thermal.expansion,thermal.reference_temperature,thermal.max_boussinesq_fraction));
+        if g.norm() == 0.0 {
+            r.warnings
+                .push("Gravity is zero: enabled buoyancy produces no force.".into());
+        }
+        if thermal.expansion == 0.0 {
+            r.warnings.push(
+                "Expansion coefficient beta is zero: heating produces no relative buoyancy.".into(),
+            );
+        }
+        if g.norm() > 0.0 && thermal.expansion > 0.0 {
+            let rise = g * (-1.0 / g.norm());
+            r.warnings.push(format!("Hot-fluid relative rise direction: ({:.4}, {:.4}, {:.4}); cold-fluid relative buoyancy is opposite. Inlet momentum can dominate jet direction.",rise.x,rise.y,rise.z));
+            if case.boundaries.iter().any(|(_, bc)| {
+                matches!(
+                    bc,
+                    crate::IncompressibleBoundaryCondition::PressureOutlet { .. }
+                        | crate::IncompressibleBoundaryCondition::PressureOutletBackflow { .. }
+                        | crate::IncompressibleBoundaryCondition::FarField { .. }
+                        | crate::IncompressibleBoundaryCondition::TotalPressure { .. }
+                )
+            }) {
+                r.warnings.push("Buoyant open boundaries need hydrostatic-consistent pressures: a constant p/rho=0 across different elevations does not necessarily represent a quiescent ambient. This is not a reduced p_rgh pressure solver.".into());
+            }
+        }
+    }
     let mesh = mesh_preflight(&case.mesh);
     if mesh.blocked() {
         r.errors.push(mesh.summary());

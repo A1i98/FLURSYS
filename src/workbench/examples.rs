@@ -80,7 +80,7 @@ impl From<WorkbenchError> for ExampleProjectError {
 const DESCRIPTORS: [ExampleProjectDescriptor; 6] = [
     ExampleProjectDescriptor {
         id: ExampleProjectId::Blank,
-        title: "Blank Project",
+        title: "New 2D analysis",
         short_description: "Start with an empty editable Workbench project.",
         category: "New Project",
         dimension: MeshDimension::TwoD,
@@ -90,7 +90,7 @@ const DESCRIPTORS: [ExampleProjectDescriptor; 6] = [
     },
     ExampleProjectDescriptor {
         id: ExampleProjectId::LidDrivenCavity2D,
-        title: "Lid-Driven Cavity",
+        title: "Lid-driven cavity · 2D",
         short_description: "Low-Re closed cavity with one moving wall.",
         category: "Internal Flow",
         dimension: MeshDimension::TwoD,
@@ -100,7 +100,7 @@ const DESCRIPTORS: [ExampleProjectDescriptor; 6] = [
     },
     ExampleProjectDescriptor {
         id: ExampleProjectId::LaminarChannel2D,
-        title: "Laminar Channel",
+        title: "Laminar channel · 2D",
         short_description: "Open low-Re channel with velocity inlet and pressure outlet.",
         category: "Internal Flow",
         dimension: MeshDimension::TwoD,
@@ -110,7 +110,7 @@ const DESCRIPTORS: [ExampleProjectDescriptor; 6] = [
     },
     ExampleProjectDescriptor {
         id: ExampleProjectId::CylinderFlow2D,
-        title: "Flow Around Cylinder",
+        title: "Cylinder flow · 2D, low Re",
         short_description: "Low-Re external flow around a circular hole.",
         category: "External Flow",
         dimension: MeshDimension::TwoD,
@@ -120,9 +120,9 @@ const DESCRIPTORS: [ExampleProjectDescriptor; 6] = [
     },
     ExampleProjectDescriptor {
         id: ExampleProjectId::SkewedMeshVerification2D,
-        title: "Skewed-Mesh Verification",
+        title: "Skewed-mesh flow · 2D",
         short_description: "Curved low-Re channel for non-ideal mesh-quality inspection.",
-        category: "Verification",
+        category: "Numerical exploration",
         dimension: MeshDimension::TwoD,
         difficulty: "Intermediate",
         capabilities: &["2D", "Curved Geometry", "Non-orthogonality", "SIMPLE"],
@@ -130,7 +130,7 @@ const DESCRIPTORS: [ExampleProjectDescriptor; 6] = [
     },
     ExampleProjectDescriptor {
         id: ExampleProjectId::Channel3D,
-        title: "3D Channel",
+        title: "Rectangular channel · 3D",
         short_description: "Small rectangular volume channel through the 3D Gmsh path.",
         category: "3D",
         dimension: MeshDimension::ThreeD,

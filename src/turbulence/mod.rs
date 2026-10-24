@@ -346,18 +346,29 @@ impl Closure {
             component(MomentumComponent::Y, fallback.y),
             component(MomentumComponent::Z, fallback.z),
         );
-        b.values_with_viscosity(u.norm(),self.molecular_viscosity).map_err(SimpleError::PhysicalBoundary)
+        b.values_with_viscosity(u.norm(), self.molecular_viscosity)
+            .map_err(SimpleError::PhysicalBoundary)
     }
-    pub fn backward_old(&mut self, older: Option<&TurbulenceFields>, weights: [f64;2]) {
-        if let Some(old)=&mut self.old {
+    pub fn backward_old(&mut self, older: Option<&TurbulenceFields>, weights: [f64; 2]) {
+        if let Some(old) = &mut self.old {
             for i in 0..old.k.values().len() {
-                old.k[i]=weights[0]*old.k[i]+weights[1]*older.map_or(self.config.k,|v|v.k[i]);
-                old.omega[i]=weights[0]*old.omega[i]+weights[1]*older.map_or(self.config.omega,|v|v.omega[i]);
-                if let Some(nt)=&mut old.nu_tilda {
-                    nt[i]=weights[0]*nt[i]+weights[1]*older.and_then(|v|v.nu_tilda.as_ref()).map_or(self.config.nu_tilda,|v|v[i]);
+                old.k[i] =
+                    weights[0] * old.k[i] + weights[1] * older.map_or(self.config.k, |v| v.k[i]);
+                old.omega[i] = weights[0] * old.omega[i]
+                    + weights[1] * older.map_or(self.config.omega, |v| v.omega[i]);
+                if let Some(nt) = &mut old.nu_tilda {
+                    nt[i] = weights[0] * nt[i]
+                        + weights[1]
+                            * older
+                                .and_then(|v| v.nu_tilda.as_ref())
+                                .map_or(self.config.nu_tilda, |v| v[i]);
                 }
-                if let Some(e)=&mut old.epsilon {
-                    e[i]=weights[0]*e[i]+weights[1]*older.and_then(|v|v.epsilon.as_ref()).map_or(self.config.epsilon,|v|v[i]);
+                if let Some(e) = &mut old.epsilon {
+                    e[i] = weights[0] * e[i]
+                        + weights[1]
+                            * older
+                                .and_then(|v| v.epsilon.as_ref())
+                                .map_or(self.config.epsilon, |v| v[i]);
                 }
             }
         }

@@ -432,3 +432,101 @@ fn polygon_vertices(mesh: &UnstructuredMesh, cell_index: usize) -> Result<Vec<us
     }
     Ok(vertices)
 }
+
+/// Cell-centred scalar-transport frames. Axisymmetric meshes remain meridian
+/// profiles; the exporter does not invent a revolved 3D velocity field.
+pub fn write_transport_vtk(
+    path: &Path,
+    mesh: &UnstructuredMesh,
+    state: &crate::multiphysics::State,
+) -> Result<(), String> {
+    let n = mesh.cell_count();
+    if [
+        state.temperature.len(),
+        state.phase_fraction.len(),
+        state.density.len(),
+        state.solid.len(),
+    ]
+    .iter()
+    .any(|&len| len != n)
+        || state
+            .temperature
+            .iter()
+            .chain(&state.phase_fraction)
+            .chain(&state.density)
+            .any(|v| !v.is_finite())
+    {
+        return Err("Invalid transport field dimensions/values for VTK export".into());
+    }
+    let cells = (0..n)
+        .map(|i| match mesh.dimension() {
+            MeshDimension::TwoD => polygon_vertices(mesh, i).map(|v| (v, 7)),
+            MeshDimension::ThreeD => {
+                let v = mesh.cells()[i]
+                    .faces
+                    .iter()
+                    .flat_map(|&f| mesh.faces()[f].vertices.iter().copied())
+                    .collect::<std::collections::BTreeSet<_>>()
+                    .into_iter()
+                    .collect::<Vec<_>>();
+                let kind = if v.len() == 4 { 10 } else { 41 }; // tetrahedron or convex point set
+                Ok((v, kind))
+            }
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    let mut writer = BufWriter::new(
+        OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(path)
+            .map_err(io_err)?,
+    );
+    writeln!(writer,"# vtk DataFile Version 3.0\nFLURSYS phase and sensible energy\nASCII\nDATASET UNSTRUCTURED_GRID").map_err(io_err)?;
+    writeln!(
+        writer,
+        "FIELD FieldData 2\nTIME 1 1 double\n{:.17e}\nSTEP 1 1 double\n{}",
+        state.time, state.step
+    )
+    .map_err(io_err)?;
+    writeln!(writer, "POINTS {} double", mesh.points().len()).map_err(io_err)?;
+    for p in mesh.points() {
+        writeln!(
+            writer,
+            "{:.17e} {:.17e} {:.17e}",
+            p.position.x, p.position.y, p.position.z
+        )
+        .map_err(io_err)?;
+    }
+    writeln!(
+        writer,
+        "CELLS {} {}",
+        n,
+        cells.iter().map(|(v, _)| v.len() + 1).sum::<usize>()
+    )
+    .map_err(io_err)?;
+    for (v, _) in &cells {
+        write!(writer, "{}", v.len()).map_err(io_err)?;
+        for index in v {
+            write!(writer, " {index}").map_err(io_err)?;
+        }
+        writeln!(writer).map_err(io_err)?;
+    }
+    writeln!(writer, "CELL_TYPES {n}").map_err(io_err)?;
+    for (_, kind) in &cells {
+        writeln!(writer, "{kind}").map_err(io_err)?;
+    }
+    writeln!(writer, "CELL_DATA {n}").map_err(io_err)?;
+    write_scalar_cell_field(&mut writer, "phase_fraction", &state.phase_fraction)?;
+    write_scalar_cell_field(&mut writer, "temperature_K", &state.temperature)?;
+    write_scalar_cell_field(&mut writer, "density_kg_m3", &state.density)?;
+    write_scalar_cell_field(
+        &mut writer,
+        "solid",
+        &state
+            .solid
+            .iter()
+            .map(|&v| if v { 1.0 } else { 0.0 })
+            .collect::<Vec<_>>(),
+    )?;
+    writer.flush().map_err(io_err)
+}

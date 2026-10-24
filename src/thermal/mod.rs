@@ -16,6 +16,11 @@ pub enum Boundary {
     HeatFlux {
         inward_flux: f64,
     },
+    /// Diffuse-grey exchange with a large isothermal enclosure; not RTE.
+    Radiation {
+        emissivity: f64,
+        ambient_temperature: f64,
+    },
     Convection {
         coefficient: f64,
         ambient_temperature: f64,
@@ -69,6 +74,74 @@ impl Default for Options {
     }
 }
 impl Options {
+    /// Acceleration relative to a reference-density hydrostatic state.
+    /// The current pressure formulation additionally retains reference gravity.
+    pub fn relative_buoyancy_acceleration(&self, temperature: f64) -> Result<Vec3, String> {
+        self.validate()?;
+        self.validate_temperature(temperature)?;
+        Ok(if self.enabled && self.buoyancy {
+            self.gravity * (-self.expansion * (temperature - self.reference_temperature))
+        } else {
+            Vec3::ZERO
+        })
+    }
+    pub fn validate_temperature(&self, temperature: f64) -> Result<(), String> {
+        if !temperature.is_finite() || temperature <= 0.0 {
+            return Err("Temperature must be finite positive Kelvin".into());
+        }
+        if self.enabled && self.buoyancy {
+            let fraction = self.expansion * (temperature - self.reference_temperature);
+            if !fraction.is_finite() || fraction.abs() > self.max_boussinesq_fraction {
+                return Err(format!("Boussinesq |beta*(T-Tref)|={:.4e} exceeds limit {:.4e} at T={temperature:.6} K; use smaller temperature differences or a variable-density model",fraction.abs(),self.max_boussinesq_fraction));
+            }
+        }
+        Ok(())
+    }
+    pub fn validate_for_case(&self, case: &IncompressibleCase) -> Result<(), String> {
+        self.validate_for_mesh(&case.mesh)?;
+        if self.enabled {
+            for patch in case.mesh.boundary_patches() {
+                if !self.boundaries.contains_key(&patch.name) {
+                    return Err(format!(
+                        "Assign a thermal boundary to patch {:?}",
+                        patch.name
+                    ));
+                }
+            }
+            if self
+                .boundaries
+                .keys()
+                .any(|name| !case.mesh.boundary_patches().iter().any(|p| &p.name == name))
+            {
+                return Err("Thermal boundary refers to a missing mesh patch".into());
+            }
+            for (name, profile) in &case.solver.boundary_profiles {
+                if profile.quantity
+                    == crate::unstructured_incompressible::BoundaryQuantity::Temperature
+                {
+                    profile.validate()?;
+                    for sample in &profile.samples {
+                        self.validate_temperature(sample.value.x)
+                            .map_err(|e| format!("Patch {name}, t={} s: {e}", sample.time))?;
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+    pub fn validate_for_mesh(&self, mesh: &UnstructuredMesh) -> Result<(), String> {
+        self.validate()?;
+        if self.enabled
+            && self.buoyancy
+            && mesh.dimension() == MeshDimension::TwoD
+            && self.gravity.z.abs() > 1e-12 * self.gravity.norm().max(1.0)
+        {
+            return Err(
+                "2D XY buoyancy requires gz=0; choose in-plane gravity or a 3D case".into(),
+            );
+        }
+        Ok(())
+    }
     pub fn validate(&self) -> Result<(), String> {
         if self.buoyancy && !self.enabled {
             return Err("Boussinesq requires temperature transport".into());
@@ -89,6 +162,8 @@ impl Options {
         .iter()
         .any(|v| !v.is_finite() || *v <= 0.0)
             || self.relaxation > 1.0
+            || self.relative_tolerance >= 1.0
+            || !self.gravity.norm().is_finite()
             || self.max_boussinesq_fraction > 0.2
             || !self.source_w_m3.is_finite()
             || !self.expansion.is_finite()
@@ -99,6 +174,7 @@ impl Options {
         {
             return Err("Invalid thermal properties, positive Kelvin temperatures, relaxation/tolerance or Boussinesq settings".into());
         }
+        self.validate_temperature(self.initial_temperature)?;
         for bc in self.boundaries.values() {
             match *bc {
                 Boundary::FixedTemperature { temperature }
@@ -109,6 +185,16 @@ impl Options {
                 }
                 Boundary::HeatFlux { inward_flux } if !inward_flux.is_finite() => {
                     return Err("Heat flux must be finite W/m²".into())
+                }
+                Boundary::Radiation {
+                    emissivity,
+                    ambient_temperature,
+                } if !emissivity.is_finite()
+                    || !(0.0..=1.0).contains(&emissivity)
+                    || !ambient_temperature.is_finite()
+                    || ambient_temperature <= 0.0 =>
+                {
+                    return Err("Radiation requires emissivity in [0,1] and positive ambient Kelvin temperature".into());
                 }
                 Boundary::Convection {
                     coefficient,
@@ -121,6 +207,13 @@ impl Options {
                     return Err("Convection requires h > 0 and ambient T > 0 K".into())
                 }
                 _ => {}
+            }
+            if let Boundary::FixedTemperature { temperature }
+            | Boundary::InletOutlet {
+                incoming_temperature: temperature,
+            } = *bc
+            {
+                self.validate_temperature(temperature)?;
             }
         }
         Ok(())
@@ -147,7 +240,7 @@ impl Closure {
         initial: Option<CellField<f64>>,
     ) -> Result<Self, SimpleError> {
         let config = case.solver.thermal.clone();
-        config.validate().map_err(failure)?;
+        config.validate_for_case(case).map_err(failure)?;
         if config.wall_treatment == ThermalWallTreatment::EquilibriumPrt
             && (case.solver.turbulence.model != crate::turbulence::TurbulenceModel::KEpsilon
                 || case.solver.turbulence.wall_treatment
@@ -193,6 +286,9 @@ impl Closure {
                 "Temperature state must be finite and positive Kelvin",
             ));
         }
+        for &temperature in field.values() {
+            config.validate_temperature(temperature).map_err(failure)?;
+        }
         Ok(Self {
             linear: case.solver.equations.as_ref().map(|e| e.temperature),
             last_linear: None,
@@ -205,7 +301,7 @@ impl Closure {
             relative_change: f64::INFINITY,
         })
     }
-    pub fn backward_old(&mut self, older: Option<&CellField<f64>>, weights: [f64;2]) {
+    pub fn backward_old(&mut self, older: Option<&CellField<f64>>, weights: [f64; 2]) {
         for i in 0..self.old.values().len() {
             let b = older.map_or(self.config.initial_temperature, |t| t[i]);
             self.old[i] = weights[0] * self.old[i] + weights[1] * b;
@@ -286,6 +382,24 @@ impl Closure {
                     source[f.owner] +=
                         inward_flux * f.area / (rho_cp * mesh.cells()[f.owner].volume)
                 }
+                Boundary::Radiation {
+                    emissivity,
+                    ambient_temperature,
+                } => {
+                    let y = (f.center - mesh.cells()[f.owner].center).dot(f.normal);
+                    if y <= 0.0 {
+                        return Err(failure("Invalid radiative wall distance"));
+                    }
+                    let (slope, intercept) = crate::multiphysics::energy::radiative_linearization(
+                        self.field[f.owner],
+                        ambient_temperature,
+                        rho_cp * face_d[i] / y,
+                        emissivity,
+                    )
+                    .map_err(failure)?;
+                    extra_diag[f.owner] += slope * f.area / rho_cp;
+                    source[f.owner] += intercept * f.area / (rho_cp * mesh.cells()[f.owner].volume);
+                }
                 Boundary::Convection {
                     coefficient,
                     ambient_temperature,
@@ -362,9 +476,9 @@ impl Closure {
             for i in 0..mesh.cell_count() {
                 let fraction =
                     self.config.expansion * (self.field[i] - self.config.reference_temperature);
-                if fraction.abs() > self.config.max_boussinesq_fraction {
-                    return Err(failure(format!("Boussinesq density variation {fraction:.4e} exceeds configured small-variation limit in cell {i}")));
-                }
+                self.config
+                    .validate_temperature(self.field[i])
+                    .map_err(|e| failure(format!("{e}; cell {i}")))?;
                 force[i] = self.config.gravity * (1.0 - fraction);
             }
         }
