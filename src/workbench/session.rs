@@ -1,5 +1,5 @@
 //! Workbench session state: the presentation-layer controller that bridges the
-//! Slint UI with the stable geometry topology, the Gmsh meshing backend, and
+//! GUI with the stable geometry topology, the Gmsh meshing backend, and
 //! the high-level incompressible solver.
 //!
 //! The session owns validated domain state. The UI issues commands and renders

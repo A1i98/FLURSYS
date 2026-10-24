@@ -1,4 +1,4 @@
-//! Stateful, headless 2D geometry editor used by the Slint workbench.
+//! Stateful, headless 2D geometry editor used by the native workbench.
 //!
 //! Rust owns tool state and all coordinate/picking rules.  The UI only sends
 //! pointer actions and renders the resulting stable-topology selection.
