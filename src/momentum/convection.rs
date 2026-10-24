@@ -8,6 +8,10 @@ pub enum MomentumConvection {
     #[default]
     Upwind,
     LimitedLinear,
+    /// Unbounded distance-weighted central interpolation (deferred).
+    Central,
+    /// Van Leer directional limiter with a local extrema bound.
+    VanLeer,
 }
 
 pub(super) fn correct(
@@ -56,7 +60,40 @@ pub(super) fn correct(
             continue;
         };
         let up = if phi < 0.0 { neighbour } else { f.owner };
-        let delta = limiter[up] * gradient[up].dot(f.center - mesh.cells()[up].center);
+        let down = if phi < 0.0 { f.owner } else { neighbour };
+        let reconstruction = gradient[up].dot(f.center - mesh.cells()[up].center);
+        let delta = match options.convection {
+            MomentumConvection::Upwind => 0.0,
+            MomentumConvection::LimitedLinear => limiter[up] * reconstruction,
+            MomentumConvection::Central => {
+                let a = (f.center - mesh.cells()[up].center).norm();
+                let b = (f.center - mesh.cells()[down].center).norm();
+                if a + b > 0.0 {
+                    a / (a + b) * (value[down] - value[up])
+                } else {
+                    0.0
+                }
+            }
+            MomentumConvection::VanLeer => {
+                let jump = value[down] - value[up];
+                let projected =
+                    gradient[up].dot(mesh.cells()[down].center - mesh.cells()[up].center);
+                let r = if jump.abs() > 1e-30 {
+                    (2.0 * projected / jump - 1.0).max(0.0)
+                } else {
+                    0.0
+                };
+                let psi = 2.0 * r / (1.0 + r);
+                let a = (f.center - mesh.cells()[up].center).norm();
+                let b = (f.center - mesh.cells()[down].center).norm();
+                let candidate = if a + b > 0.0 {
+                    psi * a / (a + b) * jump
+                } else {
+                    0.0
+                };
+                candidate.clamp(bounds[up].0 - value[up], bounds[up].1 - value[up])
+            }
+        };
         let correction = phi * delta;
         if !correction.is_finite() {
             return Err(MomentumError::NonFiniteSource {

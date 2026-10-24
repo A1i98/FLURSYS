@@ -31,6 +31,11 @@ pub struct WallPatchReport {
     pub pressure_force: Vec3,
     pub shear_force: Vec3,
     pub total_force: Vec3,
+    /// Moments about the global origin; shift with M(c)=M(0)-c cross F.
+    #[serde(default)]
+    pub pressure_moment: Vec3,
+    #[serde(default)]
+    pub shear_moment: Vec3,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub samples: Vec<WallFaceSample>,
 }
@@ -97,6 +102,8 @@ pub fn reports_with_turbulence(
             pressure_force: Vec3::ZERO,
             shear_force: Vec3::ZERO,
             total_force: Vec3::ZERO,
+            pressure_moment: Vec3::ZERO,
+            shear_moment: Vec3::ZERO,
             samples: Vec::new(),
         };
         let mut weighted_y = 0.0;
@@ -141,6 +148,8 @@ pub fn reports_with_turbulence(
                 r.invalid_faces += 1;
                 continue;
             }
+            r.pressure_moment += f.center.cross(pressure_force);
+            r.shear_moment += f.center.cross(shear_force);
             r.pressure_force += pressure_force;
             r.shear_force += shear_force;
             r.measure += f.area;
@@ -189,6 +198,12 @@ pub fn reports_with_turbulence(
             r.total_force.x,
             r.total_force.y,
             r.total_force.z,
+            r.pressure_moment.x,
+            r.pressure_moment.y,
+            r.pressure_moment.z,
+            r.shear_moment.x,
+            r.shear_moment.y,
+            r.shear_moment.z,
         ]
         .iter()
         .any(|x| !x.is_finite())
@@ -215,13 +230,30 @@ pub fn summary(reports: &[WallPatchReport]) -> String {
     if reports.is_empty() {
         return "Wall diagnostics unavailable: no solved no-slip / moving-wall patches.".into();
     }
-    let mut text=String::from("WALL-RESOLVED ESTIMATES · first-cell tangential gradient\nShear stress: Pa · forces: N (2D: N per unit depth).\nPressure force uses adjacent-cell gauge pressure. No wall functions.\n");
+    let mut text = String::from(
+        "WALL-RESOLVED ESTIMATES · first-cell tangential gradient\nShear stress: Pa · forces: N (2D: N per unit depth).\nPressure force uses adjacent-cell gauge pressure. No wall functions.\n",
+    );
     for r in reports {
         let y = match (r.y_plus_min, r.y_plus_mean, r.y_plus_max) {
             (Some(a), Some(b), Some(c)) => format!("{a:.4e} / {b:.4e} / {c:.4e}"),
             _ => "N/A (zero molecular viscosity or no valid faces)".into(),
         };
         text.push_str(&format!("\n{} · {} faces · {} invalid\ny+ min / area-mean / max: {y}\nArea fraction y+ > 1: {}\nShear mean / max: {:.4e} / {:.4e} Pa\nForce on wall (Fx, Fy, Fz): {:.6e}, {:.6e}, {:.6e}\n",r.patch,r.faces,r.invalid_faces,r.fraction_measure_above_y_plus_one.map(|v|format!("{:.2}%",100.0*v)).unwrap_or_else(||"N/A".into()),r.shear_stress_mean,r.shear_stress_max,r.total_force.x,r.total_force.y,r.total_force.z));
+    }
+    for r in reports {
+        let m = r.pressure_moment + r.shear_moment;
+        text.push_str(&format!(
+            "\n{} · moment about global origin: ({:.6e}, {:.6e}, {:.6e}) {}\n",
+            r.patch,
+            m.x,
+            m.y,
+            m.z,
+            if r.force_unit == "N/m" {
+                "N (per unit depth)"
+            } else {
+                "N m"
+            }
+        ));
     }
     text
 }
@@ -232,15 +264,37 @@ pub fn csv(reports: &[WallPatchReport], faces: bool) -> String {
         s.push_str("patch,face,owner,x_m,y_m,z_m,normal_distance_m,y_plus,friction_velocity_m_s,tau_x_Pa,tau_y_Pa,tau_z_Pa,pressure_force_x,pressure_force_y,pressure_force_z,shear_force_x,shear_force_y,shear_force_z,force_unit\n");
         for r in reports {
             for f in &r.samples {
-                let _=writeln!(s,"{},{},{},{:.16e},{:.16e},{:.16e},{:.16e},{},{:.16e},{:.16e},{:.16e},{:.16e},{:.16e},{:.16e},{:.16e},{:.16e},{:.16e},{:.16e},{}",quote(&r.patch),f.face,f.owner,f.point.x,f.point.y,f.point.z,f.normal_distance,optional(f.y_plus),f.friction_velocity,f.shear_stress.x,f.shear_stress.y,f.shear_stress.z,f.pressure_force.x,f.pressure_force.y,f.pressure_force.z,f.shear_force.x,f.shear_force.y,f.shear_force.z,r.force_unit);
+                let _ = writeln!(
+                    s,
+                    "{},{},{},{:.16e},{:.16e},{:.16e},{:.16e},{},{:.16e},{:.16e},{:.16e},{:.16e},{:.16e},{:.16e},{:.16e},{:.16e},{:.16e},{:.16e},{}",
+                    quote(&r.patch),
+                    f.face,
+                    f.owner,
+                    f.point.x,
+                    f.point.y,
+                    f.point.z,
+                    f.normal_distance,
+                    optional(f.y_plus),
+                    f.friction_velocity,
+                    f.shear_stress.x,
+                    f.shear_stress.y,
+                    f.shear_stress.z,
+                    f.pressure_force.x,
+                    f.pressure_force.y,
+                    f.pressure_force.z,
+                    f.shear_force.x,
+                    f.shear_force.y,
+                    f.shear_force.z,
+                    r.force_unit
+                );
             }
         }
     } else {
-        s.push_str("patch,faces,invalid_faces,measure,y_plus_min,y_plus_mean,y_plus_max,fraction_measure_y_plus_above_one,shear_mean_Pa,shear_max_Pa,force_x,force_y,force_z,force_unit\n");
+        s.push_str("patch,faces,invalid_faces,measure,y_plus_min,y_plus_mean,y_plus_max,fraction_measure_y_plus_above_one,shear_mean_Pa,shear_max_Pa,force_x,force_y,force_z,pressure_moment_x,pressure_moment_y,pressure_moment_z,viscous_moment_x,viscous_moment_y,viscous_moment_z,force_unit\n");
         for r in reports {
             let _ = writeln!(
                 s,
-                "{},{},{},{:.16e},{},{},{},{},{:.16e},{:.16e},{:.16e},{:.16e},{:.16e},{}",
+                "{},{},{},{:.16e},{},{},{},{},{:.16e},{:.16e},{:.16e},{:.16e},{:.16e},{:.16e},{:.16e},{:.16e},{:.16e},{:.16e},{:.16e},{}",
                 quote(&r.patch),
                 r.faces,
                 r.invalid_faces,
@@ -254,6 +308,12 @@ pub fn csv(reports: &[WallPatchReport], faces: bool) -> String {
                 r.total_force.x,
                 r.total_force.y,
                 r.total_force.z,
+                r.pressure_moment.x,
+                r.pressure_moment.y,
+                r.pressure_moment.z,
+                r.shear_moment.x,
+                r.shear_moment.y,
+                r.shear_moment.z,
                 r.force_unit
             );
         }
@@ -265,4 +325,96 @@ fn quote(s: &str) -> String {
 }
 fn optional(v: Option<f64>) -> String {
     v.map(|v| format!("{v:.16e}")).unwrap_or_default()
+}
+
+/// Reference measure is area in 3D, or length per unit depth in 2D.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub struct ForceReference {
+    pub density: f64,
+    pub speed: f64,
+    pub measure: f64,
+    pub length: f64,
+    pub center: Vec3,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ForceCoefficients {
+    pub pressure: Vec3,
+    pub viscous: Vec3,
+    pub total: Vec3,
+    pub moment: Vec3,
+}
+impl WallPatchReport {
+    pub fn coefficients(&self, reference: ForceReference) -> Result<ForceCoefficients, String> {
+        if [
+            reference.density,
+            reference.speed,
+            reference.measure,
+            reference.length,
+        ]
+        .iter()
+        .any(|v| !v.is_finite() || *v <= 0.0)
+            || [reference.center.x, reference.center.y, reference.center.z]
+                .iter()
+                .any(|v| !v.is_finite())
+        {
+            return Err("Force reference requires finite positive density, speed, measure and length, and a finite center".into());
+        }
+        let scale = 0.5 * reference.density * reference.speed.powi(2) * reference.measure;
+        let moment_scale = scale * reference.length;
+        if !scale.is_finite() || scale <= 0.0 || !moment_scale.is_finite() || moment_scale <= 0.0 {
+            return Err("Force reference normalization overflow or underflow".into());
+        }
+        Ok(ForceCoefficients {
+            pressure: self.pressure_force / scale,
+            viscous: self.shear_force / scale,
+            total: self.total_force / scale,
+            moment: (self.pressure_moment + self.shear_moment
+                - reference.center.cross(self.total_force))
+                / moment_scale,
+        })
+    }
+}
+
+/// Wall-shear zero crossings along an explicitly supplied straight wall segment.
+/// Returns downstream distances from start; no crossing is an empty vector.
+/// Detailed wall samples must be requested when constructing the report.
+pub fn reattachment_distances(
+    report: &WallPatchReport,
+    start: Vec3,
+    direction: Vec3,
+    transverse_tolerance: f64,
+) -> Result<Vec<f64>, String> {
+    let length = direction.norm();
+    if !length.is_finite()
+        || length <= 0.0
+        || !transverse_tolerance.is_finite()
+        || transverse_tolerance <= 0.0
+        || [start.x, start.y, start.z].iter().any(|v| !v.is_finite())
+    {
+        return Err("Require a finite start, nonzero direction and positive wall tolerance".into());
+    }
+    if report.samples.is_empty() {
+        return Err("Reattachment requires detailed wall samples".into());
+    }
+    let axis = direction / length;
+    let mut samples: Vec<_> = report
+        .samples
+        .iter()
+        .filter_map(|s| {
+            let d = s.point - start;
+            let x = d.dot(axis);
+            let transverse = (d - axis * x).norm();
+            let shear = s.shear_stress.dot(axis);
+            (x >= 0.0 && transverse <= transverse_tolerance && shear.is_finite())
+                .then_some((x, shear))
+        })
+        .collect();
+    samples.sort_by(|a, b| a.0.total_cmp(&b.0));
+    Ok(samples
+        .windows(2)
+        .filter_map(|w| {
+            let ((x0, t0), (x1, t1)) = (w[0], w[1]);
+            (x1 > x0 && t0 <= 0.0 && t1 > 0.0).then(|| x0 + (x1 - x0) * (-t0) / (t1 - t0))
+        })
+        .collect())
 }

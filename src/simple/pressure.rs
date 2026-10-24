@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 pub enum CouplingAlgorithm {
     #[default]
     Simple,
+    Simplec,
     Pimple,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -39,7 +40,7 @@ impl PressureCoupling {
         {
             return Err("Require 1..8 pressure correctors, 0..8 extra non-orthogonal passes and limiter in [0,1]".into());
         }
-        if self.algorithm == CouplingAlgorithm::Simple && self.pressure_correctors != 1 {
+        if self.algorithm != CouplingAlgorithm::Pimple && self.pressure_correctors != 1 {
             return Err("Multiple inner pressure correctors require PIMPLE".into());
         }
         if self.algorithm == CouplingAlgorithm::Pimple && !transient {

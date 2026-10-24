@@ -8,12 +8,12 @@ mod pressure;
 pub use pressure::{CouplingAlgorithm, PressureCoupling};
 
 use crate::{
-    interpolate_vector_into, least_squares_gradient, momentum_component_field, CellField,
-    CsrBuilder, CsrMatrix, DiffusionOptions, Diffusivity, FaceField, FieldError,
+    CellField, CsrBuilder, CsrMatrix, DiffusionOptions, Diffusivity, FaceField, FieldError,
     LeastSquaresGradientStencil, LinearAlgebraError, LinearSolveReport, LinearSolverOptions,
     MomentumComponent, MomentumError, MomentumOptions, NumericsError,
     ResolvedScalarBoundaryConditions, ResolvedVelocityBoundaryConditions, ScalarBoundaryCondition,
-    ScalarBoundaryValue, UnstructuredMesh, Vec3,
+    ScalarBoundaryValue, UnstructuredMesh, Vec3, interpolate_vector_into, least_squares_gradient,
+    momentum_component_field,
 };
 
 #[derive(Clone, Debug, PartialEq)]
@@ -517,7 +517,24 @@ pub fn solve_simple_with_observer(
         let diagonal = x_system.matrix().diagonal()?;
         // Momentum is assembled in integrated form (a_P U = -V grad(p)+...).
         // Pressure response is V/a_P, including on nonuniform cells.
-        let inverse = momentum_inverse_diagonal(&diagonal)?;
+        let mut inverse = momentum_inverse_diagonal(&diagonal)?;
+        if options.pressure_coupling.algorithm == CouplingAlgorithm::Simplec {
+            let matrix = x_system.matrix();
+            for (cell, response) in inverse.iter_mut().enumerate() {
+                let off_sum: f64 = (matrix.row_offsets()[cell]..matrix.row_offsets()[cell + 1])
+                    .filter(|&entry| matrix.column_indices()[entry] != cell)
+                    .map(|entry| matrix.values()[entry])
+                    .sum();
+                let consistent = diagonal[cell] + off_sum;
+                // Positive fallback avoids singular response in unconstrained rows.
+                if consistent.is_finite() && consistent > 1e-12 * diagonal[cell].abs().max(1e-30) {
+                    let original = *response;
+                    *response = 1.0 / consistent;
+                    predictor[cell] += current_pressure_gradient[cell]
+                        * ((*response - original) * mesh.cells()[cell].volume);
+                }
+            }
+        }
         let r_au = CellField::from_values(
             mesh,
             inverse
@@ -960,7 +977,7 @@ pub fn correct_face_flux_with_boundary(
                 }
                 Some(ScalarBoundaryCondition::ZeroGradient) => continue,
                 None => {
-                    return Err(NumericsError::MissingBoundaryCondition { face: face_index }.into())
+                    return Err(NumericsError::MissingBoundaryCondition { face: face_index }.into());
                 }
             }
         };
@@ -1464,10 +1481,12 @@ mod tests {
         let bc = ResolvedScalarBoundaryConditions::strict(&mesh, &assignments).unwrap();
         let stencil = LeastSquaresGradientStencil::new(&mesh, &bc).unwrap();
         let gradient = pressure_coupling_gradient(&mesh, &values, &stencil, Some(&bc)).unwrap();
-        assert!(gradient
-            .values()
-            .iter()
-            .all(|g| (*g - expected).norm() < 1e-11));
+        assert!(
+            gradient
+                .values()
+                .iter()
+                .all(|g| (*g - expected).norm() < 1e-11)
+        );
         let constant = CellField::filled(&mesh, 2.5);
         let gradient = pressure_coupling_gradient(&mesh, &constant, &stencil, None).unwrap();
         assert!(gradient.values().iter().all(|g| g.norm() < 1e-11));
@@ -1718,22 +1737,14 @@ mod tests {
             FaceField::from_faces(
                 &mesh,
                 |_, face| {
-                    if face.neighbour.is_some() {
-                        3.0
-                    } else {
-                        0.0
-                    }
+                    if face.neighbour.is_some() { 3.0 } else { 0.0 }
                 },
             );
         let coefficients =
             FaceField::from_faces(
                 &mesh,
                 |_, face| {
-                    if face.neighbour.is_some() {
-                        2.0
-                    } else {
-                        0.0
-                    }
+                    if face.neighbour.is_some() { 2.0 } else { 0.0 }
                 },
             );
         let correction = CellField::from_values(&mesh, vec![0.0, 1.5]).unwrap();
@@ -1759,22 +1770,14 @@ mod tests {
             FaceField::from_faces(
                 &mesh,
                 |_, face| {
-                    if face.neighbour.is_some() {
-                        3.0
-                    } else {
-                        0.0
-                    }
+                    if face.neighbour.is_some() { 3.0 } else { 0.0 }
                 },
             );
         let coefficients =
             FaceField::from_faces(
                 &mesh,
                 |_, face| {
-                    if face.neighbour.is_some() {
-                        2.0
-                    } else {
-                        0.0
-                    }
+                    if face.neighbour.is_some() { 2.0 } else { 0.0 }
                 },
             );
         let system = assemble_pressure_correction(&mesh, &predicted, &coefficients, 0).unwrap();
@@ -1794,22 +1797,14 @@ mod tests {
             FaceField::from_faces(
                 &mesh,
                 |_, face| {
-                    if face.neighbour.is_some() {
-                        3.0
-                    } else {
-                        0.0
-                    }
+                    if face.neighbour.is_some() { 3.0 } else { 0.0 }
                 },
             );
         let coefficients =
             FaceField::from_faces(
                 &mesh,
                 |_, face| {
-                    if face.neighbour.is_some() {
-                        2.0
-                    } else {
-                        0.0
-                    }
+                    if face.neighbour.is_some() { 2.0 } else { 0.0 }
                 },
             );
         let system = assemble_pressure_correction(&mesh, &predicted, &coefficients, 0).unwrap();
@@ -1825,19 +1820,23 @@ mod tests {
         )
         .unwrap();
         assert!(report.converged());
-        assert!(correction
-            .values()
-            .iter()
-            .zip([0.0, 1.5])
-            .all(|(a, b)| (*a - b).abs() < 1e-12));
+        assert!(
+            correction
+                .values()
+                .iter()
+                .zip([0.0, 1.5])
+                .all(|(a, b)| (*a - b).abs() < 1e-12)
+        );
         let corrected = correct_face_flux(&mesh, &predicted, &coefficients, &correction).unwrap();
         let imbalance = crate::integrated_divergence(&mesh, &corrected).unwrap();
         assert!(imbalance.values().iter().all(|value| value.abs() < 1.0e-12));
-        assert!(system
-            .true_residual(correction.values())
-            .unwrap()
-            .iter()
-            .all(|value| value.abs() < 1.0e-12));
+        assert!(
+            system
+                .true_residual(correction.values())
+                .unwrap()
+                .iter()
+                .all(|value| value.abs() < 1.0e-12)
+        );
     }
 
     #[test]
@@ -1866,11 +1865,7 @@ mod tests {
         let flux = FaceField::from_faces(
             &mesh,
             |_, face| {
-                if face.neighbour.is_some() {
-                    3.0
-                } else {
-                    0.0
-                }
+                if face.neighbour.is_some() { 3.0 } else { 0.0 }
             },
         );
         // Integrated cell residuals are [+3, -3], whose RMS is 3.
@@ -1885,11 +1880,7 @@ mod tests {
             FaceField::from_faces(
                 &mesh,
                 |_, face| {
-                    if face.neighbour.is_none() {
-                        4.0
-                    } else {
-                        0.0
-                    }
+                    if face.neighbour.is_none() { 4.0 } else { 0.0 }
                 },
             );
         let flux = initial_face_flux(&mesh, &velocity, &wall_flux).unwrap();
@@ -1928,11 +1919,13 @@ mod tests {
         let report = solve_simple(&mesh, &mut state, options).unwrap();
         assert!(report.converged);
         assert!(report.final_continuity_rms < 1.0e-12);
-        assert!(state
-            .velocity
-            .values()
-            .iter()
-            .all(|value| *value == Vec3::ZERO));
+        assert!(
+            state
+                .velocity
+                .values()
+                .iter()
+                .all(|value| *value == Vec3::ZERO)
+        );
         assert!(state.pressure.values().iter().all(|value| *value == 0.0));
         assert!(state.face_flux.values().iter().all(|value| *value == 0.0));
     }
@@ -1985,11 +1978,7 @@ mod tests {
             FaceField::from_faces(
                 &mesh,
                 |_, face| {
-                    if face.neighbour.is_some() {
-                        3.0
-                    } else {
-                        0.0
-                    }
+                    if face.neighbour.is_some() { 3.0 } else { 0.0 }
                 },
             );
         let mut state = SimpleState::new(
@@ -2007,11 +1996,13 @@ mod tests {
         assert_eq!(report.outer_iterations, 1);
         assert_eq!(report.initial_continuity_rms, 3.0);
         assert!(report.final_continuity_rms < 1.0e-12);
-        assert!(state
-            .face_flux
-            .values()
-            .iter()
-            .all(|value| value.abs() < 1.0e-12));
+        assert!(
+            state
+                .face_flux
+                .values()
+                .iter()
+                .all(|value| value.abs() < 1.0e-12)
+        );
     }
 
     #[test]
@@ -2037,11 +2028,7 @@ mod tests {
             FaceField::from_faces(
                 &mesh,
                 |face, _| {
-                    if face == leaking_wall {
-                        1.0
-                    } else {
-                        0.0
-                    }
+                    if face == leaking_wall { 1.0 } else { 0.0 }
                 },
             );
         let mut state = SimpleState::new(
@@ -2183,27 +2170,34 @@ mod tests {
         let report = solve_simple(&mesh, &mut state, options).unwrap();
         assert!(report.converged, "{report:?}");
         assert!(report.final_continuity_rms < 1.0e-9);
-        assert!(state
-            .velocity
-            .values()
-            .iter()
-            .any(|value| value.norm_squared() > 1.0e-12));
-        assert!(state
-            .velocity
-            .values()
-            .iter()
-            .all(|value| { value.x.is_finite() && value.y.is_finite() && value.z.is_finite() }));
-        assert!(state
-            .pressure
-            .values()
-            .iter()
-            .all(|value| value.is_finite()));
-        assert!(mesh
-            .faces()
-            .iter()
-            .enumerate()
-            .filter(|(_, face)| face.neighbour.is_none())
-            .all(|(face, _)| state.face_flux[face].abs() < 1.0e-12));
+        assert!(
+            state
+                .velocity
+                .values()
+                .iter()
+                .any(|value| value.norm_squared() > 1.0e-12)
+        );
+        assert!(
+            state
+                .velocity
+                .values()
+                .iter()
+                .all(|value| { value.x.is_finite() && value.y.is_finite() && value.z.is_finite() })
+        );
+        assert!(
+            state
+                .pressure
+                .values()
+                .iter()
+                .all(|value| value.is_finite())
+        );
+        assert!(
+            mesh.faces()
+                .iter()
+                .enumerate()
+                .filter(|(_, face)| face.neighbour.is_none())
+                .all(|(face, _)| state.face_flux[face].abs() < 1.0e-12)
+        );
     }
 
     #[test]
@@ -2252,22 +2246,27 @@ mod tests {
         let report = solve_simple(&mesh, &mut state, options).unwrap();
         assert!(report.converged, "{report:?}");
         assert!(report.final_continuity_rms < 1.0e-8);
-        assert!(state
-            .velocity
-            .values()
-            .iter()
-            .all(|value| { value.x.is_finite() && value.y.is_finite() && value.z.is_finite() }));
-        assert!(state
-            .pressure
-            .values()
-            .iter()
-            .all(|value| value.is_finite()));
-        assert!(mesh
-            .faces()
-            .iter()
-            .enumerate()
-            .filter(|(_, face)| face.neighbour.is_none())
-            .all(|(face, _)| state.face_flux[face].abs() < 1.0e-12));
+        assert!(
+            state
+                .velocity
+                .values()
+                .iter()
+                .all(|value| { value.x.is_finite() && value.y.is_finite() && value.z.is_finite() })
+        );
+        assert!(
+            state
+                .pressure
+                .values()
+                .iter()
+                .all(|value| value.is_finite())
+        );
+        assert!(
+            mesh.faces()
+                .iter()
+                .enumerate()
+                .filter(|(_, face)| face.neighbour.is_none())
+                .all(|(face, _)| state.face_flux[face].abs() < 1.0e-12)
+        );
     }
 
     #[test]
@@ -2313,22 +2312,27 @@ mod tests {
         assert!(report.final_continuity_rms < 1.0e-10);
         assert!(report.momentum_reports.is_some());
         assert!(report.pressure_report.is_some());
-        assert!(state
-            .velocity
-            .values()
-            .iter()
-            .all(|value| { value.x.is_finite() && value.y.is_finite() && value.z.is_finite() }));
-        assert!(state
-            .pressure
-            .values()
-            .iter()
-            .all(|value| value.is_finite()));
-        assert!(mesh
-            .faces()
-            .iter()
-            .enumerate()
-            .filter(|(_, face)| face.neighbour.is_none())
-            .all(|(face, _)| state.face_flux[face].abs() < 1.0e-12));
+        assert!(
+            state
+                .velocity
+                .values()
+                .iter()
+                .all(|value| { value.x.is_finite() && value.y.is_finite() && value.z.is_finite() })
+        );
+        assert!(
+            state
+                .pressure
+                .values()
+                .iter()
+                .all(|value| value.is_finite())
+        );
+        assert!(
+            mesh.faces()
+                .iter()
+                .enumerate()
+                .filter(|(_, face)| face.neighbour.is_none())
+                .all(|(face, _)| state.face_flux[face].abs() < 1.0e-12)
+        );
     }
 
     #[test]
@@ -2400,11 +2404,7 @@ mod tests {
         let pressure = CellField::from_cells(&mesh, |cell, _| {
             let x = cell % 3;
             let y = cell / 3;
-            if (x + y) % 2 == 0 {
-                1.0
-            } else {
-                -1.0
-            }
+            if (x + y) % 2 == 0 { 1.0 } else { -1.0 }
         });
         let r_au = CellField::filled(&mesh, 1.0);
         let wall_flux = FaceField::filled(&mesh, 0.0);
@@ -2414,11 +2414,12 @@ mod tests {
 
         // Naive interpolation of the zero predictor is zero at every face.
         // The direct pressure-difference term must still couple this mode.
-        assert!(mesh
-            .faces()
-            .iter()
-            .enumerate()
-            .filter(|(_, face)| face.neighbour.is_some())
-            .any(|(face, _)| flux[face].abs() > 1.0e-8));
+        assert!(
+            mesh.faces()
+                .iter()
+                .enumerate()
+                .filter(|(_, face)| face.neighbour.is_some())
+                .any(|(face, _)| flux[face].abs() > 1.0e-8)
+        );
     }
 }
