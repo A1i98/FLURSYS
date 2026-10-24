@@ -1,4 +1,6 @@
 //! Built-in, executable Workbench recipes; no source-tree files required.
+#[path = "script_examples.rs"]
+mod script_examples;
 use super::{examples::*, project::*, WorkbenchSession};
 use crate::{
     unstructured_incompressible::{AdaptiveTimeStep, TimeIntegration},
@@ -152,6 +154,7 @@ pub fn builtin_templates() -> Result<Vec<CaseTemplateManifest>, String> {
         "Experimental".into(),
     ]);
     templates.push(entry);
+    templates.extend(script_examples::templates()?);
     for entry in &mut templates {
         entry.project_template.cad_document = cad_document(&entry.project_template)?;
         #[cfg(feature = "gui")]
