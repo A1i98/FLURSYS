@@ -100,6 +100,11 @@ pub fn svg(series: &[Series], title: &str, x_label: &str, y_label: &str) -> Resu
         escape(x_label),
         escape(y_label)
     );
+    let version = format!(
+        r##"<text x="1080" y="636" text-anchor="end" font-family="sans-serif" font-size="11" fill="#9aabbf">FLURSYS v{}</text></svg>"##,
+        env!("CARGO_PKG_VERSION")
+    );
+    out = out.replace("</svg>", &version);
     Ok(out)
 }
 pub fn csv(series: &[Series], x_label: &str) -> String {

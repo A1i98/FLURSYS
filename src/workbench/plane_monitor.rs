@@ -944,7 +944,11 @@ fn section_svg_impl(
             r##"<text x="{legend_x}" y="18">{unit}</text></g></svg>"##
         );
     }
-    svg
+    let version = format!(
+        r##"<text x="98%" y="95%" text-anchor="end" font-family="sans-serif" font-size="11" fill="#9aabbf">FLURSYS v{}</text></svg>"##,
+        env!("CARGO_PKG_VERSION")
+    );
+    svg.replace("</svg>", &version)
 }
 
 pub fn csv_text(snapshot: &PlaneSnapshot) -> String {
