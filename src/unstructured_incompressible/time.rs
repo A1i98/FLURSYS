@@ -146,10 +146,16 @@ pub(super) fn solve_time_loop(
                 .iter()
                 .filter(|c| p.region.contains(c.center))
                 .count();
-            cb(format!("Isotropic momentum resistance: {count} cells; Darcy {} 1/m², Forchheimer {} 1/m; implicit lagged-speed sink.",p.darcy,p.forchheimer));
+            cb(format!(
+                "Isotropic momentum resistance: {count} cells; Darcy {} 1/m², Forchheimer {} 1/m; implicit lagged-speed sink.",
+                p.darcy, p.forchheimer
+            ));
         }
         if let Some(r) = case.solver.volume_models.rotating_frame {
-            cb(format!("Global rotating frame: omega={:?} rad/s; origin={:?} m. All velocity fields, boundary velocities and face fluxes are relative. No multi-zone MRF interface or mesh motion.",r.angular_velocity,r.origin));
+            cb(format!(
+                "Global rotating frame: omega={:?} rad/s; origin={:?} m. All velocity fields, boundary velocities and face fluxes are relative. No multi-zone MRF interface or mesh motion.",
+                r.angular_velocity, r.origin
+            ));
         }
     }
     case.solver
@@ -172,9 +178,49 @@ pub(super) fn solve_time_loop(
         )
         .into());
     }
+    case.solver
+        .scripting
+        .validate(case.solver.time.is_transient())
+        .map_err(SimpleError::PhysicalBoundary)?;
+    for (name, bindings) in &case.solver.scripting.bindings {
+        if case.solver.boundary_profiles.contains_key(name) {
+            return Err(SimpleError::PhysicalBoundary(format!(
+                "Remove the time table before attaching a script on {name}"
+            ))
+            .into());
+        }
+        if case
+            .solver
+            .cyclic_pairs
+            .iter()
+            .any(|p| p.first == *name || p.second == *name)
+        {
+            return Err(SimpleError::PhysicalBoundary(format!(
+                "Cyclic patch {name} cannot use physical scripts"
+            ))
+            .into());
+        }
+        if !case.solver.thermal.enabled
+            && bindings
+                .iter()
+                .any(|b| b.quantity == crate::scripting::Quantity::Temperature)
+        {
+            return Err(SimpleError::PhysicalBoundary(
+                "Temperature scripts require enabled thermal transport".into(),
+            )
+            .into());
+        }
+    }
     if !case.solver.time.is_transient() && !case.solver.boundary_profiles.is_empty() {
         return Err(SimpleError::PhysicalBoundary(
             "Time-table boundaries require transient integration".into(),
+        )
+        .into());
+    }
+    let end_time = case.solver.physical_end_time;
+    if end_time.is_some_and(|t| !t.is_finite() || t <= 0.0 || !case.solver.time.is_transient()) {
+        return Err(SimpleError::PhysicalBoundary(
+            "Physical end time requires transient integration and a finite positive time".into(),
         )
         .into());
     }
@@ -187,8 +233,14 @@ pub(super) fn solve_time_loop(
     };
     if let Some(cb) = control.and_then(|c| c.on_message.as_ref()) {
         let coupling = case.solver.pressure_coupling;
-        cb(format!("Transient coupling {:?}: up to {} outer iterations per time step, {} inner pressure corrector(s), {} extra non-orthogonal pass(es), limiter {}. Physical history is frozen until acceptance.",
-            coupling.algorithm,case.solver.max_outer_iterations,coupling.pressure_correctors,coupling.non_orthogonal_correctors,coupling.non_orthogonal_limiter));
+        cb(format!(
+            "Transient coupling {:?}: up to {} outer iterations per time step, {} inner pressure corrector(s), {} extra non-orthogonal pass(es), limiter {}. Physical history is frozen until acceptance.",
+            coupling.algorithm,
+            case.solver.max_outer_iterations,
+            coupling.pressure_correctors,
+            coupling.non_orthogonal_correctors,
+            coupling.non_orthogonal_limiter
+        ));
     }
     let backward = matches!(
         case.solver.time,
@@ -207,6 +259,12 @@ pub(super) fn solve_time_loop(
         IncompressibleInitialConditions::Restart { time, last_dt, .. } => (*time, *last_dt),
         _ => (0.0, None),
     };
+    if end_time.is_some_and(|end| time >= end) {
+        return Err(SimpleError::PhysicalBoundary(
+            "Restart time has already reached the requested physical end time".into(),
+        )
+        .into());
+    }
     profiles::apply(&mut step_case, time)?;
     // Freeze actual initial face flux at t_n before any future boundary evaluation.
     if backward
@@ -276,6 +334,9 @@ pub(super) fn solve_time_loop(
                 ))
                 .into());
             }
+        }
+        if let Some(end) = end_time {
+            dt = dt.min(end - time);
         }
         let mut accepted = None;
         for attempt in 0..=8 {
@@ -347,7 +408,11 @@ pub(super) fn solve_time_loop(
                     };
                     let smaller = (dt * factor).max(c.min_dt);
                     if let Some(cb) = control.and_then(|c| c.on_message.as_ref()) {
-                        cb(format!("Rejected time step {step}, attempt {}: dt={dt:e}, Co={co:.4e}, coupled_converged={}; retry dt={smaller:e}; fields and physical time rolled back",attempt+1,result.report.converged()));
+                        cb(format!(
+                            "Rejected time step {step}, attempt {}: dt={dt:e}, Co={co:.4e}, coupled_converged={}; retry dt={smaller:e}; fields and physical time rolled back",
+                            attempt + 1,
+                            result.report.converged()
+                        ));
                     }
                     if attempt == 8 || smaller >= dt {
                         return Err(SimpleError::PhysicalBoundary(format!("Time step {step} cannot satisfy coupled convergence / Courant within adaptive limits; last accepted time is {time:e} s")).into());
@@ -405,10 +470,13 @@ pub(super) fn solve_time_loop(
         }
         step_case.initial_conditions = result.restart();
         last = Some(result);
+        if end_time.is_some_and(|end| time >= end) {
+            break;
+        }
     }
     let mut result = last.expect("validated nonzero time steps");
-    result.report.outer_iterations = steps;
-    result.report.simple.outer_iterations = steps;
+    result.report.outer_iterations = result.completed_time_steps;
+    result.report.simple.outer_iterations = result.completed_time_steps;
     result.report.initial_continuity_rms = initial_continuity.unwrap();
     result.report.simple.initial_continuity_rms = initial_continuity.unwrap();
     result.report.continuity_history = histories.clone();

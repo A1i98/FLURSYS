@@ -5,8 +5,8 @@
 //! project-local derived artifacts rather than JSON payloads.
 
 use super::{
-    load_legacy_vtk_result, GeometrySelectionTarget, NamedSelection, ResultDataset, SolveStatus,
-    WorkbenchSession,
+    GeometrySelectionTarget, NamedSelection, ResultDataset, SolveStatus, WorkbenchSession,
+    load_legacy_vtk_result,
 };
 use crate::{GeometryTopology, MeshDimension, Vec3};
 use serde::{Deserialize, Serialize};
@@ -417,9 +417,13 @@ pub struct WorkbenchSolverSettings {
     #[serde(default)]
     pub boundary_profiles: crate::unstructured_incompressible::BoundaryProfiles,
     #[serde(default)]
+    pub scripting: crate::scripting::Settings,
+    #[serde(default)]
     pub thermal: crate::thermal::Options,
     #[serde(default)]
     pub time: crate::unstructured_incompressible::TimeIntegration,
+    #[serde(default)]
+    pub physical_end_time: Option<f64>,
     #[serde(default)]
     pub turbulence: crate::turbulence::TurbulenceOptions,
     #[serde(default)]
@@ -443,8 +447,10 @@ impl Default for WorkbenchSolverSettings {
             volume_models: Default::default(),
             cyclic_pairs: Vec::new(),
             boundary_profiles: Default::default(),
+            scripting: Default::default(),
             thermal: crate::thermal::Options::default(),
             time: Default::default(),
+            physical_end_time: None,
             turbulence: Default::default(),
             convection: crate::momentum::MomentumConvection::Upwind,
             threads: 0,
@@ -653,6 +659,10 @@ impl WorkbenchProject {
                 "invalid SIMPLE settings".into(),
             ));
         }
+        self.solver
+            .scripting
+            .validate(self.solver.time.is_transient())
+            .map_err(ProjectDocumentError::Invalid)?;
         for p in self.solver.boundary_profiles.values() {
             p.validate().map_err(ProjectDocumentError::Invalid)?;
         }
@@ -1428,11 +1438,11 @@ fn io_error(error: std::io::Error) -> ProjectDocumentError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::workbench::examples::{build_example, ExampleProjectId};
+    use crate::workbench::examples::{ExampleProjectId, build_example};
     use crate::{
-        pressure_face_coefficients, solve_incompressible, CellField,
-        IncompressibleBoundaryCondition, ResultFieldKind, ResultRenderCache, StreamlineDirection,
-        StreamlineField, StreamlineOptions, Vec3, WorkbenchSession,
+        CellField, IncompressibleBoundaryCondition, ResultFieldKind, ResultRenderCache,
+        StreamlineDirection, StreamlineField, StreamlineOptions, Vec3, WorkbenchSession,
+        pressure_face_coefficients, solve_incompressible,
     };
     use tempfile::tempdir;
 
@@ -1717,11 +1727,13 @@ mod tests {
 
         discard_workspace_recovery(directory.path()).unwrap();
 
-        assert!(!directory
-            .path()
-            .join("autosave")
-            .join(PROJECT_DOCUMENT_FILE)
-            .exists());
+        assert!(
+            !directory
+                .path()
+                .join("autosave")
+                .join(PROJECT_DOCUMENT_FILE)
+                .exists()
+        );
     }
 
     #[test]
@@ -1741,11 +1753,13 @@ mod tests {
         autosave_workspace(directory.path(), &project).unwrap();
         assert!(recovery_is_newer(directory.path()).unwrap());
         save_workspace(directory.path(), &project).unwrap();
-        assert!(!directory
-            .path()
-            .join("autosave")
-            .join(PROJECT_DOCUMENT_FILE)
-            .exists());
+        assert!(
+            !directory
+                .path()
+                .join("autosave")
+                .join(PROJECT_DOCUMENT_FILE)
+                .exists()
+        );
         assert!(!recovery_is_newer(directory.path()).unwrap());
     }
 
@@ -1764,10 +1778,12 @@ mod tests {
 
         assert_eq!(record.status, RunStatus::Failed);
         assert!(record.solution_path.is_none());
-        assert!(record
-            .failure_diagnostic
-            .as_deref()
-            .is_some_and(|message| message.contains("InvalidInitialConditions")));
+        assert!(
+            record
+                .failure_diagnostic
+                .as_deref()
+                .is_some_and(|message| message.contains("InvalidInitialConditions"))
+        );
         assert_eq!(
             load_workspace(directory.path()).unwrap().runs,
             vec![record.clone()]
@@ -2022,10 +2038,12 @@ mod tests {
         assert_eq!(dataset.run_id(), run.id);
         assert_eq!(dataset.mesh().cell_count(), cache.cell_count());
         assert!(dataset.pressure().iter().all(|value| value.is_finite()));
-        assert!(dataset
-            .velocity_magnitude()
-            .iter()
-            .all(|value| value.is_finite()));
+        assert!(
+            dataset
+                .velocity_magnitude()
+                .iter()
+                .all(|value| value.is_finite())
+        );
         assert!(cache.velocity_for_cell(probe.cell_index).is_some());
         assert!(!path.points.is_empty());
     }
@@ -2049,18 +2067,20 @@ mod tests {
         let field = StreamlineField::from_dataset(&dataset).unwrap();
 
         assert!(field.locate_cell(Vec3::new(2.0, 1.0, 0.0)).is_none());
-        assert!(field
-            .integrate(
-                Vec3::new(2.0, 1.0, 0.0),
-                StreamlineDirection::Forward,
-                StreamlineOptions {
-                    step_size: 0.05,
-                    max_steps: 8,
-                    max_length: 1.0,
-                    stagnation_speed: 1.0e-12,
-                },
-            )
-            .is_err());
+        assert!(
+            field
+                .integrate(
+                    Vec3::new(2.0, 1.0, 0.0),
+                    StreamlineDirection::Forward,
+                    StreamlineOptions {
+                        step_size: 0.05,
+                        max_steps: 8,
+                        max_length: 1.0,
+                        stagnation_speed: 1.0e-12,
+                    },
+                )
+                .is_err()
+        );
     }
 
     #[test]
@@ -2087,9 +2107,11 @@ mod tests {
 
         assert_eq!(dataset.mesh().dimension(), MeshDimension::ThreeD);
         assert!(!cache.mesh_cache().surface_triangles().is_empty());
-        assert!(cache.mesh_cache().triangle_faces().iter().all(|&face| cache
-            .scalar_for_face(ResultFieldKind::Pressure, face)
-            .is_some()));
+        assert!(cache.mesh_cache().triangle_faces().iter().all(|&face| {
+            cache
+                .scalar_for_face(ResultFieldKind::Pressure, face)
+                .is_some()
+        }));
     }
 
     #[test]
@@ -2115,16 +2137,22 @@ mod tests {
         let cache = ResultRenderCache::build(&dataset).unwrap();
 
         assert!(dataset.pressure().iter().all(|value| value.is_finite()));
-        assert!(dataset
-            .velocity()
-            .iter()
-            .all(|value| value.norm().is_finite()));
-        assert!(cache
-            .scalar_for_cell(ResultFieldKind::Pressure, 0)
-            .is_some());
-        assert!(cache
-            .scalar_for_cell(ResultFieldKind::VelocityMagnitude, 0)
-            .is_some());
+        assert!(
+            dataset
+                .velocity()
+                .iter()
+                .all(|value| value.norm().is_finite())
+        );
+        assert!(
+            cache
+                .scalar_for_cell(ResultFieldKind::Pressure, 0)
+                .is_some()
+        );
+        assert!(
+            cache
+                .scalar_for_cell(ResultFieldKind::VelocityMagnitude, 0)
+                .is_some()
+        );
     }
 
     #[test]
@@ -2220,13 +2248,9 @@ mod tests {
     }
 
     #[test]
-    fn built_in_blank_templates_are_discovered_from_files() {
-        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("cases/templates");
-        let templates = discover_templates(&root)
-            .into_iter()
-            .collect::<Result<Vec<_>, _>>()
-            .unwrap();
-        assert_eq!(templates.len(), 7);
+    fn built_in_templates_use_the_shared_catalogue() {
+        let templates = crate::workbench::catalogue::builtin_templates().unwrap();
+        assert!(templates.len() >= 7);
         for id in [
             "blank-2d",
             "blank-3d",
@@ -2238,9 +2262,11 @@ mod tests {
         ] {
             assert!(templates.iter().any(|template| template.id == id));
         }
-        assert!(templates
-            .iter()
-            .all(|template| !template.expectations.notes.is_empty()));
+        assert!(
+            templates
+                .iter()
+                .all(|template| !template.expectations.notes.is_empty())
+        );
         let channel = templates
             .iter()
             .find(|template| template.id == "laminar-channel")

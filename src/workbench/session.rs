@@ -11,12 +11,12 @@ use super::{
     WorkbenchProject,
 };
 use crate::{
-    output::write_unstructured_legacy_vtk, BodyId, BoxEntities, CadExtrudeFeature, CadSketch,
-    CadSketchId, CadSketchPlane, CircleHoleEntities, EdgeId, FaceId, GeneratedMesh, GeometryError,
-    GeometryGmshExport, GeometryTopology, GmshGeometryExporter, GmshMeshOptions, GmshMesher,
+    BodyId, BoxEntities, CadExtrudeFeature, CadSketch, CadSketchId, CadSketchPlane,
+    CircleHoleEntities, EdgeId, FaceId, GeneratedMesh, GeometryError, GeometryGmshExport,
+    GeometryTopology, GmshGeometryExporter, GmshMeshOptions, GmshMesher,
     IncompressibleBoundaryCondition, IncompressibleCase, IncompressibleCaseError,
     IncompressibleMaterial, IncompressibleSolution, IncompressibleSolverOptions, MeshDimension,
-    MeshingError, RectangleEntities, Vec3,
+    MeshingError, RectangleEntities, Vec3, output::write_unstructured_legacy_vtk,
 };
 use std::collections::BTreeMap;
 mod flow_domain;
@@ -180,8 +180,10 @@ impl WorkbenchSession {
         session.solver.volume_models = project.solver.volume_models;
         session.solver.cyclic_pairs = project.solver.cyclic_pairs.clone();
         session.solver.boundary_profiles = project.solver.boundary_profiles.clone();
+        session.solver.scripting = project.solver.scripting.clone();
         session.solver.thermal = project.solver.thermal.clone();
         session.solver.time = project.solver.time;
+        session.solver.physical_end_time = project.solver.physical_end_time;
         session.solver.turbulence = project.solver.turbulence.clone();
         session.solver.coupling_relative_tolerance = project.solver.coupling_relative_tolerance;
         session.geometry.ensure_extrusion_edges()?;
@@ -267,10 +269,12 @@ impl WorkbenchSession {
         project.solver.volume_models = self.solver.volume_models;
         project.solver.cyclic_pairs = self.solver.cyclic_pairs.clone();
         project.solver.boundary_profiles = self.solver.boundary_profiles.clone();
+        project.solver.scripting = self.solver.scripting.clone();
         project.solver.thermal = self.solver.thermal.clone();
         project.material.density = self.material.density;
         project.material.kinematic_viscosity = self.material.kinematic_viscosity;
         project.solver.time = self.solver.time;
+        project.solver.physical_end_time = self.solver.physical_end_time;
         project.solver.turbulence = self.solver.turbulence.clone();
         project.solver.max_outer_iterations = self.solver.max_outer_iterations;
         project.solver.continuity_absolute_tolerance = self.solver.continuity_absolute_tolerance;
@@ -591,6 +595,12 @@ impl WorkbenchSession {
                 pair.second = new_name.trim().into();
             }
         }
+        if let Some(b) = self.solver.scripting.bindings.remove(old_name) {
+            self.solver
+                .scripting
+                .bindings
+                .insert(new_name.trim().into(), b);
+        }
         if let Some(b) = self.solver.boundary_profiles.remove(old_name) {
             self.solver
                 .boundary_profiles
@@ -643,6 +653,7 @@ impl WorkbenchSession {
             self.solver.thermal.boundaries.remove(name);
             self.solver.turbulence.inlets.remove(name);
             self.solver.boundary_profiles.remove(name);
+            self.solver.scripting.bindings.remove(name);
             self.invalidate_mesh();
         }
         deleted
@@ -683,7 +694,7 @@ impl WorkbenchSession {
                                 "Named Selection {:?} must contain only geometry faces for a 3D box mesh",
                                 selection.name
                             ),
-                        })
+                        });
                     }
                 }
             }
@@ -711,9 +722,12 @@ impl WorkbenchSession {
         // Reject silent clamping of explicit controls by global size bounds.
         for control in self.mesh_recipe.local_sizes.iter().filter(|c| c.enabled) {
             if control.size < self.min_size || control.size > self.max_size {
-                return Err(WorkbenchError::InvalidGrouping { message: format!(
-                    "Local size '{}' ({}) is outside global bounds [{}, {}]. Adjust the bounds or this control.",
-                    control.name, control.size, self.min_size, self.max_size) });
+                return Err(WorkbenchError::InvalidGrouping {
+                    message: format!(
+                        "Local size '{}' ({}) is outside global bounds [{}, {}]. Adjust the bounds or this control.",
+                        control.name, control.size, self.min_size, self.max_size
+                    ),
+                });
             }
         }
         for control in self.mesh_recipe.refinements.iter().filter(|c| c.enabled) {
@@ -846,7 +860,13 @@ impl WorkbenchSession {
             if let Some(g) = self.mesh_recipe.tuning.max_size_growth {
                 let required = (control.size_max - control.size_min) / g.ln();
                 if control.distance_max - control.distance_min < required * (1.0 - 1e-10) {
-                    return Err(WorkbenchError::InvalidGrouping {message:format!("Distance control '{}' transition is too short for growth {g}: require width ≥ {required:.6e} m (end ≥ {:.6e} m). Use Calculate transition or increase the end distance.",control.name,control.distance_min+required)});
+                    return Err(WorkbenchError::InvalidGrouping {
+                        message: format!(
+                            "Distance control '{}' transition is too short for growth {g}: require width ≥ {required:.6e} m (end ≥ {:.6e} m). Use Calculate transition or increase the end distance.",
+                            control.name,
+                            control.distance_min + required
+                        ),
+                    });
                 }
             }
             let distance_field = field_id;
@@ -939,7 +959,7 @@ impl WorkbenchSession {
                     return Err(WorkbenchError::InvalidGrouping {
                         message: "Mesh recipe controls must target edges in 2D and faces in 3D"
                             .into(),
-                    })
+                    });
                 }
             }
         }
@@ -983,7 +1003,12 @@ impl WorkbenchSession {
                         .map(|e| e.edge.get().to_string())
                         .collect::<Vec<_>>();
                     if !missing.is_empty() {
-                        return Err(WorkbenchError::InvalidGrouping { message: format!("Assign every fluid boundary edge to a Named Selection before meshing. Missing edges: {}", missing.join(", ")) });
+                        return Err(WorkbenchError::InvalidGrouping {
+                            message: format!(
+                                "Assign every fluid boundary edge to a Named Selection before meshing. Missing edges: {}",
+                                missing.join(", ")
+                            ),
+                        });
                     }
                 }
                 Ok(GmshGeometryExporter::planar(
@@ -1398,6 +1423,18 @@ impl WorkbenchSession {
         name: &str,
         profile: Option<crate::unstructured_incompressible::BoundaryProfile>,
     ) -> Result<(), WorkbenchError> {
+        if profile.is_some()
+            && self
+                .solver
+                .scripting
+                .bindings
+                .get(name)
+                .is_some_and(|v| !v.is_empty())
+        {
+            return Err(WorkbenchError::InvalidGrouping {
+                message: "Detach scripts on this boundary before applying a time table".into(),
+            });
+        }
         if let Some(p) = &profile {
             let bc = *self
                 .boundaries
@@ -1424,6 +1461,35 @@ impl WorkbenchSession {
             } else {
                 self.solver.boundary_profiles.remove(name);
             }
+            self.solution = None;
+            self.status = SolveStatus::Idle;
+        }
+        Ok(())
+    }
+    pub fn set_scripting(&mut self, settings: crate::scripting::Settings) -> Result<(), String> {
+        settings.validate(self.solver.time.is_transient())?;
+        for (name, bindings) in &settings.bindings {
+            let bc = *self
+                .boundaries
+                .get(name)
+                .ok_or_else(|| format!("Assign physical boundary {name} first"))?;
+            settings.check_boundary(name, bc, self.solver.thermal.boundaries.get(name).copied())?;
+            if self.solver.boundary_profiles.contains_key(name) && !bindings.is_empty() {
+                return Err(format!("Remove the time table on {name} first"));
+            }
+            if self.cyclic_partner(name).is_some() {
+                return Err("Cyclic patches cannot use scripts".into());
+            }
+            if bindings
+                .iter()
+                .any(|b| b.quantity == crate::scripting::Quantity::Temperature)
+                && !self.solver.thermal.enabled
+            {
+                return Err("Enable temperature transport first".into());
+            }
+        }
+        if self.solver.scripting != settings {
+            self.solver.scripting = settings;
             self.solution = None;
             self.status = SolveStatus::Idle;
         }
@@ -1526,6 +1592,17 @@ impl WorkbenchSession {
             self.status = SolveStatus::Idle;
         }
         self.solver.convection = convection;
+    }
+
+    pub fn set_physical_end_time(&mut self, time: Option<f64>) -> Result<(), WorkbenchError> {
+        if time.is_some_and(|t| !t.is_finite() || t <= 0.0 || !self.solver.time.is_transient()) {
+            return Err(WorkbenchError::InvalidGrouping {
+                message: "End time requires transient integration and a finite positive time"
+                    .into(),
+            });
+        }
+        self.solver.physical_end_time = time;
+        Ok(())
     }
 
     pub fn set_flow_models(
@@ -1648,6 +1725,23 @@ impl WorkbenchSession {
         };
         if !self.solver.cyclic_pairs.is_empty() {
             self.solver.resolve_cyclic(&generated.mesh)?;
+        }
+        self.solver
+            .scripting
+            .validate(self.solver.time.is_transient())?;
+        for name in self.solver.scripting.bindings.keys() {
+            let bc = *self
+                .boundaries
+                .get(name)
+                .ok_or_else(|| format!("Missing scripted boundary {name}"))?;
+            self.solver.scripting.check_boundary(
+                name,
+                bc,
+                self.solver.thermal.boundaries.get(name).copied(),
+            )?;
+            if self.solver.boundary_profiles.contains_key(name) {
+                return Err(format!("Script/time table conflict on {name}"));
+            }
         }
         if !self.solver.boundary_profiles.is_empty() && !self.solver.time.is_transient() {
             return Err("Time-dependent boundaries require transient integration".into());
@@ -1906,7 +2000,7 @@ fn condition_values(condition: IncompressibleBoundaryCondition) -> Vec<f64> {
                 axis as f64,
                 center,
                 half_width,
-            ]
+            ];
         }
         IncompressibleBoundaryCondition::NoSlipWall
         | IncompressibleBoundaryCondition::Slip

@@ -26,7 +26,7 @@ mod vector;
 pub use csr::{CsrBuilder, CsrMatrix};
 pub use preconditioner::{
     IncompleteCholeskyPreconditioner, JacobiPreconditioner, Preconditioner,
-    StructuredMultigridPreconditioner, SymmetricGaussSeidelPreconditioner,
+    SymmetricGaussSeidelPreconditioner,
 };
 pub use solver::{
     bicgstab, bicgstab_with_preconditioner, bicgstab_with_preconditioner_and_workspace, cg, pcg,

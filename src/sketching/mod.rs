@@ -2,6 +2,8 @@
 //! Upstream provenance and licences: vendor/cad-workbench/HOST-INTEGRATION.json.
 pub use cad_geom as geom;
 pub use cad_sketch as core;
+pub mod draft;
+
 mod corners;
 mod freeform;
 mod modify;

@@ -5,10 +5,11 @@
 //! remains in `crate::simple`.
 
 use crate::{
-    initial_face_flux, CellField, Diffusivity, FaceField, FieldError, LeastSquaresGradientStencil,
+    CellField, Diffusivity, FaceField, FieldError, LeastSquaresGradientStencil,
     LinearSolverOptions, NumericsError, ResolvedScalarBoundaryConditions,
     ResolvedVelocityBoundaryConditions, ScalarBoundaryCondition, SimpleError, SimpleOptions,
     SimpleReport, SimpleState, UnstructuredMesh, Vec3, VelocityBoundaryCondition,
+    initial_face_flux,
 };
 
 mod profiles;
@@ -71,11 +72,14 @@ pub struct IncompressibleMaterial {
 pub struct IncompressibleSolverOptions {
     pub compute: crate::compute::ComputeOptions,
     pub time: TimeIntegration,
+    /// Absolute physical stopping time; the last step is shortened to land here.
+    pub physical_end_time: Option<f64>,
     pub pressure_coupling: crate::simple::PressureCoupling,
     pub volume_models: crate::volume_models::VolumeModels,
     pub cyclic_pairs: Vec<crate::periodic::TranslationalCyclicPair>,
     pub equations: Option<crate::equations::EquationSolvers>,
     pub boundary_profiles: BoundaryProfiles,
+    pub scripting: crate::scripting::Settings,
     pub turbulence: crate::turbulence::TurbulenceOptions,
     pub thermal: crate::thermal::Options,
     pub convection: crate::momentum::MomentumConvection,
@@ -122,11 +126,13 @@ impl Default for IncompressibleSolverOptions {
         Self {
             compute: Default::default(),
             time: TimeIntegration::Steady,
+            physical_end_time: None,
             pressure_coupling: Default::default(),
             volume_models: Default::default(),
             cyclic_pairs: Vec::new(),
             equations: None,
             boundary_profiles: Default::default(),
+            scripting: Default::default(),
             turbulence: crate::turbulence::TurbulenceOptions::default(),
             thermal: crate::thermal::Options::default(),
             convection: crate::momentum::MomentumConvection::Upwind,
@@ -531,6 +537,57 @@ impl IncompressibleCase {
                 }
             }
         }
+        for (name, bindings) in &self.solver.scripting.bindings {
+            let fail = |message| IncompressibleCaseError::InvalidScript { message };
+            let bc = self
+                .boundaries
+                .iter()
+                .find(|(n, _)| n == name)
+                .map(|(_, b)| *b)
+                .ok_or_else(|| fail(format!("Missing scripted patch {name}")))?;
+            self.solver
+                .scripting
+                .check_boundary(name, bc, self.solver.thermal.boundaries.get(name).copied())
+                .map_err(fail)?;
+            let patch = self
+                .mesh
+                .boundary_patches()
+                .iter()
+                .find(|p| &p.name == name)
+                .ok_or_else(|| fail(format!("Missing mesh patch {name}")))?;
+            for binding in bindings {
+                if binding.quantity == crate::scripting::Quantity::Temperature {
+                    continue;
+                }
+                let compiled = self.solver.scripting.compiled(binding).map_err(fail)?;
+                for &i in &patch.face_indices {
+                    let face = &self.mesh.faces()[i];
+                    let v = compiled
+                        .value(binding, face.center, self.solver.scripting.evaluation_time)
+                        .map_err(|e| fail(format!("Patch {name}, face {i}: {e}")))?;
+                    match binding.quantity {
+                        crate::scripting::Quantity::Velocity => {
+                            if self.mesh.dimension() == crate::MeshDimension::TwoD
+                                && v.z.abs() > 1e-12
+                            {
+                                return Err(fail(format!(
+                                    "2D velocity script on {name} must return Uz=0"
+                                )));
+                            }
+                            velocity_boundary.set_face_velocity(i, Some(v));
+                            boundary_flux[i] = v.dot(face.area_vector);
+                        }
+                        crate::scripting::Quantity::Pressure => {
+                            pressure_boundary
+                                .set_condition(i, ScalarBoundaryCondition::FixedValue(v.x));
+                            pressure_correction_boundary
+                                .set_condition(i, ScalarBoundaryCondition::FixedValue(0.0));
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
         if !self.solver.cyclic_pairs.is_empty() {
             let cyclic = std::sync::Arc::new(
                 self.solver
@@ -641,6 +698,7 @@ impl ResolvedIncompressibleBoundaries {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum IncompressibleCaseError {
+    InvalidScript { message: String },
     InvalidCyclic { message: String },
     Field(FieldError),
     Numerics(crate::NumericsError),
@@ -804,9 +862,9 @@ impl<'a> SolveControl<'a> {
     pub fn with_fields(
         mut self,
         callback: impl Fn(usize, &CellField<Vec3>, &CellField<f64>) -> Result<(), String>
-            + Send
-            + Sync
-            + 'a,
+        + Send
+        + Sync
+        + 'a,
     ) -> Self {
         self.on_fields = Some(Box::new(callback));
         self
@@ -816,9 +874,9 @@ impl<'a> SolveControl<'a> {
         mut self,
         every: usize,
         callback: impl Fn(usize, IncompressibleInitialConditions) -> Result<(), String>
-            + Send
-            + Sync
-            + 'a,
+        + Send
+        + Sync
+        + 'a,
     ) -> Self {
         self.on_restart = Some(Box::new(callback));
         self.restart_every = every;
@@ -895,17 +953,46 @@ pub enum IncompressibleSolveError {
 impl std::fmt::Display for IncompressibleSolveError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let guidance = match self {
-            Self::Compute(_) => "Compute backend could not start. Check device selection, resource limits and CPU fallback settings.",
-            Self::Simple(SimpleError::Linear(crate::LinearAlgebraError::Backend { message })) if message.contains("FGMRES exhausted") => "GPU-preconditioned linear solve did not reach the requested true residual. The final L2, target and method are reported below. Review the preconditioner and linear iteration budget; CPU fallback is available without changing tolerances.",
-            Self::Simple(SimpleError::Linear(crate::LinearAlgebraError::Backend { .. })) => "Compute backend failed. Check GPU availability, working-buffer limits and recorded fallback policy.",
+            Self::Compute(_) => {
+                "Compute backend could not start. Check device selection, resource limits and CPU fallback settings."
+            }
+            Self::Simple(SimpleError::Linear(crate::LinearAlgebraError::Backend { message }))
+                if message.contains("FGMRES exhausted") =>
+            {
+                "GPU-preconditioned linear solve did not reach the requested true residual. The final L2, target and method are reported below. Review the preconditioner and linear iteration budget; CPU fallback is available without changing tolerances."
+            }
+            Self::Simple(SimpleError::Linear(crate::LinearAlgebraError::Backend { .. })) => {
+                "Compute backend failed. Check GPU availability, working-buffer limits and recorded fallback policy."
+            }
             Self::Cancelled => "Solve cancelled by the user.",
-            Self::Simple(SimpleError::Linear(crate::LinearAlgebraError::IncompleteCholeskyPivot {..})) => "Pressure IC(0) factorization failed. The failing row, pivot and diagonal are included below. Inspect pressure-system scaling and definiteness, plus preceding velocity/momentum growth; a small continuity residual alone does not establish a stable solution.",
-            Self::Simple(SimpleError::MomentumLinearDidNotConverge) => "Momentum linear solver did not reach tolerance. Check mesh non-orthogonality and size transitions, inlet speed and viscosity; try lower velocity relaxation and first-order upwind. This does not identify a unique cause.",
-            Self::Simple(SimpleError::PressureLinearDidNotConverge) => "Pressure linear solver did not reach tolerance. Check domain connectivity, pressure reference, mesh quality and incompatible flow boundary conditions.",
-            Self::Simple(SimpleError::InvalidMomentumDiagonal { .. }) => "Momentum diagonal is invalid. Check cell measures, material properties and assembled coefficients.",
-            Self::BackflowAtPressureOutlet { .. } => "Flow enters a strict pressure outlet. Extend the outlet beyond recirculation, or choose a pressure outlet with an explicit backflow velocity when physically appropriate.",
-            Self::Case(IncompressibleCaseError::Numerics(crate::NumericsError::SingularLeastSquaresStencil { .. })) | Self::Simple(SimpleError::Numerics(crate::NumericsError::SingularLeastSquaresStencil { .. })) => "Gradient stencil is rank-deficient at the reported cell. Check degenerate cells, collapsed dimensions and disconnected or insufficiently independent neighbour directions; adding iterations will not fix this geometric failure.",
-            Self::Case(_) => "Case preparation failed. Check boundary coverage, boundary compatibility and numerical stencils.",
+            Self::Simple(SimpleError::Linear(
+                crate::LinearAlgebraError::IncompleteCholeskyPivot { .. },
+            )) => {
+                "Pressure IC(0) factorization failed. The failing row, pivot and diagonal are included below. Inspect pressure-system scaling and definiteness, plus preceding velocity/momentum growth; a small continuity residual alone does not establish a stable solution."
+            }
+            Self::Simple(SimpleError::MomentumLinearDidNotConverge) => {
+                "Momentum linear solver did not reach tolerance. Check mesh non-orthogonality and size transitions, inlet speed and viscosity; try lower velocity relaxation and first-order upwind. This does not identify a unique cause."
+            }
+            Self::Simple(SimpleError::PressureLinearDidNotConverge) => {
+                "Pressure linear solver did not reach tolerance. Check domain connectivity, pressure reference, mesh quality and incompatible flow boundary conditions."
+            }
+            Self::Simple(SimpleError::InvalidMomentumDiagonal { .. }) => {
+                "Momentum diagonal is invalid. Check cell measures, material properties and assembled coefficients."
+            }
+            Self::BackflowAtPressureOutlet { .. } => {
+                "Flow enters a strict pressure outlet. Extend the outlet beyond recirculation, or choose a pressure outlet with an explicit backflow velocity when physically appropriate."
+            }
+            Self::Case(IncompressibleCaseError::Numerics(
+                crate::NumericsError::SingularLeastSquaresStencil { .. },
+            ))
+            | Self::Simple(SimpleError::Numerics(
+                crate::NumericsError::SingularLeastSquaresStencil { .. },
+            )) => {
+                "Gradient stencil is rank-deficient at the reported cell. Check degenerate cells, collapsed dimensions and disconnected or insufficiently independent neighbour directions; adding iterations will not fix this geometric failure."
+            }
+            Self::Case(_) => {
+                "Case preparation failed. Check boundary coverage, boundary compatibility and numerical stencils."
+            }
             _ => "Solve failed; inspect the detailed error and mesh preflight report.",
         };
         write!(formatter, "{guidance} Details: {self:?}")

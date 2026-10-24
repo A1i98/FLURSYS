@@ -168,6 +168,12 @@ pub fn run(args: &[String]) -> Result<(), String> {
         }
         return Ok(());
     }
+    if args[0] != "project" {
+        return Err(format!(
+            "Unknown command '{}'. Use flursys --help.",
+            args[0]
+        ));
+    }
     let action = args[1].as_str();
     let folder = Path::new(args.get(2).ok_or("Missing project directory")?);
     let allowed: &[&str] = match action {
@@ -306,20 +312,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
         if let Some(n) = number(&opts, "threads")? {
             session.set_mesh_cpu_threads(n);
         }
-        let (export, options) = session
-            .mesh_generation_inputs()
-            .map_err(|e| e.to_string())?;
-        let generated = GmshMesher::auto()
-            .generate(&export.document, &options)
-            .map_err(|e| e.to_string())?;
-        session.install_mesh(generated);
-        project.mesh_asset = Some(mesh_storage::save(
-            folder,
-            &session.to_project(project.name.clone()),
-            session.mesh().unwrap(),
-        )?);
-        project.mesh = session.to_project(project.name.clone()).mesh;
-        save_workspace(folder, &project).map_err(|e| e.to_string())?;
+        flursys::headless::mesh(folder, &mut project, &mut session, &GmshMesher::auto())?;
         emit(
             json!({"summary":format!("Mesh saved: {} cells",session.mesh().unwrap().mesh.cell_count()),"cells":session.mesh().unwrap().mesh.cell_count()}),
             json_output,
@@ -373,89 +366,34 @@ pub fn run(args: &[String]) -> Result<(), String> {
     if action == "benchmark" {
         return benchmark(&case, &opts, json_output);
     }
-    let mut jobs = flursys::app::WorkbenchJobExecutor::new();
-    if let Some(path) = opts.get("restart") {
-        flursys::workbench::checkpoint::load(Path::new(path), &case.mesh)?;
-        jobs.set_restart(Some(PathBuf::from(path)));
-    }
-    project.solver = session.to_project(project.name.clone()).solver;
-    save_workspace(folder, &project).map_err(|e| e.to_string())?;
-    let stamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    let recording = PathBuf::from("monitors").join(format!("solve-{stamp}"));
-    jobs.start_solve_with_planes(
-        case,
-        project.plane_monitors.clone(),
-        folder.join(&recording),
-    )
-    .map_err(str::to_string)?;
-    session.mark_solving();
-    let mut outcome = None;
-    let mut health = None;
-    while outcome.is_none() {
-        for event in jobs.drain() {
+    let outcome = flursys::headless::run(
+        folder,
+        &mut project,
+        &mut session,
+        &flursys::headless::RunOptions {
+            restart: opts.get("restart").map(PathBuf::from),
+        },
+        |event| {
             use flursys::app::{JobProgress as P, WorkbenchJobEvent as E};
             match event {
                 E::SolveProgress(P::Iteration {
                     current,
                     max,
                     residual,
-                }) if current == 1 || current % 10 == 0 || current == max => eprintln!(
+                }) if *current == 1 || current % 10 == 0 || current == max => eprintln!(
                     "step {current}/{max} · continuity {:.6e}",
                     residual.unwrap_or(f64::NAN)
                 ),
                 E::SolveProgress(P::Message(message)) => eprintln!("{message}"),
-                E::Health(report) => health = Some(report),
-                E::Performance(report) => session.set_performance(report),
-                E::SolveCompleted(result) => outcome = Some(result),
                 _ => {}
             }
-        }
-        if outcome.is_none() && jobs.lifecycle() != flursys::app::JobLifecycle::Running {
-            outcome = Some(Err(flursys::IncompressibleSolveError::Simple(
-                flursys::simple::SimpleError::Monitor(
-                    "Solve worker disconnected before returning a result".into(),
-                ),
-            )));
-        }
-        if outcome.is_none() {
-            std::thread::sleep(std::time::Duration::from_millis(20));
-        }
-    }
-    let solution = outcome.unwrap();
-    let failure = solution.as_ref().err().map(ToString::to_string);
-    session.complete_solve(solution);
-    let record =
-        finalize_workspace_run(folder, &mut project, &session).map_err(|e| e.to_string())?;
-    if let Some(record) = record.as_ref() {
-        let path = folder.join(&record.report_path);
-        let mut report: Value =
-            serde_json::from_slice(&std::fs::read(&path).map_err(|e| e.to_string())?)
-                .map_err(|e| e.to_string())?;
-        report["plane_recording_folder"] = json!(recording);
-        report["sampled_field_health"] = json!(health);
-        if let Some(restart) = opts.get("restart") {
-            report["restart_source"] = json!(restart);
-        }
-        let diagnostic = recording.join("failed-last-sample.json");
-        if failure.is_some() && folder.join(&diagnostic).is_file() {
-            report["unconverged_checkpoint"] = json!(diagnostic);
-        }
-        use std::io::Write;
-        let mut temp =
-            tempfile::NamedTempFile::new_in(path.parent().unwrap()).map_err(|e| e.to_string())?;
-        serde_json::to_writer_pretty(&mut temp, &report).map_err(|e| e.to_string())?;
-        temp.flush().map_err(|e| e.to_string())?;
-        temp.as_file().sync_all().map_err(|e| e.to_string())?;
-        temp.persist(&path).map_err(|e| e.to_string())?;
-    }
+        },
+    )?;
     emit(
-        json!({"summary":failure.clone().unwrap_or_else(||format!("Run saved: {:?}",session.status())),"run":record,"failed":failure.is_some()}),
+        json!({"summary":outcome.failure.clone().unwrap_or_else(||format!("Run saved: {:?}",session.status())),"run":outcome.run,"failed":outcome.failure.is_some()}),
         json_output,
     );
-    if let Some(e) = failure {
+    if let Some(e) = outcome.failure {
         return Err(e);
     }
     Ok(())

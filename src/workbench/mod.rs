@@ -1,8 +1,4 @@
-//! Solver-independent analysis intent and executable solver plans.
-//!
-//! A project records what the engineer wants to analyse. `ExecutionPlan` is
-//! created only after project data has been validated against the capabilities
-//! of a concrete numerical backend.
+//! Canonical project, meshing, solver orchestration and results shared by GUI and headless clients.
 
 pub mod boundary_reports;
 pub mod catalogue;
@@ -11,7 +7,6 @@ pub mod diagnostics;
 pub mod editor;
 pub mod examples;
 pub mod field_mapping;
-pub mod legacy_import;
 pub mod mesh_report;
 pub mod mesh_storage;
 pub mod mesh_viewport;
@@ -33,10 +28,6 @@ pub use examples::{
     build_example, descriptor as example_descriptor, example_descriptors, expectations,
     verify_solution, ExampleCheck, ExampleExpectations, ExampleProjectDescriptor,
     ExampleProjectError, ExampleProjectId, ExampleVerificationReport,
-};
-pub use legacy_import::{
-    import_legacy_project, inspect_legacy_project, is_legacy_project_path, migrate_legacy_project,
-    LegacyProjectInspection, MigrationReport, MigrationResult, LEGACY_PROJECT_FORMATS,
 };
 pub use mesh_viewport::{
     MeshQualityMetric, MeshQualityValues, MeshRenderCache, MeshSelection, MeshSelectionTarget,
@@ -65,68 +56,3 @@ pub use selection::{
     GeometrySelectionTarget, NamedSelection, NamedSelectionError, NamedSelectionStore,
 };
 pub use session::{SolveStatus, WorkbenchError, WorkbenchSession};
-
-use crate::{LidDrivenCavity3DConfig, SimulationConfig};
-use serde::{Deserialize, Serialize};
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum AnalysisDimension {
-    #[default]
-    TwoD,
-    ThreeD,
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum AnalysisKind {
-    #[default]
-    IncompressibleFlow,
-}
-
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
-#[serde(default)]
-pub struct WorkbenchAnalysis {
-    pub dimension: AnalysisDimension,
-    pub kind: AnalysisKind,
-}
-
-impl WorkbenchAnalysis {
-    pub fn validate(&self) -> Result<(), String> {
-        match self.kind {
-            AnalysisKind::IncompressibleFlow => Ok(()),
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SolverBackend {
-    StructuredIncompressible2D,
-    StructuredCavity3D,
-}
-
-#[derive(Clone, Debug)]
-pub enum ExecutionPlan {
-    StructuredIncompressible2D(Box<SimulationConfig>),
-    StructuredCavity3D(LidDrivenCavity3DConfig),
-}
-
-impl ExecutionPlan {
-    pub fn backend(&self) -> SolverBackend {
-        match self {
-            Self::StructuredIncompressible2D(_) => SolverBackend::StructuredIncompressible2D,
-            Self::StructuredCavity3D(_) => SolverBackend::StructuredCavity3D,
-        }
-    }
-
-    pub fn capability_summary(&self) -> &'static str {
-        match self {
-            Self::StructuredIncompressible2D(_) => {
-                "structured 2D incompressible flow with the selected case and supported boundaries"
-            }
-            Self::StructuredCavity3D(_) => {
-                "structured 3D lid-driven cavity with no CAD solids and case-default walls"
-            }
-        }
-    }
-}

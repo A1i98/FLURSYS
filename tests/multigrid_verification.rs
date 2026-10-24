@@ -1,7 +1,4 @@
-use flursys::{
-    dot, pcg_with_preconditioner_and_workspace, residual, CgWorkspace, CsrBuilder,
-    LinearSolverOptions, Preconditioner, StructuredMultigridPreconditioner,
-};
+use flursys::{residual, CsrBuilder, LinearSolverOptions};
 
 // Variable-coefficient pressure operator with odd dimensions, an internal solid
 // mask and a Dirichlet outlet. This exercises aggregation across wall cells.
@@ -35,80 +32,6 @@ fn pressure_matrix(nx: usize, ny: usize, scale: f64) -> flursys::CsrMatrix {
         }
     }
     builder.finalize().unwrap()
-}
-
-#[test]
-fn masked_multigrid_is_symmetric_positive_and_recovers_a_manufactured_solution() {
-    let (nx, ny) = (13, 9);
-    let matrix = pressure_matrix(nx, ny, 1.0);
-    let size = nx * ny;
-    let exact: Vec<_> = (0..size).map(|i| (i as f64 * 0.13).sin()).collect();
-    let mut rhs = vec![0.0; size];
-    matrix.spmv_into(&exact, &mut rhs).unwrap();
-    let y: Vec<_> = (0..size).map(|i| (i as f64 * 0.21).cos()).collect();
-    for sweeps in [1, 2, 3, 8] {
-        let mg = StructuredMultigridPreconditioner::with_smoothing_steps(&matrix, nx, ny, sweeps)
-            .unwrap();
-        let mut mx = vec![0.0; size];
-        let mut my = vec![0.0; size];
-        mg.apply_into(&exact, &mut mx).unwrap();
-        mg.apply_into(&y, &mut my).unwrap();
-        let xy = dot(&exact, &my).unwrap();
-        let yx = dot(&y, &mx).unwrap();
-        assert!((xy - yx).abs() < 1.0e-10 * xy.abs().max(yx.abs()).max(1.0));
-        assert!(dot(&exact, &mx).unwrap() > 0.0);
-        let mut solution = vec![0.0; size];
-        let report = pcg_with_preconditioner_and_workspace(
-            &matrix,
-            &rhs,
-            &mut solution,
-            &mg,
-            LinearSolverOptions {
-                absolute_tolerance: 1.0e-11,
-                relative_tolerance: 0.0,
-                max_iterations: 500,
-            },
-            &mut CgWorkspace::default(),
-        )
-        .unwrap();
-        assert!(report.converged());
-        assert!(
-            residual(&matrix, &solution, &rhs)
-                .unwrap()
-                .iter()
-                .map(|x| x * x)
-                .sum::<f64>()
-                .sqrt()
-                < 2.0e-11
-        );
-        assert!(solution
-            .iter()
-            .zip(&exact)
-            .all(|(a, b)| (a - b).abs() < 1.0e-10));
-    }
-}
-
-#[test]
-fn reused_hierarchy_matches_a_fresh_hierarchy_after_coefficient_updates() {
-    let (nx, ny) = (13, 9);
-    let initial = pressure_matrix(nx, ny, 1.0);
-    let mut reused = StructuredMultigridPreconditioner::new(&initial, nx, ny).unwrap();
-    let rhs: Vec<_> = (0..nx * ny).map(|i| (i as f64).sin()).collect();
-    for scale in [0.5, 1.5, 3.0, 1.0] {
-        let updated = pressure_matrix(nx, ny, scale);
-        reused.update_values(&updated).unwrap();
-        let fresh = StructuredMultigridPreconditioner::new(&updated, nx, ny).unwrap();
-        let mut actual = vec![0.0; nx * ny];
-        let mut expected = actual.clone();
-        reused.apply_into(&rhs, &mut actual).unwrap();
-        fresh.apply_into(&rhs, &mut expected).unwrap();
-        assert!(actual
-            .iter()
-            .zip(expected)
-            .all(|(a, b)| (a - b).abs() < 1.0e-12));
-    }
-    assert!(StructuredMultigridPreconditioner::with_smoothing_steps(&initial, nx, ny, 0).is_err());
-    assert!(StructuredMultigridPreconditioner::with_smoothing_steps(&initial, nx, ny, 9).is_err());
 }
 
 #[test]

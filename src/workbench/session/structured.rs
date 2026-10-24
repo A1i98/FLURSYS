@@ -9,11 +9,7 @@ fn invalid(message: impl Into<String>) -> WorkbenchError {
     }
 }
 fn signed(tag: usize, reversed: bool) -> i64 {
-    if reversed {
-        -(tag as i64)
-    } else {
-        tag as i64
-    }
+    if reversed { -(tag as i64) } else { tag as i64 }
 }
 impl WorkbenchSession {
     fn loop_data(
@@ -34,7 +30,7 @@ impl WorkbenchSession {
                     _ => {
                         return Err(invalid(
                             "Mapped meshing requires analytic curves, not faceted CAD edges",
-                        ))
+                        ));
                     }
                 };
                 Ok((
@@ -68,7 +64,9 @@ impl WorkbenchSession {
                 | MeshMethod::SweepHex
         );
         if structured && self.mesh_recipe.edge_divisions.iter().any(|c| c.enabled) {
-            return Err(invalid("Mapped/block/sweep methods use their I/J/K counts. Disable scoped edge division controls first."));
+            return Err(invalid(
+                "Mapped/block/sweep methods use their I/J/K counts. Disable scoped edge division controls first.",
+            ));
         }
         if structured
             && (self.mesh_recipe.local_sizes.iter().any(|c| c.enabled)
@@ -76,7 +74,9 @@ impl WorkbenchSession {
                 || self.mesh_recipe.boundary_layers.iter().any(|c| c.enabled)
                 || self.mesh_recipe.regions.iter().any(|c| c.enabled))
         {
-            return Err(invalid("Structured methods use explicit cell divisions. Disable size, distance, box and inflation controls first; use mapped progression for grading."));
+            return Err(invalid(
+                "Structured methods use explicit cell divisions. Disable size, distance, box and inflation controls first; use mapped progression for grading.",
+            ));
         }
         let [ni, nj, nk] = t.divisions;
         let [ri, rj] = t.progression;
@@ -85,7 +85,9 @@ impl WorkbenchSession {
                 || self.box_body.is_some()
                 || self.geometry.cad_bodies().any(|(_, b)| b.visible)
             {
-                return Err(invalid("Surface sweep requires an analytic profile extrusion, not an imported/faceted CAD solid or canonical box"));
+                return Err(invalid(
+                    "Surface sweep requires an analytic profile extrusion, not an imported/faceted CAD solid or canonical box",
+                ));
             }
             let body = self
                 .geometry
@@ -161,7 +163,9 @@ impl WorkbenchSession {
                         .cad_bodies()
                         .any(|(id, b)| b.visible && export.map.body_tag(id) == Some(7000)))
             {
-                return Err(invalid("Hex block requires a canonical box or a recognized six-face axis-aligned CAD box. General solids are not supported."));
+                return Err(invalid(
+                    "Hex block requires a canonical box or a recognized six-face axis-aligned CAD box. General solids are not supported.",
+                ));
             }
             if ri != 1.0 || rj != 1.0 {
                 return Err(invalid(
@@ -210,7 +214,9 @@ impl WorkbenchSession {
                 )
             })
         {
-            return Err(invalid("Mapped/O-grid requires a convex four-line outer boundary; partition the geometry into blocks first"));
+            return Err(invalid(
+                "Mapped/O-grid requires a convex four-line outer boundary; partition the geometry into blocks first",
+            ));
         }
         let outer = self.loop_data(&export, outer_loop)?;
         let pos = |id: VertexId| self.geometry.vertex(id).unwrap().position;
@@ -232,7 +238,9 @@ impl WorkbenchSession {
         let mut source = String::new();
         if t.method == MeshMethod::MappedQuad {
             if !inner_loops.is_empty() {
-                return Err(invalid("A mapped quad face cannot contain holes. Choose O-grid for a single circular hole."));
+                return Err(invalid(
+                    "A mapped quad face cannot contain holes. Choose O-grid for a single circular hole.",
+                ));
             }
             for (i, edge) in outer.iter().enumerate().take(4) {
                 let (n, r) = if i % 2 == 0 { (ni, ri) } else { (nj, rj) };
@@ -334,7 +342,9 @@ impl WorkbenchSession {
             inner.rotate_left(shift);
             // Reject severely twisted blocks instead of emitting inverted cells.
             if (0..4).any(|i| (pos(inner[i].1) - c).dot(p[i] - c) <= 0.0) {
-                return Err(invalid("O-grid circle arcs are not aligned with the outer corners; rotate/partition the circular profile"));
+                return Err(invalid(
+                    "O-grid circle arcs are not aligned with the outer corners; rotate/partition the circular profile",
+                ));
             }
             for i in 0..4 {
                 let j = (i + 1) % 4;
@@ -345,7 +355,9 @@ impl WorkbenchSession {
                         .dot(normal)
                         <= 0.0
                 }) {
-                    return Err(invalid("O-grid corner correspondence creates a degenerate/twisted block; reposition or repartition the profile"));
+                    return Err(invalid(
+                        "O-grid corner correspondence creates a degenerate/twisted block; reposition or repartition the profile",
+                    ));
                 }
             }
             let original = export

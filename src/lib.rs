@@ -5,20 +5,17 @@
 //! designed and validated.
 
 pub mod app;
-pub mod cases;
 pub mod compressible;
 pub mod compute;
 pub mod database;
 pub mod equations;
-pub mod field;
 pub mod fields;
 pub mod geometry;
-pub mod grid;
+pub mod headless;
 pub mod io;
 pub mod linear;
 pub mod materials;
 pub mod mesh;
-pub mod mesh_artifact;
 pub mod meshing;
 pub mod momentum;
 pub mod multiphase;
@@ -26,20 +23,15 @@ pub mod multiphysics;
 pub mod numerics;
 pub mod output;
 pub mod periodic;
-pub mod physics;
 pub mod poisson;
-pub mod preprocess;
-pub mod project;
-pub mod runtime;
+pub mod scripting;
 pub mod simple;
 pub mod sketching;
-pub mod solver;
 pub mod thermal;
 pub mod unstructured_incompressible;
 pub mod volume_models;
 pub mod workbench;
 
-pub use cases::{Case, CaseKind};
 pub use fields::{CellField, FaceField, FieldError};
 pub use geometry::{
     BodyId, BoxEntities, CadExtrudeFeature, CadFeatureId, CadPlaneFrame, CadPocketFeature,
@@ -57,15 +49,13 @@ pub use linear::{
     BiCgStabWorkspace, CgWorkspace, CsrBuilder, CsrMatrix, IncompleteCholeskyPreconditioner,
     JacobiPreconditioner, LinearAlgebraError, LinearSolveReport, LinearSolverOptions,
     LinearSolverStatus, MultigridCoarseSolver, MultigridLevelStatistics, MultigridOptions,
-    MultigridResidualNorm, MultigridSmoother, Preconditioner, StructuredMultigridPreconditioner,
-    SymmetricGaussSeidelPreconditioner,
+    MultigridResidualNorm, MultigridSmoother, Preconditioner, SymmetricGaussSeidelPreconditioner,
 };
 pub use mesh::{
-    BoundaryPatch, BoundaryType, Cell, CellDefinition, ExtrudedMesh3D, Face, MeshDimension,
-    MeshError, MeshId, MeshQualityReport as UnstructuredMeshQualityReport, MeshStatistics, Point,
-    StructuredMesh2D, UnstructuredMesh, Vec3,
+    BoundaryPatch, BoundaryType, Cell, CellDefinition, Face, MeshDimension, MeshError, MeshId,
+    MeshQualityReport as UnstructuredMeshQualityReport, MeshStatistics, Point, UnstructuredMesh,
+    Vec3,
 };
-pub use mesh_artifact::{MeshQualityReport, StructuredMeshArtifact};
 pub use meshing::{
     GeneratedMesh, GeometryGmshExport, GeometryToGmshMap, GmshExecutable, GmshGeoDocument,
     GmshGeometryExporter, GmshMeshOptions, GmshMesher, GmshMeshingReport, GmshVersion,
@@ -91,23 +81,9 @@ pub use numerics::{
     NonOrthogonalDecomposition, NumericsError, ResolvedScalarBoundaryConditions,
     ScalarBoundaryCondition, ScalarBoundaryValue,
 };
-pub use physics::{
-    BuoyancyModel, EnergyModel, PhysicsSettings, ThermalBoundaryCondition, ThermalSettings,
-};
 pub use poisson::{
     assemble_poisson, solve_poisson, solve_poisson_correction_sweeps, PoissonError,
     PoissonLinearSolver, PoissonOptions, PoissonReference, PoissonSystem,
-};
-pub use preprocess::{
-    BoundaryCondition, BoundaryConditionKind, BoundaryFace, GeometryDimension, GeometryFeature,
-    GeometryFeatureKind, GeometryModel, GeometryPart, GeometryPartKind, GeometryRegion,
-    GeometryRegionKind, GeometrySketch, MeshSettings, MeshTopology, PreprocessingModel, SketchAxis,
-    SketchConstraint, SketchConstraintKind, SketchDimension, SketchDimensionKind, SketchEntity,
-    SketchEntityKind, SketchPlane, SketchProfileKind, SolverBoundaryOverrides,
-};
-pub use project::{
-    Project, ProjectCase, ProjectConvectionScheme, ProjectCoupling, ProjectPressureSolver,
-    ProjectSolver, ProjectTimeStepSettings,
 };
 pub use simple::{
     assemble_pressure_correction, continuity_rms, correct_cell_velocity_from_gradient,
@@ -115,10 +91,9 @@ pub use simple::{
     rhie_chow_predicted_flux, solve_pressure_correction, solve_simple, solve_simple_with_control,
     PressureCorrectionSystem, SimpleError, SimpleOptions, SimpleReport, SimpleState,
 };
-pub use solver::{
-    ConvectionScheme, FieldUpdate, IncompressibleSolver, LidDrivenCavity3DConfig,
-    LidDrivenCavity3DSolver, PimpleControls, PressureSolverKind, PressureVelocityCoupling,
-    RunSummary, RunSummary3D, SimulationConfig, SolverStep, TimeStepSettings, TransientTimeScheme,
+pub use sketching::draft::{
+    GeometrySketch, SketchAxis, SketchConstraint, SketchConstraintKind, SketchDimension,
+    SketchDimensionKind, SketchEntity, SketchEntityKind, SketchPlane, SketchProfileKind,
 };
 pub use unstructured_incompressible::{
     patch_flux, solve_incompressible, solve_incompressible_with_control,
@@ -129,21 +104,18 @@ pub use unstructured_incompressible::{
 };
 pub use workbench::{
     build_example, delete_workspace_run, example_descriptor, example_descriptors, expectations,
-    finalize_workspace_run, import_legacy_project, inspect_legacy_project, is_legacy_project_path,
-    load_recent_projects, load_workspace, load_workspace_result, migrate_legacy_project,
-    save_recent_projects, save_workspace, verify_solution, AnalysisDimension, AnalysisKind,
-    BoundaryLayerControl, CadPickMode, CadSelectionState, ExampleCheck, ExampleExpectations,
-    ExampleProjectDescriptor, ExampleProjectError, ExampleProjectId, ExampleVerificationReport,
-    ExecutionPlan, GeometryEditorState, GeometrySelectionTarget, GeometryTool,
-    LegacyProjectInspection, LocalMeshSize, MeshControlTarget, MeshQualityMetric,
+    finalize_workspace_run, load_recent_projects, load_workspace, load_workspace_result,
+    save_recent_projects, save_workspace, verify_solution, BoundaryLayerControl, CadPickMode,
+    CadSelectionState, ExampleCheck, ExampleExpectations, ExampleProjectDescriptor,
+    ExampleProjectError, ExampleProjectId, ExampleVerificationReport, GeometryEditorState,
+    GeometrySelectionTarget, GeometryTool, LocalMeshSize, MeshControlTarget, MeshQualityMetric,
     MeshQualityValues, MeshRecipe, MeshRenderCache, MeshSelection, MeshSelectionTarget,
-    MigrationReport, MigrationResult, NamedSelection, NamedSelectionError, NamedSelectionStore,
-    PhysicalBoundaryCondition, PreviewPrimitive, ProjectDocumentError, RecentProjectEntry,
-    RecentProjects, RenderRange, ResultDataError, ResultDataset, ResultFieldKind, ResultProbe,
-    ResultRenderCache, RunRecord, RunStatus, SolveStatus, SolverBackend, StreamlineDirection,
-    StreamlineField, StreamlineOptions, StreamlinePath, TemplateExpectations, ThresholdRefinement,
-    ViewTransform, WorkbenchAnalysis, WorkbenchError, WorkbenchProject, WorkbenchSession,
-    LEGACY_PROJECT_FORMATS,
+    NamedSelection, NamedSelectionError, NamedSelectionStore, PhysicalBoundaryCondition,
+    PreviewPrimitive, ProjectDocumentError, RecentProjectEntry, RecentProjects, RenderRange,
+    ResultDataError, ResultDataset, ResultFieldKind, ResultProbe, ResultRenderCache, RunRecord,
+    RunStatus, SolveStatus, StreamlineDirection, StreamlineField, StreamlineOptions,
+    StreamlinePath, TemplateExpectations, ThresholdRefinement, ViewTransform, WorkbenchError,
+    WorkbenchProject, WorkbenchSession,
 };
 
 pub use geometry::cad::{
