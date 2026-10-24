@@ -156,7 +156,9 @@ pub(super) fn balance(state: &AppState) -> String {
     } else {
         "N/A · closed/zero-throughflow domain".into()
     };
-    format!("CONSERVATIVE BOUNDARY BALANCE\nInflow {qin:.6e}\nOutflow {qout:.6e}\nSigned net flux {net:.6e}\nRelative imbalance {relative}\nVolume flux: m³/s in 3D; m²/s per unit depth in 2D. Density is not applied.")
+    format!(
+        "CONSERVATIVE BOUNDARY BALANCE\nInflow {qin:.6e}\nOutflow {qout:.6e}\nSigned net flux {net:.6e}\nRelative imbalance {relative}\nVolume flux: m³/s in 3D; m²/s per unit depth in 2D. Density is not applied."
+    )
 }
 
 pub(super) fn profile_svg(points: &[ProfilePoint], title: &str, log: bool) -> String {
@@ -175,7 +177,10 @@ pub(super) fn profile_svg(points: &[ProfilePoint], title: &str, log: bool) -> St
         .iter()
         .filter_map(|(x, y)| y.map(|y| (*x, y)))
         .collect::<Vec<_>>();
-    let mut svg=format!("<svg xmlns='http://www.w3.org/2000/svg' width='900' height='350' viewBox='0 0 900 350' role='img'><rect width='900' height='350' fill='#101c26'/><g font-family='sans-serif' font-size='13' fill='#dce9ef'><text x='75' y='25'>{}</text>",escape(title));
+    let mut svg = format!(
+        "<svg xmlns='http://www.w3.org/2000/svg' width='900' height='350' viewBox='0 0 900 350' role='img'><rect width='900' height='350' fill='#101c26'/><g font-family='sans-serif' font-size='13' fill='#dce9ef'><text x='75' y='25'>{}</text>",
+        escape(title)
+    );
     if finite.is_empty() {
         svg.push_str("<text x='75' y='100'>No recorded finite samples</text></g></svg>");
         return svg;
@@ -233,7 +238,9 @@ pub(super) fn profile_svg(points: &[ProfilePoint], title: &str, log: bool) -> St
     svg
 }
 pub(super) fn profile_csv(points: &[ProfilePoint], label: &str) -> String {
-    let mut out=format!("# {label}; piecewise-constant owning-cell samples; blank = outside domain\ndistance,x,y,z,cell,value\n");
+    let mut out = format!(
+        "# {label}; piecewise-constant owning-cell samples; blank = outside domain\ndistance,x,y,z,cell,value\n"
+    );
     for p in points {
         out.push_str(&format!(
             "{:.17e},{:.17e},{:.17e},{:.17e},{},{}\n",
@@ -291,7 +298,19 @@ pub(super) fn report(state: &AppState) -> Result<String, String> {
     let d = state
         .active_result()
         .ok_or("Select a completed result first")?;
-    let mut out=format!("<!doctype html><html lang='en'><meta charset='utf-8'><title>FLURSYS — {}</title><style>body{{font:15px system-ui;max-width:1100px;margin:36px auto;padding:20px;color:#172b38}}table{{border-collapse:collapse;width:100%;margin:20px 0}}td,th{{border:1px solid #ccd5da;padding:9px;text-align:left}}svg{{width:100%;break-inside:avoid}}pre{{white-space:pre-wrap}}@media print{{body{{margin:0}}h2{{break-after:avoid}}}}</style><h1>FLURSYS · CFD run report</h1><p>Run: <b>{}</b> · {:?} · {} cells · {} nodes</p><p>Generated Unix seconds: {}</p><pre>{}</pre><h2>Field statistics</h2><table><tr><th>Quantity</th><th>Minimum</th><th>Maximum</th><th>Volume-weighted mean</th></tr>",escape(d.run_id()),escape(d.run_id()),d.mesh().dimension(),d.mesh().cell_count(),d.mesh().points().len(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs(),escape(&balance(state)));
+    let mut out = format!(
+        "<!doctype html><html lang='en'><meta charset='utf-8'><title>FLURSYS — {}</title><style>body{{font:15px system-ui;max-width:1100px;margin:36px auto;padding:20px;color:#172b38}}table{{border-collapse:collapse;width:100%;margin:20px 0}}td,th{{border:1px solid #ccd5da;padding:9px;text-align:left}}svg{{width:100%;break-inside:avoid}}pre{{white-space:pre-wrap}}@media print{{body{{margin:0}}h2{{break-after:avoid}}}}</style><h1>FLURSYS · CFD run report</h1><p>Run: <b>{}</b> · {:?} · {} cells · {} nodes</p><p>Generated Unix seconds: {}</p><pre>{}</pre><h2>Field statistics</h2><table><tr><th>Quantity</th><th>Minimum</th><th>Maximum</th><th>Volume-weighted mean</th></tr>",
+        escape(d.run_id()),
+        escape(d.run_id()),
+        d.mesh().dimension(),
+        d.mesh().cell_count(),
+        d.mesh().points().len(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs(),
+        escape(&balance(state))
+    );
     for f in [
         ResultFieldKind::Pressure,
         ResultFieldKind::VelocityMagnitude,
@@ -489,7 +508,9 @@ pub(super) fn line_measurements(points: &[ProfilePoint]) -> String {
         .zip(points.last().and_then(|b| b.value))
         .map(|(a, b)| format!("{:.6e}", b - a))
         .unwrap_or("N/A · endpoint outside fluid".into());
-    format!("Line-weighted mean {mean} · covered length {covered:.6e}\nEnd − start {delta} (selected field units; p/ρ for pressure)")
+    format!(
+        "Line-weighted mean {mean} · covered length {covered:.6e}\nEnd − start {delta} (selected field units; p/ρ for pressure)"
+    )
 }
 pub(super) fn convergence_summary(state: &AppState) -> String {
     let ends = |v: &[f64]| (v.first().copied(), v.last().copied());

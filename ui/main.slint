@@ -11,7 +11,7 @@ import { TopBar } from "layout/topbar.slint";
 import { ProjectTree } from "layout/project_tree.slint";
 import { ExampleGallery, ExampleDescriptor } from "layout/example_gallery.slint";
 import { StatusBar } from "layout/status_bar.slint";
-import { MaterialLibraryDialog, LibraryMaterialDraft, TransportDialog, TransportDraft, TransportBoundaryDraft, TransportRegionDraft, TransportContactDraft, ComputeDialog, ProjectNameDialog, LegacyImportDialog, RecoveryDialog, UnsavedChangesDialog, FluidMaterialDialog, SettingsDialog, EquationControlsDialog, EquationDraft, VolumeModelsDialog, VolumeModelDraft, CyclicPairsDialog } from "layout/project_dialogs.slint";
+import { ScriptEditorDialog, MaterialLibraryDialog, LibraryMaterialDraft, TransportDialog, TransportDraft, TransportBoundaryDraft, TransportRegionDraft, TransportContactDraft, ComputeDialog, ProjectNameDialog, RecoveryDialog, UnsavedChangesDialog, FluidMaterialDialog, SettingsDialog, EquationControlsDialog, EquationDraft, VolumeModelsDialog, VolumeModelDraft, CyclicPairsDialog } from "layout/project_dialogs.slint";
 
 export component MainWindow inherits Window {
     init => { Palette.color-scheme = ColorScheme.dark; UiTheme.cad-active=true; }
@@ -183,10 +183,6 @@ export component MainWindow inherits Window {
     in-out property <bool> recovery-pending: false;
     in-out property <string> recovery-workspace: "";
     in-out property <bool> unsaved-replacement-pending: false;
-    in-out property <bool> legacy-import-pending: false;
-    in-out property <string> legacy-import-project-name: "";
-    in-out property <string> legacy-import-recoverable-items: "";
-    in-out property <string> legacy-import-skipped-items: "";
     property <length> page-padding: root.compact-ui ? 14px : 24px;
     property <length> page-spacing: root.compact-ui ? 10px : 16px;
     property <length> sidebar-preferred-width: root.compact-ui ? 176px : 224px;
@@ -207,8 +203,6 @@ export component MainWindow inherits Window {
     in-out property <bool> show-history:true;
     in-out property <bool> show-topology:false;
     callback refresh-browser();
-    in-out property <int> case-index: 0;
-    in-out property <int> part-kind-index: 0;
     in-out property <int> sketch-kind-index: 0;
     in-out property <int> sketch-plane-index: 0;
     in-out property <int> feature-kind-index: 0;
@@ -222,13 +216,6 @@ export component MainWindow inherits Window {
     in-out property <string> feature-depth <=> root.cad-size-z;
     in-out property <string> revolve-axis-offset: "1.0";
     in-out property <string> driving-dimension: "1.0";
-    in-out property <string> part-name: "Part 1";
-    in-out property <string> part-size-x: "1.0";
-    in-out property <string> part-size-y: "1.0";
-    in-out property <string> part-size-z: "1.0";
-    in-out property <string> part-pos-x: "0.0";
-    in-out property <string> part-pos-y: "0.0";
-    in-out property <string> part-pos-z: "0.0";
     in-out property <string> geometry-parts-summary: "No custom solids in this project.";
     in-out property <string> geometry-model-tree: "▾ Geometry\n   ▾ Sketches (0)\n      — None\n   ▾ Features (0)\n      — None\n   ▾ Solids (0)\n      — None";
     in-out property <bool> project-loaded: false;
@@ -241,7 +228,7 @@ export component MainWindow inherits Window {
     in-out property <bool> geometry-sketch-open: true;
     in-out property <bool> geometry-feature-open: true;
     in-out property <string> status: "Idle";
-    in-out property <string> project-path: "case.flursys.json";
+    in-out property <string> project-path: "";
     in-out property <string> project-name: "New analysis";
     in property <string> application-version;
     in property <bool> project-modified;
@@ -249,40 +236,8 @@ export component MainWindow inherits Window {
     in-out property <string> project-name-draft;
     in-out property <string> project-name-feedback;
     callback apply-project-name(string)->bool;
-    in-out property <string> case-name: "Lid-driven cavity";
-    in-out property <int> nx: 64;
-    in-out property <int> ny: 64;
-    in-out property <string> dt-text: "0.001";
-    in-out property <int> iterations: 10000;
-    in-out property <int> threads: 0;
-    in-out property <int> gui-update-every: 10;
-    in-out property <int> history-every: 10;
-    in-out property <int> frame-every: 100;
-    in-out property <int> coupling-index: 0;
-    in-out property <int> convection-index: 0;
-    in-out property <int> pressure-solver-index: 0;
-    in-out property <string> velocity-relaxation: "0.7";
-    in-out property <string> pressure-relaxation: "0.3";
-    in-out property <string> extrusion-depth: "0.25";
-    in-out property <int> mesh-nz: 8;
     in-out property <string> mesh-inspection: "Mesh inspection is waiting for a valid grid.";
-    in-out property <int> boundary-face-index: 0;
-    in-out property <int> boundary-kind-index: 0;
-    in-out property <string> boundary-value: "0.0";
-    in-out property <string> boundary-summary: "No boundary summary available.";
     in-out property <string> preflight-summary: "Run validation before starting the solver.";
-    in-out property <int> energy-model-index: 0;
-    in-out property <string> initial-temperature: "293.15";
-    in-out property <string> thermal-diffusivity: "0.000022";
-    in-out property <string> thermal-source: "0.0";
-    in-out property <int> thermal-face-index: 0;
-    in-out property <int> thermal-boundary-kind-index: 0;
-    in-out property <string> thermal-boundary-value: "293.15";
-    in-out property <int> buoyancy-model-index: 0;
-    in-out property <string> reference-temperature: "293.15";
-    in-out property <string> thermal-expansion: "0.0034";
-    in-out property <string> gravity-x: "0.0";
-    in-out property <string> gravity-y: "-9.81";
     in-out property <string> post-balance;
     in-out property <string> post-convergence-summary;
     in-out property <image> post-profile-image;
@@ -406,16 +361,7 @@ export component MainWindow inherits Window {
     in-out property <string> result-vector-scale: "";
     in-out property <string> continuity-chart-caption;
     in-out property <string> residual-summary: "Waiting for a solver run.";
-    in-out property <float> solver-physical-time: 0.0;
-    in-out property <float> solver-time-step: 0.0;
-    in-out property <float> solver-momentum-cfl: 0.0;
-    in-out property <float> solver-viscous-number: 0.0;
-    in-out property <float> solver-max-speed: 0.0;
-    in-out property <string> solver-stability-summary: "Time       0.0000e+0\ndt         0.0000e+0\nCFL        0.0000e+0\nDν         0.0000e+0\n|U|max     0.0000e+0";
     in-out property <image> residual-image;
-    in-out property <float> continuity-level: 0.0;
-    in-out property <float> momentum-level: 0.0;
-    in-out property <float> pressure-level: 0.0;
     in-out property <string> force-summary: "Cd: —\nCl: —";
     in-out property <string> field-summary: "No field snapshot received.";
     in-out property <image> visualization-image;
@@ -496,17 +442,16 @@ export component MainWindow inherits Window {
     in-out property <string> geometry-selection-detail: "Click a face in the 3D view to inspect it.";
     in-out property <string> log-text: "FLURSYS Slint workbench ready.";
 
-    callback new-project(); callback start(); callback pause(); callback resume(); callback stop(); callback validate-case();
+    callback new-project(); callback start();    callback validate-case();
     callback open-project-native(); callback save-project-native(); callback save-project-as(); callback save-as-case-template();
     callback open-recent-project(int);
     callback load-project(); callback save-project(); callback show-mesh(); callback show-field();
     callback recover-workspace(); callback discard-workspace-recovery();
     callback save-before-project-replacement(); callback discard-before-project-replacement(); callback cancel-project-replacement();
-    callback confirm-legacy-import(); callback cancel-legacy-import();
-    callback animation-play-pause(); callback animation-next(); callback show-geometry-3d();
-    callback rotate-geometry-3d(); callback apply-boundary(); callback show-boundary-face(); callback select-step(int);
-    callback select-case(); callback add-part(); callback build-feature(); callback duplicate-last-part(); callback remove-last-part();
-    callback apply-thermal-boundary(); callback select-result-field(int); callback apply-result-style(); callback apply-result-range(); callback reset-result-range(); callback seed-streamline(); callback clear-streamlines();
+      callback show-geometry-3d();
+    callback rotate-geometry-3d();   callback select-step(int);
+      callback build-feature();
+     callback select-result-field(int); callback apply-result-style(); callback apply-result-range(); callback reset-result-range(); callback seed-streamline(); callback clear-streamlines();
     callback geometry-drag(float, float, float, float, float, float); callback geometry-zoom(float); callback reset-geometry-view(); callback select-geometry-view-axis(int);
     callback geometry-drag-end();
     callback pick-boundary(float, float, float, float);
@@ -584,6 +529,7 @@ export component MainWindow inherits Window {
     in-out property <int> wb-time-mode:0;
     in-out property <string> wb-time-step:"0.001";
     in-out property <int> wb-time-steps:100;
+    in-out property <string> wb-end-time:"";
     in-out property <int> wb-turbulence-model:0;
     in-out property <string> wb-turbulence-k:"0.0001";
     in-out property <string> wb-turbulence-omega:"1";
@@ -719,6 +665,22 @@ export component MainWindow inherits Window {
     in-out property <bool> equation-controls-open:false;
     in-out property <[EquationDraft]> equation-drafts;
     in-out property <string> equation-feedback;
+    in-out property <bool> script-editor-open:false;
+    in-out property <[string]> script-names;
+    in-out property <int> script-index:0;
+    in-out property <string> script-name:"new-profile";
+    in-out property <string> script-source:"fn profile(x, y, z) { vec3(1.0, 0.0, 0.0) }";
+    in-out property <bool> script-timed:false;
+    in-out property <string> script-function:"profile";
+    in-out property <string> script-parameters:"{}";
+    in-out property <int> script-quantity:0;
+    in-out property <string> script-patch;
+    in-out property <string> script-feedback;
+    in-out property <string> script-binding-summary;
+    in-out property <string> script-preview-position:"0,0,0";
+    in-out property <string> script-preview-time:"0";
+    callback open-script-editor(); callback load-script(int); callback script-template();
+    callback save-script(); callback attach-script(); callback detach-script(); callback delete-script(); callback preview-script();
     callback apply-time-boundary();
     in-out property <int> time-bc-mode:0;
     in-out property <string> time-bc-table;
@@ -1126,6 +1088,9 @@ PlaneMonitorPanel {manage-plane(i)=>{root.flow-plane-manage(i);}
                                         Button {min-width:0px; text: "CLEAR"; enabled: root.patch-model.length > 0 && !root.wb-busy; clicked => { root.unassign-boundary-wb(); } }
                                     }
                                     InspectorValue { text: root.bc-assigned; }
+                                    InspectorLabel {text:"SCRIPTED BOUNDARY VALUES · RHAI";}
+                                    InspectorValue {text:root.script-binding-summary;}
+                                    Button {text:"Scripts / attach profile…";enabled:!root.wb-busy;clicked=>{root.open-script-editor();}}
                                     InspectorLabel {text:"PHYSICAL-TIME BOUNDARY TABLE";}
                                     ComboBox {model:["Constant / remove time table","Velocity vector vs time","Flow rate vs time","Pressure vs time","Temperature vs time","Heat flux vs time"];current-index <=> root.time-bc-mode;min-height:32px;max-height:32px;min-width:0px;enabled:!root.wb-busy;}
                                     if root.time-bc-mode>0 : VerticalLayout {
@@ -1257,7 +1222,7 @@ HorizontalLayout {height:32px;spacing:5px;
                     target-courant <=> root.wb-target-courant;min-time-step <=> root.wb-min-time-step;max-time-step <=> root.wb-max-time-step;time-growth <=> root.wb-time-growth;
                     wall-summary:root.post-wall-summary;
                     coupling-algorithm <=> root.wb-coupling-algorithm;pressure-correctors <=> root.wb-pressure-correctors;nonorthogonal-correctors <=> root.wb-nonorthogonal-correctors;nonorthogonal-limiter <=> root.wb-nonorthogonal-limiter;
-                    time-mode <=> root.wb-time-mode;time-step <=> root.wb-time-step;time-steps <=> root.wb-time-steps;
+                    end-time <=> root.wb-end-time;time-mode <=> root.wb-time-mode;time-step <=> root.wb-time-step;time-steps <=> root.wb-time-steps;
                     edit-volume-models=>{root.open-volume-models();}
                     edit-equations=>{root.open-equation-controls();}
                     nu-tilda <=> root.wb-nu-tilda;
@@ -1341,22 +1306,7 @@ HorizontalLayout {height:32px;spacing:5px;
             discard => { root.discard-before-project-replacement(); }
             cancel => { root.cancel-project-replacement(); }
         }
-    if root.legacy-import-pending : LegacyImportDialog {
-            x:0px;y:0px;width:root.width;height:root.height;
-            compact-ui: root.compact-ui;
-            project-name: root.legacy-import-project-name;
-            recoverable-items: root.legacy-import-recoverable-items;
-            skipped-items: root.legacy-import-skipped-items;
-            cancel => { root.cancel-legacy-import(); }
-            import-project => { root.confirm-legacy-import(); }
-        }
-    if root.cyclic-dialog-open : CyclicPairsDialog {
-        patches:root.cyclic-patch-list;pairs:root.cyclic-pair-list;
-        first-index <=> root.cyclic-first-index;second-index <=> root.cyclic-second-index;pair-index <=> root.cyclic-pair-index;
-        tx <=> root.cyclic-tx;ty <=> root.cyclic-ty;tz <=> root.cyclic-tz;tolerance <=> root.cyclic-tolerance;
-        feedback:root.cyclic-feedback;busy:root.wb-busy;
-        add=>{root.add-cyclic-pair();}remove=>{root.remove-cyclic-pair();}apply=>{root.apply-cyclic-pairs();}cancel=>{root.cyclic-dialog-open=false;}
-    }
+
     if root.volume-models-open : VolumeModelsDialog {
         draft <=> root.volume-model-draft;feedback:root.volume-model-feedback;busy:root.wb-busy;
         apply=>{root.apply-volume-models();}cancel=>{root.volume-models-open=false;}
@@ -1383,6 +1333,17 @@ HorizontalLayout {height:32px;spacing:5px;
         import-settings=>{root.import-transport();}export-settings=>{root.export-transport();}use-flow=>{root.use-transport-flow();}load-restart=>{root.load-transport-restart();}open-archive=>{root.open-transport-archive();}
         add-region=>{root.add-transport-region();}remove-region(index)=>{root.remove-transport-region(index);}add-contact=>{root.add-transport-contact();}remove-contact(index)=>{root.remove-transport-contact(index);}
         refresh-view=>{root.refresh-transport();}show-frame(index)=>{root.select-transport-frame(index);}orbit(x,y,w,h)=>{root.orbit-transport(x,y,w,h);}zoom(delta)=>{root.zoom-transport(delta);}home=>{root.home-transport();}orbit-end=>{root.end-transport-orbit();}pan(x,y,w,h)=>{root.pan-transport(x,y,w,h);}axis(index)=>{root.axis-transport(index);}pick-orientation(x,y)=>{root.pick-transport-orientation(x,y);}
+    }
+    if root.script-editor-open : ScriptEditorDialog {
+        names:root.script-names;index <=> root.script-index;
+        script-name <=> root.script-name;source <=> root.script-source;timed <=> root.script-timed;
+        function-name <=> root.script-function;parameters <=> root.script-parameters;quantity <=> root.script-quantity;
+        patch:root.script-patch;feedback:root.script-feedback;busy:root.wb-busy;
+        preview-position <=> root.script-preview-position;preview-time <=> root.script-preview-time;
+        load(i)=>{root.load-script(i);}new-template=>{root.script-template();}
+        save=>{root.save-script();}attach=>{root.attach-script();}detach=>{root.detach-script();}
+        delete=>{root.delete-script();}preview=>{root.preview-script();}
+        close-requested=>{root.script-editor-open=false;}
     }
     if root.material-dialog-open : FluidMaterialDialog {
         x:0px;y:0px;width:root.width;height:root.height;

@@ -173,7 +173,7 @@ pub(super) fn load(ui: &MainWindow, state: &mut AppState, body: BodyId) -> Resul
         _ => {
             return Err(
                 "Use the Pad/Pocket editor or edit the source sketches for this operation".into(),
-            )
+            );
         }
     };
     super::cad_properties::open_for_action(ui, operation);

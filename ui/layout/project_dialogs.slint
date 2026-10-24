@@ -1,4 +1,4 @@
-import { Button, LineEdit, CheckBox, ComboBox, SpinBox, Slider } from "std-widgets.slint";
+import { TextEdit, Button, LineEdit, CheckBox, ComboBox, SpinBox, Slider } from "std-widgets.slint";
 import { UiTheme, PropertyScroll, WorkspaceSections, InteractiveGeometryPreview } from "../components.slint";
 
 // Window-sized modal scrim; dialogs never participate in workspace layout.
@@ -41,22 +41,7 @@ export component UnsavedChangesDialog inherits ModalFrame {
     Rectangle {vertical-stretch:1;}
     HorizontalLayout {spacing:8px;Rectangle {horizontal-stretch:1;}Button {text:"Cancel";clicked=>{root.cancel();}}Button {text:"Discard";clicked=>{root.discard();}}Button {text:"Save";clicked=>{root.save();}}}
 }
-export component LegacyImportDialog inherits ModalFrame {
-    close-requested=>{root.cancel();}
-    in property <bool> compact-ui;
-    in property <string> project-name;
-    in property <string> recoverable-items;
-    in property <string> skipped-items;
-    callback cancel();callback import-project();
-    panel-width:root.compact-ui ? 360px : 500px;panel-height:300px;
-    Text {text:"Import project";color:UiTheme.text-title;font-size:17px;font-weight:700;}
-    Text {text:root.project-name;color:UiTheme.text-bright;font-size:13px;}
-    Text {text:"Import geometry and settings into an editable workspace.";color:UiTheme.text-secondary;font-size:12px;wrap:word-wrap;}
-    Text {text:"Recovered: "+root.recoverable-items;color:UiTheme.text-bright;font-size:11px;wrap:word-wrap;}
-    Text {text:"Regenerate: "+root.skipped-items;color:UiTheme.text-muted;font-size:11px;wrap:word-wrap;}
-    Rectangle {vertical-stretch:1;}
-    HorizontalLayout {spacing:8px;Rectangle {horizontal-stretch:1;}Button {text:"Cancel";clicked=>{root.cancel();}}Button {text:"Import";clicked=>{root.import-project();}}}
-}
+
 
 component MaterialField inherits VerticalLayout {
     in property <string> label;in-out property <string> value;in property <bool> editable:true;
@@ -593,4 +578,62 @@ export component MaterialLibraryDialog inherits ModalFrame {
     }
     Text {text:root.feedback;color:UiTheme.accent;wrap:word-wrap;vertical-stretch:0;}
     Button {text:"Close";clicked=>{root.close();}vertical-stretch:0;}
+}
+
+export component ScriptEditorDialog inherits ModalFrame {
+    in property <[string]> names;
+    in-out property <int> index;
+    in-out property <string> script-name;
+    in-out property <string> source;
+    in-out property <bool> timed;
+    in-out property <string> function-name;
+    in-out property <string> parameters;
+    in-out property <int> quantity;
+    in property <string> patch;
+    in property <string> feedback;
+    in property <bool> busy;
+    in-out property <string> preview-position;
+    in-out property <string> preview-time;
+    callback load(int);callback new-template();callback save();callback attach();
+    callback detach();callback delete();callback preview();
+    panel-width:900px;panel-height:780px;
+    Text {text:"Boundary scripts · Rhai";color:UiTheme.text-title;font-size:18px;font-weight:700;}
+    Text {text:"Boundary: " + root.patch;color:UiTheme.text-secondary;}
+    PropertyScroll {
+        VerticalLayout {spacing:8px;
+            HorizontalLayout {
+                ComboBox {model:root.names;current-index <=> root.index;selected(i)=>{root.load(self.current-index);}enabled:!root.busy;horizontal-stretch:1;}
+                Button {text:"New template";enabled:!root.busy;clicked=>{root.new-template();}}
+            }
+            Text {text:"Script name / stable project ID";color:UiTheme.text-secondary;}
+            LineEdit {text <=> root.script-name;enabled:!root.busy;}
+            HorizontalLayout {
+                ComboBox {model:["Velocity · m/s","Pressure p/ρ · m²/s²","Temperature · K"];current-index <=> root.quantity;enabled:!root.busy;horizontal-stretch:1;}
+                CheckBox {text:"Physical-time dependent";checked <=> root.timed;enabled:!root.busy;}
+            }
+            Text {text:root.timed ? "Signature: fn profile(x, y, z, t). Coordinates: m; time: s. Transient only." : "Signature: fn profile(x, y, z). Coordinates: m. Steady or transient.";color:UiTheme.text-secondary;wrap:word-wrap;}
+            Text {text:"Return vec3(Ux, Uy, Uz) for velocity; a number for pressure or temperature. Use params.name and PI. Global statements do not run. No file, process or network API.";color:UiTheme.text-muted;wrap:word-wrap;}
+            TextEdit {text <=> root.source;min-height:230px;max-height:230px;enabled:!root.busy;}
+            HorizontalLayout {
+                Text {text:"Function";color:UiTheme.text-secondary;vertical-alignment:center;}
+                LineEdit {text <=> root.function-name;enabled:!root.busy;horizontal-stretch:1;}
+            }
+            Text {text:"Binding parameters · JSON object, e.g. {\"base_speed\":1.0}";color:UiTheme.text-secondary;wrap:word-wrap;}
+            LineEdit {text <=> root.parameters;enabled:!root.busy;}
+            HorizontalLayout {
+                LineEdit {text <=> root.preview-position;placeholder-text:"x,y,z (m)";horizontal-stretch:1;}
+                LineEdit {text <=> root.preview-time;placeholder-text:"Time (s)";enabled:root.timed;horizontal-stretch:1;}
+                Button {text:"Check / preview";enabled:!root.busy;clicked=>{root.preview();}}
+            }
+            Text {text:"Supported: velocity inlet, pressure outlet (including backflow), fixed / inlet-outlet temperature. Remove a patch's time table before attaching scripts. Apply physical conditions first.";color:UiTheme.text-muted;wrap:word-wrap;}
+            Text {text:root.feedback;color:UiTheme.text-secondary;wrap:word-wrap;}
+        }
+    }
+    HorizontalLayout {spacing:8px;
+        Button {text:"Save code";enabled:!root.busy;clicked=>{root.save();}}
+        Button {text:"Attach / update";enabled:!root.busy && root.patch!="";clicked=>{root.attach();}}
+        Button {text:"Detach quantity";enabled:!root.busy && root.patch!="";clicked=>{root.detach();}}
+        Button {text:"Delete code";enabled:!root.busy;clicked=>{root.delete();}}
+        Button {text:"Close";clicked=>{root.close-requested();}}
+    }
 }

@@ -1,12 +1,12 @@
 //! Dedicated scalar physics editor and archive viewer. No CFD field is fabricated.
 use super::*;
 use flursys::multiphysics::{
-    self as physics, checkpoint::Checkpoint, energy::Boundary, metrics::Coordinates, Options,
-    Properties, Region, State as Fields,
+    self as physics, Options, Properties, Region, State as Fields, checkpoint::Checkpoint,
+    energy::Boundary, metrics::Coordinates,
 };
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
     Arc, Mutex,
+    atomic::{AtomicBool, Ordering},
 };
 #[derive(Default)]
 struct Controls {
@@ -991,7 +991,13 @@ fn execute_job(
             if state.step % options.write_every == 0
                 || last_update.elapsed() > Duration::from_millis(200)
             {
-                let message=format!("Accepted step {} · t={:.6e} s · phase balance {:.3e} · energy balance {:.3e} (per depth in planar mode)",state.step,state.time,report.phase.conservation_error,report.energy.balance_error);
+                let message = format!(
+                    "Accepted step {} · t={:.6e} s · phase balance {:.3e} · energy balance {:.3e} (per depth in planar mode)",
+                    state.step,
+                    state.time,
+                    report.phase.conservation_error,
+                    report.energy.balance_error
+                );
                 if let Ok(mut latest) = mail.latest.lock() {
                     *latest = Some((Arc::new(state.clone()), message));
                 }

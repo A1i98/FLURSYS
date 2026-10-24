@@ -1,8 +1,8 @@
 //! Interactive sketch drafting over the complete imported constraint model.
 //! Drafts are isolated; B-rep publication runs through the existing CAD worker.
 use super::*;
-use flursys::sketching::{self, core, geom::Vec2, ToolParameters};
 use flursys::GeometryTopology;
+use flursys::sketching::{self, ToolParameters, core, geom::Vec2};
 
 pub(super) struct Draft {
     source: GeometryTopology,
@@ -847,8 +847,8 @@ pub(super) fn worker_feedback(state: &mut AppState, message: &str) {
 mod integration_tests {
     use super::*;
     use slint::platform::{
-        software_renderer::{MinimalSoftwareWindow, RepaintBufferType},
         Platform, WindowAdapter,
+        software_renderer::{MinimalSoftwareWindow, RepaintBufferType},
     };
     struct SoftwarePlatform(Rc<MinimalSoftwareWindow>);
     impl Platform for SoftwarePlatform {
@@ -930,15 +930,17 @@ mod integration_tests {
         ui.set_drawing_constraint_kind(13);
         ui.set_drawing_value("20".into());
         ui.invoke_drawing_action(110);
-        assert!(state
-            .borrow()
-            .drawing
-            .as_ref()
-            .unwrap()
-            .model
-            .constraints
-            .iter()
-            .any(|c| matches!(c.kind, core::ConstraintKind::Length { .. })));
+        assert!(
+            state
+                .borrow()
+                .drawing
+                .as_ref()
+                .unwrap()
+                .model
+                .constraints
+                .iter()
+                .any(|c| matches!(c.kind, core::ConstraintKind::Length { .. }))
+        );
         ui.invoke_drawing_select_tool(6);
         click(&ui, &state, Vec2::new(10., 5.), false);
         click(&ui, &state, Vec2::new(12., 5.), false);
@@ -997,10 +999,12 @@ mod integration_tests {
                 .unwrap();
             (root.id, root.profile_face.unwrap())
         };
-        assert!(state
-            .borrow()
-            .wb_selected_targets
-            .contains(&GeometrySelectionTarget::Face(face)));
+        assert!(
+            state
+                .borrow()
+                .wb_selected_targets
+                .contains(&GeometrySelectionTarget::Face(face))
+        );
         let saved = serde_json::to_string(state.borrow().workbench.geometry()).unwrap();
         let restored: GeometryTopology = serde_json::from_str(&saved).unwrap();
         assert!(restored.sketch(id).unwrap().drawing.is_some());

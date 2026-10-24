@@ -927,7 +927,7 @@ fn execute(
                             .clone()
                             .ok_or("Sketch constraints were not loaded")?,
                     )
-                    .map_err(|e| e.to_string())
+                    .map_err(|e| e.to_string());
             }
             31 => {
                 let id = c.edit_feature.ok_or("Select a Pad or Pocket feature")?;
@@ -1066,7 +1066,7 @@ fn execute(
             44 => {
                 return g
                     .cad_radial_pattern(source()?, c.count, c.position, c.axis, c.angle)
-                    .map_err(|e| e.to_string())
+                    .map_err(|e| e.to_string());
             }
             34 => g.cad_pocket_to_face(
                 c.face.ok_or("Select a sketch on the solid's planar face")?,
@@ -1128,7 +1128,7 @@ fn execute(
                         c.position,
                         if c.action == 8 { c.angle } else { 0.0 },
                     )
-                    .map_err(|e| e.to_string())
+                    .map_err(|e| e.to_string());
             }
             9..=11 => g.cad_boolean(
                 source()?,
@@ -1952,8 +1952,20 @@ pub(super) fn measure_selection(state: &AppState) -> Result<String, String> {
             .and_then(|s| s.profile.as_ref())
         {
             return Ok(match profile {
-                flursys::CadSketchProfile::Circle { radius } => format!("Radius {:.6} · Diameter {:.6} · Area {:.6} · Circumference {:.6} (model units)", radius, 2.0*radius, std::f64::consts::PI*radius*radius, std::f64::consts::TAU*radius),
-                flursys::CadSketchProfile::Rectangle { width, height } => format!("Width {:.6} · Height {:.6} · Area {:.6} · Perimeter {:.6} (model units)", width, height, width*height, 2.0*(width+height)),
+                flursys::CadSketchProfile::Circle { radius } => format!(
+                    "Radius {:.6} · Diameter {:.6} · Area {:.6} · Circumference {:.6} (model units)",
+                    radius,
+                    2.0 * radius,
+                    std::f64::consts::PI * radius * radius,
+                    std::f64::consts::TAU * radius
+                ),
+                flursys::CadSketchProfile::Rectangle { width, height } => format!(
+                    "Width {:.6} · Height {:.6} · Area {:.6} · Perimeter {:.6} (model units)",
+                    width,
+                    height,
+                    width * height,
+                    2.0 * (width + height)
+                ),
             });
         }
     }
@@ -1963,7 +1975,11 @@ pub(super) fn measure_selection(state: &AppState) -> Result<String, String> {
         return match edge.geometry {
             flursys::EdgeGeometry::Kernel { id, .. } => {
                 let data = g.cad_edge(id).ok_or("Missing kernel curve")?;
-                Ok(format!("B-rep edge {} · Length ≈ {:.6} (model units; numerical integration of the exact curve)",id.get(),data.length))
+                Ok(format!(
+                    "B-rep edge {} · Length ≈ {:.6} (model units; numerical integration of the exact curve)",
+                    id.get(),
+                    data.length
+                ))
             }
             flursys::EdgeGeometry::Line { start, end } => Ok(format!(
                 "Length {:.6} (model units)",
@@ -2006,10 +2022,15 @@ pub(super) fn measure_selection(state: &AppState) -> Result<String, String> {
                 polygon_area(&f.vertices) - f.holes.iter().map(|v| polygon_area(v)).sum::<f64>()
             })
             .sum::<f64>();
-        return Ok(format!("Face area ≈ {:.6} (model units²). Pick another planar face for distance / angle; use Point distance for surface points.",area));
+        return Ok(format!(
+            "Face area ≈ {:.6} (model units²). Pick another planar face for distance / angle; use Point distance for surface points.",
+            area
+        ));
     }
-    if let [GeometrySelectionTarget::Vertex(a), GeometrySelectionTarget::Vertex(b)] =
-        selected.as_slice()
+    if let [
+        GeometrySelectionTarget::Vertex(a),
+        GeometrySelectionTarget::Vertex(b),
+    ] = selected.as_slice()
     {
         let a = g.vertex(*a).ok_or("Missing vertex")?.position;
         let b = g.vertex(*b).ok_or("Missing vertex")?.position;
@@ -2022,8 +2043,10 @@ pub(super) fn measure_selection(state: &AppState) -> Result<String, String> {
             d.z
         ));
     }
-    if let [GeometrySelectionTarget::Face(a), GeometrySelectionTarget::Face(b)] =
-        selected.as_slice()
+    if let [
+        GeometrySelectionTarget::Face(a),
+        GeometrySelectionTarget::Face(b),
+    ] = selected.as_slice()
     {
         let a = g.sketch_frame_for_face(*a).map_err(|e| e.to_string())?;
         let b = g.sketch_frame_for_face(*b).map_err(|e| e.to_string())?;
@@ -2097,8 +2120,8 @@ pub(super) fn submit_drawing(
 mod tests {
     use super::*;
     use slint::platform::{
-        software_renderer::{MinimalSoftwareWindow, RepaintBufferType},
         Platform, WindowAdapter,
+        software_renderer::{MinimalSoftwareWindow, RepaintBufferType},
     };
     struct SoftwarePlatform(Rc<MinimalSoftwareWindow>);
     impl Platform for SoftwarePlatform {

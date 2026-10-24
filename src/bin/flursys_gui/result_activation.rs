@@ -45,11 +45,7 @@ impl AppState {
             .take(400)
             .rev()
             .filter(|v| v.is_finite())
-            .map(|v| ResidualSample {
-                continuity: *v,
-                momentum: 0.0,
-                pressure: 0.0,
-            })
+            .map(|v| ResidualSample { continuity: *v })
             .collect();
         let histories = [
             solution.report.simple.momentum_relative_history.clone(),
@@ -82,7 +78,7 @@ impl AppState {
                 self.workbench.material().density,
             );
             self.post.boundary_summary =
-                balance.summary() + "\n\n" + &result_analysis::boundary_summary(&reports);
+                balance.summary() + "\n\n" + result_analysis::boundary_summary(&reports).as_str();
             self.post.boundary_reports = reports;
         }
         Ok(())
@@ -176,7 +172,10 @@ pub(super) fn refresh(ui: &MainWindow, state: &AppState) {
             .iter()
             .find(|r| r.id == result.run_id());
         let summary = if result.run_id().starts_with("UNCONVERGED-") {
-            format!("UNCONVERGED DIAGNOSTIC FIELD\n{}\nRetained completed sample; not the failed iterate. Do not use as a converged result.",result.run_id())
+            format!(
+                "UNCONVERGED DIAGNOSTIC FIELD\n{}\nRetained completed sample; not the failed iterate. Do not use as a converged result.",
+                result.run_id()
+            )
         } else {
             record
                 .map(|r| {
@@ -249,8 +248,8 @@ fn range(result: &ResultDataset, field: ResultFieldKind) -> String {
 mod tests {
     use super::*;
     use slint::platform::{
-        software_renderer::{MinimalSoftwareWindow, RepaintBufferType},
         Platform, WindowAdapter,
+        software_renderer::{MinimalSoftwareWindow, RepaintBufferType},
     };
     struct SoftwarePlatform(Rc<MinimalSoftwareWindow>);
     impl Platform for SoftwarePlatform {
@@ -409,10 +408,12 @@ mod tests {
             solution.report.simple.velocity_change_history.last(),
             Some(&solution.report.simple.final_velocity_relative_change)
         );
-        assert!(directory
-            .path()
-            .join("runs/run-0001/solution.vtk")
-            .is_file());
+        assert!(
+            directory
+                .path()
+                .join("runs/run-0001/solution.vtk")
+                .is_file()
+        );
         assert_eq!(state.active_result().unwrap().run_id(), "run-0001");
         assert_eq!(
             state.active_result().unwrap().pressure().len(),
@@ -434,8 +435,6 @@ mod tests {
         let history = (0..20)
             .map(|i| ResidualSample {
                 continuity: 10f64.powf(-12.0 - i as f64 / 20.0),
-                momentum: 0.0,
-                pressure: 0.0,
             })
             .collect();
         let image = render::render_workbench_continuity_chart(&history)

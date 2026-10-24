@@ -119,7 +119,6 @@ fn show_geometry(ui: &MainWindow, state: &mut AppState, geometry: bool) {
     state.show_geometry_3d = geometry;
     state.show_sketch_editor = false;
     state.show_mesh = !geometry;
-    state.animation_playing = false;
 }
 
 fn group_name(state: &AppState, index: i32) -> Option<String> {
@@ -891,8 +890,8 @@ pub(super) fn refresh(ui: &MainWindow, state: &AppState) {
 mod tests {
     use super::*;
     use slint::platform::{
-        software_renderer::{MinimalSoftwareWindow, RepaintBufferType},
         Platform, WindowAdapter,
+        software_renderer::{MinimalSoftwareWindow, RepaintBufferType},
     };
     struct SoftwarePlatform(Rc<MinimalSoftwareWindow>);
     impl Platform for SoftwarePlatform {
@@ -950,11 +949,13 @@ mod tests {
         );
         ui.set_ns_edit_name("moving_top".into());
         ui.invoke_mesh_group_action(1);
-        assert!(state
-            .borrow()
-            .workbench
-            .boundary_assignment("moving_top")
-            .is_none());
+        assert!(
+            state
+                .borrow()
+                .workbench
+                .boundary_assignment("moving_top")
+                .is_none()
+        );
         pick(1, false);
         pick(2, true);
         pick(3, true);
@@ -964,12 +965,14 @@ mod tests {
         pick(3, true);
         ui.set_ns_edit_name("fixed_walls".into());
         ui.invoke_mesh_group_action(1);
-        assert!(state
-            .borrow()
-            .workbench
-            .to_project("manual")
-            .boundaries
-            .is_empty());
+        assert!(
+            state
+                .borrow()
+                .workbench
+                .to_project("manual")
+                .boundaries
+                .is_empty()
+        );
         ui.invoke_mesh_select_group(1);
         assert_eq!(state.borrow().wb_selected_targets.len(), 3);
         ui.set_ns_edit_name("stationary".into());

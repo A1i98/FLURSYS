@@ -86,7 +86,13 @@ pub(super) fn chart(
         .get(&plane.id)
         .ok_or("No history: enable recording before Run, or select a recorded plane")?;
     let (series, x, y) = plane_integrals::series(points, &plane.name, kind)?;
-    let caption=format!("{} · {} samples · {} · {}. Flux uses cell velocity and section polygons, not conservative solver face flux.",plane.name,points.len(),x,y);
+    let caption = format!(
+        "{} · {} samples · {} · {}. Flux uses cell velocity and section polygons, not conservative solver face flux.",
+        plane.name,
+        points.len(),
+        x,
+        y
+    );
     Ok((
         flursys::workbench::series_plot::svg(&[series], "Section monitor", x, y)?,
         caption,

@@ -68,7 +68,14 @@ pub(super) fn pick(
         state.cad_measure_points.push(position);
         let text = if let [a, b] = state.cad_measure_points.as_slice() {
             let d = *b - *a;
-            format!("Distance {}{:.6} · ΔX {:.6} · ΔY {:.6} · ΔZ {:.6} (model units). Click to start another measurement.",if three_d {"≈ "} else {""},d.norm(),d.x,d.y,d.z)
+            format!(
+                "Distance {}{:.6} · ΔX {:.6} · ΔY {:.6} · ΔZ {:.6} (model units). Click to start another measurement.",
+                if three_d { "≈ " } else { "" },
+                d.norm(),
+                d.x,
+                d.y,
+                d.z
+            )
         } else {
             format!(
                 "Point 1: ({:.4}, {:.4}, {:.4}). Pick the second point.",

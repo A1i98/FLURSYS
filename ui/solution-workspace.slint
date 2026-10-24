@@ -89,6 +89,7 @@ export component SolutionWorkspace inherits Rectangle {
     in-out property <int> time-mode;
     in-out property <string> time-step;
     in-out property <int> time-steps;
+    in-out property <string> end-time;
     in-out property <string> turbulence-relaxation;in-out property <string> turbulence-tolerance;
     in-out property <int> turbulence-model;
     in-out property <string> nu-tilda;
@@ -199,7 +200,9 @@ Label {text:"Time integration";}
                         if root.time-mode>0 : VerticalLayout {spacing:6px;vertical-stretch:0;
                             Label {text:(root.time-mode==2 || root.time-mode==4) ? "Initial time step Δt (s)" : "Physical time step Δt (s)";}
                             LineEdit {text <=> root.time-step;enabled:!root.busy;min-width:0px;}
-                            Label {text:"Additional physical time steps";}
+                            Label {text:"Absolute end time (s; blank = step budget)";}
+                            LineEdit {text <=> root.end-time;enabled:!root.busy;min-width:0px;}
+                            Label {text:"Maximum additional physical time steps";}
                             SpinBox {value <=> root.time-steps;minimum:1;maximum:1000000;enabled:!root.busy;}
                             if root.time-mode==2 || root.time-mode==4 : VerticalLayout {spacing:6px;vertical-stretch:0;
                                 Label {text:"Target maximum Courant number";}
@@ -223,9 +226,9 @@ Label {text:"CPU worker threads (0 = automatic)";}
                         Label {text:root.time-mode==0 ? "Iterations to run / add" : "Maximum coupled correctors per time step";}
                         SpinBox {max-height:32px;value <=> root.iterations;minimum:1;maximum:1000000;enabled:!root.busy;}
                         Label {text:"Momentum convection";}
-                        ComboBox {model:["First-order upwind","Limited linear upwind"];current-index <=> root.convection-index;enabled:!root.busy;max-height:32px;min-width:0px;}
+                        ComboBox {model:["First-order upwind","Limited linear upwind","Central (unbounded)","Van Leer (bounded)"];current-index <=> root.convection-index;enabled:!root.busy;max-height:32px;min-width:0px;}
                         Label {text:"Pressure–velocity coupling · experimental"; }
-                        ComboBox {model:["SIMPLE","PIMPLE · transient only"];current-index <=> root.coupling-algorithm;enabled:!root.busy;max-height:32px;min-width:0px;}
+                        ComboBox {model:["SIMPLE","PIMPLE · transient only","SIMPLEC"];current-index <=> root.coupling-algorithm;enabled:!root.busy;max-height:32px;min-width:0px;}
                         if root.coupling-algorithm==1 : VerticalLayout {vertical-stretch:0;spacing:5px;
                             Label {text:"Inner pressure correctors per outer iteration";}
                             SpinBox {value <=> root.pressure-correctors;minimum:1;maximum:8;enabled:!root.busy;max-height:32px;}

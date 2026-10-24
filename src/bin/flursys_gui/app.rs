@@ -5,18 +5,17 @@ use slint::Model;
 #[path = "native_cad.rs"]
 mod native_cad;
 use flursys::app::{JobProgress, WorkbenchJobEvent, WorkbenchJobExecutor};
-use flursys::runtime::{SolverCommand, SolverController, SolverState, SolverUpdate};
-use flursys::workbench::{discover_templates_from_roots, save_case_template, CaseTemplateManifest};
+use flursys::workbench::{CaseTemplateManifest, discover_templates_from_roots, save_case_template};
+#[path = "ui_adapters.rs"]
+mod ui_adapters;
 use flursys::{
-    BoundaryConditionKind, BoundaryFace, BoundaryLayerControl, CadSketchPlane, FieldUpdate,
-    GeometryEditorState, GeometrySelectionTarget, GeometrySketch, GeometryTool, GmshMesher,
-    IncompressibleBoundaryCondition, IncompressibleSolveError, LegacyProjectInspection,
-    LocalMeshSize, MeshControlTarget, MeshDimension, MeshQualityMetric, MeshSelection,
-    MeshSelectionTarget, Project, ProjectCoupling, RecentProjects, ResultDataset, ResultFieldKind,
+    BoundaryLayerControl, CadSketchPlane, GeometryEditorState, GeometrySelectionTarget,
+    GeometrySketch, GeometryTool, GmshMesher, IncompressibleBoundaryCondition,
+    IncompressibleSolveError, LocalMeshSize, MeshControlTarget, MeshDimension, MeshQualityMetric,
+    MeshSelection, MeshSelectionTarget, RecentProjects, ResultDataset, ResultFieldKind,
     ResultProbe, ResultRenderCache, SketchAxis, SketchEntityKind, SketchPlane, SketchProfileKind,
     SolveStatus, StreamlineDirection, StreamlineField, StreamlineOptions, StreamlinePath,
-    ThermalBoundaryCondition, ThresholdRefinement, Vec3, ViewTransform, WorkbenchProject,
-    WorkbenchSession,
+    ThresholdRefinement, Vec3, ViewTransform, WorkbenchProject, WorkbenchSession,
 };
 use slint::{ComponentHandle, ModelRc, SharedString, Timer, TimerMode, VecModel};
 use std::cell::RefCell;
@@ -25,9 +24,7 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::mpsc::Receiver;
 use std::time::Duration;
-
-#[cfg(test)]
-use flursys::{ExtrudedMesh3D, StructuredMesh2D};
+use ui_adapters::*;
 
 #[path = "convergence_plot.rs"]
 mod convergence_plot;
@@ -88,6 +85,8 @@ mod mesh_inspection;
 mod mesh_setup;
 mod preferences;
 mod render_device;
+#[path = "script_setup.rs"]
+mod script_setup;
 #[path = "sketch_edit.rs"]
 mod sketch_edit;
 #[path = "thermal_setup.rs"]
@@ -108,10 +107,6 @@ enum WorkspaceSaveRoute {
 enum PendingProjectReplacement {
     NewBlank(MeshDimension),
     OpenWorkspace(PathBuf),
-    ImportLegacy {
-        source: PathBuf,
-        destination: PathBuf,
-    },
     OpenTemplate(usize),
 }
 
@@ -141,20 +136,6 @@ fn validate_new_workspace_target(workspace: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn suggested_legacy_import_destination(path: &Path) -> Result<PathBuf, String> {
-    let file_name = path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .ok_or_else(|| format!("legacy project has no usable filename: {}", path.display()))?;
-    let stem = file_name.strip_suffix(".flursys.json").ok_or_else(|| {
-        format!(
-            "expected a .flursys.json legacy project: {}",
-            path.display()
-        )
-    })?;
-    Ok(path.with_file_name(format!("{stem}.flursys")))
-}
-
 fn choose_workspace_folder(title: &str) -> Option<PathBuf> {
     rfd::FileDialog::new()
         .set_title(title)
@@ -166,7 +147,7 @@ fn user_template_root() -> Option<PathBuf> {
     std::env::var_os("XDG_DATA_HOME")
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/share")))
-        .map(|root| root.join("flursys/cases/templates"))
+        .map(|root| root.join("flursys/templates"))
 }
 
 fn user_settings_root() -> Option<PathBuf> {
@@ -245,26 +226,17 @@ impl MeshPickMode {
 }
 
 struct AppState {
-    controller: SolverController,
-    project: Project,
     project_loaded: bool,
     logs: VecDeque<String>,
-    last_update: Option<SolverUpdate>,
-    residual_history: VecDeque<ResidualSample>,
     wb_residual_history: VecDeque<ResidualSample>,
     post: post_processing::State,
-    frames: VecDeque<FieldUpdate>,
-    frame_index: usize,
-    animation_playing: bool,
     show_mesh: bool,
     show_geometry_3d: bool,
     view_3d: viewport::View3d,
     geometry_view_axis: i32,
     geometry_pick_mode: i32,
     geometry_drag_anchor: Option<(f32, f32, f32, f32)>,
-    selected_boundary_face: BoundaryFace,
     preflight_summary: String,
-    last_animation_tick: std::time::Instant,
     draft_sketch: Option<GeometrySketch>,
     show_sketch_editor: bool,
     sketch_tool: SketchTool,
@@ -273,9 +245,7 @@ struct AppState {
     sketch_undo: Vec<GeometrySketch>,
     sketch_redo: Vec<GeometrySketch>,
     workbench: WorkbenchSession,
-    /// Canonical portable intent for the unstructured workbench. The legacy
-    /// `project` field is retained temporarily for the older structured UI
-    /// panels; new workspace save/load routes through this document only.
+    /// Canonical portable workspace intent.
     workbench_project: WorkbenchProject,
     workspace_path: Option<PathBuf>,
     saved_mesh_copies: BTreeMap<(PathBuf, u64, String), String>,
@@ -285,7 +255,6 @@ struct AppState {
     workbench_autosave_needed: bool,
     pending_recovery_workspace: Option<PathBuf>,
     pending_project_replacement: Option<PendingProjectReplacement>,
-    pending_legacy_import: Option<(PendingProjectReplacement, LegacyProjectInspection)>,
     cad_auto_preview_timer: Timer,
     cad_measure_points: Vec<Vec3>,
     geometry_editor: GeometryEditorState,
@@ -348,24 +317,9 @@ enum SketchTool {
 #[derive(Clone, Copy)]
 struct ResidualSample {
     continuity: f64,
-    momentum: f64,
-    pressure: f64,
 }
 
 impl AppState {
-    fn queue_legacy_import(&mut self, source: PathBuf) -> Result<(), String> {
-        let destination = suggested_legacy_import_destination(&source)?;
-        let inspection = flursys::inspect_legacy_project(&source)?;
-        self.pending_legacy_import = Some((
-            PendingProjectReplacement::ImportLegacy {
-                source,
-                destination,
-            },
-            inspection,
-        ));
-        Ok(())
-    }
-
     fn new() -> Self {
         let (templates, template_errors) = gallery_templates();
         let mut logs = VecDeque::from([
@@ -381,26 +335,17 @@ impl AppState {
             .unwrap_or_default();
         recent_projects.remove_missing();
         Self {
-            controller: SolverController::spawn(),
-            project: Project::default(),
             project_loaded: true,
             logs,
-            last_update: None,
-            residual_history: VecDeque::new(),
             wb_residual_history: VecDeque::new(),
             post: post_processing::State::default(),
-            frames: VecDeque::new(),
-            frame_index: 0,
-            animation_playing: false,
             show_mesh: false,
             show_geometry_3d: true,
             view_3d: viewport::View3d::default(),
             geometry_view_axis: 3,
             geometry_pick_mode: 0,
             geometry_drag_anchor: None,
-            selected_boundary_face: BoundaryFace::Left,
             preflight_summary: "Run validation before starting the solver.".to_string(),
-            last_animation_tick: std::time::Instant::now(),
             draft_sketch: None,
             show_sketch_editor: false,
             sketch_tool: SketchTool::Select,
@@ -418,7 +363,6 @@ impl AppState {
             workbench_autosave_needed: false,
             pending_recovery_workspace: None,
             pending_project_replacement: None,
-            pending_legacy_import: None,
             cad_auto_preview_timer: Timer::default(),
             cad_measure_points: Vec::new(),
             geometry_editor: {
@@ -546,12 +490,7 @@ impl AppState {
         self.workbench_dirty = true;
         self.workbench_autosave_needed = false;
         self.pending_recovery_workspace = None;
-        self.last_update = None;
-        self.residual_history.clear();
         self.wb_residual_history.clear();
-        self.frames.clear();
-        self.frame_index = 0;
-        self.animation_playing = false;
         self.show_mesh = false;
         self.show_geometry_3d = true;
         self.geometry_editor = GeometryEditorState::new();
@@ -574,6 +513,96 @@ impl AppState {
         self.wb_selected_targets.clear();
         self.tree_dirty = true;
         self.preflight_summary = "Run validation before starting the solver.".to_string();
+    }
+
+    fn activate_persisted_result(&mut self, run_id: &str) -> Result<(), String> {
+        self.post.reset_result();
+        self.active_result = None;
+        self.result_render_cache = None;
+        self.active_result_probe = None;
+        self.streamline_paths.clear();
+        self.streamline_seed_mode = false;
+        self.result_manual_range = None;
+        let workspace = self
+            .workspace_path
+            .clone()
+            .ok_or_else(|| "Open a saved workspace before loading a persisted run.".to_string())?;
+        if self
+            .workbench_project
+            .runs
+            .iter()
+            .find(|r| r.id == run_id)
+            .is_some_and(|r| r.solution_path.is_none())
+        {
+            return self.activate_failed_archive(run_id, &workspace);
+        }
+        let dataset = flursys::load_workspace_result(&workspace, &self.workbench_project, run_id)
+            .map_err(|error| error.to_string())?;
+        self.install_result_dataset(dataset)?;
+        self.wb_residual_history.clear();
+        if let Some(record) = self.workbench_project.runs.iter().find(|r| r.id == run_id) {
+            if let Ok(text) = std::fs::read_to_string(workspace.join(&record.report_path)) {
+                if let Ok(report) = serde_json::from_str::<serde_json::Value>(&text) {
+                    self.post.health = report
+                        .get("sampled_field_health")
+                        .and_then(|v| serde_json::from_value(v.clone()).ok());
+                    self.post.wall_report_index = record.iterations;
+                    self.post.wall_report_time = record.physical_time;
+                    self.post.wall_reports = report
+                        .get("wall_reports")
+                        .and_then(|v| serde_json::from_value(v.clone()).ok())
+                        .unwrap_or_default();
+                    if let Some(v) = report.get("boundary_flow_reports") {
+                        if let Ok(reports) = serde_json::from_value::<
+                            Vec<flursys::workbench::boundary_reports::BoundaryFlowReport>,
+                        >(v.clone())
+                        {
+                            self.post.boundary_summary =
+                                result_analysis::boundary_summary(&reports);
+                            if let Some(balance) = report.get("conservation").and_then(|v| {
+                                serde_json::from_value::<
+                                    flursys::workbench::boundary_reports::ConservationReport,
+                                >(v.clone())
+                                .ok()
+                            }) {
+                                self.post.boundary_summary = balance.summary()
+                                    + "\n\n"
+                                    + self.post.boundary_summary.as_str();
+                            }
+                            self.post.boundary_reports = reports;
+                        }
+                    }
+                    if let Some(histories) = report.get("convergence_histories") {
+                        for (index, key) in ["momentum", "velocity", "pressure_linear"]
+                            .iter()
+                            .enumerate()
+                        {
+                            if let Some(values) = histories.get(*key).and_then(|v| v.as_array()) {
+                                self.post.metric_histories[index] = values
+                                    .iter()
+                                    .filter_map(|v| v.as_f64())
+                                    .filter(|v| v.is_finite())
+                                    .collect();
+                            }
+                        }
+                    }
+                    if let Some(history) =
+                        report.get("continuity_history").and_then(|v| v.as_array())
+                    {
+                        self.wb_residual_history = history
+                            .iter()
+                            .rev()
+                            .take(400)
+                            .rev()
+                            .filter_map(|v| v.as_f64())
+                            .filter(|v| v.is_finite())
+                            .map(|v| ResidualSample { continuity: v })
+                            .collect();
+                    }
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Starts a destructive project replacement only after the current dirty
@@ -602,9 +631,6 @@ impl AppState {
         &mut self,
         replacement: PendingProjectReplacement,
     ) -> Result<String, String> {
-        if let Err(error) = self.controller.send(SolverCommand::Stop) {
-            self.log(error);
-        }
         match replacement {
             PendingProjectReplacement::NewBlank(dimension) => {
                 self.project_loaded = true;
@@ -615,19 +641,6 @@ impl AppState {
                 self.load_workbench_workspace(workspace)?;
                 self.project_loaded = true;
                 Ok("Workbench workspace loaded.".to_string())
-            }
-            PendingProjectReplacement::ImportLegacy {
-                source,
-                destination,
-            } => {
-                let result = flursys::import_legacy_project(&source, &destination)?;
-                self.load_workbench_workspace(destination)?;
-                self.project_loaded = true;
-                Ok(format!(
-                    "Imported legacy project as a modern workspace. Migrated: {}. Not migrated: {}. The original file was not modified.",
-                    result.report.migrated_items.join(", "),
-                    result.report.skipped_items.join(", "),
-                ))
             }
             PendingProjectReplacement::OpenTemplate(index) => {
                 let title = self.open_gallery_template(index as i32)?;
@@ -744,11 +757,7 @@ impl AppState {
                     if let Some(value) = residual.filter(|v| v.is_finite()) {
                         push_bounded(
                             &mut self.wb_residual_history,
-                            ResidualSample {
-                                continuity: value,
-                                momentum: 0.0,
-                                pressure: 0.0,
-                            },
+                            ResidualSample { continuity: value },
                             400,
                         );
                     }
@@ -1220,123 +1229,6 @@ impl AppState {
             .active_result_probe()
             .expect("a just-selected result probe exists"))
     }
-
-    /// Replaces the complete result state with one immutable persisted run.
-    /// Clearing first prevents a failed selection from leaving fields from a
-    /// different run visible in the Results view.
-    fn activate_persisted_result(&mut self, run_id: &str) -> Result<(), String> {
-        self.post.reset_result();
-        self.active_result = None;
-        self.result_render_cache = None;
-        self.active_result_probe = None;
-        self.streamline_paths.clear();
-        self.streamline_seed_mode = false;
-        self.result_manual_range = None;
-        let workspace = self
-            .workspace_path
-            .clone()
-            .ok_or_else(|| "Open a saved workspace before loading a persisted run.".to_string())?;
-        if self
-            .workbench_project
-            .runs
-            .iter()
-            .find(|r| r.id == run_id)
-            .is_some_and(|r| r.solution_path.is_none())
-        {
-            return self.activate_failed_archive(run_id, &workspace);
-        }
-        let dataset = flursys::load_workspace_result(&workspace, &self.workbench_project, run_id)
-            .map_err(|error| error.to_string())?;
-        self.install_result_dataset(dataset)?;
-        self.wb_residual_history.clear();
-        if let Some(record) = self.workbench_project.runs.iter().find(|r| r.id == run_id) {
-            if let Ok(text) = std::fs::read_to_string(workspace.join(&record.report_path)) {
-                if let Ok(report) = serde_json::from_str::<serde_json::Value>(&text) {
-                    self.post.health = report
-                        .get("sampled_field_health")
-                        .and_then(|v| serde_json::from_value(v.clone()).ok());
-                    self.post.wall_report_index = record.iterations;
-                    self.post.wall_report_time = record.physical_time;
-                    self.post.wall_reports = report
-                        .get("wall_reports")
-                        .and_then(|v| serde_json::from_value(v.clone()).ok())
-                        .unwrap_or_default();
-                    if let Some(v) = report.get("boundary_flow_reports") {
-                        if let Ok(reports) = serde_json::from_value::<
-                            Vec<flursys::workbench::boundary_reports::BoundaryFlowReport>,
-                        >(v.clone())
-                        {
-                            self.post.boundary_summary =
-                                result_analysis::boundary_summary(&reports);
-                            if let Some(balance) = report.get("conservation").and_then(|v| {
-                                serde_json::from_value::<
-                                    flursys::workbench::boundary_reports::ConservationReport,
-                                >(v.clone())
-                                .ok()
-                            }) {
-                                self.post.boundary_summary =
-                                    balance.summary() + "\n\n" + &self.post.boundary_summary;
-                            }
-                            self.post.boundary_reports = reports;
-                        }
-                    }
-                    if let Some(histories) = report.get("convergence_histories") {
-                        for (index, key) in ["momentum", "velocity", "pressure_linear"]
-                            .iter()
-                            .enumerate()
-                        {
-                            if let Some(values) = histories.get(*key).and_then(|v| v.as_array()) {
-                                self.post.metric_histories[index] = values
-                                    .iter()
-                                    .filter_map(|v| v.as_f64())
-                                    .filter(|v| v.is_finite())
-                                    .collect();
-                            }
-                        }
-                    }
-                    if let Some(history) =
-                        report.get("continuity_history").and_then(|v| v.as_array())
-                    {
-                        self.wb_residual_history = history
-                            .iter()
-                            .rev()
-                            .take(400)
-                            .rev()
-                            .filter_map(|v| v.as_f64())
-                            .filter(|v| v.is_finite())
-                            .map(|v| ResidualSample {
-                                continuity: v,
-                                momentum: 0.0,
-                                pressure: 0.0,
-                            })
-                            .collect();
-                    }
-                }
-            }
-        }
-        Ok(())
-    }
-
-    fn push_update(&mut self, update: SolverUpdate) {
-        if update.iteration > 0 {
-            push_bounded(
-                &mut self.residual_history,
-                ResidualSample {
-                    continuity: update.continuity_residual,
-                    momentum: update.momentum_residual,
-                    pressure: update.pressure_residual,
-                },
-                400,
-            );
-        }
-        if let Some(field) = update.field_update.clone() {
-            push_bounded(&mut self.frames, field, 120);
-            if !self.animation_playing {
-                self.frame_index = self.frames.len().saturating_sub(1);
-            }
-        }
-        self.last_update = Some(update);
-    }
 }
 
 fn push_bounded<T>(values: &mut VecDeque<T>, value: T, limit: usize) {
@@ -1439,8 +1331,8 @@ fn canonical_geometry_sidebar(state: &AppState) -> (String, String) {
     let topology = state.workbench.geometry();
     if topology.faces().next().is_none() && topology.edges().next().is_none() {
         return (
-            geometry_model_tree(&state.project),
-            geometry_parts_summary(&state.project),
+            "No geometry".into(),
+            "Create or import CAD geometry to begin.".into(),
         );
     }
     let free_faces: Vec<_> = topology
@@ -1487,18 +1379,12 @@ fn canonical_geometry_sidebar(state: &AppState) -> (String, String) {
             .take(12)
             .map(|body| format!("      Body {}", body.id.get())),
     );
-    let legacy = state.project.preprocessing.geometry.parts.len();
     let summary = format!(
-        "{} closed profiles · {} sketches · {} extrusions · {} solids{}",
+        "{} closed profiles · {} sketches · {} extrusions · {} solids",
         free_faces.len(),
         sketches.len(),
         features.len(),
-        bodies.len(),
-        if legacy == 0 {
-            String::new()
-        } else {
-            format!(" · {legacy} primitive parts")
-        }
+        bodies.len()
     );
     (lines.join("\n"), summary)
 }
@@ -1585,7 +1471,14 @@ fn sketch_rectangle_on_selected_face(
     state.tree_dirty = true;
     state.show_geometry_3d = true;
     state.show_mesh = false;
-    Ok(format!("Sketch {} on Face {}: rectangle {:.3} × {:.3} mm → profile Face {}. Extrude the selected profile to create a body.", sketch.id.get(), face.get(), width, height, profile.get()))
+    Ok(format!(
+        "Sketch {} on Face {}: rectangle {:.3} × {:.3} mm → profile Face {}. Extrude the selected profile to create a body.",
+        sketch.id.get(),
+        face.get(),
+        width,
+        height,
+        profile.get()
+    ))
 }
 
 fn begin_face_sketch(state: &mut AppState) -> Result<String, String> {
@@ -1708,7 +1601,12 @@ fn face_sketch_click(state: &mut AppState, point: (f64, f64)) -> Result<Option<S
     state.face_sketch_cursor = None;
     state.show_geometry_3d = true;
     state.show_mesh = false;
-    Ok(Some(format!("Drawn Sketch {} on Face {} → Face {} ({width:.3} × {height:.3} mm). Select EXTRUDE / BUILD to make a solid.", sketch.id.get(), host.get(), profile.get())))
+    Ok(Some(format!(
+        "Drawn Sketch {} on Face {} → Face {} ({width:.3} × {height:.3} mm). Select EXTRUDE / BUILD to make a solid.",
+        sketch.id.get(),
+        host.get(),
+        profile.get()
+    )))
 }
 
 /// Begin a press-and-drag stroke without committing geometry. A short press
@@ -1765,7 +1663,14 @@ fn sketch_rectangle_on_plane(
     state.tree_dirty = true;
     state.show_geometry_3d = true;
     state.show_mesh = false;
-    Ok(format!("Sketch {} on {:?}: rectangle {:.3} × {:.3} mm → profile Face {}. Extrude the selected profile to create a body.", sketch.id.get(), plane, width, height, profile.get()))
+    Ok(format!(
+        "Sketch {} on {:?}: rectangle {:.3} × {:.3} mm → profile Face {}. Extrude the selected profile to create a body.",
+        sketch.id.get(),
+        plane,
+        width,
+        height,
+        profile.get()
+    ))
 }
 
 fn translate_selected_body(
@@ -1943,7 +1848,6 @@ pub fn run() -> Result<(), slint::PlatformError> {
     slint::set_xdg_app_id("flursys")?;
     preferences::bind(&ui);
     let state = Rc::new(RefCell::new(AppState::new()));
-    write_project_to_ui(&ui, &state.borrow().project);
     {
         let mut state = state.borrow_mut();
         state.spawn_gmsh_probe();
@@ -1966,15 +1870,6 @@ pub fn run() -> Result<(), slint::PlatformError> {
         };
         let mut state = poll_state.borrow_mut();
         let mut changed = cad::poll(&ui, &mut state);
-        while let Ok(update) = state.controller.try_recv() {
-            if let Some(message) = &update.message {
-                state.log(format!("{:?}: {message}", update.state));
-            } else if matches!(update.state, SolverState::Completed | SolverState::Stopped) {
-                state.log(format!("Solver state: {:?}", update.state));
-            }
-            state.push_update(update);
-            changed = true;
-        }
         let mesh_before = state.workbench.mesh().map(|mesh| mesh.mesh.id());
         let patch_before = state
             .patch_names
@@ -2003,14 +1898,6 @@ pub fn run() -> Result<(), slint::PlatformError> {
                 state.log(format!("Workspace recovery autosave failed: {error}"));
                 changed = true;
             }
-        }
-        if state.animation_playing
-            && state.frames.len() > 1
-            && state.last_animation_tick.elapsed() >= Duration::from_millis(120)
-        {
-            state.frame_index = (state.frame_index + 1) % state.frames.len();
-            state.last_animation_tick = std::time::Instant::now();
-            changed = true;
         }
         changed |= post_processing::tick(&ui, &mut state);
         if changed {
@@ -2116,6 +2003,7 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
     transport_setup::bind(ui, state);
     material_library::bind(ui);
     time_boundary_setup::bind(ui, state);
+    script_setup::bind(ui, state);
     equation_setup::bind(ui, state);
     volume_setup::bind(ui, state);
     cyclic_setup::bind(ui, state);
@@ -2670,51 +2558,6 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
     });
 
     let weak_ui = ui.as_weak();
-    let case_state = state.clone();
-    ui.on_select_case(move || {
-        let Some(ui) = weak_ui.upgrade() else {
-            return;
-        };
-        let mut state = case_state.borrow_mut();
-        sync_project_from_ui(&ui, &mut state.project);
-        state.project.case = project_case_from_index(ui.get_case_index());
-        state.project_loaded = true;
-        let selected_case = case_name(&state.project.case);
-        state.project.name = selected_case.to_string();
-        state.show_geometry_3d = true;
-        state.show_mesh = false;
-        state.animation_playing = false;
-        state.log(format!("Geometry selected: {selected_case}."));
-        write_project_to_ui(&ui, &state.project);
-        refresh_ui(&ui, &state);
-    });
-
-    let weak_ui = ui.as_weak();
-    let parts_state = state.clone();
-    ui.on_add_part(move || {
-        let Some(ui) = weak_ui.upgrade() else {
-            return;
-        };
-        let mut state = parts_state.borrow_mut();
-        if !require_project(&mut state) {
-            refresh_ui(&ui, &state);
-            return;
-        }
-        sync_project_from_ui(&ui, &mut state.project);
-        match geometry_part_from_ui(&ui) {
-            Ok(part) if state.project.preprocessing.geometry.parts.len() < 128 => {
-                state.log(format!("Added 3D solid: {}.", part.name));
-                state.project.preprocessing.geometry.parts.push(part);
-                state.show_geometry_3d = true;
-                state.show_mesh = false;
-            }
-            Ok(_) => state.log("A project can contain at most 128 geometry parts."),
-            Err(error) => state.log(error),
-        }
-        refresh_ui(&ui, &state);
-    });
-
-    let weak_ui = ui.as_weak();
     let feature_state = state.clone();
     ui.on_build_feature(move || {
         let Some(ui) = weak_ui.upgrade() else {
@@ -3005,80 +2848,6 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
     });
 
     let weak_ui = ui.as_weak();
-    let parts_state = state.clone();
-    ui.on_duplicate_last_part(move || {
-        let Some(ui) = weak_ui.upgrade() else {
-            return;
-        };
-        let mut state = parts_state.borrow_mut();
-        if !require_project(&mut state) {
-            refresh_ui(&ui, &state);
-            return;
-        }
-        if state.project.preprocessing.geometry.parts.len() >= 128 {
-            state.log("A project can contain at most 128 geometry parts.");
-        } else if let Some(source) = state.project.preprocessing.geometry.parts.last().cloned() {
-            let mut duplicate = source.clone();
-            duplicate.name =
-                next_copy_name(&source.name, &state.project.preprocessing.geometry.parts);
-            // A small offset makes a duplicate visible and immediately editable.
-            duplicate.x += 0.1;
-            duplicate.y += 0.1;
-            state.project.preprocessing.geometry.parts.push(duplicate);
-            state.log(format!("Duplicated 3D solid: {}.", source.name));
-        } else {
-            state.log("There is no custom 3D solid to duplicate.");
-        }
-        state.show_geometry_3d = true;
-        state.show_mesh = false;
-        refresh_ui(&ui, &state);
-    });
-
-    let weak_ui = ui.as_weak();
-    let parts_state = state.clone();
-    ui.on_remove_last_part(move || {
-        let Some(ui) = weak_ui.upgrade() else {
-            return;
-        };
-        let mut state = parts_state.borrow_mut();
-        if !require_project(&mut state) {
-            refresh_ui(&ui, &state);
-            return;
-        }
-        if let Some(part) = state.project.preprocessing.geometry.parts.pop() {
-            if let Some(feature) = state
-                .project
-                .preprocessing
-                .geometry
-                .features
-                .pop_if(|feature| feature.output_part == part.name)
-            {
-                if let Some(sketch_index) = state
-                    .project
-                    .preprocessing
-                    .geometry
-                    .sketches
-                    .iter()
-                    .position(|sketch| sketch.id == feature.sketch_id)
-                {
-                    state
-                        .project
-                        .preprocessing
-                        .geometry
-                        .sketches
-                        .remove(sketch_index);
-                }
-            }
-            state.log(format!("Removed 3D solid: {}.", part.name));
-        } else {
-            state.log("There is no custom 3D solid to remove.");
-        }
-        state.show_geometry_3d = true;
-        state.show_mesh = false;
-        refresh_ui(&ui, &state);
-    });
-
-    let weak_ui = ui.as_weak();
     let start_state = state.clone();
     ui.on_start(move || {
         let Some(ui) = weak_ui.upgrade() else {
@@ -3105,7 +2874,6 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
             name.as_str(),
         ) {
             Ok(()) => {
-                state.project.name = state.workbench_project.name.clone();
                 state.mark_workbench_dirty();
                 ui.set_project_name_feedback("".into());
                 refresh_ui(&ui, &state);
@@ -3141,45 +2909,6 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
     });
 
     let weak_ui = ui.as_weak();
-    let pause_state = state.clone();
-    ui.on_pause(move || {
-        let Some(ui) = weak_ui.upgrade() else {
-            return;
-        };
-        let mut state = pause_state.borrow_mut();
-        if let Err(error) = state.controller.send(SolverCommand::Pause) {
-            state.log(error);
-        }
-        refresh_ui(&ui, &state);
-    });
-
-    let weak_ui = ui.as_weak();
-    let resume_state = state.clone();
-    ui.on_resume(move || {
-        let Some(ui) = weak_ui.upgrade() else {
-            return;
-        };
-        let mut state = resume_state.borrow_mut();
-        if let Err(error) = state.controller.send(SolverCommand::Resume) {
-            state.log(error);
-        }
-        refresh_ui(&ui, &state);
-    });
-
-    let weak_ui = ui.as_weak();
-    let stop_state = state.clone();
-    ui.on_stop(move || {
-        let Some(ui) = weak_ui.upgrade() else {
-            return;
-        };
-        let mut state = stop_state.borrow_mut();
-        if let Err(error) = state.controller.send(SolverCommand::Stop) {
-            state.log(error);
-        }
-        refresh_ui(&ui, &state);
-    });
-
-    let weak_ui = ui.as_weak();
     let open_native_state = state.clone();
     ui.on_open_project_native(move || {
         let Some(ui) = weak_ui.upgrade() else {
@@ -3190,14 +2919,6 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
             .set_title("Open FLURSYS project.json (Cancel to choose a folder)")
             .pick_file();
         let workspace = if let Some(path) = selected {
-            if flursys::is_legacy_project_path(&path) {
-                let mut state = open_native_state.borrow_mut();
-                if let Err(error) = state.queue_legacy_import(path) {
-                    state.log(error);
-                }
-                refresh_ui(&ui, &state);
-                return;
-            }
             match workspace_from_project_file(&path) {
                 Ok(folder) => folder,
                 Err(error) => {
@@ -3389,40 +3110,6 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
     });
 
     let weak_ui = ui.as_weak();
-    let legacy_import_state = state.clone();
-    ui.on_cancel_legacy_import(move || {
-        let Some(ui) = weak_ui.upgrade() else {
-            return;
-        };
-        let mut state = legacy_import_state.borrow_mut();
-        state.pending_legacy_import = None;
-        state.log("Legacy project import cancelled; the original file was not modified.");
-        refresh_ui(&ui, &state);
-    });
-
-    let weak_ui = ui.as_weak();
-    let legacy_import_state = state.clone();
-    ui.on_confirm_legacy_import(move || {
-        let Some(ui) = weak_ui.upgrade() else {
-            return;
-        };
-        let mut state = legacy_import_state.borrow_mut();
-        let Some((replacement, _)) = state.pending_legacy_import.take() else {
-            return;
-        };
-        if let Some(replacement) = state.request_project_replacement(replacement) {
-            match state.apply_project_replacement(replacement) {
-                Ok(message) => {
-                    state.log(message);
-                    push_workbench_defaults(&ui, &state.workbench);
-                }
-                Err(error) => state.log(error),
-            }
-        }
-        refresh_ui(&ui, &state);
-    });
-
-    let weak_ui = ui.as_weak();
     let save_native_state = state.clone();
     ui.on_save_project_native(move || {
         let Some(ui) = weak_ui.upgrade() else {
@@ -3474,8 +3161,14 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
                 Err(error) => state.log(error),
             }
         } else {
-            if let Err(error) = state.queue_legacy_import(path) {
-                state.log(error);
+            match workspace_from_project_file(&path)
+                .and_then(|folder| state.load_workbench_workspace(folder))
+            {
+                Ok(()) => {
+                    state.log("Workbench workspace loaded.");
+                    push_workbench_defaults(&ui, &state.workbench);
+                }
+                Err(error) => state.log(error),
             }
         }
         refresh_ui(&ui, &state);
@@ -3494,7 +3187,7 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
         }
         let workspace = PathBuf::from(ui.get_project_path().as_str());
         if workspace.extension().is_some() {
-            state.log("Save requires a workspace folder path, not a legacy project file path.");
+            state.log("Save requires a workspace folder path, not a file path.");
         } else {
             let save_as = state.workspace_path.as_deref() != Some(workspace.as_path());
             let result = if save_as {
@@ -3555,7 +3248,6 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
         }
         state.show_mesh = true;
         state.show_geometry_3d = false;
-        state.animation_playing = false;
         refresh_ui(&ui, &state);
     });
 
@@ -3568,41 +3260,8 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
         let mut state = field_state.borrow_mut();
         state.show_mesh = false;
         state.show_geometry_3d = false;
-        state.frame_index = state.frames.len().saturating_sub(1);
         if let Err(error) = state.ensure_result_active() {
             state.log(error);
-        }
-        refresh_ui(&ui, &state);
-    });
-
-    let weak_ui = ui.as_weak();
-    let play_state = state.clone();
-    ui.on_animation_play_pause(move || {
-        let Some(ui) = weak_ui.upgrade() else {
-            return;
-        };
-        let mut state = play_state.borrow_mut();
-        if state.frames.len() > 1 {
-            state.show_mesh = false;
-            state.animation_playing = !state.animation_playing;
-            state.last_animation_tick = std::time::Instant::now();
-        } else {
-            state.log("Animation needs at least two field snapshots.");
-        }
-        refresh_ui(&ui, &state);
-    });
-
-    let weak_ui = ui.as_weak();
-    let next_state = state.clone();
-    ui.on_animation_next(move || {
-        let Some(ui) = weak_ui.upgrade() else {
-            return;
-        };
-        let mut state = next_state.borrow_mut();
-        if !state.frames.is_empty() {
-            state.show_mesh = false;
-            state.animation_playing = false;
-            state.frame_index = (state.frame_index + 1) % state.frames.len();
         }
         refresh_ui(&ui, &state);
     });
@@ -3618,11 +3277,9 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
             refresh_ui(&ui, &state);
             return;
         }
-        sync_project_from_ui(&ui, &mut state.project);
         state.show_geometry_3d = true;
         state.show_mesh = false;
         state.show_sketch_editor = false;
-        state.animation_playing = false;
         state.log("Showing the saved geometry and mesh extrusion preview.");
         refresh_ui(&ui, &state);
     });
@@ -3634,75 +3291,11 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
             return;
         };
         let mut state = rotate_state.borrow_mut();
-        sync_project_from_ui(&ui, &mut state.project);
         state.show_geometry_3d = true;
         state.show_mesh = false;
-        state.animation_playing = false;
         state.view_3d.yaw = (state.view_3d.yaw + 0.45) % std::f32::consts::TAU;
         state.geometry_view_axis = 3;
         state.geometry_drag_anchor = None;
-        refresh_ui(&ui, &state);
-    });
-
-    let weak_ui = ui.as_weak();
-    let boundary_state = state.clone();
-    ui.on_apply_boundary(move || {
-        let Some(ui) = weak_ui.upgrade() else {
-            return;
-        };
-        let mut state = boundary_state.borrow_mut();
-        sync_project_from_ui(&ui, &mut state.project);
-        let face = boundary_face_from_index(ui.get_boundary_face_index());
-        state.selected_boundary_face = face;
-        if ui.get_boundary_kind_index() == 2 && face != BoundaryFace::Right {
-            state.log("The active 2D solver accepts a pressure outlet only on the right boundary.");
-            refresh_ui(&ui, &state);
-            return;
-        }
-        let value = parse_number(ui.get_boundary_value().as_str(), 0.0);
-        let kind = match ui.get_boundary_kind_index() {
-            1 => BoundaryConditionKind::Velocity {
-                u: value,
-                v: 0.0,
-                w: 0.0,
-            },
-            2 => BoundaryConditionKind::PressureOutlet { pressure: value },
-            3 => BoundaryConditionKind::Wall {
-                u: value,
-                v: 0.0,
-                w: 0.0,
-            },
-            4 => BoundaryConditionKind::Symmetry,
-            _ => BoundaryConditionKind::CaseDefault,
-        };
-        if let Some(boundary) = state.project.preprocessing.boundary_mut(face) {
-            boundary.kind = kind;
-            state.log(format!("{} boundary updated.", face.label()));
-        } else {
-            state.log(format!(
-                "{} boundary is missing from the project.",
-                face.label()
-            ));
-        }
-        state.show_geometry_3d = true;
-        state.show_mesh = false;
-        refresh_ui(&ui, &state);
-    });
-
-    let weak_ui = ui.as_weak();
-    let boundary_preview_state = state.clone();
-    ui.on_show_boundary_face(move || {
-        let Some(ui) = weak_ui.upgrade() else {
-            return;
-        };
-        let mut state = boundary_preview_state.borrow_mut();
-        sync_project_from_ui(&ui, &mut state.project);
-        state.selected_boundary_face = boundary_face_from_index(ui.get_boundary_face_index());
-        state.show_geometry_3d = true;
-        state.show_mesh = false;
-        state.animation_playing = false;
-        let label = state.selected_boundary_face.label();
-        state.log(format!("Highlighted {label} boundary in the mesh preview."));
         refresh_ui(&ui, &state);
     });
 
@@ -3848,50 +3441,7 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
             }
             if state.current_step == 0 { return }
         }
-        let selected = if state.show_mesh {
-            pick_boundary_2d(&state.project, point)
-        } else if state.show_geometry_3d {
-            pick_boundary_3d(
-                &state.project,
-                state.view_3d,
-                point,
-            )
-        } else {
-            None
-        };
-        if let Some(face) = selected {
-            state.selected_boundary_face = face;
-            write_boundary_to_ui(&ui, &state.project, face);
-            state.log(format!("Selected {} boundary from preview.", face.label()));
-            refresh_ui(&ui, &state);
-        }
-    });
 
-    let weak_ui = ui.as_weak();
-    let thermal_state = state.clone();
-    ui.on_apply_thermal_boundary(move || {
-        let Some(ui) = weak_ui.upgrade() else {
-            return;
-        };
-        let mut state = thermal_state.borrow_mut();
-        sync_project_from_ui(&ui, &mut state.project);
-        let temperature = parse_number(
-            ui.get_thermal_boundary_value().as_str(),
-            state.project.physics.thermal.initial_temperature,
-        );
-        let boundary = if ui.get_thermal_boundary_kind_index() == 0 {
-            ThermalBoundaryCondition::Adiabatic
-        } else {
-            ThermalBoundaryCondition::FixedTemperature { temperature }
-        };
-        match ui.get_thermal_face_index() {
-            1 => state.project.physics.thermal.right = boundary,
-            2 => state.project.physics.thermal.bottom = boundary,
-            3 => state.project.physics.thermal.top = boundary,
-            _ => state.project.physics.thermal.left = boundary,
-        }
-        state.log("Thermal boundary condition updated.");
-        refresh_ui(&ui, &state);
     });
 
     let weak_ui = ui.as_weak();
@@ -3910,7 +3460,6 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
         state.result_manual_range=None;
         state.show_mesh = false;
         state.show_geometry_3d = false;
-        state.animation_playing = false;
         refresh_ui(&ui, &state);
     });
 
@@ -3936,7 +3485,6 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
         }
         state.show_mesh = false;
         state.show_geometry_3d = false;
-        state.animation_playing = false;
         state.log(format!(
             "Applied result style: {} / {} / {} levels.",
             result_plot_label(ui.get_result_plot_index()),
@@ -4268,7 +3816,6 @@ fn bind_callbacks(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
                     Ok(()) => {
                         state.show_mesh = false;
                         state.show_geometry_3d = false;
-                        state.animation_playing = false;
                         state.current_step = 4;
                         ui.set_current_step(4);
                         state.log(format!("Loaded persisted result run '{run_id}'."));
@@ -4924,7 +4471,6 @@ fn select_tree_geometry_target(
 }
 
 fn apply_workflow_step(ui: &MainWindow, state: &mut AppState, step: i32) {
-    sync_project_from_ui(ui, &mut state.project);
     let step = step.clamp(0, 4);
     if step != 4 {
         state.post.playing = false;
@@ -4946,18 +4492,15 @@ fn apply_workflow_step(ui: &MainWindow, state: &mut AppState, step: i32) {
                     payload: ui.get_patch_index().max(0),
                 });
             }
-            state.animation_playing = false;
         }
         0 => {
             state.show_geometry_3d = true;
             state.show_mesh = false;
-            state.animation_playing = false;
         }
         1 => {
             state.show_geometry_3d = true;
             state.show_mesh = false;
             state.show_sketch_editor = false;
-            state.animation_playing = false;
             ui.set_mesh_task(0);
             ui.set_mesh_group_index(-1);
             ui.set_ns_edit_name("".into());
@@ -4981,7 +4524,6 @@ fn apply_workflow_step(ui: &MainWindow, state: &mut AppState, step: i32) {
             }
             state.show_geometry_3d = false;
             state.show_mesh = false;
-            state.frame_index = state.frames.len().saturating_sub(1);
         }
         _ => {}
     }
@@ -5518,16 +5060,26 @@ fn run_inspector_text(run: &flursys::RunRecord, delete_armed: bool) -> String {
         run.id,
         run_status_label(&run.status),
         run.created_unix_ms,
-        run.mesh_identity.map_or_else(|| "—".to_string(), |value| value.to_string()),
-        run.iterations.map_or_else(|| "—".to_string(), |value| value.to_string()),
-        run.continuity_residual.map_or_else(|| "—".to_string(), |value| format!("{value:.3e}")),
-        run.total_inflow.map_or_else(|| "—".to_string(), |value| format!("{value:.3e}")),
-        run.total_outflow.map_or_else(|| "—".to_string(), |value| format!("{value:.3e}")),
-        run.net_boundary_flux.map_or_else(|| "—".to_string(), |value| format!("{value:.3e}")),
+        run.mesh_identity
+            .map_or_else(|| "—".to_string(), |value| value.to_string()),
+        run.iterations
+            .map_or_else(|| "—".to_string(), |value| value.to_string()),
+        run.continuity_residual
+            .map_or_else(|| "—".to_string(), |value| format!("{value:.3e}")),
+        run.total_inflow
+            .map_or_else(|| "—".to_string(), |value| format!("{value:.3e}")),
+        run.total_outflow
+            .map_or_else(|| "—".to_string(), |value| format!("{value:.3e}")),
+        run.net_boundary_flux
+            .map_or_else(|| "—".to_string(), |value| format!("{value:.3e}")),
         run.failure_diagnostic.as_deref().unwrap_or("—"),
         run.report_path.display(),
         artifact,
-        if delete_armed { "DELETE ARMED — press DELETE RUN again to confirm." } else { "Delete is not armed." },
+        if delete_armed {
+            "DELETE ARMED — press DELETE RUN again to confirm."
+        } else {
+            "Delete is not armed."
+        },
     )
 }
 
@@ -5640,13 +5192,11 @@ fn push_workbench_defaults(ui: &MainWindow, session: &WorkbenchSession) {
     let solver = session.solver_options();
     use flursys::unstructured_incompressible::TimeIntegration;
     let pc = solver.pressure_coupling;
-    ui.set_wb_coupling_algorithm(
-        if pc.algorithm == flursys::simple::CouplingAlgorithm::Pimple {
-            1
-        } else {
-            0
-        },
-    );
+    ui.set_wb_coupling_algorithm(match pc.algorithm {
+        flursys::simple::CouplingAlgorithm::Simple => 0,
+        flursys::simple::CouplingAlgorithm::Pimple => 1,
+        flursys::simple::CouplingAlgorithm::Simplec => 2,
+    });
     ui.set_wb_pressure_correctors(
         if pc.algorithm == flursys::simple::CouplingAlgorithm::Pimple {
             pc.pressure_correctors as i32
@@ -5666,6 +5216,13 @@ fn push_workbench_defaults(ui: &MainWindow, session: &WorkbenchSession) {
     let (dt, steps) = solver.time.parameters().unwrap_or((0.001, 100));
     ui.set_wb_time_step(dt.to_string().into());
     ui.set_wb_time_steps(steps as i32);
+    ui.set_wb_end_time(
+        solver
+            .physical_end_time
+            .map(|t| t.to_string())
+            .unwrap_or_default()
+            .into(),
+    );
     let adaptive = solver.time.adaptive().unwrap_or_default();
     ui.set_wb_target_courant(adaptive.target_courant.to_string().into());
     ui.set_wb_min_time_step(adaptive.min_dt.to_string().into());
@@ -5712,13 +5269,12 @@ fn push_workbench_defaults(ui: &MainWindow, session: &WorkbenchSession) {
         "{}",
         solver.velocity_relaxation
     )));
-    ui.set_wb_convection_index(
-        if solver.convection == flursys::momentum::MomentumConvection::LimitedLinear {
-            1
-        } else {
-            0
-        },
-    );
+    ui.set_wb_convection_index(match solver.convection {
+        flursys::momentum::MomentumConvection::Upwind => 0,
+        flursys::momentum::MomentumConvection::LimitedLinear => 1,
+        flursys::momentum::MomentumConvection::Central => 2,
+        flursys::momentum::MomentumConvection::VanLeer => 3,
+    });
     ui.set_wb_pressure_relaxation(SharedString::from(format!(
         "{}",
         solver.pressure_relaxation
@@ -5732,6 +5288,7 @@ fn push_workbench_defaults(ui: &MainWindow, session: &WorkbenchSession) {
 fn push_boundary_fields(ui: &MainWindow, session: &WorkbenchSession, patch: &str) {
     thermal_setup::push_boundary(ui, session, patch);
     time_boundary_setup::push(ui, session, patch);
+    script_setup::push(ui, session, patch);
     if let Some(peer) = session.cyclic_partner(patch) {
         ui.set_bc_kind_index(-1);
         ui.set_bc_assigned(
@@ -5932,6 +5489,8 @@ fn sync_solver_panel(ui: &MainWindow, session: &mut WorkbenchSession) -> Result<
     let pressure_coupling = flursys::simple::PressureCoupling {
         algorithm: if ui.get_wb_coupling_algorithm() == 1 {
             flursys::simple::CouplingAlgorithm::Pimple
+        } else if ui.get_wb_coupling_algorithm() == 2 {
+            flursys::simple::CouplingAlgorithm::Simplec
         } else {
             flursys::simple::CouplingAlgorithm::Simple
         },
@@ -5944,6 +5503,15 @@ fn sync_solver_panel(ui: &MainWindow, session: &mut WorkbenchSession) -> Result<
         non_orthogonal_limiter: parse_number(ui.get_wb_nonorthogonal_limiter().as_str(), f64::NAN),
     };
     pressure_coupling.validate(time.is_transient())?;
+    let physical_end_time = if !time.is_transient() || ui.get_wb_end_time().trim().is_empty() {
+        None
+    } else {
+        Some(
+            ui.get_wb_end_time()
+                .parse::<f64>()
+                .map_err(|_| "Invalid physical end time")?,
+        )
+    };
     // Validate the complete form before invalidating an existing solution.
     let mut draft = WorkbenchSession::from_project(&session.to_project("Solver validation"))
         .map_err(|e| e.to_string())?;
@@ -5962,16 +5530,23 @@ fn sync_solver_panel(ui: &MainWindow, session: &mut WorkbenchSession) -> Result<
     draft
         .set_pressure_coupling(pressure_coupling)
         .map_err(|e| e.to_string())?;
+    draft
+        .set_physical_end_time(physical_end_time)
+        .map_err(|e| e.to_string())?;
     session
         .set_flow_models(time, turbulence)
         .map_err(|e| e.to_string())?;
     session
         .set_pressure_coupling(pressure_coupling)
         .map_err(|e| e.to_string())?;
-    session.set_convection(if ui.get_wb_convection_index() == 1 {
-        flursys::momentum::MomentumConvection::LimitedLinear
-    } else {
-        flursys::momentum::MomentumConvection::Upwind
+    session
+        .set_physical_end_time(physical_end_time)
+        .map_err(|e| e.to_string())?;
+    session.set_convection(match ui.get_wb_convection_index() {
+        1 => flursys::momentum::MomentumConvection::LimitedLinear,
+        2 => flursys::momentum::MomentumConvection::Central,
+        3 => flursys::momentum::MomentumConvection::VanLeer,
+        _ => flursys::momentum::MomentumConvection::Upwind,
     });
     session.set_cpu_threads(threads);
     session
@@ -5991,7 +5566,7 @@ fn workspace_from_project_file(path: &Path) -> Result<PathBuf, String> {
         .file_name()
         .is_none_or(|name| name != flursys::workbench::PROJECT_DOCUMENT_FILE)
     {
-        return Err("Select the workspace project.json file, or cancel and choose the workspace folder. This file is not a recognized legacy project.".into());
+        return Err("Select the workspace project.json file, or cancel and choose the workspace folder. Only canonical project.json workspaces are supported.".into());
     }
     path.parent()
         .map(Path::to_path_buf)
@@ -6018,7 +5593,7 @@ fn mesh_inspector_summary(
         maximum,
         threshold,
         bad_cells.len(),
-    ) + &format!("\nPreflight: max non-orth {:.2}° · aspect {:.3e} · centre-line skew {:.3e}\nCell measure {:.3e} .. {:.3e}",mesh.quality().max_non_orthogonality_degrees,mesh.quality().max_aspect_ratio,mesh.quality().max_skewness,mesh.quality().min_cell_volume,mesh.quality().max_cell_volume)
+    ) + format!("\nPreflight: max non-orth {:.2}° · aspect {:.3e} · centre-line skew {:.3e}\nCell measure {:.3e} .. {:.3e}",mesh.quality().max_non_orthogonality_degrees,mesh.quality().max_aspect_ratio,mesh.quality().max_skewness,mesh.quality().min_cell_volume,mesh.quality().max_cell_volume).as_str()
 }
 
 fn mesh_summary_text(session: &WorkbenchSession) -> String {
@@ -6108,16 +5683,6 @@ fn solution_summary_text(session: &WorkbenchSession) -> String {
             )
         }
     }
-}
-
-fn next_copy_name(source: &str, parts: &[flursys::GeometryPart]) -> String {
-    for copy_index in 1..=128 {
-        let candidate = format!("{source} copy {copy_index}");
-        if !parts.iter().any(|part| part.name == candidate) {
-            return candidate;
-        }
-    }
-    format!("{source} copy")
 }
 
 fn sketch_viewport_point(
@@ -6307,10 +5872,6 @@ fn sketch_tool_label(tool: SketchTool) -> &'static str {
     }
 }
 
-#[path = "bindings.rs"]
-mod bindings;
-use bindings::*;
-
 fn sync_example_gallery(ui: &MainWindow, state: &AppState) {
     ui.set_example_model(ModelRc::new(VecModel::from(state.examples.clone())));
     match state
@@ -6382,31 +5943,6 @@ fn refresh_ui(ui: &MainWindow, state: &AppState) {
     });
     ui.set_recovery_pending(state.pending_recovery_workspace.is_some());
     ui.set_unsaved_replacement_pending(state.pending_project_replacement.is_some());
-    ui.set_legacy_import_pending(state.pending_legacy_import.is_some());
-    ui.set_legacy_import_project_name(SharedString::from(
-        state
-            .pending_legacy_import
-            .as_ref()
-            .map_or_else(String::new, |(_, inspection)| {
-                inspection.detected_project_name.clone()
-            }),
-    ));
-    ui.set_legacy_import_recoverable_items(SharedString::from(
-        state
-            .pending_legacy_import
-            .as_ref()
-            .map_or_else(String::new, |(_, inspection)| {
-                inspection.recoverable_items.join(", ")
-            }),
-    ));
-    ui.set_legacy_import_skipped_items(SharedString::from(
-        state
-            .pending_legacy_import
-            .as_ref()
-            .map_or_else(String::new, |(_, inspection)| {
-                inspection.skipped_items.join(", ")
-            }),
-    ));
     ui.set_recovery_workspace(SharedString::from(
         state
             .pending_recovery_workspace
@@ -6427,7 +5963,7 @@ fn refresh_ui(ui: &MainWindow, state: &AppState) {
     sync_example_gallery(ui, state);
     if !state.project_loaded {
         ui.set_geometry_parts_summary(SharedString::from(
-            "No project is open. Choose a domain or open a workspace/import a legacy file.",
+            "No project is open. Choose a domain or open a workspace.",
         ));
         ui.set_visualization_title(SharedString::from("NO ACTIVE PROJECT"));
         ui.set_animation_status(SharedString::from(
@@ -6476,83 +6012,16 @@ fn refresh_ui(ui: &MainWindow, state: &AppState) {
     let (model_tree, parts_summary) = canonical_geometry_sidebar(state);
     ui.set_geometry_parts_summary(SharedString::from(parts_summary));
     ui.set_geometry_model_tree(SharedString::from(model_tree));
-    ui.set_boundary_summary(SharedString::from(boundary_summary(&state.project)));
-    ui.set_preflight_summary(SharedString::from(state.preflight_summary.as_str()));
-    let update = state.last_update.as_ref();
-    let solver_state = update.map_or(SolverState::Idle, |update| update.state);
-    ui.set_status(SharedString::from(format!("{:?}", solver_state)));
-    if let Some(update) = update {
-        ui.set_solver_physical_time(update.physical_time as f32);
-        ui.set_solver_time_step(update.time_step as f32);
-        ui.set_solver_momentum_cfl(update.momentum_cfl as f32);
-        ui.set_solver_viscous_number(update.viscous_diffusion_number as f32);
-        ui.set_solver_max_speed(update.max_speed as f32);
-        let time_label = match state.project.solver.coupling {
-            ProjectCoupling::Projection => "Time",
-            ProjectCoupling::Pimple => "Time",
-            ProjectCoupling::Simple => "Pseudo time",
-            ProjectCoupling::SimpleImplicit => "Iteration",
-            ProjectCoupling::SimpleConsistent => "Iteration",
-        };
-        ui.set_solver_stability_summary(SharedString::from(format!(
-            "{time_label:<10}{:>10.4e}\ndt         {:>10.4e}\nCFL        {:>10.4e}\nDν         {:>10.4e}\n|U|max     {:>10.4e}",
-            update.physical_time,
-            update.time_step,
-            update.momentum_cfl,
-            update.viscous_diffusion_number,
-            update.max_speed,
-        )));
-        ui.set_residual_summary(SharedString::from(format!(
-            "Iteration        {:>10}\nElapsed          {:>10.3} s\nLast iteration   {:>10.3} ms\nPressure linear  {:>10} iters\nContinuity       {:>10.3e}\nMomentum ΔU      {:>10.3e}\nMomentum eq      {}\nPressure         {:>10.3e}\nConverged        {}",
-            update.iteration,
-            update.elapsed_seconds,
-            update.iteration_seconds * 1_000.0,
-            update.pressure_iterations,
-            update.continuity_residual,
-            update.momentum_residual,
-            update.momentum_equation_residual.map(|value| format!("{value:.3e}")).unwrap_or_else(|| "n/a".to_string()),
-            update.pressure_residual,
-            update.converged
-        )));
-        ui.set_force_summary(SharedString::from(format!(
-            "Drag coefficient   {:>12.6}\nLift coefficient   {:>12.6}",
-            update.drag_coefficient, update.lift_coefficient
-        )));
-        ui.set_continuity_level(residual_level(update.continuity_residual));
-        ui.set_momentum_level(residual_level(update.momentum_residual));
-        ui.set_pressure_level(residual_level(update.pressure_residual));
-        if let Some(field) = &update.field_update {
-            let max_speed = field.speed.iter().copied().fold(0.0_f64, f64::max);
-            ui.set_field_summary(SharedString::from(format!(
-                "Cell-centred field snapshot\nGrid: {} × {}\nMax speed: {:.6}\nPressure / vorticity samples: {} / {}\nTemperature: {}\nSolid cells: {}",
-                field.nx,
-                field.ny,
-                max_speed,
-                field.pressure.len(),
-                field.vorticity.len(),
-                if field.temperature.is_some() { "available" } else { "off" },
-                field.solid.iter().filter(|solid| **solid).count()
-            )));
-        }
-    }
+    ui.set_preflight_summary(state.preflight_summary.as_str().into());
     ui.set_log_text(SharedString::from(
         state.logs.iter().cloned().collect::<Vec<_>>().join("\n"),
     ));
     result_activation::refresh(ui, state);
     if state.current_step != 3 {
-        ui.set_residual_image(
-            if state.last_update.is_some() && state.workbench.geometry().vertices().next().is_none()
-            {
-                render_residual_chart(&state.residual_history)
-            } else {
-                render::render_workbench_continuity_chart(&post_processing::chart_history(
-                    state,
-                    ui.get_wb_chart_kind(),
-                ))
-            },
-        );
+        ui.set_residual_image(render::render_workbench_continuity_chart(
+            &post_processing::chart_history(state, ui.get_wb_chart_kind()),
+        ));
     }
-    ui.set_mesh_inspection(SharedString::from(mesh_inspection(&state.project)));
 
     // ---- Workbench pipeline ----
     let mut hidden_topology_depth = None;
@@ -6833,12 +6302,9 @@ fn refresh_ui(ui: &MainWindow, state: &AppState) {
             "continuity {:.1e}",
             solution.report.final_continuity_rms
         )));
-    } else if let Some(update) = update {
-        ui.set_status_iteration(SharedString::from(format!("iter {}", update.iteration)));
-        ui.set_status_continuity(SharedString::from(format!(
-            "continuity {:.1e}",
-            update.continuity_residual
-        )));
+    } else {
+        ui.set_status_iteration(format!("iter {}", state.post.iteration).into());
+        ui.set_status_continuity("continuity —".into());
     }
 
     let inspector_mode = ui.get_inspector_mode();
@@ -7183,82 +6649,6 @@ fn refresh_ui(ui: &MainWindow, state: &AppState) {
                 state.view_3d,
             ),
         });
-    } else if let Some(field) = state.frames.get(state.frame_index) {
-        let selected = ui.get_result_field_index();
-        let plot = ui.get_result_plot_index().clamp(0, 3);
-        let colormap = ui.get_result_colormap_index().clamp(0, 3);
-        let contour_levels = ui.get_result_contour_levels().clamp(3, 32) as usize;
-        let (title, image) = match selected {
-            1 => (
-                "PRESSURE FIELD",
-                render_scalar_field(field, &field.pressure, true, colormap, plot, contour_levels),
-            ),
-            4 => (
-                "VELOCITY X",
-                render_scalar_field(
-                    field,
-                    &field.velocity_x,
-                    true,
-                    colormap,
-                    plot,
-                    contour_levels,
-                ),
-            ),
-            5 => (
-                "VELOCITY Y",
-                render_scalar_field(
-                    field,
-                    &field.velocity_y,
-                    true,
-                    colormap,
-                    plot,
-                    contour_levels,
-                ),
-            ),
-            6 => ("VELOCITY Z UNAVAILABLE IN 2D", render_empty_image()),
-            2 => (
-                "VORTICITY FIELD",
-                render_scalar_field(
-                    field,
-                    &field.vorticity,
-                    true,
-                    colormap,
-                    plot,
-                    contour_levels,
-                ),
-            ),
-            3 => match &field.temperature {
-                Some(temperature) => (
-                    "TEMPERATURE FIELD",
-                    render_scalar_field(field, temperature, false, colormap, plot, contour_levels),
-                ),
-                None => ("TEMPERATURE UNAVAILABLE", render_empty_image()),
-            },
-            _ => (
-                "SPEED FIELD",
-                render_scalar_field(field, &field.speed, false, colormap, plot, contour_levels),
-            ),
-        };
-        ui.set_visualization_title(SharedString::from(title));
-        ui.set_animation_status(SharedString::from(format!(
-            "Frame {} / {} · {} · {} · {} levels{}{}",
-            state.frame_index + 1,
-            state.frames.len(),
-            result_plot_label(plot),
-            result_colormap_label(colormap),
-            contour_levels,
-            if state.animation_playing {
-                " · playing"
-            } else {
-                ""
-            },
-            if selected == 3 && field.temperature.is_none() {
-                " · enable Energy in Setup"
-            } else {
-                ""
-            }
-        )));
-        ui.set_visualization_image(image);
     } else {
         ui.set_visualization_title(SharedString::from("NO ACTIVE RESULT"));
         ui.set_animation_status(SharedString::from(
@@ -7279,14 +6669,6 @@ mod scene_view;
 #[path = "viewport.rs"]
 mod viewport;
 use render::*;
-fn case_name(case: &flursys::ProjectCase) -> &'static str {
-    match case {
-        flursys::ProjectCase::LidDrivenCavity { .. } => "Lid-driven cavity",
-        flursys::ProjectCase::Cylinder { .. } => "Cylinder flow",
-        flursys::ProjectCase::BackwardFacingStep { .. } => "Backward-facing step",
-        flursys::ProjectCase::Channel { .. } => "Channel (Poiseuille)",
-    }
-}
 
 fn parse_number(value: &str, fallback: f64) -> f64 {
     value
@@ -7294,13 +6676,6 @@ fn parse_number(value: &str, fallback: f64) -> f64 {
         .ok()
         .filter(|value| value.is_finite())
         .unwrap_or(fallback)
-}
-
-fn residual_level(residual: f64) -> f32 {
-    if !residual.is_finite() || residual <= 0.0 {
-        return 0.0;
-    }
-    ((-residual.log10()).clamp(0.0, 10.0) / 10.0) as f32
 }
 
 fn geometry_view_angles(axis: i32) -> (f32, f32) {
@@ -7355,16 +6730,13 @@ mod tests {
                 .unwrap(),
             std::path::PathBuf::from("/tmp/example")
         );
-        assert!(super::workspace_from_project_file(std::path::Path::new(
-            "/tmp/example/random.json"
-        ))
-        .is_err());
+        assert!(
+            super::workspace_from_project_file(std::path::Path::new("/tmp/example/random.json"))
+                .is_err()
+        );
     }
     use super::*;
-    use flursys::cases::{BackwardStepCase, CylinderCase};
-    use flursys::{
-        GeometryPart, GeometryPartKind, GeometrySketch, ProjectCase, SketchPlane, SketchProfileKind,
-    };
+    use flursys::{GeometrySketch, SketchPlane, SketchProfileKind};
     use std::fs;
     use tempfile::tempdir;
 
@@ -7403,80 +6775,6 @@ mod tests {
         let error = validate_new_workspace_target(directory.path()).unwrap_err();
 
         assert!(error.contains("already contains project.json"));
-    }
-
-    #[test]
-    fn legacy_project_path_suggests_a_new_modern_workspace() {
-        let directory = tempdir().unwrap();
-        let legacy_path = directory.path().join("legacy.flursys.json");
-        Project::default().save(&legacy_path).unwrap();
-
-        let destination = suggested_legacy_import_destination(&legacy_path).unwrap();
-
-        assert_eq!(destination, directory.path().join("legacy.flursys"));
-        assert!(!destination.exists());
-    }
-
-    #[test]
-    fn legacy_import_is_inspected_before_any_workspace_is_created() {
-        let directory = tempdir().unwrap();
-        let source = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("tests/fixtures/legacy/cavity-v2.flursys.json");
-        let destination = directory.path().join("cavity.flursys");
-        let copied_source = directory.path().join("cavity.flursys.json");
-        fs::copy(source, &copied_source).unwrap();
-        let mut state = AppState::new();
-
-        state.queue_legacy_import(copied_source).unwrap();
-
-        let Some((
-            PendingProjectReplacement::ImportLegacy {
-                destination: queued,
-                ..
-            },
-            inspection,
-        )) = state.pending_legacy_import.as_ref()
-        else {
-            panic!("legacy import confirmation was not queued");
-        };
-        assert_eq!(queued, &destination);
-        assert_eq!(inspection.detected_project_name, "Historical cavity");
-        assert!(!destination.exists());
-    }
-
-    #[test]
-    fn confirmed_legacy_import_installs_canonical_geometry_and_tree_state() {
-        let directory = tempdir().unwrap();
-        let source = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("tests/fixtures/legacy/cylinder-v2.flursys.json");
-        let copied_source = directory.path().join("cylinder.flursys.json");
-        fs::copy(source, &copied_source).unwrap();
-        let mut state = AppState::new();
-        state.queue_legacy_import(copied_source).unwrap();
-        let Some((replacement, _)) = state.pending_legacy_import.take() else {
-            panic!("legacy import confirmation was not queued");
-        };
-
-        state.apply_project_replacement(replacement).unwrap();
-        rebuild_tree_rows(&mut state);
-
-        assert!(state
-            .workspace_path
-            .as_ref()
-            .unwrap()
-            .join("project.json")
-            .is_file());
-        assert!(state.workbench.geometry().faces().next().is_some());
-        assert!(state
-            .workbench
-            .named_selections()
-            .iter()
-            .any(|selection| selection.name == "cylinder"));
-        assert!(state
-            .tree_rows
-            .iter()
-            .any(|row| row.label.contains("Geometry")));
-        assert!(!state.workbench.has_mesh());
     }
 
     #[test]
@@ -7640,29 +6938,6 @@ mod tests {
     }
 
     #[test]
-    fn loading_a_workspace_preserves_canonical_project_until_recovery_is_explicitly_chosen() {
-        let directory = tempdir().unwrap();
-        let canonical = WorkbenchProject::blank("canonical");
-        flursys::save_workspace(directory.path(), &canonical).unwrap();
-        let recovered = WorkbenchProject::blank("recovered");
-        flursys::workbench::autosave_workspace(directory.path(), &recovered).unwrap();
-
-        let mut state = AppState::new();
-        state
-            .load_workbench_workspace(directory.path().to_path_buf())
-            .unwrap();
-
-        assert_eq!(state.workbench_project.name, "canonical");
-        assert_eq!(
-            state.pending_recovery_workspace.as_deref(),
-            Some(directory.path())
-        );
-        state.recover_pending_workbench_workspace().unwrap();
-        assert_eq!(state.workbench_project.name, "recovered");
-        assert!(state.workbench_dirty);
-    }
-
-    #[test]
     fn gallery_templates_are_discovered_and_open_as_workbench_projects() {
         let (templates, errors) = gallery_templates();
         assert!(
@@ -7707,56 +6982,11 @@ mod tests {
     }
 
     #[test]
-    fn residual_indicators_are_bounded() {
-        assert_eq!(residual_level(f64::NAN), 0.0);
-        assert_eq!(residual_level(1.0), 0.0);
-        assert_eq!(residual_level(1.0e-10), 1.0);
-    }
-
-    #[test]
     fn axis_views_map_to_stable_orthographic_camera_angles() {
         assert_eq!(geometry_view_angles(0), (std::f32::consts::FRAC_PI_2, 0.0));
         assert_eq!(geometry_view_angles(1), (0.0, 0.0));
         assert_eq!(geometry_view_angles(2), (0.0, std::f32::consts::FRAC_PI_2));
         assert_eq!(geometry_view_label(3), "isometric");
-    }
-
-    #[test]
-    fn orientation_triad_endpoints_select_the_corresponding_axis() {
-        let project = Project::default();
-        let (length, domain_height) = project_case_domain(&project.case);
-        let mesh = ExtrudedMesh3D::new(
-            StructuredMesh2D::new(project.solver.nx, project.solver.ny, length, domain_height)
-                .unwrap(),
-            project.preprocessing.mesh.cells_z,
-            project.preprocessing.geometry.extrusion_depth,
-        )
-        .unwrap();
-        let camera = MeshCamera::fit(&mesh, 0.65, 0.48, 1.0);
-        for (axis, endpoint) in orientation_triad_endpoints(camera).into_iter().enumerate() {
-            assert_eq!(
-                pick_orientation_triad((f64::from(endpoint.0), f64::from(endpoint.1)), camera),
-                Some(axis as i32)
-            );
-            assert_eq!(
-                pick_orientation_axis_3d(
-                    &project,
-                    0.65,
-                    0.48,
-                    1.0,
-                    (f64::from(endpoint.0), f64::from(endpoint.1)),
-                ),
-                Some(axis as i32)
-            );
-            assert_eq!(
-                pick_canonical_orientation_axis(
-                    0.65,
-                    0.48,
-                    (f64::from(endpoint.0), f64::from(endpoint.1))
-                ),
-                Some(axis as i32)
-            );
-        }
     }
 
     #[test]
@@ -7802,9 +7032,11 @@ mod tests {
         editor
             .click(state.workbench.geometry_mut(), (200.0, 210.0), false)
             .unwrap();
-        assert!(editor
-            .click(state.workbench.geometry_mut(), (310.0, 100.0), false)
-            .unwrap());
+        assert!(
+            editor
+                .click(state.workbench.geometry_mut(), (310.0, 100.0), false)
+                .unwrap()
+        );
         state.geometry_editor = editor;
         state.wb_selected_targets = state.geometry_editor.selection.clone();
         let face = state.workbench.geometry().faces().next().unwrap().id;
@@ -7831,9 +7063,11 @@ mod tests {
             Some(flursys::PreviewPrimitive::Rectangle(_, _))
         ));
         let mut editor = std::mem::take(&mut state.geometry_editor);
-        assert!(editor
-            .click(state.workbench.geometry_mut(), (310.0, 100.0), false)
-            .unwrap());
+        assert!(
+            editor
+                .click(state.workbench.geometry_mut(), (310.0, 100.0), false)
+                .unwrap()
+        );
         state.geometry_editor = editor;
         state.wb_selected_targets = state.geometry_editor.selection.clone();
         assert!(matches!(
@@ -7859,9 +7093,11 @@ mod tests {
             Some(flursys::PreviewPrimitive::Circle(_, _))
         ));
         let mut editor = std::mem::take(&mut state.geometry_editor);
-        assert!(editor
-            .click(state.workbench.geometry_mut(), (310.0, 160.0), false)
-            .unwrap());
+        assert!(
+            editor
+                .click(state.workbench.geometry_mut(), (310.0, 160.0), false)
+                .unwrap()
+        );
         state.geometry_editor = editor;
         state.wb_selected_targets = state.geometry_editor.selection.clone();
         assert!(matches!(
@@ -7881,9 +7117,11 @@ mod tests {
         assert_eq!(state.workbench.geometry().faces().count(), 0);
         assert!(!begin_geometry_stroke(&mut state, (310.0, 100.0)).unwrap());
         let mut editor = std::mem::take(&mut state.geometry_editor);
-        assert!(editor
-            .click(state.workbench.geometry_mut(), (310.0, 100.0), false)
-            .unwrap());
+        assert!(
+            editor
+                .click(state.workbench.geometry_mut(), (310.0, 100.0), false)
+                .unwrap()
+        );
         assert_eq!(state.workbench.geometry().faces().count(), 1);
     }
 
@@ -7999,9 +7237,11 @@ mod tests {
             )
             .unwrap();
         state.wb_selected_targets = vec![GeometrySelectionTarget::Edge(rectangle.bottom)];
-        assert!(build_canonical_extrude(&mut state, "0.5")
-            .unwrap_err()
-            .contains("multiple faces"));
+        assert!(
+            build_canonical_extrude(&mut state, "0.5")
+                .unwrap_err()
+                .contains("multiple faces")
+        );
         assert_eq!(state.workbench.geometry().bodies().count(), 0);
     }
 
@@ -8043,11 +7283,13 @@ mod tests {
             }
             build_canonical_extrude(&mut state, "0.2").unwrap();
             assert_eq!(state.workbench.geometry().bodies().count(), 2);
-            assert!(state
-                .workbench
-                .geometry()
-                .extrude_features()
-                .any(|feature| feature.sketch == sketch_id && feature.source_face == profile));
+            assert!(
+                state
+                    .workbench
+                    .geometry()
+                    .extrude_features()
+                    .any(|feature| feature.sketch == sketch_id && feature.source_face == profile)
+            );
             let document = serde_json::to_string(&state.workbench_project).unwrap();
             let restored: WorkbenchProject = serde_json::from_str(&document).unwrap();
             let reopened = WorkbenchSession::from_project(&restored).unwrap();
@@ -8415,165 +7657,6 @@ mod tests {
     }
 
     #[test]
-    fn speed_preview_accepts_a_cell_field() {
-        let field = FieldUpdate {
-            nx: 2,
-            ny: 2,
-            pressure: vec![0.0; 4],
-            speed: vec![0.0, 0.5, 1.0, 0.25],
-            velocity_x: vec![0.0, 0.5, 1.0, 0.25],
-            velocity_y: vec![0.0; 4],
-            vorticity: vec![0.0; 4],
-            solid: vec![false, false, false, true],
-            temperature: None,
-        };
-        for (colormap, plot) in [(0, 0), (1, 1), (2, 2), (3, 3)] {
-            let _image = render_scalar_field(&field, &field.speed, false, colormap, plot, 8);
-        }
-    }
-
-    #[test]
-    fn geometry_preview_accepts_a_project_mesh() {
-        let _image = render_geometry_3d(&Project::default(), 0.0, 0.0, 1.0, None);
-    }
-
-    #[test]
-    fn geometry_preview_renders_parametric_parts() {
-        let mut project = Project::default();
-        project.preprocessing.geometry.parts.push(GeometryPart {
-            name: "test-cylinder".to_string(),
-            kind: GeometryPartKind::Cylinder {
-                radius: 0.5,
-                height: 1.0,
-                segments: 32,
-            },
-            x: 0.0,
-            y: 0.0,
-            z: 0.5,
-        });
-        let _image = render_geometry_3d(&project, 0.35, -0.2, 1.1, Some(BoundaryFace::Top));
-    }
-
-    #[test]
-    fn parametric_parts_follow_mesh_camera_pitch() {
-        let project = Project::default();
-        let (length, domain_height) = project_case_domain(&project.case);
-        let mesh = ExtrudedMesh3D::new(
-            StructuredMesh2D::new(project.solver.nx, project.solver.ny, length, domain_height)
-                .unwrap(),
-            project.preprocessing.mesh.cells_z,
-            project.preprocessing.geometry.extrusion_depth,
-        )
-        .unwrap();
-        let part = GeometryPart {
-            name: "camera-part".to_string(),
-            kind: GeometryPartKind::Box {
-                length: 0.4,
-                width: 0.4,
-                height: 0.4,
-            },
-            x: 0.5 * length,
-            y: 0.5 * domain_height,
-            z: 0.5 * mesh.depth,
-        };
-        let mut level = vec![0_u8; (PREVIEW_WIDTH * PREVIEW_HEIGHT * 4) as usize];
-        let mut pitched = level.clone();
-        draw_part_with_camera(
-            &mut level,
-            PREVIEW_WIDTH,
-            PREVIEW_HEIGHT,
-            &part,
-            MeshCamera::fit(&mesh, 0.4, 0.0, 1.0),
-            part_color(0),
-        );
-        draw_part_with_camera(
-            &mut pitched,
-            PREVIEW_WIDTH,
-            PREVIEW_HEIGHT,
-            &part,
-            MeshCamera::fit(&mesh, 0.4, 0.7, 1.0),
-            part_color(0),
-        );
-        assert!(level.chunks_exact(4).any(|pixel| pixel == part_color(0)));
-        assert!(pitched.chunks_exact(4).any(|pixel| pixel == part_color(0)));
-        assert_ne!(level, pitched);
-    }
-
-    #[test]
-    fn geometry_model_tree_lists_sketches_features_and_solids() {
-        let mut project = Project::default();
-        project
-            .preprocessing
-            .geometry
-            .add_sketch_feature(
-                GeometrySketch::from_profile(
-                    "inlet-profile".to_string(),
-                    SketchPlane::Xy,
-                    SketchProfileKind::Rectangle {
-                        width: 2.0,
-                        height: 1.0,
-                    },
-                    0.0,
-                    0.0,
-                    0.0,
-                ),
-                "inlet-extrude".to_string(),
-                flursys::GeometryFeatureKind::Extrude { depth: 0.5 },
-            )
-            .unwrap();
-
-        let tree = geometry_model_tree(&project);
-
-        assert!(tree.contains("Sketches (1)"));
-        assert!(tree.contains("inlet-profile [XY]"));
-        assert!(tree.contains("Features (1)"));
-        assert!(tree.contains("inlet-extrude [Extrude]"));
-        assert!(tree.contains("Regions (6)"));
-        assert!(tree.contains("inlet-extrude:side-4 [Side]"));
-        assert!(tree.contains("Solids (1)"));
-        assert!(tree.contains("inlet-extrude solid [Box]"));
-    }
-
-    #[test]
-    fn geometry_preview_accepts_advanced_primitives() {
-        let mut project = Project::default();
-        for (name, kind) in [
-            (
-                "cone",
-                GeometryPartKind::Cone {
-                    radius: 0.4,
-                    height: 1.0,
-                    segments: 32,
-                },
-            ),
-            (
-                "sphere",
-                GeometryPartKind::Sphere {
-                    radius: 0.4,
-                    segments: 24,
-                },
-            ),
-            (
-                "torus",
-                GeometryPartKind::Torus {
-                    major_radius: 0.6,
-                    minor_radius: 0.2,
-                    segments: 32,
-                },
-            ),
-        ] {
-            project.preprocessing.geometry.parts.push(GeometryPart {
-                name: name.to_string(),
-                kind,
-                x: project.preprocessing.geometry.parts.len() as f64,
-                y: 0.0,
-                z: 0.5,
-            });
-        }
-        let _image = render_geometry_3d(&project, 0.35, -0.2, 1.1, None);
-    }
-
-    #[test]
     fn sketch_canvas_renders_axes_and_construction_geometry() {
         let sketch = GeometrySketch::from_profile(
             "canvas".to_string(),
@@ -8648,15 +7731,6 @@ mod tests {
     }
 
     #[test]
-    fn case_obstacle_classification_matches_the_builtin_geometry() {
-        let cylinder = ProjectCase::from(CylinderCase::default());
-        assert!(project_case_is_solid(&cylinder, 5.0, 5.0));
-        assert!(!project_case_is_solid(&cylinder, 0.1, 0.1));
-        let step = ProjectCase::from(BackwardStepCase::default());
-        assert!(project_case_is_solid(&step, 0.1, 0.1));
-    }
-
-    #[test]
     fn mesh_display_modes_are_distinct_and_surface_capable() {
         assert!(!MeshDisplayMode::Wireframe.draws_surface());
         assert!(MeshDisplayMode::Surface.draws_surface());
@@ -8693,23 +7767,6 @@ mod tests {
         assert!(summary.contains("Aspect ratio"));
         assert!(summary.contains("bad cells"));
         assert!(!summary.contains("dx / dy / dz"));
-    }
-
-    #[test]
-    fn preflight_accepts_the_default_case() {
-        assert!(preflight_report(&Project::default())
-            .expect("the default case should be runnable")
-            .contains("READY"));
-    }
-
-    #[test]
-    fn boundary_summary_and_2d_picker_use_the_project_faces() {
-        let project = Project::default();
-        assert!(boundary_summary(&project).contains("Left"));
-        assert_eq!(
-            pick_boundary_2d(&project, (125.0, 160.0)),
-            Some(BoundaryFace::Left)
-        );
     }
 
     fn workbench_tree_fixture(patches: &[(String, bool)]) -> Vec<ProjectTreeRowData> {
@@ -8991,5 +8048,28 @@ mod tests {
             .expect("outlet patch listed");
         assert_eq!(outlet.note, "Unassigned");
         assert!(session.readiness().is_err());
+    }
+
+    #[test]
+    fn loading_a_workspace_preserves_canonical_project_until_recovery_is_explicitly_chosen() {
+        let directory = tempdir().unwrap();
+        let canonical = WorkbenchProject::blank("canonical");
+        flursys::save_workspace(directory.path(), &canonical).unwrap();
+        let recovered = WorkbenchProject::blank("recovered");
+        flursys::workbench::autosave_workspace(directory.path(), &recovered).unwrap();
+
+        let mut state = AppState::new();
+        state
+            .load_workbench_workspace(directory.path().to_path_buf())
+            .unwrap();
+
+        assert_eq!(state.workbench_project.name, "canonical");
+        assert_eq!(
+            state.pending_recovery_workspace.as_deref(),
+            Some(directory.path())
+        );
+        state.recover_pending_workbench_workspace().unwrap();
+        assert_eq!(state.workbench_project.name, "recovered");
+        assert!(state.workbench_dirty);
     }
 }

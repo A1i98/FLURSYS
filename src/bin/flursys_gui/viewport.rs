@@ -356,7 +356,6 @@ pub(super) fn bind(
         state.view_3d.pitch = pitch;
         state.geometry_view_axis = axis;
         state.geometry_drag_anchor = None;
-        state.animation_playing = false;
         state.log(format!(
             "Selected {} geometry view.",
             geometry_view_label(axis)
@@ -438,11 +437,11 @@ pub(super) fn bind(
 mod integration_tests {
     use super::super::*;
     use super::*;
-    use slint::platform::{
-        software_renderer::{MinimalSoftwareWindow, RepaintBufferType},
-        Platform, WindowAdapter,
-    };
     use slint::Model;
+    use slint::platform::{
+        Platform, WindowAdapter,
+        software_renderer::{MinimalSoftwareWindow, RepaintBufferType},
+    };
     struct SoftwarePlatform(Rc<MinimalSoftwareWindow>);
     impl Platform for SoftwarePlatform {
         fn create_window_adapter(&self) -> Result<Rc<dyn WindowAdapter>, slint::PlatformError> {
@@ -610,16 +609,18 @@ mod integration_tests {
         assert_ne!(rendered_modes[1], rendered_modes[2]);
         assert_eq!(state.borrow().workbench.geometry(), &original);
         // Topology is opt-in; hiding it never changes persistent geometry IDs.
-        assert!(!ui
-            .get_project_tree_model()
-            .iter()
-            .any(|row| row.label == "Topology"));
+        assert!(
+            !ui.get_project_tree_model()
+                .iter()
+                .any(|row| row.label == "Topology")
+        );
         ui.set_show_topology(true);
         ui.invoke_refresh_browser();
-        assert!(ui
-            .get_project_tree_model()
-            .iter()
-            .any(|row| row.label == "Topology"));
+        assert!(
+            ui.get_project_tree_model()
+                .iter()
+                .any(|row| row.label == "Topology")
+        );
         ui.set_show_topology(false);
         ui.invoke_refresh_browser();
         let old_density = state.borrow().workbench.material().density;

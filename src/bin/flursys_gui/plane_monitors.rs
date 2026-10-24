@@ -1065,7 +1065,6 @@ pub(super) fn bind(ui: &MainWindow, shared: &Rc<RefCell<AppState>>) {
         let mut state = section_state.borrow_mut();
         state.post.playing = false;
         state.post.plane_playing = false;
-        state.animation_playing = false;
         ui.set_post_playing(false);
         ui.set_result_slice_axis(index);
         if index >= 4 {

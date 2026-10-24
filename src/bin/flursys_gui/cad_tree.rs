@@ -483,7 +483,21 @@ pub(super) fn details(g: &GeometryTopology, id: u64) -> Option<String> {
         .map(|id| format!("#{}", id.get()))
         .collect::<Vec<_>>()
         .join(", ");
-    Some(format!("{} · Body #{}\nName: {}\nVisibility: {}\nInput bodies: {}\nInput profiles: {}\nSaved construction: {}\n\n{}\n\nDouble-click to edit this operation. Source sketch edits rebuild dependent operations.",name(g,id),id.get(),b.name,if b.visible{"visible"}else{"hidden"},if parent.is_empty(){"—"}else{&parent},if faces.is_empty(){"—"}else{&faces},if b.recipe.is_some(){"available"}else{"not available"},b.operation))
+    Some(format!(
+        "{} · Body #{}\nName: {}\nVisibility: {}\nInput bodies: {}\nInput profiles: {}\nSaved construction: {}\n\n{}\n\nDouble-click to edit this operation. Source sketch edits rebuild dependent operations.",
+        name(g, id),
+        id.get(),
+        b.name,
+        if b.visible { "visible" } else { "hidden" },
+        if parent.is_empty() { "—" } else { &parent },
+        if faces.is_empty() { "—" } else { &faces },
+        if b.recipe.is_some() {
+            "available"
+        } else {
+            "not available"
+        },
+        b.operation
+    ))
 }
 
 pub(super) fn bind(ui: &MainWindow, shared: &Rc<RefCell<AppState>>) {

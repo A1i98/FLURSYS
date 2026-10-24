@@ -58,29 +58,9 @@ pub(super) struct Plot {
     pub caption: String,
 }
 fn curves(state: &AppState, options: &Options) -> Vec<Curve> {
-    let structured =
-        state.last_update.is_some() && state.workbench.geometry().vertices().next().is_none();
-    let histories = if structured {
-        [
-            state
-                .residual_history
-                .iter()
-                .map(|s| s.continuity)
-                .collect(),
-            state.residual_history.iter().map(|s| s.momentum).collect(),
-            vec![],
-            state.residual_history.iter().map(|s| s.pressure).collect(),
-        ]
-    } else {
-        result_analysis::histories(state)
-    };
+    let histories = result_analysis::histories(state);
     let longest = histories.iter().map(Vec::len).max().unwrap_or(0);
-    let last = if structured {
-        state
-            .last_update
-            .as_ref()
-            .map_or(longest.saturating_sub(1), |u| u.iteration)
-    } else if state.solving
+    let last = if state.solving
         || (state.workbench.solution().is_none() && !state.post.continuity_full.is_empty())
     {
         state.post.iteration
@@ -122,13 +102,7 @@ fn curves(state: &AppState, options: &Options) -> Vec<Curve> {
             let first = last.saturating_add(1).saturating_sub(values.len());
             let skip = values.len().saturating_sub(options.window);
             Some(Curve {
-                name: if structured && index == 1 {
-                    "Momentum · reported"
-                } else if structured && index == 3 {
-                    "Pressure · reported"
-                } else {
-                    NAMES[index]
-                },
+                name: NAMES[index],
                 color: COLORS[index],
                 first: first + skip,
                 scale,
@@ -171,9 +145,18 @@ fn x_range(curves: &[Curve]) -> (f64, f64) {
 }
 pub(super) fn build(state: &AppState, options: &Options) -> Plot {
     if (5..=7).contains(&options.kind) {
-        return match monitor_history::chart(state,options.plane_index,(options.kind-5) as usize) {
-            Ok((svg,caption))=>Plot{svg,caption},
-            Err(e)=>Plot{svg:format!("<svg xmlns='http://www.w3.org/2000/svg' width='1100' height='650'><rect width='100%' height='100%' fill='#20242c'/><text x='40' y='80' fill='white' font-family='sans-serif'>{}</text></svg>",e.replace('&',"&amp;").replace('<',"&lt;").replace('>',"&gt;")),caption:e},
+        return match monitor_history::chart(state, options.plane_index, (options.kind - 5) as usize)
+        {
+            Ok((svg, caption)) => Plot { svg, caption },
+            Err(e) => Plot {
+                svg: format!(
+                    "<svg xmlns='http://www.w3.org/2000/svg' width='1100' height='650'><rect width='100%' height='100%' fill='#20242c'/><text x='40' y='80' fill='white' font-family='sans-serif'>{}</text></svg>",
+                    e.replace('&', "&amp;")
+                        .replace('<', "&lt;")
+                        .replace('>', "&gt;")
+                ),
+                caption: e,
+            },
         };
     }
     let curves = curves(state, options);
@@ -379,7 +362,29 @@ pub(super) fn build(state: &AppState, options: &Options) -> Plot {
         );
     }
     svg.push_str("</g></svg>");
-    let caption=format!("Iterations / steps {x0:.0}–{x1:.0} · {}{} · {}. Pressure is an inner-solver metric; continuity alone does not prove convergence.{}",if options.logarithmic{"logarithmic"}else{"linear"},if options.normalized{" · normalized display"}else{" · raw values"},if options.normalized{"Stopping criteria use original values"}else{"Monitors have different definitions / units"},if omitted>0 {format!(" {omitted} zero or invalid samples omitted on this scale.")}else{String::new()});
+    let caption = format!(
+        "Iterations / steps {x0:.0}–{x1:.0} · {}{} · {}. Pressure is an inner-solver metric; continuity alone does not prove convergence.{}",
+        if options.logarithmic {
+            "logarithmic"
+        } else {
+            "linear"
+        },
+        if options.normalized {
+            " · normalized display"
+        } else {
+            " · raw values"
+        },
+        if options.normalized {
+            "Stopping criteria use original values"
+        } else {
+            "Monitors have different definitions / units"
+        },
+        if omitted > 0 {
+            format!(" {omitted} zero or invalid samples omitted on this scale.")
+        } else {
+            String::new()
+        }
+    );
     Plot { svg, caption }
 }
 pub(super) fn readout(state: &AppState, options: &Options, x: f64) -> String {

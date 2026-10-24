@@ -246,11 +246,7 @@ pub(super) fn chart_history(state: &AppState, kind: i32) -> VecDeque<ResidualSam
                 .rev()
                 .take(400)
                 .rev()
-                .map(|v| ResidualSample {
-                    continuity: *v,
-                    momentum: 0.0,
-                    pressure: 0.0,
-                })
+                .map(|v| ResidualSample { continuity: *v })
                 .collect();
         }
     }
@@ -262,11 +258,7 @@ pub(super) fn chart_history(state: &AppState, kind: i32) -> VecDeque<ResidualSam
         .rev()
         .take(400)
         .rev()
-        .map(|v| ResidualSample {
-            continuity: *v,
-            momentum: 0.0,
-            pressure: 0.0,
-        })
+        .map(|v| ResidualSample { continuity: *v })
         .collect()
 }
 fn chart_caption(state: &AppState, kind: i32) -> String {
@@ -289,7 +281,9 @@ fn chart_caption(state: &AppState, kind: i32) -> String {
         );
     }
     if values.is_empty() {
-        return format!("{name} · no positive history available. Additional metrics are recorded on new solves.");
+        return format!(
+            "{name} · no positive history available. Additional metrics are recorded on new solves."
+        );
     }
     let lo = values.iter().copied().fold(f64::INFINITY, f64::min);
     let hi = values.iter().copied().fold(0.0, f64::max);
@@ -324,7 +318,7 @@ pub(super) fn bind(ui: &MainWindow, state: &Rc<RefCell<AppState>>) {
             state.post.profile_label=format!("{} · distance from ({:.4e}, {:.4e}) to ({:.4e}, {:.4e})",f.label(),a.x,a.y,b.x,b.y);
             ui.set_post_profile_caption(format!("{}\n{} / {} inside · min {:.5e} · max {:.5e}\nHorizontal: distance 0 … {:.5e}; vertical: selected field value. Gaps = outside fluid.",state.post.profile_label,valid,points.len(),lo,hi,(b-a).norm()).into());
             ui.set_post_profile_image(slint::Image::load_from_svg_data(result_analysis::profile_svg(&points,f.label(),false).as_bytes()).map_err(|e|e.to_string())?);
-            let caption=ui.get_post_profile_caption().to_string()+"\n"+&result_analysis::line_measurements(&points);
+            let caption=ui.get_post_profile_caption().to_string()+"\n"+result_analysis::line_measurements(&points).as_str();
             ui.set_post_profile_caption(caption.into());
             state.post.profile=points;
             Ok(())
@@ -807,7 +801,8 @@ pub(super) fn refresh(ui: &MainWindow, state: &AppState) {
         })
         .unwrap_or_default();
     ui.set_post_wall_summary(
-        (identity + &flursys::workbench::wall_reports::summary(&state.post.wall_reports)).into(),
+        (identity + flursys::workbench::wall_reports::summary(&state.post.wall_reports).as_str())
+            .into(),
     );
     ui.set_post_has_wall_report(!state.post.wall_reports.is_empty());
     ui.set_post_has_wall_samples(
@@ -853,7 +848,7 @@ pub(super) fn refresh(ui: &MainWindow, state: &AppState) {
     ui.set_post_export_busy(state.post.export.is_some());
     ui.set_post_export_status(state.post.export_status.clone().into());
     ui.set_post_probe_count(state.post.probes.len() as i32);
-    ui.set_post_balance((state.post.health.as_ref().map(|h|h.summary()+"\n\n").unwrap_or_default()+&result_analysis::balance(state)+"\n\n"+if state.solving{""}else if state.post.boundary_summary.is_empty(){"Patch details were not recorded for this archive. New solves save patch flow integrals."}else{&state.post.boundary_summary}).into());
+    ui.set_post_balance((state.post.health.as_ref().map(|h|h.summary()+"\n\n").unwrap_or_default()+result_analysis::balance(state).as_str()+"\n\n"+if state.solving{""}else if state.post.boundary_summary.is_empty(){"Patch details were not recorded for this archive. New solves save patch flow integrals."}else{&state.post.boundary_summary}).into());
     ui.set_post_convergence_summary(result_analysis::convergence_summary(state).into());
     if ui.get_post_plot_mode() == 0 && state.post.profile.is_empty() {
         ui.set_post_profile_image(render::render_empty_image());
@@ -1010,8 +1005,8 @@ fn decorate_probe(ui: &MainWindow, state: &AppState) {
 mod tests {
     use super::*;
     use slint::platform::{
-        software_renderer::{MinimalSoftwareWindow, RepaintBufferType},
         Platform, WindowAdapter,
+        software_renderer::{MinimalSoftwareWindow, RepaintBufferType},
     };
     struct SoftwarePlatform(Rc<MinimalSoftwareWindow>);
     impl Platform for SoftwarePlatform {
@@ -1081,9 +1076,11 @@ mod tests {
         assert!(csv.starts_with("quantity,minimum,maximum,volume_weighted_mean\n"));
         assert!(csv.lines().count() > 4);
         std::fs::remove_file(path).unwrap();
-        assert!(result_analysis::report(&state)
-            .unwrap()
-            .contains("Archived run settings unavailable"));
+        assert!(
+            result_analysis::report(&state)
+                .unwrap()
+                .contains("Archived run settings unavailable")
+        );
     }
 
     #[test]
