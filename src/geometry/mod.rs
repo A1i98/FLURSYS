@@ -712,17 +712,11 @@ impl GeometryTopology {
             return self.cad_face_frame(face);
         }
         let points = match &self.require_face(face)?.representation {
-            GeometryFaceRepresentation::Planar { outer_loop, .. } => outer_loop
-                .iter()
-                .map(|oriented| {
-                    let (start, end) = match self.require_edge(oriented.edge)?.geometry {
-                        EdgeGeometry::Line { start, end }
-                        | EdgeGeometry::CircularArc { start, end, .. }
-                        | EdgeGeometry::Kernel { start, end, .. } => (start, end),
-                    };
-                    self.vertex_position(if oriented.reversed { end } else { start })
-                })
-                .collect::<Result<Vec<_>, GeometryError>>()?,
+            GeometryFaceRepresentation::Planar { outer_loop, .. } => self
+                .render_loop_vertices(outer_loop)
+                .ok_or_else(|| GeometryError::InvalidPrimitive {
+                    message: "planar face boundary cannot be sampled".into(),
+                })?,
             GeometryFaceRepresentation::PrimitiveSurface => self
                 .renderable_faces()
                 .into_iter()
