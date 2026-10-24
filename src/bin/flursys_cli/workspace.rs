@@ -82,6 +82,8 @@ Project commands use the GUI Workbench backend and saved mesh assets.
 --iterations is the outer-corrector budget (per physical step for transient cases).
 Restart requires the exact saved mesh; solve does not silently generate a mesh.
 Progress goes to stderr; --json keeps stdout machine-readable.
+Transient controls: --dt SECONDS --steps N --end-time SECONDS --max-diffusion NUMBER
+Checkpoint cadence: --checkpoint-every N (0 disables periodic writes)
 GPU controls: --gpu-preconditioner auto|jacobi --gpu-restart 2..64
   --gpu-inner-iterations 1..64 --gpu-smoothing 1..8 --gpu-timeout-ms 100..60000
   --gpu-basis-mb 16..16384. Small-row crossover applies only when fallback is allowed."
@@ -196,6 +198,11 @@ pub fn run(args: &[String]) -> Result<(), String> {
         ],
         "mesh" => &["json", "gmsh", "threads"],
         "solve" => &[
+            "dt",
+            "steps",
+            "end-time",
+            "max-diffusion",
+            "checkpoint-every",
             "json",
             "threads",
             "iterations",
@@ -320,6 +327,39 @@ pub fn run(args: &[String]) -> Result<(), String> {
         return Ok(());
     }
     if action == "solve" {
+        use flursys::unstructured_incompressible::TimeIntegration as Time;
+        if ["dt", "steps", "end-time", "max-diffusion"]
+            .iter()
+            .any(|k| opts.contains_key(*k))
+        {
+            let mut time = session.solver_options().time;
+            let real = |name: &str| -> Result<Option<f64>, String> {
+                opts.get(name)
+                    .map(|v| v.parse::<f64>().map_err(|_| format!("Invalid --{name}")))
+                    .transpose()
+            };
+            let step = real("dt")?;
+            let count = number(&opts, "steps")?;
+            match &mut time {
+                Time::Steady=>return Err("Time controls require a transient project; choose Euler or BDF2 in project settings".into()),
+                Time::Euler{dt,steps}|Time::Backward{dt,steps}|Time::AdaptiveEuler{dt,steps,..}|Time::AdaptiveBackward{dt,steps,..}=>{if let Some(v)=step {*dt=v;}if let Some(v)=count {*steps=v;}}
+            }
+            if let Some(max) = real("max-diffusion")? {
+                match &mut time {
+                    Time::AdaptiveEuler { controls, .. }
+                    | Time::AdaptiveBackward { controls, .. } => controls.max_diffusion = Some(max),
+                    _ => return Err("--max-diffusion requires adaptive time integration".into()),
+                }
+            }
+            session
+                .set_flow_models(time, session.solver_options().turbulence.clone())
+                .map_err(|e| e.to_string())?;
+            if let Some(end) = real("end-time")? {
+                session
+                    .set_physical_end_time(Some(end))
+                    .map_err(|e| e.to_string())?;
+            }
+        }
         if let Some(n) = number(&opts, "threads")? {
             let available = std::thread::available_parallelism().map_or(1, |n| n.get());
             if n > available {
@@ -372,6 +412,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
         &mut session,
         &flursys::headless::RunOptions {
             restart: opts.get("restart").map(PathBuf::from),
+            checkpoint_every: number(&opts, "checkpoint-every")?.unwrap_or(100),
         },
         |event| {
             use flursys::app::{JobProgress as P, WorkbenchJobEvent as E};
@@ -390,7 +431,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
         },
     )?;
     emit(
-        json!({"summary":outcome.failure.clone().unwrap_or_else(||format!("Run saved: {:?}",session.status())),"run":outcome.run,"failed":outcome.failure.is_some()}),
+        json!({"summary":outcome.failure.clone().unwrap_or_else(||format!("Run saved: {:?}",session.status())),"run":outcome.run,"restart_checkpoint":outcome.restart_checkpoint,"failed":outcome.failure.is_some()}),
         json_output,
     );
     if let Some(e) = outcome.failure {
