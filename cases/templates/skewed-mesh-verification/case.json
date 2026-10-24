@@ -1,8 +1,8 @@
 {
   "format_version": 2,
   "id": "skewed-mesh-verification",
-  "name": "Skewed-Mesh Verification",
-  "category": "Verification",
+  "name": "Skewed-mesh flow · 2D",
+  "category": "Numerical exploration",
   "description": "Curved low-Re channel for non-ideal mesh-quality inspection.",
   "capabilities": [
     "2D",
@@ -15,13 +15,15 @@
     "positive_streamwise_flow": true,
     "curved_boundary": true,
     "non_ideal_mesh_quality": true,
-    "notes": "Quality metrics are finite and nontrivial while the production flow path remains usable."
+    "notes": "Quality metrics are finite and nontrivial while the production flow path remains usable. Recipe only; no reference-accuracy certification is implied."
   },
   "project_template": {
     "format_version": 2,
-    "project_id": "project-1787866351845625748-197841",
-    "name": "Skewed-Mesh Verification",
+    "project_id": "template-skewed-mesh-verification",
+    "name": "Skewed-mesh flow · 2D",
     "geometry": {
+      "cad_bodies": {},
+      "hidden_profiles": [],
       "revision": 19,
       "next_vertex_id": 10,
       "next_edge_id": 9,
@@ -230,8 +232,13 @@
       },
       "bodies": {},
       "sketches": {},
-      "extrude_features": {}
+      "extrude_features": {},
+      "pocket_features": {}
     },
+    "cad_document": "{\"features\":[{\"id\":1,\"name\":\"Fluid profile\",\"plane\":{\"name\":\"XY\",\"type\":\"origin\"},\"sketch\":{\"constraints\":[],\"counters\":{\"a\":8,\"k\":0,\"l\":8,\"p\":9},\"curves\":[{\"a\":0,\"b\":1,\"construction\":false,\"id\":\"edge1\",\"type\":\"line\"},{\"a\":1,\"b\":2,\"construction\":false,\"id\":\"edge2\",\"type\":\"line\"},{\"a\":2,\"b\":3,\"construction\":false,\"id\":\"edge3\",\"type\":\"line\"},{\"a\":3,\"b\":0,\"construction\":false,\"id\":\"edge4\",\"type\":\"line\"},{\"a\":5,\"b\":6,\"c\":4,\"construction\":false,\"id\":\"edge5\",\"type\":\"arc\"},{\"a\":6,\"b\":7,\"c\":4,\"construction\":false,\"id\":\"edge6\",\"type\":\"arc\"},{\"a\":7,\"b\":8,\"c\":4,\"construction\":false,\"id\":\"edge7\",\"type\":\"arc\"},{\"a\":8,\"b\":5,\"c\":4,\"construction\":false,\"id\":\"edge8\",\"type\":\"arc\"}],\"points\":[{\"fixed\":false,\"id\":\"p1\",\"pos\":[0.0,0.0]},{\"fixed\":false,\"id\":\"p2\",\"pos\":[4000.0,0.0]},{\"fixed\":false,\"id\":\"p3\",\"pos\":[4000.0,1500.0]},{\"fixed\":false,\"id\":\"p4\",\"pos\":[0.0,1500.0]},{\"fixed\":false,\"id\":\"p5\",\"pos\":[1550.0,520.0]},{\"fixed\":false,\"id\":\"p6\",\"pos\":[1830.0,520.0]},{\"fixed\":false,\"id\":\"p7\",\"pos\":[1550.0,800.0]},{\"fixed\":false,\"id\":\"p8\",\"pos\":[1270.0,520.0]},{\"fixed\":false,\"id\":\"p9\",\"pos\":[1550.0,240.0]}]},\"suppressed\":false,\"type\":\"sketch\"}],\"format\":\"solidcraft/30\",\"name\":\"Skewed-mesh flow · 2D\",\"next_id\":2,\"params\":[],\"units\":\"mm\"}",
+    "cad_geometry_hash": "20ed822bd886d6b72b7b4bec7f74e71f036d2b785133441c67731bbbf2cdab04",
+    "plane_monitors": [],
+    "fluid_face": 1,
     "named_selections": [
       {
         "name": "inlet",
@@ -284,11 +291,56 @@
       }
     ],
     "mesh": {
+      "threads": 1,
       "dimension": "two-d",
       "global_size": 0.16,
-      "min_size": 0.08,
+      "min_size": 0.055999999999999994,
       "max_size": 0.16,
       "element_order": 1
+    },
+    "mesh_recipe": {
+      "tuning": {
+        "method": "unstructured",
+        "max_size_growth": null,
+        "divisions": [
+          40,
+          40,
+          10
+        ],
+        "progression": [
+          1.0,
+          1.0
+        ],
+        "algorithm_2d": 6,
+        "algorithm_3d": 1,
+        "curvature_points": 32,
+        "smoothing_steps": 10,
+        "optimize": true,
+        "optimize_netgen": false,
+        "optimize_threshold": 0.3,
+        "extend_boundary_sizes": true
+      },
+      "edge_divisions": [],
+      "regions": [],
+      "local_sizes": [],
+      "refinements": [
+        {
+          "id": 1,
+          "name": "cylinder-distance",
+          "targets": [
+            {
+              "named-selection": "cylinder"
+            }
+          ],
+          "sampling": 64,
+          "size_min": 0.055999999999999994,
+          "size_max": 0.16,
+          "distance_min": 0.0,
+          "distance_max": 0.56,
+          "enabled": true
+        }
+      ],
+      "boundary_layers": []
     },
     "boundaries": [
       {
@@ -325,14 +377,83 @@
       }
     ],
     "material": {
+      "catalog": null,
       "density": 1.0,
       "kinematic_viscosity": 0.1
     },
     "solver": {
+      "pressure_coupling": {
+        "algorithm": "simple",
+        "pressure_correctors": 1,
+        "non_orthogonal_correctors": 0,
+        "non_orthogonal_limiter": 0.5
+      },
+      "volume_models": {
+        "resistance": null,
+        "rotating_frame": null
+      },
+      "cyclic_pairs": [],
+      "equations": null,
+      "boundary_profiles": {},
+      "thermal": {
+        "enabled": false,
+        "initial_temperature": 293.15,
+        "specific_heat": 1005.0,
+        "conductivity": 0.025,
+        "source_w_m3": 0.0,
+        "relaxation": 0.7,
+        "relative_tolerance": 1e-08,
+        "turbulent_prandtl": 0.85,
+        "wall_treatment": "molecular",
+        "buoyancy": false,
+        "reference_temperature": 293.15,
+        "expansion": 0.0,
+        "gravity": {
+          "x": 0.0,
+          "y": -9.81,
+          "z": 0.0
+        },
+        "max_boussinesq_fraction": 0.1,
+        "boundaries": {}
+      },
+      "time": {
+        "mode": "steady"
+      },
+      "turbulence": {
+        "model": "laminar",
+        "wall_treatment": "resolved",
+        "inlets": {},
+        "k": 0.0001,
+        "omega": 1.0,
+        "epsilon": 1e-05,
+        "nu_tilda": 1e-05,
+        "relaxation": 0.5,
+        "relative_tolerance": 1e-06,
+        "ck": 0.094,
+        "ce": 1.048,
+        "cw": 0.325
+      },
+      "convection": "upwind",
+      "threads": 0,
       "max_outer_iterations": 400,
-      "continuity_absolute_tolerance": 1e-8,
+      "continuity_absolute_tolerance": 1e-08,
+      "coupling_relative_tolerance": 1e-06,
       "velocity_relaxation": 0.7,
-      "pressure_relaxation": 0.3
+      "pressure_relaxation": 0.3,
+      "compute": {
+        "backend": "parallel",
+        "adapter": "",
+        "cpu_fallback": true,
+        "parallel_min_rows": 4096,
+        "gpu_min_rows": 16384,
+        "gpu_memory_fraction": 0.8,
+        "gpu_preconditioner": "auto",
+        "gpu_restart": 24,
+        "gpu_inner_iterations": 8,
+        "gpu_smoothing_sweeps": 2,
+        "gpu_timeout_ms": 10000,
+        "gpu_host_basis_mb": 256
+      }
     },
     "runs": []
   }

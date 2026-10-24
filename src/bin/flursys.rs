@@ -1,3 +1,5 @@
+#[path = "flursys_cli/workspace.rs"]
+mod workspace;
 use flursys::cases::{
     BackwardStepCase, CavityCase, ChannelCase, CylinderCase, CylinderInitialCondition, Side,
 };
@@ -13,19 +15,33 @@ use std::path::PathBuf;
 
 fn main() {
     if let Err(error) = run_cli() {
-        eprintln!("Error: {error}");
+        if env::args().any(|a| a == "--json") {
+            eprintln!("{}", serde_json::json!({"error":error}));
+        } else {
+            eprintln!("Error: {error}");
+        }
         std::process::exit(1);
     }
 }
 
 fn run_cli() -> Result<(), String> {
     let args: Vec<String> = env::args().skip(1).collect();
+    if args.first().is_some_and(|a| a == "--version" || a == "-V") {
+        println!("FLURSYS {}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
+    if args
+        .first()
+        .is_some_and(|a| a == "examples" || a == "project" || a == "devices" || a == "catalog")
+    {
+        return workspace::run(&args);
+    }
     if args.is_empty() || args[0] == "--help" || args[0] == "-h" {
         print_help();
         return Ok(());
     }
     if args[0] == "list" {
-        println!("Available cases:");
+        println!("Structured benchmark cases (separate from Workbench projects):");
         println!("  cavity         lid-driven cavity");
         println!("  cylinder       cylinder flow at Re=100");
         println!("  turek          Turek-Schäfer / DFG 2D-2 cylinder benchmark at Re=100");
@@ -500,6 +516,12 @@ fn print_help() {
     println!("FLURSYS — Rust-native scientific simulation system");
     println!();
     println!("USAGE:");
+    println!("  flursys --version");
+    workspace::help();
+    println!(
+        "
+Structured benchmark commands (separate backend):"
+    );
     println!("  flursys list");
     println!("  flursys cavity [options]");
     println!("  flursys cylinder [options]");

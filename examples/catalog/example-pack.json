@@ -1,0 +1,400 @@
+{
+  "sources": [
+    {
+      "id": "demo:tutorial-air",
+      "citation": "Existing FLURSYS/OpenFOAM tutorial gas model sampled in T; not measured air data",
+      "url": "https://github.com/OpenFOAM/OpenFOAM-dev/blob/421b7a1693061ead99502f0e607122e0e57c0513/tutorials/fluid/blockedChannel/constant/physicalProperties",
+      "revision": "example-1",
+      "license": null,
+      "uncertainty": "Not characterized; illustrative input",
+      "note": "R=8314.46261815324/28.9; mu=1.8e-5; Cp=1005; Pr=0.7. Only p=101325 Pa. Linear table interpolation approximates this tutorial model."
+    },
+    {
+      "id": "demo:prescribed",
+      "citation": "Illustrative user-prescribed coefficients, not measured material properties",
+      "url": null,
+      "revision": "example-1",
+      "license": null,
+      "uncertainty": "Not characterized; illustrative input",
+      "note": "Contact resistance 1e-4 m2 K/W, emissivity 0.8, contact angle pi/2 are example inputs only. Solid rho/Cp/k repeat the OpenFOAM tutorial heater constants 8000/450/80. Replace with appropriate engineering data."
+    },
+    {
+      "id": "demo:analytic",
+      "citation": "Analytical uniform-temperature equilibrium of source-free conduction",
+      "url": null,
+      "revision": "example-1",
+      "license": null,
+      "uncertainty": null,
+      "note": "Adiabatic closed domain, initial T=300 K, no source or advection gives T=300 K at all times. Expected values only; no solver validation was performed."
+    }
+  ],
+  "materials": [
+    {
+      "id": "demo:air-table",
+      "name": "Air table \u00b7 tutorial-derived example",
+      "phase": "gas",
+      "composition": "Tutorial molar mass 28.9 kg/kmol; not a certified air composition",
+      "source_id": "demo:tutorial-air",
+      "revision": "example-1"
+    },
+    {
+      "id": "demo:solid",
+      "name": "Solid \u00b7 illustrative heater constants",
+      "phase": "solid",
+      "composition": "Unspecified tutorial solid",
+      "source_id": "demo:prescribed",
+      "revision": "example-1"
+    }
+  ],
+  "properties": [
+    {
+      "id": "demo:air-table:density",
+      "material_id": "demo:air-table",
+      "quantity": "density",
+      "unit": "kg/m3",
+      "temperature_range": [
+        280,
+        330
+      ],
+      "pressure_range": [
+        101325,
+        101325
+      ],
+      "model": {
+        "type": "table",
+        "samples": [
+          {
+            "temperature": 280,
+            "pressure": 101325,
+            "value": 1.2578308401033995
+          },
+          {
+            "temperature": 293.15,
+            "pressure": 101325,
+            "value": 1.2014075907520103
+          },
+          {
+            "temperature": 300,
+            "pressure": 101325,
+            "value": 1.1739754507631728
+          },
+          {
+            "temperature": 315,
+            "pressure": 101325,
+            "value": 1.1180718578696884
+          },
+          {
+            "temperature": 330,
+            "pressure": 101325,
+            "value": 1.0672504097847026
+          }
+        ]
+      },
+      "source_id": "demo:tutorial-air",
+      "revision": "example-1"
+    },
+    {
+      "id": "demo:air-table:expansion",
+      "material_id": "demo:air-table",
+      "quantity": "expansion",
+      "unit": "1/K",
+      "temperature_range": [
+        280,
+        330
+      ],
+      "pressure_range": [
+        101325,
+        101325
+      ],
+      "model": {
+        "type": "table",
+        "samples": [
+          {
+            "temperature": 280,
+            "pressure": 101325,
+            "value": 0.0035714285714285713
+          },
+          {
+            "temperature": 293.15,
+            "pressure": 101325,
+            "value": 0.003411222923418046
+          },
+          {
+            "temperature": 300,
+            "pressure": 101325,
+            "value": 0.0033333333333333335
+          },
+          {
+            "temperature": 315,
+            "pressure": 101325,
+            "value": 0.0031746031746031746
+          },
+          {
+            "temperature": 330,
+            "pressure": 101325,
+            "value": 0.0030303030303030303
+          }
+        ]
+      },
+      "source_id": "demo:tutorial-air",
+      "revision": "example-1"
+    },
+    {
+      "id": "demo:air-table:dynamic-viscosity",
+      "material_id": "demo:air-table",
+      "quantity": "dynamic-viscosity",
+      "unit": "Pa.s",
+      "temperature_range": [
+        280,
+        330
+      ],
+      "pressure_range": [
+        101325,
+        101325
+      ],
+      "model": {
+        "type": "constant",
+        "value": 1.8e-05
+      },
+      "source_id": "demo:tutorial-air",
+      "revision": "example-1"
+    },
+    {
+      "id": "demo:air-table:specific-heat",
+      "material_id": "demo:air-table",
+      "quantity": "specific-heat",
+      "unit": "J/(kg.K)",
+      "temperature_range": [
+        280,
+        330
+      ],
+      "pressure_range": [
+        101325,
+        101325
+      ],
+      "model": {
+        "type": "constant",
+        "value": 1005
+      },
+      "source_id": "demo:tutorial-air",
+      "revision": "example-1"
+    },
+    {
+      "id": "demo:air-table:conductivity",
+      "material_id": "demo:air-table",
+      "quantity": "conductivity",
+      "unit": "W/(m.K)",
+      "temperature_range": [
+        280,
+        330
+      ],
+      "pressure_range": [
+        101325,
+        101325
+      ],
+      "model": {
+        "type": "constant",
+        "value": 0.025842857142857147
+      },
+      "source_id": "demo:tutorial-air",
+      "revision": "example-1"
+    },
+    {
+      "id": "demo:solid:density",
+      "material_id": "demo:solid",
+      "quantity": "density",
+      "unit": "kg/m3",
+      "temperature_range": [
+        293.15,
+        293.15
+      ],
+      "pressure_range": [
+        101325,
+        101325
+      ],
+      "model": {
+        "type": "constant",
+        "value": 8000
+      },
+      "source_id": "demo:prescribed",
+      "revision": "example-1"
+    },
+    {
+      "id": "demo:solid:specific-heat",
+      "material_id": "demo:solid",
+      "quantity": "specific-heat",
+      "unit": "J/(kg.K)",
+      "temperature_range": [
+        293.15,
+        293.15
+      ],
+      "pressure_range": [
+        101325,
+        101325
+      ],
+      "model": {
+        "type": "constant",
+        "value": 450
+      },
+      "source_id": "demo:prescribed",
+      "revision": "example-1"
+    },
+    {
+      "id": "demo:solid:conductivity",
+      "material_id": "demo:solid",
+      "quantity": "conductivity",
+      "unit": "W/(m.K)",
+      "temperature_range": [
+        293.15,
+        293.15
+      ],
+      "pressure_range": [
+        101325,
+        101325
+      ],
+      "model": {
+        "type": "constant",
+        "value": 80
+      },
+      "source_id": "demo:prescribed",
+      "revision": "example-1"
+    }
+  ],
+  "solids": [
+    {
+      "material_id": "demo:solid",
+      "conductivity_tensor": null,
+      "note": "Isotropic example only"
+    }
+  ],
+  "fluid_pairs": [
+    {
+      "id": "demo:air-water",
+      "first_material": "demo:air-table",
+      "second_material": "water-nsrds",
+      "source_id": "demo:prescribed",
+      "revision": "example-1"
+    }
+  ],
+  "pair_properties": [
+    {
+      "id": "demo:surface-tension",
+      "pair_id": "demo:air-water",
+      "quantity": "surface-tension",
+      "unit": "N/m",
+      "temperature_range": [
+        293.15,
+        293.15
+      ],
+      "value": 0.07,
+      "source_id": "builtin:dam-break",
+      "revision": "example-1"
+    },
+    {
+      "id": "demo:contact-angle",
+      "pair_id": "demo:air-water",
+      "quantity": "contact-angle",
+      "unit": "rad",
+      "temperature_range": [
+        293.15,
+        293.15
+      ],
+      "value": 1.5707963267948966,
+      "source_id": "demo:prescribed",
+      "revision": "example-1"
+    }
+  ],
+  "thermal_contacts": [
+    {
+      "id": "demo:contact",
+      "first_material": "demo:solid",
+      "second_material": "demo:solid",
+      "resistance_m2_k_w": 0.0001,
+      "temperature_range": [
+        293.15,
+        293.15
+      ],
+      "source_id": "demo:prescribed",
+      "revision": "example-1"
+    }
+  ],
+  "surface_radiation": [
+    {
+      "id": "demo:surface",
+      "material_id": "demo:solid",
+      "emissivity": 0.8,
+      "temperature_range": [
+        293.15,
+        293.15
+      ],
+      "source_id": "demo:prescribed",
+      "revision": "example-1"
+    }
+  ],
+  "boundary_profiles": [
+    {
+      "id": "demo:jet-ramp",
+      "patch": "in",
+      "unit": "K",
+      "profile": {
+        "quantity": "temperature",
+        "samples": [
+          {
+            "time": 0,
+            "value": {
+              "x": 293.15,
+              "y": 0,
+              "z": 0
+            }
+          },
+          {
+            "time": 1,
+            "value": {
+              "x": 303.15,
+              "y": 0,
+              "z": 0
+            }
+          }
+        ]
+      },
+      "source_id": "demo:prescribed",
+      "revision": "example-1"
+    }
+  ],
+  "reference_cases": [
+    {
+      "id": "demo:uniform-temperature",
+      "name": "Analytical uniform temperature equilibrium",
+      "status": "reference-data",
+      "descriptor": {
+        "geometry": "Any closed fixed conformal domain",
+        "initial_temperature_K": 300,
+        "boundaries": "All adiabatic",
+        "source_W_m3": 0,
+        "volume_flux": 0,
+        "expected": "T remains 300 K; no implementation validation claimed"
+      },
+      "source_id": "demo:analytic",
+      "revision": "example-1"
+    }
+  ],
+  "reference_values": [
+    {
+      "id": "demo:uniform-temperature-values",
+      "case_id": "demo:uniform-temperature",
+      "quantity": "temperature at any position vs time",
+      "unit": "K",
+      "data": [
+        [
+          0,
+          300
+        ],
+        [
+          1,
+          300
+        ]
+      ],
+      "source_id": "demo:analytic"
+    }
+  ]
+}
