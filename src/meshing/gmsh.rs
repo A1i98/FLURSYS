@@ -231,7 +231,7 @@ pub struct GmshMeshingReport {
     pub stderr: String,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct GeneratedMesh {
     pub mesh: UnstructuredMesh,
     pub report: GmshMeshingReport,

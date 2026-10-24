@@ -168,7 +168,7 @@ pub fn builtin_templates() -> Result<Vec<CaseTemplateManifest>, String> {
     Ok(templates)
 }
 
-fn cad_document(project: &WorkbenchProject) -> Result<Option<String>, String> {
+pub fn cad_document(project: &WorkbenchProject) -> Result<Option<String>, String> {
     use crate::{
         EdgeGeometry, GeometryBodyRepresentation as Body, GeometryFaceRepresentation as Face,
     };
