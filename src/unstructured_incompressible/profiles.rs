@@ -207,6 +207,7 @@ pub(super) fn apply(
     case: &mut IncompressibleCase,
     time: f64,
 ) -> Result<(), IncompressibleSolveError> {
+    case.solver.scripting.evaluation_time = Some(time);
     for (name, p) in &case.solver.boundary_profiles {
         if p.quantity.is_thermal() {
             if !case.solver.thermal.enabled {

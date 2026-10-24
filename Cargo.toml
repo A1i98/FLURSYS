@@ -192,6 +192,7 @@ truck-modeling = "0.6"
 truck-meshalgo = { version = "0.4", default-features = false, features = ["tessellation", "filters"] }
 truck-shapeops = { version = "0.4", default-features = false }
 truck-stepio = "0.3"
+rhai = { version = "1.27", features = ["sync"] }
 rusqlite = { version = "0.40.2", features = ["bundled"] }
 
 [build-dependencies]

@@ -268,8 +268,48 @@ impl Closure {
             let b = *config.boundaries.get(&p.name).ok_or_else(|| {
                 failure(format!("Assign a thermal condition to patch {:?}", p.name))
             })?;
+            let binding = case
+                .solver
+                .scripting
+                .bindings
+                .get(&p.name)
+                .into_iter()
+                .flatten()
+                .find(|b| b.quantity == crate::scripting::Quantity::Temperature);
+            let compiled = binding
+                .map(|b| case.solver.scripting.compiled(b))
+                .transpose()
+                .map_err(failure)?;
             for i in &p.face_indices {
-                face_bc[*i] = Some(b);
+                let value = if let (Some(binding), Some(compiled)) = (binding, compiled.as_ref()) {
+                    let t = compiled
+                        .value(
+                            binding,
+                            mesh.faces()[*i].center,
+                            case.solver.scripting.evaluation_time,
+                        )
+                        .map_err(|e| {
+                            failure(format!("Temperature script on {}, face {i}: {e}", p.name))
+                        })?
+                        .x;
+                    config.validate_temperature(t).map_err(failure)?;
+                    match b {
+                        Boundary::FixedTemperature { .. } => {
+                            Boundary::FixedTemperature { temperature: t }
+                        }
+                        Boundary::InletOutlet { .. } => Boundary::InletOutlet {
+                            incoming_temperature: t,
+                        },
+                        _ => {
+                            return Err(failure(
+                                "Temperature script requires Fixed or Inlet/outlet temperature",
+                            ))
+                        }
+                    }
+                } else {
+                    b
+                };
+                face_bc[*i] = Some(value);
             }
         }
         if config
