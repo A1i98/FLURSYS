@@ -1,7 +1,48 @@
 use flursys::{
-    bicgstab_with_preconditioner, bicgstab_with_preconditioner_and_workspace, residual,
-    BiCgStabWorkspace, CsrBuilder, JacobiPreconditioner, LinearSolverOptions,
+    bicgstab, bicgstab_with_preconditioner, bicgstab_with_preconditioner_and_workspace,
+    bicgstab_with_workspace, cg, cg_with_workspace, residual, BiCgStabWorkspace, CgWorkspace,
+    CsrBuilder, JacobiPreconditioner, LinearSolverOptions,
 };
+
+#[test]
+fn unpreconditioned_workspaces_match_fresh_with_changing_sizes_and_rhs() {
+    let mut cg_workspace = CgWorkspace::default();
+    let mut bicg_workspace = BiCgStabWorkspace::default();
+    for (n, scale) in [(31, 1.0), (17, 0.4), (37, 2.0), (31, 1.5)] {
+        let mut builder = CsrBuilder::new(n, n);
+        for i in 0..n {
+            builder.add(i, i, 4.0 * scale).unwrap();
+            if i > 0 {
+                builder.add(i, i - 1, -scale).unwrap();
+            }
+            if i + 1 < n {
+                builder.add(i, i + 1, -scale).unwrap();
+            }
+        }
+        let matrix = builder.finalize().unwrap();
+        for zero in [false, true] {
+            let rhs: Vec<_> = (0..n)
+                .map(|i| if zero { 0.0 } else { (i as f64 * 0.13).sin() })
+                .collect();
+            let options = LinearSolverOptions::default();
+            let mut fresh = vec![0.0; n];
+            let mut reused = fresh.clone();
+            let expected = cg(&matrix, &rhs, &mut fresh, options).unwrap();
+            let actual =
+                cg_with_workspace(&matrix, &rhs, &mut reused, options, &mut cg_workspace).unwrap();
+            assert_eq!(actual, expected);
+            assert_eq!(reused, fresh);
+            fresh.fill(0.0);
+            reused.fill(0.0);
+            let expected = bicgstab(&matrix, &rhs, &mut fresh, options).unwrap();
+            let actual =
+                bicgstab_with_workspace(&matrix, &rhs, &mut reused, options, &mut bicg_workspace)
+                    .unwrap();
+            assert_eq!(actual, expected);
+            assert_eq!(reused, fresh);
+        }
+    }
+}
 
 #[test]
 fn recycled_momentum_workspace_matches_fresh_solves_when_sizes_and_rhs_change() {

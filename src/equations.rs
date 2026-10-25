@@ -72,6 +72,16 @@ impl EquationControl {
         x: &mut [f64],
         pressure: bool,
     ) -> Result<LinearSolveReport, LinearAlgebraError> {
+        self.solve_with_workspace(a, b, x, pressure, None)
+    }
+    pub(crate) fn solve_with_workspace(
+        self,
+        a: &CsrMatrix,
+        b: &[f64],
+        x: &mut [f64],
+        pressure: bool,
+        workspace: Option<&mut BiCgStabWorkspace>,
+    ) -> Result<LinearSolveReport, LinearAlgebraError> {
         self.validate(pressure)
             .map_err(|_| LinearAlgebraError::Breakdown {
                 reason: "invalid equation solver controls",
@@ -113,9 +123,23 @@ impl EquationControl {
             (true, EquationPreconditioner::Ic0) => {
                 pcg(a, b, x, &IncompleteCholeskyPreconditioner::new(a)?, o)
             }
-            (false, EquationPreconditioner::None) => bicgstab(a, b, x, o),
+            (false, EquationPreconditioner::None) => match workspace {
+                Some(workspace) => bicgstab_with_workspace(a, b, x, o, workspace),
+                None => bicgstab(a, b, x, o),
+            },
             (false, EquationPreconditioner::Jacobi) => {
-                bicgstab_with_preconditioner(a, b, x, &JacobiPreconditioner::new(a)?, o)
+                let preconditioner = JacobiPreconditioner::new(a)?;
+                match workspace {
+                    Some(workspace) => bicgstab_with_preconditioner_and_workspace(
+                        a,
+                        b,
+                        x,
+                        &preconditioner,
+                        o,
+                        workspace,
+                    ),
+                    None => bicgstab_with_preconditioner(a, b, x, &preconditioner, o),
+                }
             }
             _ => Err(LinearAlgebraError::Breakdown {
                 reason: "IC0 requires symmetric pressure matrix",
@@ -275,7 +299,7 @@ impl PressureWorkspace {
                 options,
                 &mut self.cg,
             ),
-            EquationPreconditioner::None => cg(a, b, x, options),
+            EquationPreconditioner::None => cg_with_workspace(a, b, x, options, &mut self.cg),
         }
     }
 }

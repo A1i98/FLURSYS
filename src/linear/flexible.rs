@@ -1,8 +1,9 @@
 //! Restarted right-preconditioned flexible GMRES. All Arnoldi algebra and true
 //! residual checks use f64, independently of preconditioner working precision.
+use super::vector::{dot_with_scratch, norm_l2_with_scratch};
 use super::{
-    axpy, dot, norm_l2, residual_into, CsrMatrix, LinearAlgebraError, LinearSolveReport,
-    LinearSolverOptions, LinearSolverStatus,
+    axpy, residual_into, CsrMatrix, LinearAlgebraError, LinearSolveReport, LinearSolverOptions,
+    LinearSolverStatus,
 };
 pub(crate) fn fgmres(
     matrix: &CsrMatrix,
@@ -16,8 +17,9 @@ pub(crate) fn fgmres(
     let n = matrix.nrows();
     let restart = restart.clamp(2, 64).min(options.max_iterations.max(1));
     let mut r = vec![0.; n];
+    let mut partials = Vec::new();
     residual_into(matrix, x, rhs, &mut r)?;
-    let initial = norm_l2(&r)?;
+    let initial = norm_l2_with_scratch(&r, &mut partials)?;
     let target = options
         .absolute_tolerance
         .max(options.relative_tolerance * initial);
@@ -45,17 +47,17 @@ pub(crate) fn fgmres(
                 });
             }
             let mut w = matrix.spmv(&z)?;
-            let product_norm = norm_l2(&w)?;
+            let product_norm = norm_l2_with_scratch(&w, &mut partials)?;
             // Two MGS passes are deliberate: mixed-precision preconditioning
             // can otherwise lose the Arnoldi basis near tight tolerances.
             for _ in 0..2 {
                 for i in 0..=j {
-                    let value = dot(&basis[i], &w)?;
+                    let value = dot_with_scratch(&basis[i], &w, &mut partials)?;
                     h[i][j] += value;
                     axpy(-value, &basis[i], &mut w)?;
                 }
             }
-            let next = norm_l2(&w)?;
+            let next = norm_l2_with_scratch(&w, &mut partials)?;
             h[j + 1][j] = next;
             corrections.push(z);
             let happy = next <= f64::EPSILON * product_norm.max(f64::MIN_POSITIVE);
@@ -98,7 +100,7 @@ pub(crate) fn fgmres(
             axpy(weight, z, x)?;
         }
         residual_into(matrix, x, rhs, &mut r)?;
-        norm = norm_l2(&r)?;
+        norm = norm_l2_with_scratch(&r, &mut partials)?;
         // Never accept a small projected residual without b-Ax. A new cycle
         // starts from the recomputed residual if its estimate drifted.
     }
@@ -113,4 +115,57 @@ pub(crate) fn fgmres(
         final_residual: norm,
         relative_residual: if initial > 0. { norm / initial } else { 0. },
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::compute::{Backend, ComputeOptions, Execution, Scope};
+    use crate::{norm_l2, residual, CsrBuilder};
+
+    #[test]
+    fn cpu_fgmres_restarts_preserve_serial_parallel_results_and_true_residual() {
+        let n = 4097;
+        let mut builder = CsrBuilder::new(n, n);
+        for i in 0..n {
+            builder.add(i, i, 1.0 + (i % 5) as f64 * 0.1).unwrap();
+        }
+        let matrix = builder.finalize().unwrap();
+        let exact: Vec<_> = (0..n).map(|i| (i as f64 * 0.13).sin()).collect();
+        let rhs = matrix.spmv(&exact).unwrap();
+        let options = LinearSolverOptions {
+            absolute_tolerance: 1e-10,
+            relative_tolerance: 0.0,
+            max_iterations: 100,
+        };
+        let mut expected = None;
+        for backend in [Backend::Serial, Backend::Parallel] {
+            let runtime = Execution::new(ComputeOptions {
+                backend,
+                ..Default::default()
+            })
+            .unwrap();
+            let result = rayon::ThreadPoolBuilder::new()
+                .num_threads(2)
+                .build()
+                .unwrap()
+                .install(|| {
+                    let _scope = Scope::enter(runtime);
+                    let mut x = vec![0.0; n];
+                    let report =
+                        fgmres(&matrix, &rhs, &mut x, options, 2, |r| Ok(r.to_vec())).unwrap();
+                    assert!(report.converged());
+                    assert!(report.iterations > 2, "must exercise restart scratch reuse");
+                    let actual = norm_l2(&residual(&matrix, &x, &rhs).unwrap()).unwrap();
+                    assert!(actual <= options.absolute_tolerance);
+                    assert_eq!(report.final_residual.to_bits(), actual.to_bits());
+                    (report, x)
+                });
+            if let Some(expected) = &expected {
+                assert_eq!(&result, expected);
+            } else {
+                expected = Some(result);
+            }
+        }
+    }
 }

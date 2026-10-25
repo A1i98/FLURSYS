@@ -1,4 +1,5 @@
-use super::{dot, norm_l2, residual_into, CsrMatrix, LinearAlgebraError, Preconditioner};
+use super::vector::{dot_with_scratch, norm_l2_with_scratch};
+use super::{residual_into, CsrMatrix, LinearAlgebraError, Preconditioner};
 
 const BREAKDOWN_EPSILON: f64 = 1.0e-30;
 
@@ -41,6 +42,7 @@ pub struct CgWorkspace {
     direction: Vec<f64>,
     product: Vec<f64>,
     preconditioned: Vec<f64>,
+    partials: Vec<f64>,
 }
 
 impl CgWorkspace {
@@ -63,6 +65,7 @@ pub struct BiCgStabWorkspace {
     t: Vec<f64>,
     p_preconditioned: Vec<f64>,
     s_preconditioned: Vec<f64>,
+    partials: Vec<f64>,
 }
 
 impl BiCgStabWorkspace {
@@ -97,6 +100,17 @@ pub fn cg(
     options: LinearSolverOptions,
 ) -> Result<LinearSolveReport, LinearAlgebraError> {
     solve_cg(matrix, rhs, solution, options, None)
+}
+
+/// Unpreconditioned conjugate gradients with caller-retained scratch vectors.
+pub fn cg_with_workspace(
+    matrix: &CsrMatrix,
+    rhs: &[f64],
+    solution: &mut [f64],
+    options: LinearSolverOptions,
+    workspace: &mut CgWorkspace,
+) -> Result<LinearSolveReport, LinearAlgebraError> {
+    solve_cg_with_workspace(matrix, rhs, solution, options, None, workspace)
 }
 
 pub fn pcg<P: Preconditioner>(
@@ -184,9 +198,10 @@ fn solve_cg_with_workspace(
         direction,
         product,
         preconditioned,
+        partials,
     } = workspace;
     profile.measure(false, || residual_into(matrix, solution, rhs, residual))?;
-    let initial = norm_l2(residual)?;
+    let initial = norm_l2_with_scratch(residual, partials)?;
     let threshold = options.absolute_tolerance + options.relative_tolerance * initial;
     if initial <= threshold {
         return Ok(report(LinearSolverStatus::Converged, 0, initial, initial));
@@ -198,12 +213,12 @@ fn solve_cg_with_workspace(
         direction.copy_from_slice(residual);
         preconditioned.copy_from_slice(residual);
     }
-    let mut rho = dot(residual, preconditioned)?;
+    let mut rho = dot_with_scratch(residual, preconditioned, partials)?;
     for iteration in 1..=options.max_iterations {
         crate::compute::checkpoint()?;
         profile.iteration();
         profile.measure(false, || matrix.spmv_into(direction, product))?;
-        let denominator = dot(direction, product)?;
+        let denominator = dot_with_scratch(direction, product, partials)?;
         if !denominator.is_finite() || denominator <= BREAKDOWN_EPSILON {
             return Err(LinearAlgebraError::Breakdown {
                 reason: "non-positive CG search denominator; pressure operator must be positive definite",
@@ -219,14 +234,14 @@ fn solve_cg_with_workspace(
             solution[index] += alpha * direction[index];
             residual[index] -= alpha * product[index];
         }
-        let recursive_norm = norm_l2(residual)?;
+        let recursive_norm = norm_l2_with_scratch(residual, partials)?;
         // The recurrence can drift from b-Ax on ill-conditioned pressure
         // systems. Certify convergence using the actual operator and refresh
         // when the recursive estimate reaches tolerance. Restart conjugacy after replacement, never enlarge
         // tolerances or reset the iteration budget.
         if recursive_norm <= threshold {
             residual_into(matrix, solution, rhs, residual)?;
-            let true_norm = norm_l2(residual)?;
+            let true_norm = norm_l2_with_scratch(residual, partials)?;
             if true_norm <= threshold {
                 return Ok(report(
                     LinearSolverStatus::Converged,
@@ -240,7 +255,7 @@ fn solve_cg_with_workspace(
             } else {
                 preconditioned.copy_from_slice(residual);
             }
-            rho = dot(residual, preconditioned)?;
+            rho = dot_with_scratch(residual, preconditioned, partials)?;
             direction.copy_from_slice(preconditioned);
             continue;
         }
@@ -249,7 +264,7 @@ fn solve_cg_with_workspace(
         } else {
             preconditioned.copy_from_slice(residual);
         }
-        let rho_new = dot(residual, preconditioned)?;
+        let rho_new = dot_with_scratch(residual, preconditioned, partials)?;
         if !rho_new.is_finite() || rho.abs() <= BREAKDOWN_EPSILON {
             return Err(LinearAlgebraError::Breakdown {
                 reason: "zero CG recurrence denominator",
@@ -267,7 +282,7 @@ fn solve_cg_with_workspace(
         rho = rho_new;
     }
     residual_into(matrix, solution, rhs, residual)?;
-    let final_residual = norm_l2(residual)?;
+    let final_residual = norm_l2_with_scratch(residual, partials)?;
     Ok(report(
         LinearSolverStatus::MaxIterations,
         options.max_iterations,
@@ -283,6 +298,17 @@ pub fn bicgstab(
     options: LinearSolverOptions,
 ) -> Result<LinearSolveReport, LinearAlgebraError> {
     solve_bicgstab(matrix, rhs, solution, options, None)
+}
+
+/// Unpreconditioned BiCGStab with caller-retained scratch vectors.
+pub fn bicgstab_with_workspace(
+    matrix: &CsrMatrix,
+    rhs: &[f64],
+    solution: &mut [f64],
+    options: LinearSolverOptions,
+    workspace: &mut BiCgStabWorkspace,
+) -> Result<LinearSolveReport, LinearAlgebraError> {
+    solve_bicgstab_with_workspace(matrix, rhs, solution, options, None, workspace)
 }
 
 pub fn bicgstab_with_preconditioner<P: Preconditioner>(
@@ -362,10 +388,11 @@ fn solve_bicgstab_with_workspace(
         t,
         p_preconditioned,
         s_preconditioned,
+        partials,
     } = workspace;
     residual_into(matrix, solution, rhs, r)?;
     r_hat.copy_from_slice(r);
-    let initial = norm_l2(r)?;
+    let initial = norm_l2_with_scratch(r, partials)?;
     let threshold = options.absolute_tolerance + options.relative_tolerance * initial;
     if initial <= threshold {
         return Ok(report(LinearSolverStatus::Converged, 0, initial, initial));
@@ -378,7 +405,7 @@ fn solve_bicgstab_with_workspace(
     let mut omega = 1.0;
     for iteration in 1..=options.max_iterations {
         crate::compute::checkpoint()?;
-        let rho = dot(r_hat, r)?;
+        let rho = dot_with_scratch(r_hat, r, partials)?;
         if !rho.is_finite() || rho.abs() <= BREAKDOWN_EPSILON {
             return Err(LinearAlgebraError::Breakdown {
                 reason: "zero BiCGSTAB rho",
@@ -402,7 +429,7 @@ fn solve_bicgstab_with_workspace(
             p.as_slice()
         };
         matrix.spmv_into(p_direction, v)?;
-        let denominator = dot(r_hat, v)?;
+        let denominator = dot_with_scratch(r_hat, v, partials)?;
         if !denominator.is_finite() || denominator.abs() <= BREAKDOWN_EPSILON {
             return Err(LinearAlgebraError::Breakdown {
                 reason: "zero BiCGSTAB alpha denominator",
@@ -417,7 +444,7 @@ fn solve_bicgstab_with_workspace(
         for index in 0..n {
             s[index] = r[index] - alpha * v[index];
         }
-        let s_norm = norm_l2(s)?;
+        let s_norm = norm_l2_with_scratch(s, partials)?;
         if s_norm <= threshold {
             for (solution_value, &direction_value) in solution.iter_mut().zip(p_direction) {
                 *solution_value += alpha * direction_value;
@@ -438,13 +465,13 @@ fn solve_bicgstab_with_workspace(
             s.as_slice()
         };
         matrix.spmv_into(s_direction, t)?;
-        let tt = dot(t, t)?;
+        let tt = dot_with_scratch(t, t, partials)?;
         if !tt.is_finite() || tt.abs() <= BREAKDOWN_EPSILON {
             return Err(LinearAlgebraError::Breakdown {
                 reason: "zero BiCGSTAB omega denominator",
             });
         }
-        omega = dot(t, s)? / tt;
+        omega = dot_with_scratch(t, s, partials)? / tt;
         if !omega.is_finite() || omega.abs() <= BREAKDOWN_EPSILON {
             return Err(LinearAlgebraError::Breakdown {
                 reason: "zero BiCGSTAB omega",
@@ -458,7 +485,7 @@ fn solve_bicgstab_with_workspace(
         for index in 0..n {
             r[index] = s[index] - omega * t[index];
         }
-        let residual_norm = norm_l2(r)?;
+        let residual_norm = norm_l2_with_scratch(r, partials)?;
         if residual_norm <= threshold {
             return Ok(report(
                 LinearSolverStatus::Converged,
@@ -473,7 +500,7 @@ fn solve_bicgstab_with_workspace(
         LinearSolverStatus::MaxIterations,
         options.max_iterations,
         initial,
-        norm_l2(r)?,
+        norm_l2_with_scratch(r, partials)?,
     ))
 }
 
@@ -537,5 +564,68 @@ fn report(
         } else {
             final_residual / initial
         },
+    }
+}
+
+#[cfg(test)]
+mod reduction_workspace_tests {
+    use super::*;
+    use crate::compute::{Backend, ComputeOptions, Execution, Scope};
+    use crate::CsrBuilder;
+
+    #[test]
+    fn retained_solver_reductions_match_serial_across_parallel_threshold_and_resizes() {
+        let mut cg_workspace = CgWorkspace::default();
+        let mut bicg_workspace = BiCgStabWorkspace::default();
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(2)
+            .build()
+            .unwrap();
+        for n in [4097, 17, 8193, 4095, 4097] {
+            let mut builder = CsrBuilder::new(n, n);
+            for i in 0..n {
+                builder.add(i, i, 2.0 + (i % 4) as f64 * 0.1).unwrap();
+            }
+            let matrix = builder.finalize().unwrap();
+            let rhs: Vec<_> = (0..n).map(|i| (i as f64 * 0.1).cos()).collect();
+            let options = LinearSolverOptions {
+                absolute_tolerance: 1e-9,
+                relative_tolerance: 0.0,
+                max_iterations: 100,
+            };
+            let serial = Execution::new(ComputeOptions {
+                backend: Backend::Serial,
+                ..Default::default()
+            })
+            .unwrap();
+            let (expected_cg, expected_bicg) = pool.install(|| {
+                let _scope = Scope::enter(serial);
+                let mut a = vec![0.0; n];
+                let mut b = a.clone();
+                (
+                    (cg(&matrix, &rhs, &mut a, options).unwrap(), a),
+                    (bicgstab(&matrix, &rhs, &mut b, options).unwrap(), b),
+                )
+            });
+            let parallel = Execution::new(ComputeOptions {
+                backend: Backend::Parallel,
+                ..Default::default()
+            })
+            .unwrap();
+            pool.install(|| {
+                let _scope = Scope::enter(parallel);
+                let mut a = vec![0.0; n];
+                let mut b = a.clone();
+                let a_report =
+                    cg_with_workspace(&matrix, &rhs, &mut a, options, &mut cg_workspace).unwrap();
+                let b_report =
+                    bicgstab_with_workspace(&matrix, &rhs, &mut b, options, &mut bicg_workspace)
+                        .unwrap();
+                assert!(a_report.converged());
+                assert!(b_report.converged());
+                assert_eq!((a_report, a), expected_cg);
+                assert_eq!((b_report, b), expected_bicg);
+            });
+        }
     }
 }

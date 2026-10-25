@@ -5,7 +5,7 @@
 //! entries deterministically at finalization, and omits only exact zero sums.
 
 mod csr;
-#[cfg(feature = "gpu-compute")]
+#[cfg(any(feature = "gpu-compute", test))]
 mod flexible;
 #[cfg(feature = "gpu-compute")]
 pub(crate) use flexible::fgmres;
@@ -29,9 +29,10 @@ pub use preconditioner::{
     SymmetricGaussSeidelPreconditioner,
 };
 pub use solver::{
-    bicgstab, bicgstab_with_preconditioner, bicgstab_with_preconditioner_and_workspace, cg, pcg,
-    pcg_with_preconditioner, pcg_with_preconditioner_and_workspace, BiCgStabWorkspace, CgWorkspace,
-    LinearSolveReport, LinearSolverOptions, LinearSolverStatus,
+    bicgstab, bicgstab_with_preconditioner, bicgstab_with_preconditioner_and_workspace,
+    bicgstab_with_workspace, cg, cg_with_workspace, pcg, pcg_with_preconditioner,
+    pcg_with_preconditioner_and_workspace, BiCgStabWorkspace, CgWorkspace, LinearSolveReport,
+    LinearSolverOptions, LinearSolverStatus,
 };
 pub use vector::{axpy, copy_into, dot, norm_inf, norm_l2, residual, residual_into, scale};
 

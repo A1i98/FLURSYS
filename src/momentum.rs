@@ -549,10 +549,34 @@ pub fn solve_momentum_velocity(
         crate::equations::EquationControl::from_options(options),
     )
 }
+/// Scratch retained for one coupled solve. Serial components share the first
+/// Krylov workspace; the other two allocate only on the parallel path.
+#[derive(Default)]
+pub(crate) struct MomentumWorkspace {
+    x: Vec<f64>,
+    y: Vec<f64>,
+    z: Vec<f64>,
+    linear: [crate::BiCgStabWorkspace; 3],
+}
+
 pub fn solve_momentum_velocity_with_controls(
     systems: [&MomentumSystem; 3],
     velocity: &mut CellField<Vec3>,
     controls: crate::equations::EquationControl,
+) -> Result<[LinearSolveReport; 3], MomentumError> {
+    solve_momentum_velocity_with_workspace(
+        systems,
+        velocity,
+        controls,
+        &mut MomentumWorkspace::default(),
+    )
+}
+
+pub(crate) fn solve_momentum_velocity_with_workspace(
+    systems: [&MomentumSystem; 3],
+    velocity: &mut CellField<Vec3>,
+    controls: crate::equations::EquationControl,
+    workspace: &mut MomentumWorkspace,
 ) -> Result<[LinearSolveReport; 3], MomentumError> {
     for system in systems {
         if system.mesh_id() != velocity.mesh_id() {
@@ -563,9 +587,13 @@ pub fn solve_momentum_velocity_with_controls(
             .into());
         }
     }
-    let mut x: Vec<f64> = velocity.values().iter().map(|value| value.x).collect();
-    let mut y: Vec<f64> = velocity.values().iter().map(|value| value.y).collect();
-    let mut z: Vec<f64> = velocity.values().iter().map(|value| value.z).collect();
+    let MomentumWorkspace { x, y, z, linear } = workspace;
+    x.clear();
+    y.clear();
+    z.clear();
+    x.extend(velocity.values().iter().map(|value| value.x));
+    y.extend(velocity.values().iter().map(|value| value.y));
+    z.extend(velocity.values().iter().map(|value| value.z));
     // One resident GPU workspace per analysis. Do not schedule nested GPU
     // component solves while its owner uses Rayon for f64 Arnoldi kernels.
     let gpu = crate::compute::current().is_some_and(|r| {
@@ -575,29 +603,72 @@ pub fn solve_momentum_velocity_with_controls(
     });
     let reports =
         if !gpu && rayon::current_thread_index().is_some() && rayon::current_num_threads() > 1 {
+            let [wx, wy, wz] = linear;
             let (rx, (ry, rz)) = rayon::join(
-                || controls.solve(systems[0].matrix(), systems[0].rhs(), &mut x, false),
+                || {
+                    controls.solve_with_workspace(
+                        systems[0].matrix(),
+                        systems[0].rhs(),
+                        x,
+                        false,
+                        Some(wx),
+                    )
+                },
                 || {
                     rayon::join(
-                        || controls.solve(systems[1].matrix(), systems[1].rhs(), &mut y, false),
-                        || controls.solve(systems[2].matrix(), systems[2].rhs(), &mut z, false),
+                        || {
+                            controls.solve_with_workspace(
+                                systems[1].matrix(),
+                                systems[1].rhs(),
+                                y,
+                                false,
+                                Some(wy),
+                            )
+                        },
+                        || {
+                            controls.solve_with_workspace(
+                                systems[2].matrix(),
+                                systems[2].rhs(),
+                                z,
+                                false,
+                                Some(wz),
+                            )
+                        },
                     )
                 },
             );
             [rx?, ry?, rz?]
         } else {
             [
-                controls.solve(systems[0].matrix(), systems[0].rhs(), &mut x, false)?,
-                controls.solve(systems[1].matrix(), systems[1].rhs(), &mut y, false)?,
-                controls.solve(systems[2].matrix(), systems[2].rhs(), &mut z, false)?,
+                controls.solve_with_workspace(
+                    systems[0].matrix(),
+                    systems[0].rhs(),
+                    x,
+                    false,
+                    Some(&mut linear[0]),
+                )?,
+                controls.solve_with_workspace(
+                    systems[1].matrix(),
+                    systems[1].rhs(),
+                    y,
+                    false,
+                    Some(&mut linear[0]),
+                )?,
+                controls.solve_with_workspace(
+                    systems[2].matrix(),
+                    systems[2].rhs(),
+                    z,
+                    false,
+                    Some(&mut linear[0]),
+                )?,
             ]
         };
     for (value, ((x, y), z)) in velocity
         .values_mut()
         .iter_mut()
-        .zip(x.into_iter().zip(y).zip(z))
+        .zip(x.iter().zip(y.iter()).zip(z.iter()))
     {
-        *value = Vec3::new(x, y, z);
+        *value = Vec3::new(*x, *y, *z);
     }
     Ok(reports)
 }
@@ -608,6 +679,93 @@ mod tests {
     use crate::{
         BoundaryPatch, BoundaryType, CellDefinition, MeshDimension, Point, ScalarBoundaryCondition,
     };
+
+    #[test]
+    fn retained_velocity_workspace_matches_fresh_serial_and_parallel_solves() {
+        for threads in [1, 3] {
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .build()
+                .unwrap();
+            pool.install(|| {
+                let mut workspace = MomentumWorkspace::default();
+                for (n, scale) in [(2, 1.0), (5, 0.4), (3, 2.0), (2, 1.5)] {
+                    let points = (0..=n)
+                        .flat_map(|i| {
+                            [
+                                Point::new(i as f64, 0.0, 0.0),
+                                Point::new(i as f64, 1.0, 0.0),
+                            ]
+                        })
+                        .collect();
+                    let definitions = (0..n)
+                        .map(|i| {
+                            CellDefinition::polygon(vec![2 * i, 2 * i + 2, 2 * i + 3, 2 * i + 1])
+                        })
+                        .collect();
+                    let mesh =
+                        UnstructuredMesh::from_cells(MeshDimension::TwoD, points, definitions)
+                            .unwrap();
+                    let mut builder = crate::CsrBuilder::new(n, n);
+                    for i in 0..n {
+                        builder.add(i, i, 4.0 * scale).unwrap();
+                        if i > 0 {
+                            builder.add(i, i - 1, -scale).unwrap();
+                        }
+                        if i + 1 < n {
+                            builder.add(i, i + 1, -0.5 * scale).unwrap();
+                        }
+                    }
+                    let matrix = builder.finalize().unwrap();
+                    let systems = [1.0, 2.0, 3.0].map(|component| MomentumSystem {
+                        mesh_id: mesh.id(),
+                        matrix: matrix.clone(),
+                        rhs: (0..n).map(|i| component * (i + 1) as f64).collect(),
+                        unrelaxed_diagonal: vec![4.0 * scale; n],
+                    });
+                    for preconditioner in [
+                        crate::equations::EquationPreconditioner::None,
+                        crate::equations::EquationPreconditioner::Jacobi,
+                    ] {
+                        let controls = crate::equations::EquationControl {
+                            preconditioner,
+                            ..Default::default()
+                        };
+                        let mut fresh = CellField::filled(&mesh, Vec3::new(0.1, 0.2, 0.3));
+                        let mut reused = fresh.clone();
+                        let expected = solve_momentum_velocity_with_controls(
+                            [&systems[0], &systems[1], &systems[2]],
+                            &mut fresh,
+                            controls,
+                        )
+                        .unwrap();
+                        let actual = solve_momentum_velocity_with_workspace(
+                            [&systems[0], &systems[1], &systems[2]],
+                            &mut reused,
+                            controls,
+                            &mut workspace,
+                        )
+                        .unwrap();
+                        assert_eq!(actual, expected);
+                        assert_eq!(reused.values(), fresh.values());
+                    }
+                    // A late component failure must not partially commit velocity.
+                    let mut invalid = systems[2].clone();
+                    invalid.rhs.pop();
+                    let mut velocity = CellField::filled(&mesh, Vec3::new(0.1, 0.2, 0.3));
+                    let before = velocity.clone();
+                    assert!(solve_momentum_velocity_with_workspace(
+                        [&systems[0], &systems[1], &invalid],
+                        &mut velocity,
+                        Default::default(),
+                        &mut workspace
+                    )
+                    .is_err());
+                    assert_eq!(velocity.values(), before.values());
+                }
+            });
+        }
+    }
 
     fn two_cells() -> UnstructuredMesh {
         let mesh = UnstructuredMesh::from_cells(

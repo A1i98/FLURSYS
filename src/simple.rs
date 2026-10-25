@@ -291,6 +291,7 @@ pub fn solve_simple_with_observer(
     let mut last_momentum = None;
     let mut last_pressure = None;
     let mut pressure_workspace = crate::equations::PressureWorkspace::default();
+    let mut momentum_workspace = crate::momentum::MomentumWorkspace::default();
     let static_correction_stencil = options
         .pressure_correction_boundary
         .map(|b| LeastSquaresGradientStencil::new(mesh, b))
@@ -489,13 +490,14 @@ pub fn solve_simple_with_observer(
         let y_system = assemble(MomentumComponent::Y, &source_y, &current_y)?;
         let z_system = assemble(MomentumComponent::Z, &source_z, &current_z)?;
         let mut predictor = state.velocity.clone();
-        let momentum_reports = crate::momentum::solve_momentum_velocity_with_controls(
+        let momentum_reports = crate::momentum::solve_momentum_velocity_with_workspace(
             [&x_system, &y_system, &z_system],
             &mut predictor,
             options.equations.map_or(
                 crate::equations::EquationControl::from_options(options.momentum_solver),
                 |e| e.velocity,
             ),
+            &mut momentum_workspace,
         )?;
         if !momentum_reports.iter().all(LinearSolveReport::converged) {
             return Err(SimpleError::MomentumLinearDidNotConverge);
