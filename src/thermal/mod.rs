@@ -46,6 +46,7 @@ pub struct Options {
     pub turbulent_prandtl: f64,
     pub wall_treatment: ThermalWallTreatment,
     pub buoyancy: bool,
+    pub reduced_pressure: bool,
     pub reference_temperature: f64,
     pub expansion: f64,
     pub gravity: Vec3,
@@ -65,6 +66,7 @@ impl Default for Options {
             turbulent_prandtl: 0.85,
             wall_treatment: ThermalWallTreatment::Molecular,
             buoyancy: false,
+            reduced_pressure: false,
             reference_temperature: 293.15,
             expansion: 0.0,
             gravity: Vec3::new(0.0, -9.81, 0.0),
@@ -75,7 +77,7 @@ impl Default for Options {
 }
 impl Options {
     /// Acceleration relative to a reference-density hydrostatic state.
-    /// The current pressure formulation additionally retains reference gravity.
+    /// Full-pressure runs additionally retain reference gravity.
     pub fn relative_buoyancy_acceleration(&self, temperature: f64) -> Result<Vec3, String> {
         self.validate()?;
         self.validate_temperature(temperature)?;
@@ -92,7 +94,11 @@ impl Options {
         if self.enabled && self.buoyancy {
             let fraction = self.expansion * (temperature - self.reference_temperature);
             if !fraction.is_finite() || fraction.abs() > self.max_boussinesq_fraction {
-                return Err(format!("Boussinesq |beta*(T-Tref)|={:.4e} exceeds limit {:.4e} at T={temperature:.6} K; use smaller temperature differences or a variable-density model",fraction.abs(),self.max_boussinesq_fraction));
+                return Err(format!(
+                    "Boussinesq |beta*(T-Tref)|={:.4e} exceeds limit {:.4e} at T={temperature:.6} K; use smaller temperature differences or a variable-density model",
+                    fraction.abs(),
+                    self.max_boussinesq_fraction
+                ));
             }
         }
         Ok(())
@@ -181,10 +187,10 @@ impl Options {
                 | Boundary::InletOutlet {
                     incoming_temperature: temperature,
                 } if !temperature.is_finite() || temperature <= 0.0 => {
-                    return Err("Boundary temperature must be positive Kelvin".into())
+                    return Err("Boundary temperature must be positive Kelvin".into());
                 }
                 Boundary::HeatFlux { inward_flux } if !inward_flux.is_finite() => {
-                    return Err("Heat flux must be finite W/m²".into())
+                    return Err("Heat flux must be finite W/m²".into());
                 }
                 Boundary::Radiation {
                     emissivity,
@@ -204,7 +210,7 @@ impl Options {
                     || !ambient_temperature.is_finite()
                     || ambient_temperature <= 0.0 =>
                 {
-                    return Err("Convection requires h > 0 and ambient T > 0 K".into())
+                    return Err("Convection requires h > 0 and ambient T > 0 K".into());
                 }
                 _ => {}
             }
@@ -246,7 +252,9 @@ impl Closure {
                 || case.solver.turbulence.wall_treatment
                     != crate::turbulence::WallTreatment::EquilibriumKEpsilon)
         {
-            return Err(failure("Equilibrium Prt thermal wall treatment requires equilibrium k-epsilon momentum walls"));
+            return Err(failure(
+                "Equilibrium Prt thermal wall treatment requires equilibrium k-epsilon momentum walls",
+            ));
         }
         let mesh = &case.mesh;
         let mut walls = vec![false; mesh.face_count()];
@@ -303,7 +311,7 @@ impl Closure {
                         _ => {
                             return Err(failure(
                                 "Temperature script requires Fixed or Inlet/outlet temperature",
-                            ))
+                            ));
                         }
                     }
                 } else {
@@ -412,7 +420,9 @@ impl Closure {
                 }
                 _ => {
                     if incoming {
-                        return Err(failure(format!("Thermal inflow/backflow at face {i} needs Fixed temperature or Inlet/outlet temperature")));
+                        return Err(failure(format!(
+                            "Thermal inflow/backflow at face {i} needs Fixed temperature or Inlet/outlet temperature"
+                        )));
                     }
                     ScalarBoundaryCondition::ZeroGradient
                 }
@@ -519,7 +529,12 @@ impl Closure {
                 self.config
                     .validate_temperature(self.field[i])
                     .map_err(|e| failure(format!("{e}; cell {i}")))?;
-                force[i] = self.config.gravity * (1.0 - fraction);
+                force[i] = self.config.gravity
+                    * (if self.config.reduced_pressure {
+                        0.0
+                    } else {
+                        1.0
+                    } - fraction);
             }
         }
         Ok(force)

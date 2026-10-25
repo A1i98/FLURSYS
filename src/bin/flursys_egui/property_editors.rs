@@ -325,6 +325,10 @@ impl App {
             });
         ui.checkbox(&mut t.buoyancy, "Boussinesq buoyancy");
         if t.buoyancy {
+            ui.checkbox(
+                &mut t.reduced_pressure,
+                "Remove reference hydrostatic pressure",
+            );
             number(
                 ui,
                 "Reference temperature (K)",
