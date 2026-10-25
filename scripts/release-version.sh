@@ -16,6 +16,7 @@ Usage: scripts/release-version.sh <major|minor|patch|release|alpha|beta|rc|prepa
 Options:
   --push                 Push the release commit and vX.Y.Z tag to origin.
   --dry-run              Print the calculated version without changing files.
+  --skip-checks          Skip check, fmt, test, clippy, and release build.
   --allow-dirty          Allow pre-existing worktree changes (normally refused).
   --channel <channel>    Prerelease channel: alpha, beta, or rc (default: alpha).
   --base <bump>          Base bump for alpha/beta/rc from a stable version:
@@ -26,6 +27,7 @@ Options:
 Examples:
   scripts/release-version.sh patch --dry-run
   scripts/release-version.sh minor --push
+  scripts/release-version.sh minor --skip-checks --push
   scripts/release-version.sh alpha --base minor --push
   scripts/release-version.sh prerelease --channel beta --push
   scripts/release-version.sh premajor --channel rc --push
@@ -178,6 +180,7 @@ ensure_clean_worktree() {
 BUMP=""
 PUSH=false
 DRY_RUN=false
+SKIP_CHECKS=false
 ALLOW_DIRTY=false
 COMMIT_MESSAGE=""
 CHANNEL="alpha"
@@ -191,6 +194,7 @@ while [[ $# -gt 0 ]]; do
             ;;
         --push) PUSH=true ;;
         --dry-run) DRY_RUN=true ;;
+        --skip-checks) SKIP_CHECKS=true ;;
         --allow-dirty) ALLOW_DIRTY=true ;;
         --channel)
             [[ $# -ge 2 ]] || fail "--channel requires alpha, beta, or rc"
@@ -261,6 +265,7 @@ if "$DRY_RUN"; then
         "Target version: $NEXT_VERSION" \
         "Tag: $TAG" \
         "Push after tagging: $PUSH" \
+        "Skip checks: $SKIP_CHECKS" \
         "No files were changed."
     exit 0
 fi
@@ -281,7 +286,7 @@ cleanup() {
         if [[ -s "$LOCKFILE_BACKUP" ]]; then
             cp "$LOCKFILE_BACKUP" "$LOCKFILE"
         fi
-        printf 'Restored Cargo.toml and Cargo.lock after the failed release check.\n' >&2
+        printf 'Restored Cargo.toml and Cargo.lock after the failed release process.\n' >&2
     fi
     rm -f "$MANIFEST_BACKUP" "$LOCKFILE_BACKUP"
 }
@@ -290,12 +295,18 @@ trap cleanup EXIT
 replace_manifest_version "$NEXT_VERSION"
 VERSION_CHANGED=true
 
-# Refresh the root-package entry in Cargo.lock before enforcing --locked.
-run cargo check -p flursys --all-targets --features gui
-run cargo fmt -p flursys -- --check
-run cargo test -p flursys --all-targets --features gui --locked
-run cargo clippy -p flursys --no-deps --all-targets --features gui --locked -- -D warnings
-run cargo build --release --features gui --locked --bin flursys --bin flursys-gui
+if "$SKIP_CHECKS"; then
+    # Refresh workspace package versions in Cargo.lock without compiling or running tests.
+    # --workspace preserves existing third-party dependency versions where possible.
+    run cargo update --workspace
+else
+    # Refresh the root-package entry in Cargo.lock before enforcing --locked.
+    run cargo check -p flursys --all-targets --features gui
+    run cargo fmt -p flursys -- --check
+    run cargo test -p flursys --all-targets --features gui --locked
+    run cargo clippy -p flursys --no-deps --all-targets --features gui --locked -- -D warnings
+    run cargo build --release --features gui --locked --bin flursys --bin flursys-gui
+fi
 
 FILES_TO_COMMIT=(Cargo.toml)
 [[ -f "$LOCKFILE" ]] && FILES_TO_COMMIT+=(Cargo.lock)
