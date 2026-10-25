@@ -45,14 +45,14 @@ jobs:
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install --yes libfontconfig1-dev
       - name: Build CLI and desktop workbench
-        run: cargo build -p flursys --locked --release --bin flursys --bin flursys-gui --bin flursys-compressible --features gui
+        run: cargo build -p flursys --locked --release --bin flursys --bin flursys-gui --features gui
       - name: Package Unix binaries
         if: matrix.archive == 'tar.gz'
         run: |
           mkdir -p dist
           stage="${RUNNER_TEMP}/flursys-package"
           mkdir -p "$stage"
-          cp target/release/flursys target/release/flursys-gui target/release/flursys-compressible "$stage/"
+          cp target/release/flursys target/release/flursys-gui "$stage/"
           if [ "${{ runner.os }}" = "Linux" ]; then
             mkdir -p "$stage/share/applications" "$stage/share/icons/hicolor/512x512/apps" "$stage/share/icons/hicolor/scalable/apps"
             cp packaging/linux/flursys.desktop "$stage/share/applications/"

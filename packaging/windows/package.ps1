@@ -41,7 +41,7 @@ try {
     $fileVersion = "$($coreVersion.Major).$($coreVersion.Minor).$($coreVersion.Build).0"
     $label = "v$version"
     if ($env:GITHUB_REF_TYPE -ne 'tag' -and $env:GITHUB_SHA) { $label += '-' + $env:GITHUB_SHA.Substring(0, 8) }
-    foreach ($name in 'flursys.exe', 'flursys-gui.exe', 'flursys-compressible.exe') {
+    foreach ($name in 'flursys.exe', 'flursys-gui.exe') {
         if (-not (Test-Path (Join-Path $BuildDirectory $name))) { throw "Missing built executable: $name" }
     }
     $spec = Get-Content (Join-Path $PSScriptRoot 'gmsh.json') -Raw | ConvertFrom-Json
@@ -54,7 +54,7 @@ try {
     $work = Join-Path $temporaryRoot ('flursys-package-' + [Guid]::NewGuid().ToString('N'))
     $stage = Join-Path $work 'FLURSYS'
     New-Item -ItemType Directory -Force $stage | Out-Null
-    foreach ($name in 'flursys.exe', 'flursys-gui.exe', 'flursys-compressible.exe') { Copy-Item (Join-Path $BuildDirectory $name) $stage }
+    foreach ($name in 'flursys.exe', 'flursys-gui.exe') { Copy-Item (Join-Path $BuildDirectory $name) $stage }
     foreach ($name in 'LICENSE', 'LICENSE-APACHE', 'THIRD_PARTY_NOTICES.txt') { Copy-Item (Join-Path $Repository $name) $stage }
     Copy-Item (Join-Path $PSScriptRoot 'BUNDLED-TOOLS.txt') $stage
     $licenses = Join-Path $stage 'licenses/solidcraft'

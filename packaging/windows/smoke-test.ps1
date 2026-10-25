@@ -9,7 +9,7 @@ $previousPath = $env:PATH
 try {
     $setup = Start-Process -FilePath $Installer -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/DIR=`"$installed`"") -Wait -PassThru
     if ($setup.ExitCode -ne 0) { throw "Installer failed: $($setup.ExitCode)" }
-    foreach ($name in 'flursys.exe', 'flursys-gui.exe', 'flursys-compressible.exe', 'gmsh/gmsh.exe') {
+    foreach ($name in 'flursys.exe', 'flursys-gui.exe', 'gmsh/gmsh.exe') {
         if (-not (Test-Path (Join-Path $installed $name))) { throw "Installed file missing: $name" }
     }
     & (Join-Path $installed 'flursys.exe') --version

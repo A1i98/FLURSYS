@@ -1,4 +1,4 @@
-//! Explicit experimental compressible workflow; separate from SIMPLE GUI jobs.
+//! Compressible solver command for the FLURSYS headless CLI.
 use flursys::compressible::{self, Settings};
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
@@ -8,16 +8,9 @@ struct Input {
     #[serde(default)]
     settings: Settings,
 }
-fn main() {
-    if let Err(e) = run() {
-        eprintln!("Compressible solve failed: {e}");
-        std::process::exit(1);
-    }
-}
-fn run() -> Result<(), String> {
-    let args = std::env::args().skip(1).collect::<Vec<_>>();
-    if args.is_empty() || args[0] == "--help" {
-        println!("Usage: flursys-compressible CASE.json|WORKSPACE_DIRECTORY OUTPUT_DIRECTORY\nExperimental ideal-gas Euler / laminar Navier–Stokes; Gmsh mesh input, SI units.\nSupports conformal translational cyclic_pairs in settings; not coupled to GUI SIMPLE or RANS. Produces solution.vtu and report.json.");
+pub fn run(args: &[String]) -> Result<(), String> {
+    if args.is_empty() || args[0] == "--help" || args[0] == "-h" {
+        println!("Usage: flursys compressible CASE.json|WORKSPACE_DIRECTORY OUTPUT_DIRECTORY\nExperimental ideal-gas Euler / laminar Navier–Stokes; Gmsh mesh input, SI units.\nSupports conformal translational cyclic_pairs in settings. Produces solution.vtu and report.json.");
         return Ok(());
     }
     if args.len() != 2 {
