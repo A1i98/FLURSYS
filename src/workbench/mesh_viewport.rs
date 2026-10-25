@@ -158,9 +158,66 @@ pub struct MeshRenderCache {
     face_patch_indices: Vec<Option<usize>>,
     quality: MeshQualityValues,
     bounds: (Vec3, Vec3),
+    quality_summaries: [std::sync::OnceLock<QualitySummary>; 5],
+}
+
+#[derive(Clone, Debug)]
+pub struct QualitySummary {
+    pub count: usize,
+    pub low: f64,
+    pub high: f64,
+    pub mean: f64,
+    pub median: f64,
+    pub percentile95: f64,
+    pub bins: [usize; 12],
+    pub above70: usize,
+    pub largest: Vec<(usize, f64)>,
 }
 
 impl MeshRenderCache {
+    pub fn quality_summary(&self, metric: MeshQualityMetric) -> Option<&QualitySummary> {
+        let summary = self.quality_summaries[metric as usize].get_or_init(|| {
+            let values = self.quality.values(metric);
+            let mut sorted: Vec<_> = values.iter().copied().filter(|v| v.is_finite()).collect();
+            sorted.sort_unstable_by(f64::total_cmp);
+            let count = sorted.len();
+            let low = sorted.first().copied().unwrap_or(f64::NAN);
+            let high = sorted.last().copied().unwrap_or(f64::NAN);
+            let mut bins = [0; 12];
+            for v in &sorted {
+                let bin = (((v - low) / (high - low).max(1e-30) * 12.).floor() as usize).min(11);
+                bins[bin] += 1;
+            }
+            let mut largest: Vec<_> = values
+                .iter()
+                .copied()
+                .enumerate()
+                .filter(|(_, v)| v.is_finite())
+                .collect();
+            let retained = largest.len().min(15);
+            if retained < largest.len() {
+                largest.select_nth_unstable_by(retained, |a, b| b.1.total_cmp(&a.1));
+                largest.truncate(retained);
+            }
+            largest.sort_unstable_by(|a, b| b.1.total_cmp(&a.1));
+            QualitySummary {
+                count,
+                low,
+                high,
+                mean: sorted.iter().sum::<f64>() / count.max(1) as f64,
+                median: sorted.get(count / 2).copied().unwrap_or(f64::NAN),
+                percentile95: sorted
+                    .get(count.saturating_sub(1) * 95 / 100)
+                    .copied()
+                    .unwrap_or(f64::NAN),
+                bins,
+                above70: values.iter().filter(|v| **v > 70.).count(),
+                largest,
+            }
+        });
+        (summary.count > 0).then_some(summary)
+    }
+
     pub fn build(mesh: &UnstructuredMesh) -> Result<Self, String> {
         let positions: Vec<Vec3> = mesh.points().iter().map(|point| point.position).collect();
         if positions.is_empty() || positions.iter().any(|point| !finite(*point)) {
@@ -275,6 +332,7 @@ impl MeshRenderCache {
             cell_polygons,
             face_patch_indices,
             quality: calculate_quality(mesh),
+            quality_summaries: std::array::from_fn(|_| std::sync::OnceLock::new()),
             bounds,
         })
     }

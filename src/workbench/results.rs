@@ -298,7 +298,7 @@ impl ResultDataset {
 pub struct ResultRenderCache {
     run_id: String,
     artifact_fingerprint: u64,
-    mesh_cache: MeshRenderCache,
+    mesh_cache: std::sync::Arc<MeshRenderCache>,
     pressure: Vec<f64>,
     velocity: Vec<Vec3>,
     velocity_magnitude: Vec<f64>,
@@ -311,6 +311,7 @@ pub struct ResultRenderCache {
     turbulence: Option<[Vec<f64>; 3]>,
     temperature: Option<Vec<f64>>,
     face_owners: Vec<usize>,
+    surface_nodes: [std::sync::OnceLock<Vec<f64>>; 14],
 }
 
 impl ResultRenderCache {
@@ -318,6 +319,18 @@ impl ResultRenderCache {
         let mesh_cache = MeshRenderCache::build(dataset.mesh()).map_err(|error| {
             ResultDataError::Invalid(format!("cannot build result render cache: {error}"))
         })?;
+        Self::build_with_mesh_cache(dataset, std::sync::Arc::new(mesh_cache))
+    }
+
+    pub fn build_with_mesh_cache(
+        dataset: &ResultDataset,
+        mesh_cache: std::sync::Arc<MeshRenderCache>,
+    ) -> Result<Self, ResultDataError> {
+        if mesh_cache.mesh_id() != dataset.mesh().id() {
+            return Err(ResultDataError::Invalid(
+                "Result display cache belongs to another mesh".into(),
+            ));
+        }
         Ok(Self {
             run_id: dataset.run_id.clone(),
             artifact_fingerprint: result_artifact_fingerprint(dataset),
@@ -334,6 +347,7 @@ impl ResultRenderCache {
             turbulence: dataset.turbulence.clone(),
             temperature: dataset.temperature.clone(),
             face_owners: dataset.mesh.faces().iter().map(|face| face.owner).collect(),
+            surface_nodes: std::array::from_fn(|_| std::sync::OnceLock::new()),
         })
     }
 
@@ -352,8 +366,40 @@ impl ResultRenderCache {
         &self.mesh_cache
     }
 
+    pub fn shared_mesh_cache(&self) -> std::sync::Arc<MeshRenderCache> {
+        self.mesh_cache.clone()
+    }
+
     pub fn cell_count(&self) -> usize {
         self.pressure.len()
+    }
+
+    pub fn surface_node_values(&self, field: ResultFieldKind) -> &[f64] {
+        self.surface_nodes[field as usize].get_or_init(|| {
+            let mut values = vec![0.; self.mesh_cache.positions().len()];
+            let mut counts = vec![0usize; values.len()];
+            for (triangle, &face) in self
+                .mesh_cache
+                .surface_triangles()
+                .iter()
+                .zip(self.mesh_cache.triangle_faces())
+            {
+                if let Some(value) = self.scalar_for_face(field, face).filter(|v| v.is_finite()) {
+                    for &node in triangle {
+                        values[node] += value;
+                        counts[node] += 1;
+                    }
+                }
+            }
+            for (value, count) in values.iter_mut().zip(counts) {
+                *value = if count == 0 {
+                    f64::NAN
+                } else {
+                    *value / count as f64
+                };
+            }
+            values
+        })
     }
 
     pub fn scalar_for_cell(&self, field: ResultFieldKind, cell: usize) -> Option<f64> {
