@@ -413,6 +413,10 @@ pub struct WorkbenchSolverSettings {
     #[serde(default)]
     pub cyclic_pairs: Vec<crate::periodic::TranslationalCyclicPair>,
     #[serde(default)]
+    pub initial_profile: Option<super::initialization::InitialProfile>,
+    #[serde(default)]
+    pub compressible: Option<crate::compressible::Settings>,
+    #[serde(default)]
     pub equations: Option<crate::equations::EquationSolvers>,
     #[serde(default)]
     pub boundary_profiles: crate::unstructured_incompressible::BoundaryProfiles,
@@ -448,6 +452,8 @@ impl Default for WorkbenchSolverSettings {
             pressure_coupling: Default::default(),
             volume_models: Default::default(),
             cyclic_pairs: Vec::new(),
+            initial_profile: None,
+            compressible: None,
             boundary_profiles: Default::default(),
             scripting: Default::default(),
             thermal: crate::thermal::Options::default(),
@@ -613,6 +619,9 @@ impl WorkbenchProject {
             return Err(ProjectDocumentError::Invalid(
                 "project ID and name must be non-empty".into(),
             ));
+        }
+        if let Some(profile) = &self.solver.initial_profile {
+            profile.validate().map_err(ProjectDocumentError::Invalid)?;
         }
         self.geometry
             .validate()

@@ -163,6 +163,13 @@ fn evaluate(
     })
 }
 pub fn solve(mesh: &UnstructuredMesh, s: &Settings) -> Result<Solution, String> {
+    solve_controlled(mesh, s, |_, _| Ok(()))
+}
+pub fn solve_controlled(
+    mesh: &UnstructuredMesh,
+    s: &Settings,
+    mut control: impl FnMut(usize, f64) -> Result<(), String>,
+) -> Result<Solution, String> {
     let (bc, cyclic) = s.validate(mesh)?;
     let mut q = Vec::with_capacity(mesh.cell_count());
     for c in mesh.cells() {
@@ -188,6 +195,7 @@ pub fn solve(mesh: &UnstructuredMesh, s: &Settings) -> Result<Solution, String> 
     let mut last_dt = 0.0;
     let mut boundary = Conservative([0.0; 5]);
     while time < s.end_time && steps < s.max_steps {
+        control(steps, time)?;
         let first = evaluate(mesh, &q, &bc, &cyclic, s)?;
         let remaining = s.end_time - time;
         let mut dt = first.dt.min(remaining);

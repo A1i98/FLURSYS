@@ -114,6 +114,8 @@ pub struct WorkbenchSession {
     catalog_material: Option<crate::materials::MaterialSnapshot>,
     catalog_history: Vec<serde_json::Value>,
     scalar_transport: Option<crate::multiphysics::Options>,
+    initial_profile: Option<super::initialization::InitialProfile>,
+    compressible: Option<crate::compressible::Settings>,
     solver: IncompressibleSolverOptions,
     solution: Option<IncompressibleSolution>,
     performance: Option<crate::compute::PerformanceReport>,
@@ -150,6 +152,8 @@ impl WorkbenchSession {
             catalog_material: None,
             catalog_history: Vec::new(),
             scalar_transport: None,
+            initial_profile: None,
+            compressible: None,
             material: IncompressibleMaterial {
                 density: 1.0,
                 kinematic_viscosity: 0.01,
@@ -174,6 +178,8 @@ impl WorkbenchSession {
             })?;
         let mut session = Self::new();
         session.geometry = project.geometry.clone();
+        session.initial_profile = project.solver.initial_profile.clone();
+        session.compressible = project.solver.compressible.clone();
         session.fluid_face_selection = project.fluid_face;
         session.solver.equations = project.solver.equations.clone();
         session.solver.pressure_coupling = project.solver.pressure_coupling;
@@ -265,6 +271,8 @@ impl WorkbenchSession {
         project.material.catalog = self.catalog_material.clone();
         project.catalog_history = self.catalog_history.clone();
         project.scalar_transport = self.scalar_transport.clone();
+        project.solver.initial_profile = self.initial_profile.clone();
+        project.solver.compressible = self.compressible.clone();
         project.solver.equations = self.solver.equations.clone();
         project.solver.pressure_coupling = self.solver.pressure_coupling;
         project.solver.volume_models = self.solver.volume_models;
@@ -1888,6 +1896,13 @@ impl WorkbenchSession {
     /// Builds an owned case for a worker thread. Fails fast with structured
     /// errors when the run rules are not satisfied.
     pub fn prepare_case(&self) -> Result<IncompressibleCase, WorkbenchError> {
+        if self.compressible.is_some() {
+            return Err(WorkbenchError::InvalidGrouping {
+                message:
+                    "This project uses the compressible solver; select its dedicated execution path"
+                        .into(),
+            });
+        }
         if let Err(reason) = self.readiness() {
             return Err(WorkbenchError::InvalidGrouping { message: reason });
         }
@@ -1908,12 +1923,17 @@ impl WorkbenchSession {
                     .map(|condition| (patch.name.clone(), *condition))
             })
             .collect();
-        let case = IncompressibleCase::steady(
+        let mut case = IncompressibleCase::steady(
             generated.mesh.clone(),
             boundaries,
             self.material,
             self.solver.clone(),
         );
+        if let Some(profile) = &self.initial_profile {
+            case.initial_conditions = profile
+                .fields(&case.mesh)
+                .map_err(|message| WorkbenchError::InvalidGrouping { message })?;
+        }
         case.solver
             .volume_models
             .validate_case(&case)

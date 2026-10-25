@@ -11,6 +11,7 @@ pub mod engineering;
 pub mod examples;
 pub mod field_mapping;
 pub mod force_analysis;
+pub mod initialization;
 pub mod mesh_report;
 pub mod mesh_storage;
 pub mod mesh_viewport;

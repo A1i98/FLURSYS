@@ -4,13 +4,14 @@
 use crate::{UnstructuredMesh, Vec3};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+pub mod benchmarks;
 mod flux;
 mod output;
 mod time;
 mod viscous;
 pub use output::write_vtu;
-pub use time::{solve, Report, Solution};
-#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub use time::{solve, solve_controlled, Report, Solution};
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct IdealGas {
     pub gamma: f64,
@@ -49,7 +50,7 @@ impl IdealGas {
         (self.gamma * p.pressure / p.density).sqrt()
     }
 }
-#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq)]
 pub struct Primitive {
     pub density: f64,
     pub velocity: Vec3,
@@ -117,7 +118,7 @@ impl Conservative {
         Self(self.0.map(|v| v * a))
     }
 }
-#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "kebab-case")]
 pub enum FluxScheme {
     Rusanov,
@@ -125,7 +126,7 @@ pub enum FluxScheme {
     #[default]
     CentralUpwind,
 }
-#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "kebab-case")]
 pub enum Boundary {
     SlipWall,
@@ -179,7 +180,7 @@ impl Boundary {
         })
     }
 }
-#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "kebab-case")]
 pub enum Viscosity {
     #[default]
@@ -235,13 +236,13 @@ impl Viscosity {
         Ok((mu, conductivity))
     }
 }
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct InitialRegion {
     pub minimum: Vec3,
     pub maximum: Vec3,
     pub state: Primitive,
 }
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct Settings {
     pub gas: IdealGas,
@@ -280,7 +281,7 @@ impl Default for Settings {
     }
 }
 impl Settings {
-    fn validate(
+    pub fn validate(
         &self,
         mesh: &UnstructuredMesh,
     ) -> Result<(Vec<Option<Boundary>>, crate::periodic::CyclicMap), String> {
