@@ -2,12 +2,12 @@
   "sources": [
     {
       "id": "demo:tutorial-air",
-      "citation": "Existing FLURSYS/OpenFOAM tutorial gas model sampled in T; not measured air data",
-      "url": "https://github.com/OpenFOAM/OpenFOAM-dev/blob/421b7a1693061ead99502f0e607122e0e57c0513/tutorials/fluid/blockedChannel/constant/physicalProperties",
+      "citation": "Illustrative constant-property gas model sampled in temperature",
+      "url": null,
       "revision": "example-1",
       "license": null,
       "uncertainty": "Not characterized; illustrative input",
-      "note": "R=8314.46261815324/28.9; mu=1.8e-5; Cp=1005; Pr=0.7. Only p=101325 Pa. Linear table interpolation approximates this tutorial model."
+      "note": "R=8314.46261815324/28.9; mu=1.8e-5; Cp=1005; Pr=0.7. Only p=101325 Pa. Linear table interpolation approximates this idealized model."
     },
     {
       "id": "demo:prescribed",
@@ -16,7 +16,7 @@
       "revision": "example-1",
       "license": null,
       "uncertainty": "Not characterized; illustrative input",
-      "note": "Contact resistance 1e-4 m2 K/W, emissivity 0.8, contact angle pi/2 are example inputs only. Solid rho/Cp/k repeat the OpenFOAM tutorial heater constants 8000/450/80. Replace with appropriate engineering data."
+      "note": "Illustrative inputs: contact resistance 1e-4 m2 K/W, emissivity 0.8, contact angle pi/2; solid rho=8000 kg/m3, Cp=450 J/(kg K), k=80 W/(m K)."
     },
     {
       "id": "demo:analytic",
@@ -31,7 +31,7 @@
   "materials": [
     {
       "id": "demo:air-table",
-      "name": "Air table \u00b7 tutorial-derived example",
+      "name": "Air table · illustrative example",
       "phase": "gas",
       "composition": "Tutorial molar mass 28.9 kg/kmol; not a certified air composition",
       "source_id": "demo:tutorial-air",
@@ -39,7 +39,7 @@
     },
     {
       "id": "demo:solid",
-      "name": "Solid \u00b7 illustrative heater constants",
+      "name": "Solid · illustrative heater constants",
       "phase": "solid",
       "composition": "Unspecified tutorial solid",
       "source_id": "demo:prescribed",

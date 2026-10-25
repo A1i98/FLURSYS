@@ -73,8 +73,6 @@ pub fn evaluate(id: &str, t: f64, p: f64) -> Result<MaterialSnapshot, String> {
         .and_then(|db| db.evaluate(id, t, p))
         .map_err(|e| e.to_string())
 }
-const ROOT: &str =
-    "https://github.com/OpenFOAM/OpenFOAM-dev/blob/421b7a1693061ead99502f0e607122e0e57c0513/";
 fn polynomial(t: f64, c: [f64; 6]) -> f64 {
     c.into_iter().rev().fold(0.0, |v, a| v * t + a)
 }
@@ -105,16 +103,16 @@ pub(crate) fn evaluate_builtin(id: &str, t: f64, p: f64) -> Result<MaterialSnaps
             let rho = p / ((8314.46261815324 / 28.9) * t);
             let mu = 1.8e-5;
             let cp = 1005.0;
-            (NAMES[0],PhaseState::Gas,rho,mu,cp,mu*cp/0.7,1.0/t,None,"tutorials/fluid/blockedChannel/constant/physicalProperties","Idealized tutorial gas: molecular weight 28.9, cp 1005, constant mu 1.8e-5, Pr 0.7. Not a measured air database.")
+            (NAMES[0],PhaseState::Gas,rho,mu,cp,mu*cp/0.7,1.0/t,None,"Built-in ideal-gas model","Idealized gas: molecular weight 28.9, cp 1005, constant mu 1.8e-5, Pr 0.7. Not a measured air database.")
         }
         "water-nsrds" => {
             let (rho, beta) = density(t, [98.343885, 0.30542, 647.13, 0.081]);
             let tr = t / 647.13;
-            (NAMES[1],PhaseState::Liquid,rho,viscosity(t,[-51.964,3670.6,5.7331,-5.3495e-29,10.0]),polynomial(t,[15341.1046350264,-116.019983347211,0.451013044684985,-0.000783569247849015,5.20127671384957e-7,0.0]),polynomial(t,[-0.4267,0.0056903,-8.0065e-6,1.815e-9,0.0,0.0]),beta,Some(0.18548*(1.0-tr).powf(2.717-3.554*tr+2.047*tr*tr)),"src/thermophysicalModels/thermophysicalProperties/liquidProperties/H2O/H2O.C","NSRDS liquid fit; pressure dependence neglected. Not IAPWS. Surface tension is liquid/vapour, not an arbitrary fluid-pair coefficient.")
+            (NAMES[1],PhaseState::Liquid,rho,viscosity(t,[-51.964,3670.6,5.7331,-5.3495e-29,10.0]),polynomial(t,[15341.1046350264,-116.019983347211,0.451013044684985,-0.000783569247849015,5.20127671384957e-7,0.0]),polynomial(t,[-0.4267,0.0056903,-8.0065e-6,1.815e-9,0.0,0.0]),beta,Some(0.18548*(1.0-tr).powf(2.717-3.554*tr+2.047*tr*tr)),"Built-in liquid-property correlation","NSRDS liquid fit; pressure dependence neglected. Not IAPWS. Surface tension is liquid/vapour, not an arbitrary fluid-pair coefficient.")
         }
         "ethanol-nsrds" => {
             let (rho, beta) = density(t, [70.1308387, 0.26395, 516.25, 0.2367]);
-            (NAMES[2],PhaseState::Liquid,rho,viscosity(t,[8.049,776.0,-3.068,0.0,0.0]),polynomial(t,[2052.57331394213,-0.121990926653498,-0.00714146172046278,5.20523562482363e-5,0.0,0.0]),0.253-0.000281*t,beta,Some(polynomial(t,[0.037640,-2.157e-5,-1.025e-7,0.0,0.0,0.0])),"src/thermophysicalModels/thermophysicalProperties/liquidProperties/C2H5OH/C2H5OH.C","NSRDS liquid fit; pressure dependence neglected. Liquid/vapour surface tension is not automatically a two-fluid interfacial coefficient.")
+            (NAMES[2],PhaseState::Liquid,rho,viscosity(t,[8.049,776.0,-3.068,0.0,0.0]),polynomial(t,[2052.57331394213,-0.121990926653498,-0.00714146172046278,5.20523562482363e-5,0.0,0.0]),0.253-0.000281*t,beta,Some(polynomial(t,[0.037640,-2.157e-5,-1.025e-7,0.0,0.0,0.0])),"Built-in liquid-property correlation","NSRDS liquid fit; pressure dependence neglected. Not IAPWS. Liquid/vapour surface tension is not automatically a two-fluid interfacial coefficient.")
         }
         _ => return Err(format!("Unknown material catalog ID {id:?}")),
     };
@@ -130,7 +128,7 @@ pub(crate) fn evaluate_builtin(id: &str, t: f64, p: f64) -> Result<MaterialSnaps
         conductivity: k,
         expansion: beta,
         liquid_vapour_surface_tension: sigma,
-        source: format!("{ROOT}{path}"),
+        source: path.into(),
         note: note.into(),
     };
     data.validate()?;

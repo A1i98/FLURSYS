@@ -163,8 +163,8 @@ impl Database {
                 c.execute("INSERT INTO material_properties VALUES(?1,?2,?3,?4,'builtin',NULL,280,330,95000,105000,?5,'1')",params![format!("builtin:{id}:{}",quantity.key()),id,quantity.key(),quantity.unit(),source])?;
             }
         }
-        c.execute("INSERT INTO sources VALUES('builtin:cht-heater','OpenFOAM-v2606 multiRegionHeater heater thermophysicalProperties','OpenFOAM-v2606:tutorials/heatTransfer/chtMultiRegionFoam/multiRegionHeater/constant/heater/thermophysicalProperties','v2606',NULL,NULL,'Tutorial constant solid: rho=8000, Cp=450, k=80. Not identified as a certified steel grade; application evaluation restricted to 293.15 K, 101325 Pa.')",[])?;
-        c.execute("INSERT INTO materials VALUES('cht-heater-tutorial','Heater solid · OpenFOAM tutorial','solid','Unspecified tutorial solid','builtin:cht-heater','1',1)",[])?;
+        c.execute("INSERT INTO sources VALUES('builtin:cht-heater','Illustrative constant solid properties',NULL,'1',NULL,NULL,'rho=8000 kg/m3, Cp=450 J/(kg K), k=80 W/(m K). Not identified as a certified steel grade; application evaluation restricted to 293.15 K, 101325 Pa.')",[])?;
+        c.execute("INSERT INTO materials VALUES('cht-heater-tutorial','Heater solid · illustrative properties','solid','Unspecified tutorial solid','builtin:cht-heater','1',1)",[])?;
         for (quantity, value) in [
             (Quantity::Density, 8000.0),
             (Quantity::SpecificHeat, 450.0),
@@ -176,7 +176,7 @@ impl Database {
         c.execute("INSERT INTO sources VALUES('builtin:idealizations','Explicit mathematical idealizations',NULL,'1',NULL,NULL,'Perfect contact and black surface are ideal boundary models, not measured properties of the tutorial solid. Temperature window is an application numerical restriction, not material validation.')",[])?;
         c.execute("INSERT INTO thermal_contacts VALUES('ideal-perfect-contact','cht-heater-tutorial','cht-heater-tutorial',0,1,10000,'builtin:idealizations','1')",[])?;
         c.execute("INSERT INTO surface_radiation VALUES('ideal-black-surface','cht-heater-tutorial',1,1,10000,'builtin:idealizations','1')",[])?;
-        c.execute("INSERT INTO sources VALUES('builtin:dam-break','OpenFOAM-v2606 damBreak transportProperties','OpenFOAM-v2606:tutorials/multiphase/interFoam/laminar/damBreak/damBreak/constant/transportProperties','v2606',NULL,NULL,'Illustrative air/water sigma=0.07 N/m. Not a measured pair database; application evaluation restricted to 293.15 K. Current catalogue fluid correlations differ from the tutorial constant densities.')",[])?;
+        c.execute("INSERT INTO sources VALUES('builtin:dam-break','Illustrative air-water surface tension',NULL,'1',NULL,NULL,'sigma=0.07 N/m. Not a measured pair database; application evaluation restricted to 293.15 K.')",[])?;
         c.execute("INSERT INTO fluid_pairs VALUES('air-water-tutorial','air-tutorial','water-nsrds','builtin:dam-break','1')",[])?;
         c.execute("INSERT INTO fluid_pair_properties VALUES('builtin:air-water-sigma','air-water-tutorial','surface-tension','N/m',293.15,293.15,0.07,'builtin:dam-break','1')",[])?;
         c.execute("INSERT INTO sources VALUES('builtin:jet-profile','FLURSYS illustrative jet-temperature ramp',NULL,'1',NULL,NULL,'User-selectable example boundary input, not experimental data. Does not configure gravity, the inlet velocity or the reference temperature automatically.')",[])?;
