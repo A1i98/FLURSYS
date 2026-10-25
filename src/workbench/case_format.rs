@@ -1,6 +1,7 @@
 use super::project::{CaseTemplateManifest, MeshRecipe, WorkbenchMeshSettings, WorkbenchProject};
 use crate::{unstructured_incompressible::TimeIntegration, Vec3};
 use serde::{Deserialize, Serialize};
+use std::borrow::Cow;
 use std::path::{Component, Path, PathBuf};
 
 pub const CASE_FORMAT_VERSION: u32 = 2;
@@ -195,7 +196,15 @@ pub fn relative_asset(path: &Path) -> Result<(), String> {
 }
 fn digest(content: &str) -> String {
     use sha2::{Digest, Sha256};
+    let content = normalized_line_endings(content);
     format!("{:x}", Sha256::digest(content.as_bytes()))
+}
+fn normalized_line_endings(content: &str) -> Cow<'_, str> {
+    if content.as_bytes().contains(&b'\r') {
+        Cow::Owned(content.replace("\r\n", "\n").replace('\r', "\n"))
+    } else {
+        Cow::Borrowed(content)
+    }
 }
 impl CaseMetadata {
     pub fn summary(&self) -> serde_json::Value {
@@ -321,6 +330,7 @@ pub fn hydrate(entry: &mut CaseTemplateManifest, root: &Path) -> Result<(), Stri
             }
             let content =
                 std::fs::read_to_string(&real).map_err(|e| format!("{}: {e}", real.display()))?;
+            let content = normalized_line_endings(&content).into_owned();
             if asset
                 .sha256
                 .as_ref()
