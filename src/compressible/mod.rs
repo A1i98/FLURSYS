@@ -1,6 +1,4 @@
-//! Experimental conservative ideal-gas finite-volume flow on a fixed mesh.
-//! Independent Rust implementation; SI units, absolute pressure and total energy.
-//! No coupling to the incompressible SIMPLE or turbulence path is implied.
+//! Conservative ideal-gas finite-volume flow.
 use crate::{UnstructuredMesh, Vec3};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;

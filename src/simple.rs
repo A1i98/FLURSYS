@@ -1,8 +1,4 @@
-//! Collocated unstructured SIMPLE pressure-velocity coupling.
-//!
-//! This module is intentionally separate from the Phase 6 momentum predictor.
-//! It will own Rhie--Chow flux interpolation, pressure correction, and the
-//! segregated SIMPLE outer iteration.
+//! Collocated SIMPLE pressure–velocity coupling.
 
 mod pressure;
 pub use pressure::{CouplingAlgorithm, PressureCoupling};
@@ -185,10 +181,7 @@ pub struct SimpleReport {
     pub equation_linear_reports: std::collections::BTreeMap<String, LinearSolveReport>,
 }
 
-/// Executes steady, constant-density SIMPLE outer iterations for the initial
-/// closed-wall baseline. Boundary fluxes already stored in `state.face_flux`
-/// are preserved by Rhie--Chow; nonzero open-flow boundary semantics are not
-/// part of this first API.
+/// Runs steady SIMPLE while preserving prescribed face fluxes.
 pub fn solve_simple(
     mesh: &UnstructuredMesh,
     state: &mut SimpleState,
