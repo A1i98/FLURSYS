@@ -9,7 +9,11 @@ fn invalid(message: impl Into<String>) -> WorkbenchError {
     }
 }
 fn signed(tag: usize, reversed: bool) -> i64 {
-    if reversed { -(tag as i64) } else { tag as i64 }
+    if reversed {
+        -(tag as i64)
+    } else {
+        tag as i64
+    }
 }
 impl WorkbenchSession {
     fn loop_data(

@@ -332,7 +332,6 @@ impl WorkbenchSession {
         Ok(session)
     }
 
-
     pub fn geometry(&self) -> &GeometryTopology {
         &self.geometry
     }
@@ -561,7 +560,6 @@ impl WorkbenchSession {
         self.geometry_changed();
         Ok(())
     }
-
 
     pub fn named_selections(&self) -> &NamedSelectionStore {
         &self.named_selections
@@ -1078,7 +1076,6 @@ impl WorkbenchSession {
         }
     }
 
-
     pub fn mesher(&self) -> &GmshMesher {
         &self.mesher
     }
@@ -1239,7 +1236,6 @@ impl WorkbenchSession {
                 .is_some()
         });
     }
-
 
     pub fn patch_names(&self) -> Vec<String> {
         self.mesh
@@ -1925,7 +1921,6 @@ impl WorkbenchSession {
             .map_err(|message| WorkbenchError::InvalidGrouping { message })?;
         Ok(case)
     }
-
 
     /// Clear the current solution while retaining geometry, mesh and boundary setup.
     pub fn initialize_solution(&mut self) {

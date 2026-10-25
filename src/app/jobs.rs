@@ -74,7 +74,13 @@ pub enum WorkbenchJobEvent {
     Health(crate::workbench::solve_review::SolveHealth),
     Performance(crate::compute::PerformanceReport),
     Engineering(crate::workbench::engineering::Sample),
-    TimeStep { index: usize, time: f64, dt: Option<f64>, courant: Option<f64>, rejected: usize },
+    TimeStep {
+        index: usize,
+        time: f64,
+        dt: Option<f64>,
+        courant: Option<f64>,
+        rejected: usize,
+    },
     WallReports {
         iteration: usize,
         physical_time: Option<f64>,
@@ -140,7 +146,9 @@ impl WorkbenchJobExecutor {
     pub fn completed_iterations(&self) -> usize {
         self.completed.load(Ordering::Acquire)
     }
-    pub fn set_engineering_interval(&mut self, every: usize) { self.engineering_every=every.clamp(1,1_000_000); }
+    pub fn set_engineering_interval(&mut self, every: usize) {
+        self.engineering_every = every.clamp(1, 1_000_000);
+    }
     pub fn set_checkpoint_interval(&mut self, every: usize) {
         self.checkpoint_every = every.min(1_000_000);
     }
@@ -251,7 +259,7 @@ impl WorkbenchJobExecutor {
         let offset = self.completed_iterations();
         let completed_counter = self.completed.clone();
         let physical = case.solver.time.is_transient();
-        let engineering_every=self.engineering_every;
+        let engineering_every = self.engineering_every;
         let checkpoint_every = if folder.as_os_str().is_empty() {
             0
         } else {

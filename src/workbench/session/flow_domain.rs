@@ -395,18 +395,16 @@ mod tests {
             value
         };
         let before = snapshot(&s);
-        assert!(
-            s.set_boundary_group("overlap", vec![edge(r.top)], false)
-                .is_err()
-        );
-        assert!(
-            s.set_boundary_group(
+        assert!(s
+            .set_boundary_group("overlap", vec![edge(r.top)], false)
+            .is_err());
+        assert!(s
+            .set_boundary_group(
                 "wrong-kind",
                 vec![GeometrySelectionTarget::Face(r.face)],
                 false
             )
-            .is_err()
-        );
+            .is_err());
         assert!(s.set_boundary_group("top", vec![], true).is_err());
         assert_eq!(before, snapshot(&s));
         s.set_boundary_group(
@@ -430,10 +428,9 @@ mod tests {
         let restored = WorkbenchSession::from_project(&project).unwrap();
         assert_eq!(restored.patch_names(), s.patch_names());
         assert!(restored.boundary_assignment("fixed").is_none());
-        assert!(
-            s.set_boundary_group("fixed", vec![edge(r.top)], true)
-                .is_err()
-        );
+        assert!(s
+            .set_boundary_group("fixed", vec![edge(r.top)], true)
+            .is_err());
         s.set_boundary_group("fixed", vec![edge(r.left), edge(r.bottom)], true)
             .unwrap();
         assert!(s.mesh_generation_inputs().is_err());
@@ -447,11 +444,9 @@ mod tests {
             .unwrap();
         let faces = s.boundary_geometry_targets().unwrap();
         assert_eq!(faces.len(), 6);
-        assert!(
-            faces
-                .iter()
-                .all(|t| matches!(t, GeometrySelectionTarget::Face(_)))
-        );
+        assert!(faces
+            .iter()
+            .all(|t| matches!(t, GeometrySelectionTarget::Face(_))));
         s.set_boundary_group("external_surfaces", faces, false)
             .unwrap();
         assert!(s.mesh_generation_inputs().is_ok());
@@ -545,22 +540,20 @@ mod tests {
     #[test]
     fn missing_and_overlapping_boundary_groups_fail_before_meshing() {
         let mut s = drawn_channel();
-        assert!(
-            s.mesh_generation_inputs()
-                .unwrap_err()
-                .to_string()
-                .contains("Missing edges")
-        );
+        assert!(s
+            .mesh_generation_inputs()
+            .unwrap_err()
+            .to_string()
+            .contains("Missing edges"));
         s.prepare_channel_boundaries(s.fluid_face().unwrap())
             .unwrap();
         let edges = s.named_selections.get("obstacle").unwrap().targets.clone();
         s.create_named_selection("duplicate", edges).unwrap();
-        assert!(
-            s.mesh_generation_inputs()
-                .unwrap_err()
-                .to_string()
-                .contains("must not overlap")
-        );
+        assert!(s
+            .mesh_generation_inputs()
+            .unwrap_err()
+            .to_string()
+            .contains("must not overlap"));
     }
 
     #[test]
@@ -574,22 +567,19 @@ mod tests {
             (Vec3::new(0.5, 0.5, 0.0), 0.01),
             (Vec3::new(3.0, 0.5, 0.0), 0.1),
         ] {
-            assert!(
-                s.geometry_mut()
-                    .add_circle_hole(face, center, radius)
-                    .is_err()
-            );
+            assert!(s
+                .geometry_mut()
+                .add_circle_hole(face, center, radius)
+                .is_err());
             assert_eq!(serde_json::to_value(s.geometry()).unwrap(), before);
         }
         let mut solid = GeometryTopology::new();
         let rectangle = solid.add_rectangle(2.0, 1.0).unwrap();
         solid.extrude_planar_face(rectangle.face, 0.2).unwrap();
         let before = serde_json::to_value(&solid).unwrap();
-        assert!(
-            solid
-                .add_circle_hole(rectangle.face, Vec3::new(0.5, 0.5, 0.0), 0.1)
-                .is_err()
-        );
+        assert!(solid
+            .add_circle_hole(rectangle.face, Vec3::new(0.5, 0.5, 0.0), 0.1)
+            .is_err());
         assert_eq!(serde_json::to_value(&solid).unwrap(), before);
     }
 
@@ -625,13 +615,11 @@ mod tests {
         let cells = generated.mesh.cell_count();
         let area: f64 = generated.mesh.cells().iter().map(|c| c.volume).sum();
         assert!((area - (2.0 - std::f64::consts::PI * 0.15_f64.powi(2))).abs() < 0.01);
-        assert!(
-            generated
-                .mesh
-                .cells()
-                .iter()
-                .all(|c| (c.center - Vec3::new(0.5, 0.5, 0.0)).norm() > 0.14)
-        );
+        assert!(generated
+            .mesh
+            .cells()
+            .iter()
+            .all(|c| (c.center - Vec3::new(0.5, 0.5, 0.0)).norm() > 0.14));
         s.install_mesh(generated);
         s.readiness().unwrap();
         let solution = crate::solve_incompressible(&s.prepare_case().unwrap()).unwrap();
