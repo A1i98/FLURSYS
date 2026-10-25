@@ -77,8 +77,7 @@ pub(super) fn velocity_derivatives(
         curl.push(rotation.norm());
         let trace = rhs[0][0] + rhs[1][1] + rhs[2][2];
         divergence.push(trace);
-        // Second invariant of the reconstructed velocity gradient, as defined
-        // by OpenFOAM Q. For divergence-free flow this is (|Omega|²-|S|²)/2.
+        // Q = 0.5 * ((tr grad U)^2 - tr((grad U)^2)).
         let trace_square: f64 = (0..3)
             .flat_map(|r| (0..3).map(move |c| rhs[r][c] * rhs[c][r]))
             .sum();
@@ -98,7 +97,7 @@ pub(super) fn velocity_derivatives(
             }
         }
         strain_rate.push((2.0 * strain_squared).sqrt());
-        // OpenFOAM-dev flowType convention: +1 rotation, -1 strain, 0 shear.
+        // Flow type: rotation +1, strain -1, shear 0.
         flow_type.push(if dev_norm_squared > 1e-150 {
             (-dev_square_trace / dev_norm_squared).clamp(-1.0, 1.0)
         } else {

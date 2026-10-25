@@ -1,8 +1,4 @@
-//! Read-only, run-aware CFD post-processing data and strict FLURSYS VTK loading.
-//!
-//! Only the legacy ASCII unstructured-grid dialect emitted by
-//! `write_unstructured_legacy_vtk` is accepted. Result topology is owned by the
-//! dataset, so archived runs never borrow or depend on the current workbench mesh.
+//! Result fields, file loading and render caches.
 
 use super::MeshRenderCache;
 use crate::{CellDefinition, MeshDimension, Point, UnstructuredMesh, Vec3};
@@ -355,9 +351,7 @@ impl ResultRenderCache {
         &self.run_id
     }
 
-    /// Deterministic identity of the immutable archived result content used to
-    /// build this cache. It prevents a same-named revised artifact from being
-    /// treated as the prior cached result.
+    /// Content identity for invalidating revised result artifacts.
     pub const fn artifact_fingerprint(&self) -> u64 {
         self.artifact_fingerprint
     }

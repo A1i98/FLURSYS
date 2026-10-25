@@ -1,9 +1,4 @@
-//! Workbench session state: the presentation-layer controller that bridges the
-//! GUI with the stable geometry topology, the Gmsh meshing backend, and
-//! the high-level incompressible solver.
-//!
-//! The session owns validated domain state. The UI issues commands and renders
-//! what this module reports; it never stores duplicate geometry/mesh/BC state.
+//! Workbench geometry, meshing and solve state.
 
 use super::{
     BoundaryAssignment, GeometrySelectionTarget, MeshControlTarget, MeshRecipe, MeshRenderCache,
@@ -89,8 +84,7 @@ impl From<IncompressibleCaseError> for WorkbenchError {
     }
 }
 
-/// Single source of truth for the unstructured workbench pipeline:
-/// geometry → Named Selections → Gmsh mesh → boundary conditions → solution.
+/// Editable domain state and its generated mesh and solution.
 pub struct WorkbenchSession {
     geometry: GeometryTopology,
     fluid_face_selection: Option<FaceId>,
@@ -170,8 +164,7 @@ impl WorkbenchSession {
         }
     }
 
-    /// Reconstructs transient workbench state from a validated canonical
-    /// project document. Meshes, caches, and solver fields remain derived.
+    /// Loads editable state from a project document.
     pub fn from_project(project: &WorkbenchProject) -> Result<Self, WorkbenchError> {
         project
             .validate()
@@ -339,9 +332,6 @@ impl WorkbenchSession {
         Ok(session)
     }
 
-    // ---------------------------------------------------------------
-    // Geometry
-    // ---------------------------------------------------------------
 
     pub fn geometry(&self) -> &GeometryTopology {
         &self.geometry
@@ -572,9 +562,6 @@ impl WorkbenchSession {
         Ok(())
     }
 
-    // ---------------------------------------------------------------
-    // Named Selections
-    // ---------------------------------------------------------------
 
     pub fn named_selections(&self) -> &NamedSelectionStore {
         &self.named_selections
@@ -1091,9 +1078,6 @@ impl WorkbenchSession {
         }
     }
 
-    // ---------------------------------------------------------------
-    // Meshing
-    // ---------------------------------------------------------------
 
     pub fn mesher(&self) -> &GmshMesher {
         &self.mesher
@@ -1256,9 +1240,6 @@ impl WorkbenchSession {
         });
     }
 
-    // ---------------------------------------------------------------
-    // Boundaries / case
-    // ---------------------------------------------------------------
 
     pub fn patch_names(&self) -> Vec<String> {
         self.mesh
@@ -1945,9 +1926,6 @@ impl WorkbenchSession {
         Ok(case)
     }
 
-    // ---------------------------------------------------------------
-    // Solution lifecycle
-    // ---------------------------------------------------------------
 
     /// Clear the current solution while retaining geometry, mesh and boundary setup.
     pub fn initialize_solution(&mut self) {

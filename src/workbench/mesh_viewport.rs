@@ -1,7 +1,4 @@
-//! Disposable, mesh-bound inspection data for the workbench viewport.
-//!
-//! `UnstructuredMesh` remains authoritative. This module derives contiguous
-//! display buffers, mesh-bound selection, picking, and quality values only.
+//! Mesh display buffers, picking and quality metrics.
 
 use crate::{MeshDimension, MeshId, UnstructuredMesh, Vec3};
 

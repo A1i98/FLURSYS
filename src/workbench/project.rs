@@ -1,8 +1,4 @@
-//! Versioned, portable project-workspace documents for the unstructured workbench.
-//!
-//! `WorkbenchProject` intentionally contains user intent and persistent run
-//! metadata only. Meshes, VTK fields, renderer caches, and worker handles are
-//! project-local derived artifacts rather than JSON payloads.
+//! Workspace and case-file persistence.
 
 use super::{
     load_legacy_vtk_result, GeometrySelectionTarget, NamedSelection, ResultDataset, SolveStatus,
@@ -20,9 +16,7 @@ pub const WORKBENCH_PROJECT_FORMAT_VERSION: u32 = 2;
 pub const PROJECT_DOCUMENT_FILE: &str = "project.json";
 pub const RECENT_PROJECTS_FILE: &str = "recent-projects.json";
 
-/// Small application-owned index for workspace shortcuts. It contains only a
-/// canonical path, display name, and last-open timestamp; portable project
-/// intent remains exclusively in each workspace's `project.json`.
+/// Recently opened workspace paths.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct RecentProjects {
@@ -777,8 +771,7 @@ pub struct CaseTemplateManifest {
     pub project_template: WorkbenchProject,
 }
 
-/// Human-readable, data-driven validation hints for a reusable case template.
-/// These are not solver inputs and never affect execution.
+/// Comparison notes for an example case.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct TemplateExpectations {
@@ -1190,18 +1183,12 @@ pub fn save_case_template(
     Ok(destination)
 }
 
-/// Discovers templates below one root, retaining the original one-root API.
+/// Finds case templates in a directory.
 pub fn discover_templates(root: &Path) -> Vec<Result<CaseTemplateManifest, ProjectDocumentError>> {
     discover_templates_from_roots([root])
 }
 
-/// Discovers templates from built-in and user roots in the supplied order.
-///
-/// Existing roots are canonicalized before comparison so supplying the same
-/// root (including through a symlink) does not create duplicate results. A
-/// template ID is accepted only once across all roots; later copies are
-/// returned as duplicate-ID errors rather than silently replacing the earlier
-/// template.
+/// Finds templates across roots, reporting duplicate IDs.
 pub fn discover_templates_from_roots<I, P>(
     roots: I,
 ) -> Vec<Result<CaseTemplateManifest, ProjectDocumentError>>

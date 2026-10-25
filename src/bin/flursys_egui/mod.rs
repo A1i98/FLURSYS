@@ -1,4 +1,4 @@
-//! Native, model-driven egui workbench. CFD state stays in the shared core.
+//! Desktop CFD workbench.
 mod cad;
 mod case_library;
 mod compressible_flow;
