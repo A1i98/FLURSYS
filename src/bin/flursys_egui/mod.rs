@@ -121,6 +121,15 @@ struct App {
     boundary_kind: usize,
     boundary_velocity: Vec3,
     boundary_pressure: f64,
+    parametric_angle: f64,
+    parametric_start_angle: f64,
+    parametric_end_angle: f64,
+    parametric_angle_step: f64,
+    parametric_iterations: usize,
+    parametric_job: Option<Receiver<(usize, Result<String, String>)>>,
+    parametric_total: usize,
+    parametric_completed: usize,
+    parametric_failures: usize,
     inlet_axis: usize,
     inlet_center: f64,
     inlet_half_width: f64,
@@ -311,6 +320,15 @@ impl App {
             boundary_kind: 0,
             boundary_velocity: Vec3::ZERO,
             boundary_pressure: 0.,
+            parametric_angle: 4.,
+            parametric_start_angle: -2.,
+            parametric_end_angle: 12.,
+            parametric_angle_step: 2.,
+            parametric_iterations: 100,
+            parametric_job: None,
+            parametric_total: 0,
+            parametric_completed: 0,
+            parametric_failures: 0,
             inlet_axis: 1,
             inlet_center: 0.5,
             inlet_half_width: 0.5,
@@ -1282,6 +1300,7 @@ impl App {
 impl eframe::App for App {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.poll();
+        self.poll_angle_design_points();
         self.poll_field_frame(ctx);
         self.seed_case_probes();
         self.post_logic(ctx);

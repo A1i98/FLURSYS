@@ -126,10 +126,195 @@ pub(super) fn metadata_panel(
     });
 }
 impl App {
+    pub(super) fn create_angle_design_points(&mut self) -> Result<usize, String> {
+        if self.jobs.is_running() {
+            return Err("Stop the active solve before generating design points.".into());
+        }
+        self.apply_editor()?;
+        let root = self
+            .workspace
+            .as_ref()
+            .ok_or("Save the workspace before generating design points.")?
+            .join("design-points");
+        let start = self.parametric_start_angle;
+        let end = self.parametric_end_angle;
+        let step = self.parametric_angle_step;
+        if ![start, end, step].iter().all(|v| v.is_finite()) || step <= 0.0 || end < start {
+            return Err("Use finite angles, end ≥ start, and a positive angle step.".into());
+        }
+        let count = ((end - start) / step).floor() as usize + 1;
+        if count < 2 || count > 101 {
+            return Err("A sweep must contain 2–101 design points.".into());
+        }
+        let mesh = self
+            .session
+            .mesh()
+            .ok_or("Generate a mesh before creating design points.")?;
+        let angles = (0..count)
+            .map(|i| start + i as f64 * step)
+            .collect::<Vec<_>>();
+        for angle in &angles {
+            let folder = root.join(format!("alpha-{angle:+07.2}"));
+            if folder.exists() {
+                return Err(format!(
+                    "Design-point folder already exists: {}",
+                    folder.display()
+                ));
+            }
+        }
+        let mut created = 0;
+        for angle in angles {
+            let mut point = self.project.clone();
+            set_angle_of_attack(&mut point, angle)?;
+            point.runs.clear();
+            point.name = format!("{} · α={angle:.2}°", self.project.name);
+            point.project_id = format!("{}-alpha-{angle:+.2}", self.project.project_id)
+                .replace('+', "p")
+                .replace('-', "m")
+                .replace('.', "d");
+            let folder = root.join(format!("alpha-{angle:+07.2}"));
+            std::fs::create_dir_all(&folder).map_err(|e| e.to_string())?;
+            point.mesh_asset = Some(mesh_storage::save(&folder, &point, mesh)?);
+            workbench::save_workspace(&folder, &point).map_err(|e| e.to_string())?;
+            created += 1;
+        }
+        Ok(created)
+    }
+
+    pub(super) fn run_angle_design_points(&mut self, count: usize) -> Result<(), String> {
+        if self.parametric_job.is_some() {
+            return Err("A parametric run is already active.".into());
+        }
+        let workspace = self.workspace.clone().ok_or("Save the workspace first.")?;
+        let executable = std::env::current_exe().map_err(|e| e.to_string())?;
+        let cli_name = if cfg!(windows) {
+            "flursys.exe"
+        } else {
+            "flursys"
+        };
+        let cli = executable
+            .parent()
+            .ok_or("Cannot locate the application folder.")?
+            .join(cli_name);
+        if !cli.is_file() {
+            return Err(format!(
+                "CLI solver was not found beside the GUI: {}",
+                cli.display()
+            ));
+        }
+        let start = self.parametric_start_angle;
+        let step = self.parametric_angle_step;
+        let iterations = self.parametric_iterations;
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            for i in 0..count {
+                let angle = start + i as f64 * step;
+                let folder = workspace
+                    .join("design-points")
+                    .join(format!("alpha-{angle:+07.2}"));
+                let result = std::process::Command::new(&cli)
+                    .args(["project", "solve"])
+                    .arg(&folder)
+                    .arg("--iterations")
+                    .arg(iterations.to_string())
+                    .arg("--json")
+                    .output()
+                    .map_err(|e| e.to_string())
+                    .and_then(|output| {
+                        let json: serde_json::Value = serde_json::from_slice(&output.stdout)
+                            .map_err(|e| {
+                                format!(
+                                    "Cannot read solve result: {e}; {}",
+                                    String::from_utf8_lossy(&output.stderr)
+                                )
+                            })?;
+                        if output.status.success()
+                            && json.get("failed").and_then(serde_json::Value::as_bool) != Some(true)
+                        {
+                            let summary = json
+                                .get("summary")
+                                .and_then(serde_json::Value::as_str)
+                                .unwrap_or("Completed")
+                                .to_owned();
+                            match angle_point_coefficients(&folder) {
+                                Ok(Some((cd, cl))) => {
+                                    Ok(format!("{summary} · Cd {cd:.6} · Cl {cl:.6}"))
+                                }
+                                Ok(None) => Ok(summary),
+                                Err(error) => Ok(format!(
+                                    "{summary} · coefficient history unavailable: {error}"
+                                )),
+                            }
+                        } else {
+                            Err(json
+                                .get("summary")
+                                .and_then(serde_json::Value::as_str)
+                                .or_else(|| json.get("error").and_then(serde_json::Value::as_str))
+                                .unwrap_or("Solve failed")
+                                .to_owned())
+                        }
+                    });
+                if tx.send((i + 1, result)).is_err() {
+                    break;
+                }
+            }
+        });
+        self.parametric_total = count;
+        self.parametric_completed = 0;
+        self.parametric_failures = 0;
+        self.parametric_job = Some(rx);
+        self.message(format!(
+            "Running design point 1/{count} · sequential solve, {iterations} iterations each."
+        ));
+        Ok(())
+    }
+
+    pub(super) fn poll_angle_design_points(&mut self) {
+        let Some(receiver) = &self.parametric_job else {
+            return;
+        };
+        let mut updates = Vec::new();
+        while let Ok((index, result)) = receiver.try_recv() {
+            updates.push((index, result));
+        }
+        for (index, result) in updates {
+            self.parametric_completed += 1;
+            match result {
+                Ok(summary) => self.message(format!(
+                    "Design point {index}/{} · {summary}",
+                    self.parametric_total
+                )),
+                Err(error) => {
+                    self.parametric_failures += 1;
+                    self.message(format!(
+                        "Design point {index}/{} failed · {error}",
+                        self.parametric_total
+                    ));
+                }
+            }
+        }
+        if self.parametric_completed == self.parametric_total {
+            let completed = self.parametric_completed - self.parametric_failures;
+            self.message(format!("Parametric sweep complete · {completed}/{} points solved; results are saved in each design-point workspace.", self.parametric_total));
+            self.parametric_job = None;
+        }
+    }
+
     pub(super) fn apply_case_display(&mut self) {
         let Some(CaseContext { metadata, .. }) = self.project.case_context.as_ref() else {
             return;
         };
+        if let Some(angle) = self.project.boundaries.iter().find_map(|boundary| {
+            if let workbench::PhysicalBoundaryCondition::FarField { velocity, .. } =
+                &boundary.condition
+            {
+                Some(velocity.y.atan2(velocity.x).to_degrees())
+            } else {
+                None
+            }
+        }) {
+            self.parametric_angle = angle;
+        }
         let d = &metadata.display;
         self.plane_index = self
             .project
@@ -272,7 +457,9 @@ impl App {
             .as_ref()
             .ok_or("No case reference")?;
         let weights: Vec<_> = data.mesh().cells().iter().map(|c| c.volume).collect();
-        let mut output=String::from("Cell-centre reference sampling; volume-weighted norms. This is not an independence study.\n");
+        let mut output = String::from(
+            "Cell-centre reference sampling; volume-weighted norms. This is not an independence study.\n",
+        );
         for (field, name) in [
             (ResultFieldKind::VelocityX, "velocity X"),
             (ResultFieldKind::VelocityY, "velocity Y"),
@@ -318,6 +505,64 @@ impl App {
         }
         Ok(output)
     }
+}
+
+pub(super) fn set_angle_of_attack(
+    project: &mut WorkbenchProject,
+    angle_deg: f64,
+) -> Result<(), String> {
+    let angle = angle_deg.to_radians();
+    let mut found = false;
+    for boundary in &mut project.boundaries {
+        let velocity = match &mut boundary.condition {
+            workbench::PhysicalBoundaryCondition::FarField { velocity, .. } => velocity,
+            _ => continue,
+        };
+        let speed = velocity.x.hypot(velocity.y).hypot(velocity.z);
+        if speed <= 0.0 || !speed.is_finite() {
+            return Err(format!(
+                "Far-field patch '{}' has no positive speed.",
+                boundary.selection
+            ));
+        }
+        *velocity = Vec3::new(speed * angle.cos(), speed * angle.sin(), 0.0);
+        found = true;
+    }
+    if !found {
+        return Err("No far-field patch is available to parameterize angle of attack.".into());
+    }
+    project.solver.force_analysis.drag_direction = Vec3::new(angle.cos(), angle.sin(), 0.0);
+    project.solver.force_analysis.lift_direction = Vec3::new(-angle.sin(), angle.cos(), 0.0);
+    Ok(())
+}
+
+fn angle_point_coefficients(workspace: &std::path::Path) -> Result<Option<(f64, f64)>, String> {
+    let project = workbench::load_workspace(workspace).map_err(|e| e.to_string())?;
+    let mut folders = std::fs::read_dir(workspace.join("monitors"))
+        .map_err(|e| e.to_string())?
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_name().to_string_lossy().starts_with("solve-"))
+        .map(|entry| entry.path())
+        .collect::<Vec<_>>();
+    folders.sort();
+    let Some(latest) = folders.last() else {
+        return Ok(None);
+    };
+    let path = latest.join("force-history.jsonl");
+    if !path.is_file() {
+        return Ok(None);
+    }
+    let samples = force_analysis::load(&path)?;
+    let series = force_analysis::series(&samples, &project.solver.force_analysis)?;
+    let last = |name: &str| {
+        series
+            .iter()
+            .find(|curve| curve.name == name)?
+            .points
+            .last()?
+            .1
+    };
+    Ok(last("Cd").zip(last("Cl")))
 }
 
 fn reference_curve(

@@ -1853,6 +1853,83 @@ impl App {
             }
             _ => {
                 heading(ui, "REFERENCE LOADS");
+                if self
+                    .project
+                    .case_context
+                    .as_ref()
+                    .is_some_and(|c| c.id == "naca0012-re6000000")
+                {
+                    heading(ui, "ANGLE OF ATTACK · DESIGN POINTS");
+                    ui.horizontal(|ui| {
+                        ui.label("Angle (deg)");
+                        ui.add(
+                            egui::DragValue::new(&mut self.parametric_angle)
+                                .speed(0.25)
+                                .range(-20.0..=20.0),
+                        );
+                        if ui.button("Apply angle").clicked() {
+                            match case_library::set_angle_of_attack(
+                                &mut self.editor,
+                                self.parametric_angle,
+                            )
+                            .and_then(|_| self.apply_editor())
+                            {
+                                Ok(()) => self.message(
+                                    "Angle applied to far-field and lift/drag directions.",
+                                ),
+                                Err(e) => self.message(e),
+                            }
+                        }
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("From");
+                        ui.add(
+                            egui::DragValue::new(&mut self.parametric_start_angle)
+                                .speed(0.5)
+                                .range(-20.0..=20.0),
+                        );
+                        ui.label("To");
+                        ui.add(
+                            egui::DragValue::new(&mut self.parametric_end_angle)
+                                .speed(0.5)
+                                .range(-20.0..=20.0),
+                        );
+                        ui.label("Step");
+                        ui.add(
+                            egui::DragValue::new(&mut self.parametric_angle_step)
+                                .speed(0.25)
+                                .range(0.1..=10.0),
+                        );
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("Iterations per point");
+                        ui.add(
+                            egui::DragValue::new(&mut self.parametric_iterations)
+                                .range(1..=1_000_000),
+                        );
+                    });
+                    if ui
+                        .add_enabled(
+                            self.parametric_job.is_none(),
+                            egui::Button::new("Create and run design points…"),
+                        )
+                        .clicked()
+                    {
+                        match self.create_angle_design_points().and_then(|n| self.run_angle_design_points(n).map(|_| n)) {
+                            Ok(n) => self.message(format!("Created and started {n} independent design points; each result will be retained separately.")),
+                            Err(e) => self.message(e),
+                        }
+                    }
+                    if self.parametric_job.is_some() {
+                        ui.label(format!(
+                            "Design points solved: {}/{} · failed: {}",
+                            self.parametric_completed,
+                            self.parametric_total,
+                            self.parametric_failures
+                        ));
+                    }
+                    ui.separator();
+                }
                 let mut settings = self.editor.solver.force_analysis.clone();
                 for r in &self.wall_reports {
                     let mut selected = settings.patches.contains(&r.patch);
