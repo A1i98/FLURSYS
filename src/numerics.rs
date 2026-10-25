@@ -605,6 +605,7 @@ pub fn projection_non_orthogonal_decomposition(
     })
 }
 
+#[cfg(test)]
 fn corrected_internal_diffusion_flux(
     mesh: &UnstructuredMesh,
     face_index: usize,
@@ -891,41 +892,114 @@ pub fn integrated_diffusion_with_stencil_into(
         stencil.ensure_mesh(mesh)?;
     }
     let gamma = interpolate_diffusivity(mesh, diffusivity, options.diffusivity_interpolation)?;
-    let mut face_values = FaceField::filled(mesh, 0.0);
-    for (index, face) in mesh.faces().iter().enumerate() {
-        if let Some((n, center)) = boundary.cyclic_neighbour(mesh, index) {
-            let a = (face.center - mesh.cells()[face.owner].center).norm();
-            let b = (face.center - center).norm();
-            face_values[index] = (values[face.owner] * b + values[n] * a) / (a + b);
-            continue;
-        }
-        face_values[index] = match face.neighbour {
-            Some(neighbour) => {
-                let lambda = weight(mesh, index)?;
-                (1.0 - lambda) * values[face.owner] + lambda * values[neighbour]
-            }
-            None => match boundary
-                .condition(index)
-                .ok_or(NumericsError::MissingBoundaryCondition { face: index })?
-            {
-                ScalarBoundaryCondition::FixedValue(value) => value,
-                ScalarBoundaryCondition::ZeroGradient => values[face.owner],
-            },
-        };
-    }
-    let gradients = if options.non_orthogonal_correction != NonOrthogonalCorrection::None {
-        match options.gradient_scheme {
-            GradientScheme::Gauss => Some(gauss_gradient_from_faces(mesh, &face_values)?),
-            GradientScheme::LeastSquares => Some(least_squares_gradient(
-                mesh,
-                stencil.ok_or(NumericsError::MissingLeastSquaresGradientStencil)?,
-                values,
-            )?),
-        }
-    } else {
-        None
-    };
+    let gradients = diffusion_gradients(mesh, values, boundary, options, stencil)?;
     output.fill(0.0);
+    accumulate_diffusion(
+        mesh,
+        values,
+        &gamma,
+        boundary,
+        options,
+        gradients.as_ref(),
+        false,
+        output.values_mut(),
+    )
+}
+
+fn diffusion_gradients(
+    mesh: &UnstructuredMesh,
+    values: &CellField<f64>,
+    boundary: &ResolvedScalarBoundaryConditions,
+    options: DiffusionOptions,
+    stencil: Option<&LeastSquaresGradientStencil>,
+) -> Result<Option<CellField<Vec3>>, NumericsError> {
+    if options.non_orthogonal_correction == NonOrthogonalCorrection::None {
+        return Ok(None);
+    }
+    match options.gradient_scheme {
+        GradientScheme::LeastSquares => Ok(Some(least_squares_gradient(
+            mesh,
+            stencil.ok_or(NumericsError::MissingLeastSquaresGradientStencil)?,
+            values,
+        )?)),
+        GradientScheme::Gauss => {
+            // Face interpolation is needed only for Gauss gradients, not for
+            // uncorrected diffusion or a cached least-squares reconstruction.
+            let mut face_values = FaceField::filled(mesh, 0.0);
+            for (index, face) in mesh.faces().iter().enumerate() {
+                if let Some((n, center)) = boundary.cyclic_neighbour(mesh, index) {
+                    let a = (face.center - mesh.cells()[face.owner].center).norm();
+                    let b = (face.center - center).norm();
+                    face_values[index] = (values[face.owner] * b + values[n] * a) / (a + b);
+                    continue;
+                }
+                face_values[index] = match face.neighbour {
+                    Some(neighbour) => {
+                        let lambda = weight(mesh, index)?;
+                        (1.0 - lambda) * values[face.owner] + lambda * values[neighbour]
+                    }
+                    None => match boundary
+                        .condition(index)
+                        .ok_or(NumericsError::MissingBoundaryCondition { face: index })?
+                    {
+                        ScalarBoundaryCondition::FixedValue(value) => value,
+                        ScalarBoundaryCondition::ZeroGradient => values[face.owner],
+                    },
+                };
+            }
+            Ok(Some(gauss_gradient_from_faces(mesh, &face_values)?))
+        }
+    }
+}
+
+/// Add only deferred correction fluxes, with the same conservative face scatter
+/// as the full operator. Gamma may be reused from implicit momentum assembly.
+pub(crate) fn add_diffusion_correction_rhs(
+    mesh: &UnstructuredMesh,
+    values: &CellField<f64>,
+    gamma: &FaceField<f64>,
+    boundary: &ResolvedScalarBoundaryConditions,
+    options: DiffusionOptions,
+    stencil: Option<&LeastSquaresGradientStencil>,
+    rhs: &mut [f64],
+) -> Result<(), NumericsError> {
+    check_cell_measure(mesh)?;
+    values.ensure_mesh(mesh)?;
+    gamma.ensure_mesh(mesh)?;
+    boundary.ensure_mesh(mesh)?;
+    if let Some(stencil) = stencil {
+        stencil.ensure_mesh(mesh)?;
+    }
+    if rhs.len() != mesh.cell_count() {
+        return Err(FieldError::SizeMismatch {
+            expected: mesh.cell_count(),
+            actual: rhs.len(),
+        }
+        .into());
+    }
+    let gradients = diffusion_gradients(mesh, values, boundary, options, stencil)?;
+    accumulate_diffusion(
+        mesh,
+        values,
+        gamma,
+        boundary,
+        options,
+        gradients.as_ref(),
+        true,
+        rhs,
+    )
+}
+
+fn accumulate_diffusion(
+    mesh: &UnstructuredMesh,
+    values: &CellField<f64>,
+    gamma: &FaceField<f64>,
+    boundary: &ResolvedScalarBoundaryConditions,
+    options: DiffusionOptions,
+    gradients: Option<&CellField<Vec3>>,
+    correction_only: bool,
+    output: &mut [f64],
+) -> Result<(), NumericsError> {
     for (index, face) in mesh.faces().iter().enumerate() {
         if let Some(neighbour) = face.neighbour {
             let d = mesh.cells()[neighbour].center - mesh.cells()[face.owner].center;
@@ -935,22 +1009,33 @@ pub fn integrated_diffusion_with_stencil_into(
             }
             let mut contribution = gamma[index] * face.area_vector.dot(d) / d2
                 * (values[neighbour] - values[face.owner]);
-            if let Some(gradients) = &gradients {
+            if let Some(gradients) = gradients {
                 let lambda = weight(mesh, index)?;
                 let gradient =
                     gradients[face.owner] * (1.0 - lambda) + gradients[neighbour] * lambda;
-                let corrected =
-                    corrected_internal_diffusion_flux(mesh, index, gamma[index], values, gradient)?;
-                contribution = if options.non_orthogonal_correction
-                    == NonOrthogonalCorrection::Limited
-                {
-                    // Bound the explicit part, retaining the owner/neighbour
-                    // pair update below. The correction cannot reverse diffusion.
-                    contribution
-                        + (corrected - contribution).clamp(-contribution.abs(), contribution.abs())
+                let extra = gamma[index]
+                    * gradient
+                        .dot(projection_non_orthogonal_decomposition(mesh, index)?.non_orthogonal);
+                if correction_only {
+                    contribution =
+                        if options.non_orthogonal_correction == NonOrthogonalCorrection::Limited {
+                            extra.clamp(-contribution.abs(), contribution.abs())
+                        } else {
+                            extra
+                        };
                 } else {
-                    corrected
-                };
+                    let corrected = contribution + extra;
+                    contribution =
+                        if options.non_orthogonal_correction == NonOrthogonalCorrection::Limited {
+                            contribution
+                                + (corrected - contribution)
+                                    .clamp(-contribution.abs(), contribution.abs())
+                        } else {
+                            corrected
+                        };
+                }
+            } else if correction_only {
+                contribution = 0.0;
             }
             output[face.owner] += contribution;
             output[neighbour] -= contribution;
@@ -968,8 +1053,8 @@ pub fn integrated_diffusion_with_stencil_into(
             }
             let orth =
                 gamma[index] * face.area_vector.dot(d) / d2 * (values[n] - values[face.owner]);
-            let mut contribution = orth;
-            if let Some(g) = &gradients {
+            let mut contribution = if correction_only { 0.0 } else { orth };
+            if let Some(g) = gradients {
                 let a = (face.center - mesh.cells()[face.owner].center).norm();
                 let b = (face.center - center).norm();
                 let gradient = (g[face.owner] * b + g[n] * a) / (a + b);
@@ -993,8 +1078,10 @@ pub fn integrated_diffusion_with_stencil_into(
             if d2 <= f64::EPSILON {
                 return Err(NumericsError::DegenerateOwnerFaceDistance { face: index });
             }
-            output[face.owner] +=
-                gamma[index] * face.area_vector.dot(d) / d2 * (value - values[face.owner]);
+            if !correction_only {
+                output[face.owner] +=
+                    gamma[index] * face.area_vector.dot(d) / d2 * (value - values[face.owner]);
+            }
         }
     }
     Ok(())
@@ -2188,6 +2275,261 @@ mod tests {
             corrected_internal_diffusion_flux(&mesh, face_index, gamma, &values, gradient).unwrap(),
             expected_total,
         );
+    }
+
+    #[test]
+    fn correction_only_matches_operator_difference_and_conserves_on_skewed_meshes() {
+        for mesh in [skewed_multi_cell_mesh_2d(), skewed_block_3d()] {
+            let analytic = |p: Vec3| p.x * p.x + 0.3 * p.y - 0.7 * p.z;
+            let values = CellField::from_cells(&mesh, |_, c| analytic(c.center));
+            let gamma_cells = CellField::from_cells(&mesh, |i, _| 0.5 + i as f64 * 0.01);
+            let boundary = analytic_fixed_boundaries(&mesh, analytic);
+            let stencil = LeastSquaresGradientStencil::new(&mesh, &boundary).unwrap();
+            for scheme in [GradientScheme::Gauss, GradientScheme::LeastSquares] {
+                for correction in [
+                    NonOrthogonalCorrection::Explicit,
+                    NonOrthogonalCorrection::Limited,
+                ] {
+                    let options = DiffusionOptions {
+                        gradient_scheme: scheme,
+                        non_orthogonal_correction: correction,
+                        ..Default::default()
+                    };
+                    let diffusivity = Diffusivity::CellField(&gamma_cells);
+                    let gamma = interpolate_diffusivity(
+                        &mesh,
+                        diffusivity,
+                        options.diffusivity_interpolation,
+                    )
+                    .unwrap();
+                    let baseline = integrated_diffusion(
+                        &mesh,
+                        &values,
+                        diffusivity,
+                        &boundary,
+                        DiffusionOptions::default(),
+                    )
+                    .unwrap();
+                    let full = integrated_diffusion_with_stencil(
+                        &mesh,
+                        &values,
+                        diffusivity,
+                        &boundary,
+                        options,
+                        Some(&stencil),
+                    )
+                    .unwrap();
+                    let mut direct = vec![0.0; mesh.cell_count()];
+                    add_diffusion_correction_rhs(
+                        &mesh,
+                        &values,
+                        &gamma,
+                        &boundary,
+                        options,
+                        Some(&stencil),
+                        &mut direct,
+                    )
+                    .unwrap();
+                    for ((actual, full), baseline) in
+                        direct.iter().zip(full.values()).zip(baseline.values())
+                    {
+                        assert!(
+                            (actual - (full - baseline)).abs()
+                                < 2e-12 * (1.0 + full.abs() + baseline.abs())
+                        );
+                    }
+                    let scale = direct.iter().map(|v| v.abs()).sum::<f64>().max(1.0);
+                    assert!(direct.iter().sum::<f64>().abs() < 1e-13 * scale);
+                    let expected = direct.clone();
+                    add_diffusion_correction_rhs(
+                        &mesh,
+                        &values,
+                        &gamma,
+                        &boundary,
+                        options,
+                        Some(&stencil),
+                        &mut direct,
+                    )
+                    .unwrap();
+                    assert!(direct
+                        .iter()
+                        .zip(expected)
+                        .all(|(a, b)| (a - 2.0 * b).abs() < 1e-12 * scale));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn direct_correction_matches_subtraction_on_cyclic_and_zero_gradient_boundaries() {
+        // Affine shear makes the translated seam nonorthogonal, unlike an
+        // orthogonal periodic box where every deferred seam flux is zero.
+        let mut points = Vec::new();
+        for y in 0..=3 {
+            for x in 0..=3 {
+                points.push(Point::new(x as f64 + 0.25 * y as f64, y as f64, 0.0));
+            }
+        }
+        let mut cells = Vec::new();
+        for y in 0..3 {
+            for x in 0..3 {
+                let a = x + 4 * y;
+                cells.push(CellDefinition::polygon(vec![a, a + 1, a + 5, a + 4]));
+            }
+        }
+        let mesh = UnstructuredMesh::from_cells(MeshDimension::TwoD, points, cells).unwrap();
+        let mut patches: Vec<_> = ["left", "right", "walls"]
+            .iter()
+            .map(|name| BoundaryPatch {
+                name: (*name).into(),
+                face_indices: Vec::new(),
+                boundary_type: BoundaryType::Wall,
+            })
+            .collect();
+        for (i, face) in mesh.faces().iter().enumerate() {
+            if face.neighbour.is_some() {
+                continue;
+            }
+            let x = face.center.x - 0.25 * face.center.y;
+            let patch = if x.abs() < 1e-12 {
+                0
+            } else if (x - 3.0).abs() < 1e-12 {
+                1
+            } else {
+                2
+            };
+            patches[patch].face_indices.push(i);
+        }
+        let mesh = mesh.with_boundary_patches(patches).unwrap();
+        let plain = ResolvedScalarBoundaryConditions::strict(
+            &mesh,
+            &[
+                ("left", ScalarBoundaryCondition::ZeroGradient),
+                ("right", ScalarBoundaryCondition::ZeroGradient),
+                ("walls", ScalarBoundaryCondition::ZeroGradient),
+            ],
+        )
+        .unwrap();
+        let mut periodic = plain.clone();
+        periodic.set_cyclic(std::sync::Arc::new(
+            crate::periodic::resolve(
+                &mesh,
+                &[crate::periodic::TranslationalCyclicPair {
+                    first: "left".into(),
+                    second: "right".into(),
+                    translation: Vec3::new(3.0, 0.0, 0.0),
+                    tolerance: 1e-8,
+                }],
+            )
+            .unwrap(),
+        ));
+        let values = CellField::from_cells(&mesh, |_, cell| {
+            let p = cell.center;
+            (2.0 * std::f64::consts::PI * (p.x - 0.25 * p.y) / 3.0).sin() + 0.2 * p.y * p.y
+        });
+        for boundary in [&plain, &periodic] {
+            let stencil = LeastSquaresGradientStencil::new(&mesh, boundary).unwrap();
+            for scheme in [GradientScheme::Gauss, GradientScheme::LeastSquares] {
+                for correction in [
+                    NonOrthogonalCorrection::Explicit,
+                    NonOrthogonalCorrection::Limited,
+                ] {
+                    // Isolate the cyclic seam as well as testing the whole
+                    // operator, so missing/double seam scatter cannot hide.
+                    for seam_only in [false, true] {
+                        if seam_only
+                            && !mesh
+                                .faces()
+                                .iter()
+                                .enumerate()
+                                .any(|(i, _)| boundary.cyclic_link(i).is_some())
+                        {
+                            continue;
+                        }
+                        let gamma = FaceField::from_faces(&mesh, |i, _| {
+                            if !seam_only || boundary.cyclic_link(i).is_some() {
+                                0.7
+                            } else {
+                                0.0
+                            }
+                        });
+                        let options = DiffusionOptions {
+                            gradient_scheme: scheme,
+                            non_orthogonal_correction: correction,
+                            ..Default::default()
+                        };
+                        let mut baseline_options = options;
+                        baseline_options.non_orthogonal_correction = NonOrthogonalCorrection::None;
+                        let baseline = integrated_diffusion_with_stencil(
+                            &mesh,
+                            &values,
+                            Diffusivity::Faces(&gamma),
+                            boundary,
+                            baseline_options,
+                            Some(&stencil),
+                        )
+                        .unwrap();
+                        let full = integrated_diffusion_with_stencil(
+                            &mesh,
+                            &values,
+                            Diffusivity::Faces(&gamma),
+                            boundary,
+                            options,
+                            Some(&stencil),
+                        )
+                        .unwrap();
+                        let mut direct = vec![0.0; mesh.cell_count()];
+                        add_diffusion_correction_rhs(
+                            &mesh,
+                            &values,
+                            &gamma,
+                            boundary,
+                            options,
+                            Some(&stencil),
+                            &mut direct,
+                        )
+                        .unwrap();
+                        let scale = direct.iter().map(|v| v.abs()).sum::<f64>();
+                        assert!(
+                            scale > 1e-8,
+                            "fixture must exercise nonzero correction flux"
+                        );
+                        for ((actual, corrected), orthogonal) in
+                            direct.iter().zip(full.values()).zip(baseline.values())
+                        {
+                            assert!(
+                                (actual - (corrected - orthogonal)).abs()
+                                    < 2e-12 * (1.0 + corrected.abs() + orthogonal.abs())
+                            );
+                        }
+                        assert!(direct.iter().sum::<f64>().abs() < 2e-13 * scale.max(1.0));
+                        let initial: Vec<_> = (0..mesh.cell_count())
+                            .map(|i| 0.3 * i as f64 - 0.7)
+                            .collect();
+                        let mut accumulated = initial.clone();
+                        for _ in 0..2 {
+                            add_diffusion_correction_rhs(
+                                &mesh,
+                                &values,
+                                &gamma,
+                                boundary,
+                                options,
+                                Some(&stencil),
+                                &mut accumulated,
+                            )
+                            .unwrap();
+                        }
+                        for ((actual, initial), delta) in
+                            accumulated.iter().zip(initial).zip(&direct)
+                        {
+                            assert!(
+                                (actual - (initial + 2.0 * delta)).abs() < 2e-12 * scale.max(1.0)
+                            );
+                        }
+                    }
+                }
+            }
+        }
     }
 
     #[test]

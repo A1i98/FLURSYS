@@ -4,11 +4,11 @@
 //! A positive face flux is owner-to-neighbour internally and outward at a boundary.
 
 use crate::{
-    bicgstab, integrated_diffusion, integrated_diffusion_with_stencil, interpolate_diffusivity,
-    least_squares_gradient, residual, CellField, CsrBuilder, CsrMatrix, DiffusionOptions,
-    Diffusivity, FaceField, FieldError, LeastSquaresGradientStencil, LinearAlgebraError,
-    LinearSolveReport, LinearSolverOptions, NonOrthogonalCorrection, NumericsError,
-    ResolvedScalarBoundaryConditions, ScalarBoundaryCondition, UnstructuredMesh, Vec3,
+    bicgstab, interpolate_diffusivity, least_squares_gradient, residual, CellField, CsrBuilder,
+    CsrMatrix, DiffusionOptions, Diffusivity, FaceField, FieldError, LeastSquaresGradientStencil,
+    LinearAlgebraError, LinearSolveReport, LinearSolverOptions, NonOrthogonalCorrection,
+    NumericsError, ResolvedScalarBoundaryConditions, ScalarBoundaryCondition, UnstructuredMesh,
+    Vec3,
 };
 
 mod convection;
@@ -399,13 +399,13 @@ pub(crate) fn assemble_momentum_component_with_sink(
             }
         }
     }
-    add_explicit_nonorthogonal_rhs(mesh, options, &mut rhs)?;
+    add_explicit_nonorthogonal_rhs(mesh, options, &viscosity, &mut rhs)?;
     convection::correct(mesh, options, &mut rhs)?;
     let mut builder = CsrBuilder::new(mesh.cell_count(), mesh.cell_count());
     for (row, column, value) in entries {
         builder.add(row, column, value)?;
     }
-    let unrelaxed = builder.finalize()?;
+    let mut unrelaxed = builder.finalize()?;
     let unrelaxed_diagonal = unrelaxed.diagonal()?;
     if options.under_relaxation == 1.0 {
         return Ok(MomentumSystem {
@@ -415,26 +415,35 @@ pub(crate) fn assemble_momentum_component_with_sink(
             unrelaxed_diagonal,
         });
     }
-    let mut relaxed = CsrBuilder::new(mesh.cell_count(), mesh.cell_count());
+    let current = options
+        .relaxation_field
+        .ok_or(MomentumError::MissingVelocityForUnderRelaxation)?;
     for row in 0..mesh.cell_count() {
-        for index in unrelaxed.row_offsets()[row]..unrelaxed.row_offsets()[row + 1] {
-            let column = unrelaxed.column_indices()[index];
-            let mut value = unrelaxed.values()[index];
-            if row == column {
-                value /= options.under_relaxation;
+        // Finalization already sorted and merged the row. Relaxation changes
+        // only its diagonal; retain the CSR topology and all off-diagonals.
+        let start = unrelaxed.row_offsets()[row];
+        let end = unrelaxed.row_offsets()[row + 1];
+        let diagonal = start
+            + unrelaxed.column_indices()[start..end]
+                .binary_search(&row)
+                .map_err(|_| LinearAlgebraError::MissingDiagonal { row })?;
+        let value = unrelaxed.values()[diagonal] / options.under_relaxation;
+        if !value.is_finite() {
+            return Err(LinearAlgebraError::NonFiniteValue {
+                context: "matrix",
+                index: diagonal,
             }
-            relaxed.add(row, column, value)?;
+            .into());
         }
-        let current = options
-            .relaxation_field
-            .ok_or(MomentumError::MissingVelocityForUnderRelaxation)?[row];
+        unrelaxed.values_mut()[diagonal] = value;
+        let current = current[row];
         rhs[row] += (1.0 - options.under_relaxation) / options.under_relaxation
             * unrelaxed_diagonal[row]
             * current;
     }
     Ok(MomentumSystem {
         mesh_id: mesh.id(),
-        matrix: relaxed.finalize()?,
+        matrix: unrelaxed,
         rhs,
         unrelaxed_diagonal,
     })
@@ -443,6 +452,7 @@ pub(crate) fn assemble_momentum_component_with_sink(
 fn add_explicit_nonorthogonal_rhs(
     mesh: &UnstructuredMesh,
     options: MomentumOptions<'_>,
+    viscosity: &FaceField<f64>,
     rhs: &mut [f64],
 ) -> Result<(), MomentumError> {
     if options.diffusion.non_orthogonal_correction == NonOrthogonalCorrection::None {
@@ -451,29 +461,15 @@ fn add_explicit_nonorthogonal_rhs(
     let field = options
         .correction_field
         .ok_or(MomentumError::MissingCorrectionField)?;
-    let mut baseline_options = options.diffusion;
-    baseline_options.non_orthogonal_correction = NonOrthogonalCorrection::None;
-    let baseline = integrated_diffusion(
+    crate::numerics::add_diffusion_correction_rhs(
         mesh,
         field,
-        options.viscosity,
-        options.boundary,
-        baseline_options,
-    )?;
-    let corrected = integrated_diffusion_with_stencil(
-        mesh,
-        field,
-        options.viscosity,
+        viscosity,
         options.boundary,
         options.diffusion,
         options.least_squares_stencil,
+        rhs,
     )?;
-    for (rhs, (corrected, baseline)) in rhs
-        .iter_mut()
-        .zip(corrected.values().iter().zip(baseline.values()))
-    {
-        *rhs += corrected - baseline;
-    }
     Ok(())
 }
 
@@ -1014,6 +1010,45 @@ mod tests {
         assert_eq!(system.unrelaxed_diagonal(), &[2.0, 2.0]);
         assert_eq!(system.matrix().get(0, 0), Some(4.0));
         assert_eq!(system.rhs(), &[12.0, 12.0]);
+    }
+
+    #[test]
+    fn in_place_relaxation_is_identical_to_csr_reconstruction() {
+        let mesh = channel(17);
+        let boundary = couette_boundary(&mesh);
+        let flux = FaceField::filled(&mesh, 0.0);
+        let current = CellField::from_cells(&mesh, |_, cell| cell.center.y.sin());
+        let source = CellField::filled(&mesh, 0.25);
+        let mut options = MomentumOptions::steady(Diffusivity::Constant(0.03), &boundary, &flux);
+        options.source = Some(&source);
+        options.relaxation_field = Some(&current);
+        let original = assemble_momentum_component(&mesh, options).unwrap();
+        for alpha in [1.0, 0.7, 0.5, 0.001] {
+            options.under_relaxation = alpha;
+            let actual = assemble_momentum_component(&mesh, options).unwrap();
+            let mut expected = CsrBuilder::new(mesh.cell_count(), mesh.cell_count());
+            let mut rhs = original.rhs().to_vec();
+            for row in 0..mesh.cell_count() {
+                for index in
+                    original.matrix().row_offsets()[row]..original.matrix().row_offsets()[row + 1]
+                {
+                    let column = original.matrix().column_indices()[index];
+                    let value = original.matrix().values()[index];
+                    expected
+                        .add(
+                            row,
+                            column,
+                            if column == row { value / alpha } else { value },
+                        )
+                        .unwrap();
+                }
+                rhs[row] +=
+                    (1.0 - alpha) / alpha * original.unrelaxed_diagonal()[row] * current[row];
+            }
+            assert_eq!(actual.matrix(), &expected.finalize().unwrap());
+            assert_eq!(actual.rhs(), rhs);
+            assert_eq!(actual.unrelaxed_diagonal(), original.unrelaxed_diagonal());
+        }
     }
 
     #[test]

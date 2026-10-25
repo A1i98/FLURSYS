@@ -1,11 +1,10 @@
 //! Generic unstructured finite-volume Poisson assembly for `-div(Gamma grad(phi)) = q`.
 
 use crate::{
-    bicgstab, cg, integrated_diffusion, integrated_diffusion_with_stencil, interpolate_diffusivity,
-    pcg, CellField, CsrBuilder, CsrMatrix, DiffusionOptions, Diffusivity, FieldError,
-    JacobiPreconditioner, LeastSquaresGradientStencil, LinearAlgebraError, LinearSolveReport,
-    LinearSolverOptions, NonOrthogonalCorrection, NumericsError, ResolvedScalarBoundaryConditions,
-    ScalarBoundaryCondition, UnstructuredMesh,
+    bicgstab, cg, interpolate_diffusivity, pcg, CellField, CsrBuilder, CsrMatrix, DiffusionOptions,
+    Diffusivity, FieldError, JacobiPreconditioner, LeastSquaresGradientStencil, LinearAlgebraError,
+    LinearSolveReport, LinearSolverOptions, NonOrthogonalCorrection, NumericsError,
+    ResolvedScalarBoundaryConditions, ScalarBoundaryCondition, UnstructuredMesh,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -250,7 +249,7 @@ pub fn assemble_poisson(
         }
     }
 
-    add_explicit_correction_rhs(mesh, options, &mut rhs)?;
+    add_explicit_correction_rhs(mesh, options, &gamma, &mut rhs)?;
     let entries = apply_reference(mesh, entries, &mut rhs, options.reference)?;
     let mut builder = CsrBuilder::new(mesh.cell_count(), mesh.cell_count());
     for (row, column, value) in entries {
@@ -265,6 +264,7 @@ pub fn assemble_poisson(
 fn add_explicit_correction_rhs(
     mesh: &UnstructuredMesh,
     options: PoissonOptions<'_>,
+    gamma: &crate::FaceField<f64>,
     rhs: &mut [f64],
 ) -> Result<(), PoissonError> {
     if options.diffusion.non_orthogonal_correction != NonOrthogonalCorrection::Explicit {
@@ -273,30 +273,17 @@ fn add_explicit_correction_rhs(
     let field = options
         .correction_field
         .ok_or(PoissonError::MissingCorrectionField)?;
-    let mut baseline_options = options.diffusion;
-    baseline_options.non_orthogonal_correction = NonOrthogonalCorrection::None;
-    let baseline = integrated_diffusion(
+    // With A = -I_orth, A phi = q + I_nonorth. Evaluate only the
+    // conservative correction instead of subtracting two complete operators.
+    crate::numerics::add_diffusion_correction_rhs(
         mesh,
         field,
-        options.diffusivity,
-        options.boundary,
-        baseline_options,
-    )?;
-    let corrected = integrated_diffusion_with_stencil(
-        mesh,
-        field,
-        options.diffusivity,
+        gamma,
         options.boundary,
         options.diffusion,
         options.least_squares_stencil,
+        rhs,
     )?;
-    for (rhs, (corrected, baseline)) in rhs
-        .iter_mut()
-        .zip(corrected.values().iter().zip(baseline.values()))
-    {
-        // With A = -I_orth, -I_orth - I_nonorth = q gives A phi = q + I_nonorth.
-        *rhs += corrected - baseline;
-    }
     Ok(())
 }
 
@@ -405,7 +392,8 @@ pub fn solve_poisson_correction_sweeps(
 mod tests {
     use super::*;
     use crate::{
-        BoundaryPatch, BoundaryType, CellDefinition, MeshDimension, Point, ScalarBoundaryCondition,
+        integrated_diffusion, BoundaryPatch, BoundaryType, CellDefinition, MeshDimension, Point,
+        ScalarBoundaryCondition,
     };
 
     fn single_square() -> UnstructuredMesh {
