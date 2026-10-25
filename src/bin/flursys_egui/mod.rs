@@ -92,6 +92,7 @@ struct App {
     project: WorkbenchProject,
     session: WorkbenchSession,
     workspace: Option<PathBuf>,
+    workspace_dialog: Option<(WorkspaceDialogAction, Receiver<Option<PathBuf>>)>,
     dirty: bool,
     stage: Stage,
     page: usize,
@@ -238,6 +239,11 @@ enum Pending {
     Example(usize),
     Quit,
 }
+#[derive(Clone, Copy)]
+enum WorkspaceDialogAction {
+    Open,
+    Save,
+}
 pub fn run() -> eframe::Result {
     eframe::run_native(
         "FLURSYS",
@@ -279,6 +285,7 @@ impl App {
             project,
             session,
             workspace: None,
+            workspace_dialog: None,
             dirty: false,
             stage: Stage::Geometry,
             page: 0,
@@ -472,6 +479,7 @@ impl App {
             || self.migration.mapping_active()
             || self.publishing.is_some()
             || self.loading.is_some()
+            || self.workspace_dialog.is_some()
             || self.transport.receiver.is_some()
     }
     fn sync_project(&mut self) {
@@ -583,6 +591,59 @@ impl App {
             self.replace(p);
         }
     }
+    fn choose_workspace_folder(&mut self, action: WorkspaceDialogAction) {
+        if self.workspace_dialog.is_some() {
+            return;
+        }
+        let title = match action {
+            WorkspaceDialogAction::Open => "Open FLURSYS workspace",
+            WorkspaceDialogAction::Save => "Save FLURSYS workspace",
+        };
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let folder =
+                pollster::block_on(rfd::AsyncFileDialog::new().set_title(title).pick_folder())
+                    .map(|handle| handle.path().to_path_buf());
+            let _ = tx.send(folder);
+        });
+        self.workspace_dialog = Some((action, rx));
+        self.message(match action {
+            WorkspaceDialogAction::Open => "Choose a workspace folder…",
+            WorkspaceDialogAction::Save => "Choose where to save the workspace…",
+        });
+    }
+    fn poll_workspace_dialog(&mut self) {
+        let Some((action, receiver)) = &self.workspace_dialog else {
+            return;
+        };
+        let action = *action;
+        let received = match receiver.try_recv() {
+            Ok(path) => Some(Ok(path)),
+            Err(mpsc::TryRecvError::Disconnected) => {
+                Some(Err("The workspace picker stopped unexpectedly.".to_string()))
+            }
+            Err(mpsc::TryRecvError::Empty) => None,
+        };
+        if let Some(result) = received {
+            self.workspace_dialog = None;
+            match result {
+                Ok(Some(path)) => match action {
+                    WorkspaceDialogAction::Open => self.request(Pending::Open(path)),
+                    WorkspaceDialogAction::Save => match self.save_to(path) {
+                        Ok(true) => {
+                            if let Some(pending) = self.pending_replace.take() {
+                                self.replace(pending);
+                            }
+                        }
+                        Ok(false) => {}
+                        Err(error) => self.message(error),
+                    },
+                },
+                Ok(None) => self.message("Workspace selection cancelled."),
+                Err(error) => self.message(error),
+            }
+        }
+    }
     fn replace(&mut self, p: Pending) {
         match p {
             Pending::Open(path) => self.load(path),
@@ -662,13 +723,13 @@ impl App {
             self.project.cad_document = Some(document);
         }
         self.sync_project();
-        let path = match &self.workspace {
-            Some(p) => p.clone(),
-            None => rfd::FileDialog::new()
-                .set_title("Save FLURSYS workspace")
-                .pick_folder()
-                .ok_or("Save cancelled")?,
+        let Some(path) = self.workspace.clone() else {
+            self.choose_workspace_folder(WorkspaceDialogAction::Save);
+            return Ok(false);
         };
+        self.save_to(path)
+    }
+    fn save_to(&mut self, path: PathBuf) -> Result<bool, String> {
         if let Some(mesh) = self.session.mesh() {
             self.project.mesh_asset = Some(mesh_storage::save(&path, &self.project, mesh)?);
         }
@@ -885,6 +946,7 @@ impl App {
         }
     }
     fn poll(&mut self) {
+        self.poll_workspace_dialog();
         self.poll_compressible();
         self.poll_mapping();
         self.poll_transport();

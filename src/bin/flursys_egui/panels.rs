@@ -33,9 +33,7 @@ impl App {
                         ui.close();
                     }
                     if ui.button("Open workspace…").clicked() {
-                        if let Some(p) = rfd::FileDialog::new().pick_folder() {
-                            self.request(Pending::Open(p));
-                        }
+                        self.choose_workspace_folder(WorkspaceDialogAction::Open);
                         ui.close();
                     }
                     if ui.button("Save workspace").clicked() {
