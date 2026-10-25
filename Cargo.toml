@@ -147,7 +147,7 @@ required-features = ["gui"]
 [features]
 default = ["gui"]
 gpu-compute = ["dep:egui-wgpu", "dep:pollster"]
-gui = ["gpu-compute", "dep:rfd", "dep:png", "dep:gif", "dep:cad-workbench", "dep:cad-engine", "dep:cad-kernel", "dep:cad-render", "dep:cad-gpu", "dep:egui", "dep:egui-wgpu", "dep:pollster", "dep:arboard", "dep:eframe", "dep:egui_extras"]
+gui = ["gpu-compute", "dep:rfd", "dep:png", "dep:gif", "dep:cad-workbench", "dep:cad-engine", "dep:cad-kernel", "dep:cad-render", "dep:cad-gpu", "dep:egui", "dep:egui-wgpu", "dep:pollster", "dep:arboard", "dep:eframe", "dep:egui_extras", "dep:image"]
 
 # CAD and GPU rendering dependencies make full debug info and incremental
 # compilation caches disproportionately large in local builds.
@@ -166,6 +166,7 @@ codegen-units = 1
 panic = "unwind"
 
 [dependencies]
+image = { workspace = true, optional = true }
 sha2 = { workspace = true }
 arboard = { version = "3.6", default-features = false, optional = true }
 cad-workbench = { package = "solidcraft-ui-egui", path = "vendor/cad-workbench/crates/ui-egui", features = ["host-integration"], optional = true }

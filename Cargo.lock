@@ -1207,6 +1207,7 @@ dependencies = [
  "egui_extras",
  "embed-resource",
  "gif",
+ "image",
  "naga",
  "png 0.18.1",
  "pollster 0.4.0",

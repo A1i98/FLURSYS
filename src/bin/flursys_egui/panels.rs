@@ -202,7 +202,7 @@ impl App {
                         self.browser(ui);
                     });
             }
-            if self.browser_open && compact {
+            if self.browser_open && compact && self.export.is_none() {
                 let mut open = true;
                 egui::Window::new("Project browser")
                     .open(&mut open)
@@ -245,6 +245,15 @@ impl App {
                             }
                         });
                         ui.separator();
+                        if self.has_property_apply() {
+                            egui::Panel::bottom("property-actions")
+                                .resizable(false)
+                                .show(ui, |ui| {
+                                    ui.add_space(6.);
+                                    self.apply_button(ui);
+                                    ui.add_space(6.);
+                                });
+                        }
                         let busy = self.busy();
                         egui::ScrollArea::vertical()
                             .id_salt(("properties", self.stage, self.page))
@@ -253,7 +262,7 @@ impl App {
                                 ui.add_enabled_ui(
                                     !busy
                                         || self.stage == Stage::Results
-                                        || (self.stage == Stage::Solution && self.page >= 7),
+                                        || (self.stage == Stage::Solution && self.page >= 6),
                                     |ui| self.properties(ui),
                                 );
                             });
@@ -294,6 +303,7 @@ impl App {
                         .resizable(false)
                         .show(ui, |ui| {
                             ui.add_space(6.);
+                            self.solve_identity(ui);
                             ui.horizontal_wrapped(|ui| {
                                 ui.label(
                                     RichText::new(format!("Iteration {}", self.iteration)).strong(),
@@ -333,10 +343,12 @@ impl App {
                 if self.stage == Stage::Results || (self.stage == Stage::Solution && self.page >= 7) {
                     egui::Panel::top("post-source").show(ui, |ui| self.post_toolbar(ui));
                 }
-                if (self.stage == Stage::Solution && self.page == 0)
+                if self.stage == Stage::Solution && self.page == 6 {
+                    self.engineering_chart(ui);
+                } else if (self.stage == Stage::Solution && self.page == 0)
                     || (self.stage == Stage::Results && self.page == 3)
                 {
-                    if self.stage == Stage::Results && self.migration.chart { self.profile_chart(ui); } else { self.convergence(ui); }
+                    if self.stage == Stage::Results && self.monitoring.chart {self.engineering_chart(ui);} else if self.stage == Stage::Results && self.migration.chart { self.profile_chart(ui); } else { self.convergence(ui); }
                 } else if self.stage == Stage::Results && self.page == 4 {
                     if !self.force_series.is_empty() {
                         let series=self.force_series.clone();
@@ -487,9 +499,27 @@ impl App {
             _ => {}
         }
     }
+    fn has_property_apply(&self) -> bool {
+        match self.stage {
+            Stage::Mesh => self.page == 1 || self.page >= 3,
+            Stage::Setup => self.page != 5,
+            Stage::Solution => (1..=5).contains(&self.page),
+            _ => false,
+        }
+    }
     fn apply_button(&mut self, ui: &mut egui::Ui) {
-        ui.add_space(10.);
-        if icon_button(ui, "check", "Apply settings", !self.busy()).clicked() {
+        let image = egui::Image::new(egui::include_image!("../../../ui/assets/icons/check.svg"))
+            .fit_to_exact_size(egui::vec2(18., 18.));
+        let response = ui.add_enabled(
+            !self.busy(),
+            egui::Button::image_and_text(image, RichText::new("Apply settings").strong())
+                .image_tint_follows_text_color(true)
+                .min_size(egui::vec2(ui.available_width(), 34.)),
+        );
+        if response.clicked() {
+            if self.stage == Stage::Setup && self.page == 0 && !self.boundary_patch.is_empty() {
+                self.stage_boundary_draft();
+            }
             if let Err(e) = self.apply_editor() {
                 self.message(e);
             }
@@ -816,7 +846,6 @@ impl App {
                 if let Ok(recipe) = serde_json::from_value(value) {
                     self.editor.mesh_recipe = recipe;
                 }
-                self.apply_button(ui);
             }
             2 => {
                 self.quality_properties(ui);
@@ -846,7 +875,6 @@ impl App {
                 if let Ok(t) = serde_json::from_value(v) {
                     self.editor.mesh_recipe.tuning = t;
                 }
-                self.apply_button(ui);
             }
         }
     }
@@ -910,70 +938,29 @@ impl App {
                     );
                 }
                 if self.boundary_kind >= 10 {
-                    number(ui, "Positive inlet flow rate", &mut self.boundary_pressure);
+                    number(
+                        ui,
+                        if self.boundary_kind == 11 {
+                            "Mass flow (kg/s; 2D kg/m/s)"
+                        } else {
+                            "Volume flow (m³/s; 2D m²/s)"
+                        },
+                        &mut self.boundary_pressure,
+                    );
                 }
-                if ui
-                    .add_enabled(
-                        !self.boundary_patch.is_empty(),
-                        egui::Button::new("Apply physical condition"),
-                    )
-                    .clicked()
-                {
-                    let v = self.boundary_velocity;
-                    let p = self.boundary_pressure;
-                    use IncompressibleBoundaryCondition as B;
-                    let condition = match self.boundary_kind {
-                        0 => B::NoSlipWall,
-                        1 => B::MovingWall { velocity: v },
-                        2 => B::VelocityInlet { velocity: v },
-                        3 => B::PressureOutlet { pressure: p },
-                        4 => B::PressureOutletBackflow {
-                            pressure: p,
-                            velocity: v,
-                        },
-                        5 => B::Slip,
-                        6 => B::Symmetry,
-                        7 => B::FarField {
-                            velocity: v,
-                            pressure: p,
-                        },
-                        8 => B::TotalPressure { pressure: p },
-                        9 => B::ParabolicInlet {
-                            velocity: v,
-                            axis: 1,
-                            center: 0.5,
-                            half_width: 0.5,
-                        },
-                        _ => B::FlowRateInlet {
-                            rate: p,
-                            mass: self.boundary_kind == 11,
-                        },
-                    };
-                    match self
-                        .session
-                        .configure_named_boundary(&self.boundary_patch, condition)
-                    {
-                        Ok(()) => {
-                            self.sync_project();
-                            self.editor = self.project.clone();
-                            self.dirty = true;
-                            self.message("Boundary condition assigned.");
-                        }
-                        Err(e) => self.message(e.to_string()),
-                    }
+                if self.boundary_kind == 9 {
+                    egui::ComboBox::from_id_salt("parabolic-axis")
+                        .selected_text(["X", "Y", "Z"][self.inlet_axis.min(2)])
+                        .show_ui(ui, |ui| {
+                            for (i, name) in ["X", "Y", "Z"].iter().enumerate() {
+                                ui.selectable_value(&mut self.inlet_axis, i, *name);
+                            }
+                        });
+                    number(ui, "Profile center along axis (m)", &mut self.inlet_center);
+                    number(ui, "Profile half-width (m)", &mut self.inlet_half_width);
                 }
+                ui.weak("Apply settings in the fixed footer assigns this boundary condition together with the current draft.");
                 self.boundary_table_editor(ui);
-                heading(ui, "PATCH DETAILS");
-                let mut p = serde_json::to_value(&self.editor).unwrap_or_default();
-                for key in ["boundaries"] {
-                    if let Some(v) = p.get_mut(key) {
-                        widgets::fields(ui, key, v);
-                    }
-                }
-                if let Ok(v) = serde_json::from_value::<WorkbenchProject>(p) {
-                    self.editor.boundaries = v.boundaries;
-                }
-                self.apply_button(ui);
             }
             1 => {
                 heading(ui, "FLUID MATERIAL");
@@ -1037,7 +1024,6 @@ impl App {
                     "Kinematic viscosity (m²/s)",
                     &mut self.editor.material.kinematic_viscosity,
                 );
-                self.apply_button(ui);
             }
             2 => {
                 heading(ui, "THERMAL AND BUOYANCY");
@@ -1055,41 +1041,32 @@ impl App {
                         &mut self.editor.solver.thermal.buoyancy,
                         "Boussinesq buoyancy",
                     );
-                    vector(
-                        ui,
-                        "Gravity (m/s²)",
-                        &mut self.editor.solver.thermal.gravity,
-                    );
+
                     for (patch, boundary) in &mut self.editor.solver.thermal.boundaries {
                         egui::CollapsingHeader::new(format!("Thermal boundary · {patch}"))
                             .id_salt(("thermal-bc", patch))
                             .show(ui, |ui| widgets::thermal_boundary(ui, patch, boundary));
                     }
-                    let mut v =
-                        serde_json::to_value(&self.editor.solver.thermal).unwrap_or_default();
-                    let boundaries = v.as_object_mut().and_then(|v| v.remove("boundaries"));
-                    widgets::fields(ui, "thermal", &mut v);
-                    if let Some(b) = boundaries {
-                        v["boundaries"] = b;
-                    }
-                    if let Ok(t) = serde_json::from_value(v) {
-                        self.editor.solver.thermal = t;
-                    }
+                    self.thermal_properties(ui);
                 }
-                self.apply_button(ui);
             }
             3 => self.scripts(ui),
             5 => self.transport_properties(ui),
             _ => {
                 self.models(ui);
-                self.apply_button(ui);
             }
         }
     }
     fn read_boundary(&mut self) {
-        use IncompressibleBoundaryCondition as B;
-        if let Some(b) = self.session.boundary_assignment(&self.boundary_patch) {
-            self.boundary_kind = match *b {
+        use workbench::PhysicalBoundaryCondition as B;
+        if let Some(b) = self
+            .editor
+            .boundaries
+            .iter()
+            .find(|b| b.selection == self.boundary_patch)
+            .map(|b| b.condition.clone())
+        {
+            self.boundary_kind = match b {
                 B::NoSlipWall => 0,
                 B::MovingWall { velocity } => {
                     self.boundary_velocity = velocity;
@@ -1119,8 +1096,16 @@ impl App {
                     self.boundary_pressure = pressure;
                     8
                 }
-                B::ParabolicInlet { velocity, .. } => {
+                B::ParabolicInlet {
+                    velocity,
+                    axis,
+                    center,
+                    half_width,
+                } => {
                     self.boundary_velocity = velocity;
+                    self.inlet_axis = axis;
+                    self.inlet_center = center;
+                    self.inlet_half_width = half_width;
                     9
                 }
                 B::FlowRateInlet { rate, mass } => {
@@ -1187,14 +1172,7 @@ impl App {
                 }
             }
         }
-        let mut value = serde_json::to_value(&self.editor.solver.scripting).unwrap_or_default();
-        if let Some(bindings) = value.get_mut("bindings") {
-            widgets::fields(ui, "script-bindings", bindings);
-        }
-        if let Ok(s) = serde_json::from_value(value) {
-            self.editor.solver.scripting = s;
-        }
-        self.apply_button(ui);
+        self.script_binding_properties(ui);
     }
     fn models(&mut self, ui: &mut egui::Ui) {
         heading(ui, "FLOW MODEL");
@@ -1210,6 +1188,7 @@ impl App {
             (T::Smagorinsky, "LES Smagorinsky"),
             (T::Wale, "LES WALE"),
         ];
+        let previous_model = self.editor.solver.turbulence.model;
         egui::ComboBox::from_id_salt("turbulence-model")
             .selected_text(format!("{:?}", self.editor.solver.turbulence.model))
             .show_ui(ui, |ui| {
@@ -1217,11 +1196,18 @@ impl App {
                     ui.selectable_value(&mut self.editor.solver.turbulence.model, value, label);
                 }
             });
-        let mut v = serde_json::to_value(&self.editor.solver.turbulence).unwrap_or_default();
-        widgets::fields(ui, "turbulence", &mut v);
-        if let Ok(t) = serde_json::from_value(v) {
-            self.editor.solver.turbulence = t;
+        if previous_model != self.editor.solver.turbulence.model {
+            let t = &mut self.editor.solver.turbulence;
+            t.wall_treatment = flursys::turbulence::WallTreatment::Resolved;
+            let sa = t.model == T::SpalartAllmaras;
+            t.inlets.retain(|_, v| {
+                matches!(
+                    v,
+                    flursys::turbulence::TurbulenceInlet::ModifiedViscosity { .. }
+                ) == sa
+            });
         }
+        self.turbulence_properties(ui);
     }
     fn solution_properties(&mut self, ui: &mut egui::Ui) {
         if self.page >= 7 {
@@ -1305,15 +1291,12 @@ impl App {
                     ui.label("CPU threads (0 = automatic)");
                     ui.add(egui::DragValue::new(&mut self.editor.solver.threads).range(0..=256));
                 });
-                self.apply_button(ui);
             }
             2 => {
                 self.time(ui);
-                self.apply_button(ui);
             }
             3 => {
                 self.models(ui);
-                self.apply_button(ui);
             }
             4 => {
                 heading(ui, "NUMERICAL METHODS");
@@ -1350,46 +1333,14 @@ impl App {
                             );
                         }
                     });
-                let mut value = serde_json::to_value(&self.editor.solver).unwrap_or_default();
-                if let Some(map) = value
-                    .get_mut("pressure_coupling")
-                    .and_then(|v| v.as_object_mut())
-                {
-                    map.remove("algorithm");
-                }
-                let mut per_equation = self.editor.solver.equations.is_some();
-                if ui
-                    .checkbox(&mut per_equation, "Per-equation linear solver controls")
-                    .changed()
-                {
-                    self.editor.solver.equations =
-                        per_equation.then(flursys::equations::EquationSolvers::default);
-                    value["equations"] =
-                        serde_json::to_value(&self.editor.solver.equations).unwrap_or_default();
-                }
-                for key in ["pressure_coupling", "equations"] {
-                    if let Some(v) = value.get_mut(key).filter(|v| !v.is_null()) {
-                        heading(ui, &widgets::label(key));
-                        widgets::fields(ui, key, v);
-                    }
-                }
-                value["pressure_coupling"]["algorithm"] =
-                    serde_json::to_value(self.editor.solver.pressure_coupling.algorithm)
-                        .unwrap_or_default();
-                if let Ok(mut s) =
-                    serde_json::from_value::<workbench::WorkbenchSolverSettings>(value)
-                {
-                    s.pressure_coupling.algorithm = self.editor.solver.pressure_coupling.algorithm;
-                    self.editor.solver = s;
-                }
-                self.apply_button(ui);
+                self.equation_properties(ui);
             }
             5 => {
                 self.compute_properties(ui);
-                self.apply_button(ui);
             }
             _ => {
                 heading(ui, "RUN REPORT");
+                self.monitoring_controls(ui);
                 ui.label(format!("{:?}", self.session.status()));
                 if let Some(s) = self.session.solution() {
                     match &s.budgets {
@@ -1417,16 +1368,26 @@ impl App {
             TimeIntegration::AdaptiveBackward { .. } => 4,
         };
         let old = mode;
+        let modes = [
+            "Steady",
+            "Transient · Euler (1st order)",
+            "Transient · BDF2 (2nd order)",
+            "Transient · Adaptive Euler",
+            "Transient · Adaptive BDF2",
+        ];
+        ui.label("Simulation mode / time scheme");
         egui::ComboBox::from_id_salt("time-mode")
-            .selected_text(["Steady", "Euler", "BDF2", "Adaptive Euler", "Adaptive BDF2"][mode])
+            .selected_text(modes[mode])
             .show_ui(ui, |ui| {
-                for (i, n) in ["Steady", "Euler", "BDF2", "Adaptive Euler", "Adaptive BDF2"]
-                    .iter()
-                    .enumerate()
-                {
-                    ui.selectable_value(&mut mode, i, *n);
+                for (i, name) in modes.iter().enumerate() {
+                    ui.selectable_value(&mut mode, i, *name);
                 }
             });
+        if mode == 0 {
+            ui.weak("Steady iterations do not advance physical time.");
+        } else {
+            ui.weak("Transient solving advances physical time in accepted steps. Apply settings before Run / Continue.");
+        }
         let (dt, steps) = self.editor.solver.time.parameters().unwrap_or((0.001, 100));
         if old != mode {
             self.editor.solver.time = match mode {
@@ -1854,6 +1815,11 @@ impl App {
             }
             3 => {
                 heading(ui, "HISTORY PLOTS");
+                ui.checkbox(&mut self.monitoring.chart, "Engineering monitor chart");
+                if self.monitoring.chart {
+                    self.monitoring_controls(ui);
+                    return;
+                }
                 self.profile_editor(ui);
                 ui.selectable_value(&mut self.show_probe_plot, false, "Convergence history");
                 ui.selectable_value(&mut self.show_probe_plot, true, "Recorded probe history");
@@ -2189,10 +2155,14 @@ impl App {
                 }
             }
         }
+        self.inspect_engineering();
         self.refresh_field_frames();
         Ok(())
     }
     fn windows(&mut self, ctx: &egui::Context) {
+        if self.export.is_some() {
+            return;
+        }
         if self.show_initialization {
             let mut open = true;
             egui::Window::new("Initialize solution").open(&mut open).default_width(460.).frame(widgets::dialog_frame(ctx)).scroll(true).max_height(ctx.content_rect().height() * 0.85).show(ctx,|ui|{self.mapping_editor(ui);ui.separator();ui.label("Uniform initialization resets accepted fields, physical time and iteration numbering. Existing run archives are retained.");vector(ui,"Uniform velocity (m/s)",&mut self.initial_velocity);number(ui,"Kinematic gauge pressure p/ρ",&mut self.initial_pressure);if self.editor.solver.thermal.enabled{number(ui,"Initial temperature (K)",&mut self.editor.solver.thermal.initial_temperature);}if ui.add_enabled(!self.busy(),egui::Button::new("Initialize fields")).clicked(){let valid=[self.initial_velocity.x,self.initial_velocity.y,self.initial_velocity.z,self.initial_pressure].iter().all(|v|v.is_finite());if !valid{self.message("Initialization values must be finite.");}else if let Some(mesh)=self.session.mesh().map(|m|m.mesh.id()){self.reset_solve_session();self.jobs.set_initial_fields(mesh,flursys::IncompressibleInitialConditions::Uniform{velocity:self.initial_velocity,pressure:self.initial_pressure});self.session.initialize_solution();self.histories=Default::default();self.iteration=0;self.force_history.clear();self.streamlines.clear();self.probes.clear();self.result=None;self.result_cache=None;self.result_run.clear();self.plane_snapshot=None;self.plane_frames.clear();self.plane_playing=false;self.archived_report=None;self.initialized=true;if let Err(e)=self.persist_continuation(){self.message(e);}self.show_initialization=false;self.message("Fields initialized; time and iteration numbering reset.");}else{self.message("Generate a mesh before initializing fields.");}}});

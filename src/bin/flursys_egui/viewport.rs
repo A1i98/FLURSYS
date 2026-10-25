@@ -197,6 +197,12 @@ impl App {
         });
         let (rect, response) =
             ui.allocate_exact_size(ui.available_size(), egui::Sense::click_and_drag());
+        let rect = if let Some(aspect) = self.export_aspect() {
+            let w = rect.width().min(rect.height() * aspect);
+            egui::Rect::from_center_size(rect.center(), egui::vec2(w, w / aspect))
+        } else {
+            rect
+        };
         self.viewport_rect = Some(rect);
         let painter = ui.painter_at(rect);
         painter.rect_filled(

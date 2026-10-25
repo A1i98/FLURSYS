@@ -3,14 +3,6 @@ use super::*;
 use egui::{Align2, FontId, Pos2, Rect, Stroke};
 use widgets::heading;
 
-pub struct ExportJob {
-    path: PathBuf,
-    gif: bool,
-    encoder: Option<gif::Encoder<std::fs::File>>,
-    remaining: usize,
-    last: Instant,
-    pending: bool,
-}
 impl App {
     pub(super) fn post_view(&self) -> bool {
         self.stage == Stage::Results || (self.stage == Stage::Solution && self.page >= 7)
@@ -302,12 +294,29 @@ impl App {
     pub(super) fn post_toolbar(&mut self, ui: &mut egui::Ui) {
         let mut chosen = None;
         ui.horizontal_wrapped(|ui| {
-            if self.export.is_some() && ui.button("Cancel export").clicked() {
-                self.export = None;
-                self.message("Image export stopped; any written frames remain in the file.");
-            }
-            if self.jobs.is_running() {
-                ui.checkbox(&mut self.live_fields, "Live fields · 2 s refresh");
+            if self.post_view() {
+                ui.checkbox(&mut self.live_fields, "Live fields");
+                ui.label("Refresh");
+                let response = ui.add(
+                    egui::DragValue::new(&mut self.preferences.live_refresh_seconds)
+                        .range(0.1..=60.0)
+                        .speed(0.1)
+                        .max_decimals(2)
+                        .suffix(" s"),
+                ).on_hover_text("Minimum interval between live full-field updates. Changes apply immediately; disk recording and playback FPS are independent.");
+                if response.changed() {
+                    if let Some(path) = Self::preferences_path() {
+                        let result = (|| -> Result<(), String> {
+                            let parent = path.parent().ok_or("No preferences directory")?;
+                            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+                            let mut file = tempfile::NamedTempFile::new_in(parent).map_err(|e| e.to_string())?;
+                            serde_json::to_writer_pretty(file.as_file_mut(), &self.preferences).map_err(|e| e.to_string())?;
+                            file.persist(path).map_err(|e| e.to_string())?;
+                            Ok(())
+                        })();
+                        if let Err(e) = result { self.message(e); }
+                    }
+                }
             }
             ui.label("Dataset");
             egui::ComboBox::from_id_salt("visible-run-selector")
@@ -632,7 +641,7 @@ impl App {
         });
         ui.weak("Tracer motion illustrates the selected stationary velocity field; it is not a transient solution.");
     }
-    fn seed_flow(&mut self) {
+    pub(super) fn seed_flow(&mut self) {
         self.streamlines.clear();
         if self.plane_index > 0 {
             if let Some(s) = &self.plane_snapshot {
@@ -713,78 +722,19 @@ impl App {
             }
         }
     }
-    fn begin_export(&mut self, gif: bool) {
-        if gif
-            && self.streamlines.is_empty()
-            && self.plane_frames.is_empty()
-            && self.field_frames.is_empty()
-        {
-            self.seed_flow();
-        }
-        if gif
-            && self.streamlines.is_empty()
-            && self.plane_frames.is_empty()
-            && self.field_frames.is_empty()
-        {
-            self.message("GIF needs recorded plane frames or seeded 2D flow paths.");
-            return;
-        }
-        if let Some(path) = rfd::FileDialog::new()
-            .set_file_name(if gif { "flow.gif" } else { "field.png" })
-            .save_file()
-        {
-            let remaining = if gif {
-                if !self.field_frames.is_empty()
-                    && (self.plane_index == 0 || self.plane_frames.is_empty())
-                {
-                    self.field_frames.len()
-                } else if self.plane_frames.is_empty() {
-                    60
-                } else {
-                    self.plane_frames.len()
-                }
-            } else {
-                1
-            };
-            if gif {
-                self.live_fields = false;
-                if !self.field_frames.is_empty()
-                    && (self.plane_index == 0 || self.plane_frames.is_empty())
-                {
-                    self.field_frame = 0;
-                    self.plane_playing = false;
-                    self.field_playing = false;
-                    self.read_field_frame();
-                } else if !self.plane_frames.is_empty() {
-                    self.plane_frame = 0;
-                    self.field_playing = false;
-                    self.read_plane_frame();
-                    self.plane_playing = false;
-                } else {
-                    self.flow_playing = true;
-                }
-            }
-            self.export = Some(ExportJob {
-                path,
-                gif,
-                encoder: None,
-                remaining,
-                last: Instant::now(),
-                pending: false,
-            });
-        }
-    }
     pub(super) fn post_logic(&mut self, ctx: &egui::Context) {
         self.poll_probe_history();
+        self.export_logic(ctx);
 
         if self.jobs.is_running()
             && self.post_view()
             && self.live_fields
+            && self.export.is_none()
             && !self.field_playing
             && !self.plane_playing
             && self.jobs.completed_iterations() != self.live_iteration
             && (self.result.is_none() || self.result_run == "current" || self.result_run == "live")
-            && self.live_refresh.elapsed().as_secs_f64() > 2.
+            && self.live_refresh.elapsed().as_secs_f64() >= self.preferences.live_refresh_seconds
         {
             self.live_refresh = Instant::now();
             if let Some(mesh) = self.session.mesh() {
@@ -835,100 +785,6 @@ impl App {
         self.post_tick = Instant::now();
         if self.flow_playing {
             self.flow_phase = (self.flow_phase + dt * 0.18) % 1.;
-        }
-        let screenshots: Vec<_> = ctx.input(|i| {
-            i.events
-                .iter()
-                .filter_map(|e| {
-                    if let egui::Event::Screenshot { image, .. } = e {
-                        Some(image.clone())
-                    } else {
-                        None
-                    }
-                })
-                .collect()
-        });
-        for image in screenshots {
-            if let Some(mut job) = self.export.take() {
-                let result = (|| -> Result<(), String> {
-                    let r = self.viewport_rect.ok_or("No visible field viewport")?;
-                    let scale = ctx.pixels_per_point();
-                    let x = (r.left() * scale).max(0.) as usize;
-                    let y = (r.top() * scale).max(0.) as usize;
-                    let w = ((r.width() * scale) as usize).min(image.size[0].saturating_sub(x));
-                    let h = ((r.height() * scale) as usize).min(image.size[1].saturating_sub(y));
-                    if w == 0 || h == 0 || w > 65535 || h > 65535 {
-                        return Err("Invalid viewport image dimensions".into());
-                    }
-                    let mut rgba = Vec::with_capacity(w * h * 4);
-                    for row in y..y + h {
-                        for p in &image.pixels[row * image.size[0] + x..row * image.size[0] + x + w]
-                        {
-                            rgba.extend_from_slice(&p.to_array());
-                        }
-                    }
-                    if job.gif {
-                        if job.encoder.is_none() {
-                            let file =
-                                std::fs::File::create(&job.path).map_err(|e| e.to_string())?;
-                            let mut enc = gif::Encoder::new(file, w as u16, h as u16, &[])
-                                .map_err(|e| e.to_string())?;
-                            enc.set_repeat(gif::Repeat::Infinite)
-                                .map_err(|e| e.to_string())?;
-                            job.encoder = Some(enc);
-                        }
-                        let mut frame =
-                            gif::Frame::from_rgba_speed(w as u16, h as u16, &mut rgba, 10);
-                        frame.delay = (100. / self.playback_fps.max(1.)).round().max(1.) as u16;
-                        job.encoder
-                            .as_mut()
-                            .unwrap()
-                            .write_frame(&frame)
-                            .map_err(|e| e.to_string())?;
-                    } else {
-                        let file = std::fs::File::create(&job.path).map_err(|e| e.to_string())?;
-                        let mut enc = png::Encoder::new(file, w as u32, h as u32);
-                        enc.set_color(png::ColorType::Rgba);
-                        enc.set_depth(png::BitDepth::Eight);
-                        enc.write_header()
-                            .map_err(|e| e.to_string())?
-                            .write_image_data(&rgba)
-                            .map_err(|e| e.to_string())?;
-                    }
-                    Ok(())
-                })();
-                match result {
-                    Ok(()) => {
-                        job.remaining -= 1;
-                        job.pending = false;
-                        job.last = Instant::now();
-                        if job.remaining > 0 {
-                            if job.gif
-                                && !self.field_frames.is_empty()
-                                && (self.plane_index == 0 || self.plane_frames.is_empty())
-                            {
-                                self.field_frame =
-                                    (self.field_frame + 1).min(self.field_frames.len() - 1);
-                                self.read_field_frame();
-                            } else if job.gif && !self.plane_frames.is_empty() {
-                                self.plane_frame =
-                                    (self.plane_frame + 1).min(self.plane_frames.len() - 1);
-                                self.read_plane_frame();
-                            }
-                            self.export = Some(job);
-                        } else {
-                            self.message(format!("Exported {}", job.path.display()));
-                        }
-                    }
-                    Err(e) => self.message(e),
-                }
-            }
-        }
-        if let Some(job) = &mut self.export {
-            if !job.pending && job.last.elapsed().as_secs_f64() >= 1. / self.playback_fps.max(1.) {
-                job.pending = true;
-                ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(Default::default()));
-            }
         }
     }
 }

@@ -3,6 +3,8 @@ use super::*;
 #[derive(Serialize, Deserialize)]
 struct SolveSession {
     format: u32,
+    #[serde(default)]
+    monitors: monitoring::Options,
     run: Option<String>,
     folder: Option<PathBuf>,
     family: serde_json::Value,
@@ -26,6 +28,7 @@ impl App {
     }
     pub(super) fn reset_solve_session(&mut self) {
         self.jobs = WorkbenchJobExecutor::new();
+        self.monitoring.reset_history();
         self.continuation_run = None;
         self.recording = None;
         self.solve_recording = None;
@@ -61,6 +64,7 @@ impl App {
             .transpose()?;
         let state = SolveSession {
             format: 1,
+            monitors: self.monitoring.options.clone(),
             run: self.continuation_run.clone(),
             folder,
             family: self.equation_family(),
@@ -120,6 +124,7 @@ impl App {
             let family = serde_json::json!({"transient":transient,"turbulence":settings.pointer("/turbulence/model"),"thermal":settings.pointer("/thermal/enabled").and_then(|v|v.as_bool()).unwrap_or(false)});
             SolveSession {
                 format: 1,
+                monitors: self.monitoring.options.clone(),
                 run: Some(run.id.clone()),
                 folder: Some(PathBuf::from(folder)),
                 family,
@@ -134,6 +139,7 @@ impl App {
             return;
         }
         self.checkpoint_every = state.every.min(1_000_000);
+        self.monitoring.options = state.monitors;
         let Some(folder) = state.folder else {
             if let Some((velocity, pressure)) = state.initial {
                 self.initialized = true;
@@ -169,6 +175,7 @@ impl App {
         }
         match restored {
             Ok((iteration, fields)) => {
+                self.remember_time(iteration, &fields);
                 self.jobs.set_continuation_fields(
                     self.session.mesh().unwrap().mesh.id(),
                     fields,
@@ -202,6 +209,7 @@ impl App {
                     }
                 }
                 self.histories = self.solve_histories.clone();
+                self.restore_engineering();
                 self.refresh_field_frames();
                 self.message(format!("Continuation restored at iteration/step {iteration}. Run continues in the same archive."));
             }
@@ -312,9 +320,9 @@ impl App {
         }
         self.field_frame = self.field_frames.len().saturating_sub(1);
     }
-    pub(super) fn read_field_frame(&mut self) {
+    pub(super) fn read_field_frame(&mut self) -> bool {
         let Some(path) = self.field_frames.get(self.field_frame) else {
-            return;
+            return false;
         };
         let Some(mesh) = self
             .result
@@ -322,7 +330,7 @@ impl App {
             .map(|d| d.mesh())
             .or_else(|| self.session.mesh().map(|m| &m.mesh))
         else {
-            return;
+            return false;
         };
         let loaded = workbench::checkpoint::load(path, mesh).and_then(|(index, initial)| {
             let data = match initial {
@@ -366,10 +374,12 @@ impl App {
                 if self.plane_index > 0 {
                     self.refresh_plane_preview();
                 }
+                true
             }
             Err(e) => {
                 self.field_playing = false;
                 self.message(e);
+                false
             }
         }
     }
@@ -412,6 +422,7 @@ impl App {
                 self.result_cache = ResultRenderCache::build(&data).ok();
                 self.result = Some(data);
                 self.recording = self.solve_recording.clone();
+                self.restore_engineering();
                 self.refresh_field_frames();
                 self.result_run = "current".into();
                 self.result_iteration = index;
@@ -433,7 +444,30 @@ impl App {
             .mesh;
         let mesh_id = mesh.id();
         let (iteration, fields) = workbench::checkpoint::load(path, mesh)?;
+        let archived = if let Some(workspace) = &self.workspace {
+            let folder = workspace.join("monitors").join(format!(
+                "restart-{}",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_nanos()
+            ));
+            std::fs::create_dir_all(&folder).map_err(|e| e.to_string())?;
+            workbench::checkpoint::write_restart(
+                &folder.join("checkpoint.json"),
+                &workbench::checkpoint::MeshSignature::new(mesh),
+                iteration,
+                &fields,
+                self.project.solver.time.is_transient(),
+                "Explicit restart initialization",
+            )?;
+            Some(folder)
+        } else {
+            None
+        };
         self.reset_solve_session();
+        self.remember_time(iteration, &fields);
+        self.solve_recording = archived;
         self.jobs
             .set_continuation_fields(mesh_id, fields, iteration);
         self.iteration = iteration;

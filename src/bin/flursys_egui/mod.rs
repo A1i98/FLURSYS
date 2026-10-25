@@ -1,9 +1,12 @@
 //! Native, model-driven egui workbench. CFD state stays in the shared core.
 mod cad;
 mod continuation;
+mod export;
 mod migration;
+mod monitoring;
 mod panels;
 mod post;
+mod property_editors;
 mod transport;
 mod viewport;
 mod widgets;
@@ -57,6 +60,7 @@ struct Preferences {
     browser: bool,
     properties: bool,
     messages: bool,
+    live_refresh_seconds: f64,
 }
 impl Default for Preferences {
     fn default() -> Self {
@@ -72,11 +76,13 @@ impl Default for Preferences {
             browser: true,
             properties: true,
             messages: false,
+            live_refresh_seconds: 2.0,
         }
     }
 }
 struct App {
     migration: migration::State,
+    monitoring: monitoring::State,
     project: WorkbenchProject,
     session: WorkbenchSession,
     workspace: Option<PathBuf>,
@@ -108,6 +114,9 @@ struct App {
     boundary_kind: usize,
     boundary_velocity: Vec3,
     boundary_pressure: f64,
+    inlet_axis: usize,
+    inlet_center: f64,
+    inlet_half_width: f64,
     camera: viewport::View,
     mesh_cache: Option<MeshRenderCache>,
     geometry_faces: Vec<flursys::RenderableFace>,
@@ -171,7 +180,9 @@ struct App {
     live_iteration: usize,
     playback_fps: f64,
     viewport_rect: Option<egui::Rect>,
-    export: Option<post::ExportJob>,
+    export: Option<export::Job>,
+    gif_options: export::Options,
+    show_gif_options: bool,
     gpu_devices: Vec<flursys::compute::DeviceInfo>,
     drag_select: Option<egui::Pos2>,
     mesh_quality: usize,
@@ -248,6 +259,7 @@ impl App {
         }
         let mut app = Self {
             migration: migration::State::new(),
+            monitoring: monitoring::State::default(),
             editor: project.clone(),
             project,
             session,
@@ -277,6 +289,9 @@ impl App {
             boundary_kind: 0,
             boundary_velocity: Vec3::ZERO,
             boundary_pressure: 0.,
+            inlet_axis: 1,
+            inlet_center: 0.5,
+            inlet_half_width: 0.5,
             camera: Default::default(),
             mesh_cache: None,
             geometry_faces: vec![],
@@ -338,6 +353,8 @@ impl App {
             playback_fps: 10.,
             viewport_rect: None,
             export: None,
+            gif_options: export::Options::default(),
+            show_gif_options: false,
             gpu_devices: Vec::new(),
             drag_select: None,
             mesh_quality: 0,
@@ -391,6 +408,13 @@ impl App {
             .map(|p| p.join("flursys/interface-egui.json"))
     }
     fn apply_preferences(&mut self, ctx: &egui::Context) {
+        self.preferences.live_refresh_seconds = if self.preferences.live_refresh_seconds.is_finite()
+        {
+            self.preferences.live_refresh_seconds.clamp(0.1, 60.0)
+        } else {
+            2.0
+        };
+
         self.cad.ui.dark = !self.preferences.light;
         cad_workbench::theme::set_dark(!self.preferences.light);
         cad_workbench::theme::apply(ctx);
@@ -486,6 +510,7 @@ impl App {
         self.field_playing = false;
         self.force_series.clear();
         self.migration = migration::State::new();
+        self.monitoring = monitoring::State::default();
         self.initialized = false;
         self.refresh_geometry();
         self.refresh_mesh();
@@ -754,6 +779,7 @@ impl App {
                     .map(|(_, steps)| steps)
                     .unwrap_or(self.project.solver.max_outer_iterations),
             );
+            self.configure_engineering()?;
             self.jobs.set_checkpoint_interval(self.checkpoint_every);
             self.jobs
                 .start_solve_with_planes(case, self.project.plane_monitors.clone(), folder.clone())
@@ -1001,7 +1027,9 @@ impl App {
                         series.retain(|(x, _)| *x <= self.iteration as f64);
                     }
                     self.session.complete_solve(result);
-                    self.activate_solution();
+                    if self.export.is_none() {
+                        self.activate_solution();
+                    }
                     if let Some(path) = self.workspace.clone() {
                         self.sync_project();
                         match workbench::finalize_workspace_run_continuing(
@@ -1016,27 +1044,16 @@ impl App {
                                 if let Err(e) = self.persist_continuation() {
                                     self.message(e);
                                 }
-                                if let Some(folder) = &self.solve_recording {
-                                    let report_path = path.join(&run.report_path);
-                                    if let Ok(bytes) = std::fs::read(&report_path) {
-                                        if let Ok(mut report) =
-                                            serde_json::from_slice::<serde_json::Value>(&bytes)
-                                        {
-                                            report["indexed_convergence_history"] =
-                                                serde_json::json!(self.solve_histories);
-                                            report["plane_recording_folder"] =
-                                                serde_json::json!(folder
-                                                    .strip_prefix(&path)
-                                                    .unwrap_or(folder));
-                                            if let Ok(text) = serde_json::to_string_pretty(&report)
-                                            {
-                                                let _ = std::fs::write(report_path, text);
-                                            }
-                                        }
-                                    }
-                                }
+                                let metadata = self.save_run_display_metadata(&run);
                                 self.result_run = run.id.clone();
-                                self.message(format!("Run {} saved: {:?}", run.id, run.status));
+                                match metadata {
+                                    Ok(()) => self
+                                        .message(format!("Run {} saved: {:?}", run.id, run.status)),
+                                    Err(e) => self.message(format!(
+                                        "Run {} saved, but display metadata failed: {e}",
+                                        run.id
+                                    )),
+                                }
                             }
                             Ok(None) => {}
                             Err(e) => self.message(e.to_string()),
@@ -1091,6 +1108,16 @@ impl App {
                         self.plane_snapshot = Some(s);
                     }
                 }
+                WorkbenchJobEvent::TimeStep {
+                    index,
+                    time,
+                    dt,
+                    courant,
+                    rejected,
+                } => {
+                    self.monitoring.time_state = Some((index, time, dt, courant, rejected));
+                }
+                WorkbenchJobEvent::Engineering(sample) => self.accept_engineering(sample),
                 WorkbenchJobEvent::Performance(p) => self.session.set_performance(p),
                 WorkbenchJobEvent::MeshProgress(JobProgress::Meshing { fraction, stage }) => {
                     self.feedback = format!("Meshing {:.0}% · {stage}", fraction * 100.);
@@ -1107,7 +1134,7 @@ impl App {
             self.read_plane_frame();
         }
     }
-    fn read_plane_frame(&mut self) {
+    fn read_plane_frame(&mut self) -> bool {
         if let Some(path) = self.plane_frames.get(self.plane_frame) {
             match std::fs::read(path)
                 .map_err(|e| e.to_string())
@@ -1136,10 +1163,12 @@ impl App {
                         }
                     }
                     self.plane_snapshot = Some(s);
+                    return true;
                 }
                 Err(e) => self.message(e),
             }
         }
+        false
     }
 }
 impl eframe::App for App {
@@ -1207,6 +1236,18 @@ impl eframe::App for App {
                             self.stage = Stage::Solution;
                             self.show_initialization = true;
                         }
+                        "reports" => {
+                            self.stage = Stage::Solution;
+                            self.page = 6;
+                        }
+                        "thermal" => {
+                            self.stage = Stage::Setup;
+                            self.page = 2;
+                        }
+                        "models" => {
+                            self.stage = Stage::Solution;
+                            self.page = 3;
+                        }
                         "methods" => {
                             self.stage = Stage::Solution;
                             self.page = 4;
@@ -1258,7 +1299,13 @@ impl eframe::App for App {
         }
     }
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        self.shell(ui);
+        self.export_footer(ui);
+        if let Some(job) = &self.export {
+            self.camera = job.frozen_camera();
+        }
+        ui.add_enabled_ui(self.export.is_none(), |ui| self.shell(ui));
+        self.gif_settings_window(ui.ctx());
+        self.request_export_capture(ui.ctx());
     }
     fn raw_input_hook(&mut self, _ctx: &egui::Context, input: &mut egui::RawInput) {
         if self.stage == Stage::Geometry {
