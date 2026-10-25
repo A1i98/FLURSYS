@@ -1,0 +1,92 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://flursys.local/schemas/case-v2.json",
+  "title": "FLURSYS editable case template v2",
+  "type": "object",
+  "required": [
+    "format_version",
+    "id",
+    "name",
+    "category",
+    "description",
+    "project_template"
+  ],
+  "properties": {
+    "format_version": {
+      "const": 2
+    },
+    "id": {
+      "type": "string",
+      "pattern": "^[a-zA-Z0-9_-]+$"
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1
+    },
+    "category": {
+      "type": "string"
+    },
+    "description": {
+      "type": "string"
+    },
+    "capabilities": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "expectations": {
+      "type": "object",
+      "properties": {
+        "notes": {
+          "type": "string"
+        },
+        "closed_domain": {
+          "type": "boolean"
+        },
+        "positive_streamwise_flow": {
+          "type": "boolean"
+        },
+        "curved_boundary": {
+          "type": "boolean"
+        },
+        "non_ideal_mesh_quality": {
+          "type": "boolean"
+        }
+      }
+    },
+    "project_template": {
+      "type": "object",
+      "required": [
+        "format_version",
+        "name",
+        "geometry",
+        "mesh",
+        "material",
+        "solver"
+      ],
+      "properties": {
+        "format_version": {
+          "const": 2
+        },
+        "solver": {
+          "type": "object"
+        },
+        "mesh": {
+          "type": "object"
+        },
+        "geometry": {
+          "type": "object"
+        },
+        "runs": {
+          "type": "array",
+          "maxItems": 0
+        },
+        "mesh_asset": {
+          "type": "null"
+        }
+      }
+    }
+  },
+  "description": "Portable geometry and solver intent only. Complete numerical and topology validation is performed by the canonical FLURSYS project loader."
+}

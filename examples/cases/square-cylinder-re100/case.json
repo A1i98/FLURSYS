@@ -1,0 +1,496 @@
+{
+  "$schema": "../../case.schema.json",
+  "format_version": 2,
+  "id": "square-cylinder-re100",
+  "name": "Square cylinder · Re 100",
+  "category": "Transient flow benchmark",
+  "description": "Confined square obstacle, D=1 m, channel height 8D, parabolic Umax=1 m/s, nu=0.01 m²/s; BDF2/PIMPLE.",
+  "capabilities": [
+    "Workbench",
+    "TwoD",
+    "Editable",
+    "BDF2",
+    "PIMPLE",
+    "Force reports",
+    "Unvalidated"
+  ],
+  "expectations": {
+    "closed_domain": false,
+    "positive_streamwise_flow": false,
+    "curved_boundary": false,
+    "non_ideal_mesh_quality": false,
+    "notes": "Inspired by Breuer, Bernsdorf, Zeiser & Durst (2000), Accurate computations of the laminar flow past a square cylinder. https://doi.org/10.1016/S0142-727X(99)00081-8 . Re uses maximum inlet velocity; blockage D/H=1/8. Starter domain: 5D upstream and 24D downstream of the square, not asserted identical to the publication. The pressure/backflow outlet is an approximation. Compare drag, lift and shedding frequency only after checking domain, boundary, mesh and time-step equivalence. Forces in 2D are per unit depth. No published-result validation has been run."
+  },
+  "project_template": {
+    "format_version": 2,
+    "project_id": "template-square-cylinder-re100",
+    "name": "Square cylinder · Re 100",
+    "geometry": {
+      "cad_bodies": {},
+      "hidden_profiles": [],
+      "revision": 19,
+      "next_vertex_id": 9,
+      "next_edge_id": 9,
+      "next_face_id": 3,
+      "next_body_id": 1,
+      "next_sketch_id": 1,
+      "next_feature_id": 1,
+      "vertices": {
+        "1": {
+          "id": 1,
+          "position": {
+            "x": 0.0,
+            "y": 0.0,
+            "z": 0.0
+          }
+        },
+        "2": {
+          "id": 2,
+          "position": {
+            "x": 30.0,
+            "y": 0.0,
+            "z": 0.0
+          }
+        },
+        "3": {
+          "id": 3,
+          "position": {
+            "x": 30.0,
+            "y": 8.0,
+            "z": 0.0
+          }
+        },
+        "4": {
+          "id": 4,
+          "position": {
+            "x": 0.0,
+            "y": 8.0,
+            "z": 0.0
+          }
+        },
+        "5": {
+          "id": 5,
+          "position": {
+            "x": 5.0,
+            "y": 3.5,
+            "z": 0.0
+          }
+        },
+        "6": {
+          "id": 6,
+          "position": {
+            "x": 5.0,
+            "y": 4.5,
+            "z": 0.0
+          }
+        },
+        "7": {
+          "id": 7,
+          "position": {
+            "x": 6.0,
+            "y": 4.5,
+            "z": 0.0
+          }
+        },
+        "8": {
+          "id": 8,
+          "position": {
+            "x": 6.0,
+            "y": 3.5,
+            "z": 0.0
+          }
+        }
+      },
+      "edges": {
+        "1": {
+          "id": 1,
+          "geometry": {
+            "Line": {
+              "start": 1,
+              "end": 2
+            }
+          }
+        },
+        "2": {
+          "id": 2,
+          "geometry": {
+            "Line": {
+              "start": 2,
+              "end": 3
+            }
+          }
+        },
+        "3": {
+          "id": 3,
+          "geometry": {
+            "Line": {
+              "start": 3,
+              "end": 4
+            }
+          }
+        },
+        "4": {
+          "id": 4,
+          "geometry": {
+            "Line": {
+              "start": 4,
+              "end": 1
+            }
+          }
+        },
+        "5": {
+          "id": 5,
+          "geometry": {
+            "Line": {
+              "start": 5,
+              "end": 6
+            }
+          }
+        },
+        "6": {
+          "id": 6,
+          "geometry": {
+            "Line": {
+              "start": 6,
+              "end": 7
+            }
+          }
+        },
+        "7": {
+          "id": 7,
+          "geometry": {
+            "Line": {
+              "start": 7,
+              "end": 8
+            }
+          }
+        },
+        "8": {
+          "id": 8,
+          "geometry": {
+            "Line": {
+              "start": 8,
+              "end": 5
+            }
+          }
+        }
+      },
+      "faces": {
+        "2": {
+          "id": 2,
+          "representation": {
+            "Planar": {
+              "outer_loop": [
+                {
+                  "edge": 1,
+                  "reversed": false
+                },
+                {
+                  "edge": 2,
+                  "reversed": false
+                },
+                {
+                  "edge": 3,
+                  "reversed": false
+                },
+                {
+                  "edge": 4,
+                  "reversed": false
+                }
+              ],
+              "inner_loops": [
+                [
+                  {
+                    "edge": 5,
+                    "reversed": false
+                  },
+                  {
+                    "edge": 6,
+                    "reversed": false
+                  },
+                  {
+                    "edge": 7,
+                    "reversed": false
+                  },
+                  {
+                    "edge": 8,
+                    "reversed": false
+                  }
+                ]
+              ]
+            }
+          }
+        }
+      },
+      "bodies": {},
+      "sketches": {},
+      "extrude_features": {},
+      "pocket_features": {}
+    },
+    "cad_document": "{\"features\":[{\"id\":1,\"name\":\"Fluid profile\",\"plane\":{\"name\":\"XY\",\"type\":\"origin\"},\"sketch\":{\"constraints\":[],\"counters\":{\"a\":8,\"k\":0,\"l\":8,\"p\":8},\"curves\":[{\"a\":0,\"b\":1,\"construction\":false,\"id\":\"edge1\",\"type\":\"line\"},{\"a\":1,\"b\":2,\"construction\":false,\"id\":\"edge2\",\"type\":\"line\"},{\"a\":2,\"b\":3,\"construction\":false,\"id\":\"edge3\",\"type\":\"line\"},{\"a\":3,\"b\":0,\"construction\":false,\"id\":\"edge4\",\"type\":\"line\"},{\"a\":4,\"b\":5,\"construction\":false,\"id\":\"edge5\",\"type\":\"line\"},{\"a\":5,\"b\":6,\"construction\":false,\"id\":\"edge6\",\"type\":\"line\"},{\"a\":6,\"b\":7,\"construction\":false,\"id\":\"edge7\",\"type\":\"line\"},{\"a\":7,\"b\":4,\"construction\":false,\"id\":\"edge8\",\"type\":\"line\"}],\"points\":[{\"fixed\":false,\"id\":\"p1\",\"pos\":[0.0,0.0]},{\"fixed\":false,\"id\":\"p2\",\"pos\":[30000.0,0.0]},{\"fixed\":false,\"id\":\"p3\",\"pos\":[30000.0,8000.0]},{\"fixed\":false,\"id\":\"p4\",\"pos\":[0.0,8000.0]},{\"fixed\":false,\"id\":\"p5\",\"pos\":[5000.0,3500.0]},{\"fixed\":false,\"id\":\"p6\",\"pos\":[5000.0,4500.0]},{\"fixed\":false,\"id\":\"p7\",\"pos\":[6000.0,4500.0]},{\"fixed\":false,\"id\":\"p8\",\"pos\":[6000.0,3500.0]}]},\"suppressed\":false,\"type\":\"sketch\"}],\"format\":\"solidcraft/30\",\"name\":\"Square cylinder · Re 100\",\"next_id\":2,\"params\":[],\"units\":\"mm\"}",
+    "plane_monitors": [],
+    "fluid_face": 2,
+    "named_selections": [
+      {
+        "name": "inlet",
+        "targets": [
+          {
+            "Edge": 4
+          }
+        ]
+      },
+      {
+        "name": "outlet",
+        "targets": [
+          {
+            "Edge": 2
+          }
+        ]
+      },
+      {
+        "name": "walls",
+        "targets": [
+          {
+            "Edge": 1
+          },
+          {
+            "Edge": 3
+          }
+        ]
+      },
+      {
+        "name": "square",
+        "targets": [
+          {
+            "Edge": 5
+          },
+          {
+            "Edge": 6
+          },
+          {
+            "Edge": 7
+          },
+          {
+            "Edge": 8
+          }
+        ]
+      }
+    ],
+    "mesh": {
+      "threads": 1,
+      "dimension": "two-d",
+      "global_size": 0.25,
+      "min_size": 0.0625,
+      "max_size": 0.25,
+      "element_order": 1
+    },
+    "mesh_recipe": {
+      "tuning": {
+        "method": "unstructured",
+        "max_size_growth": null,
+        "divisions": [
+          40,
+          40,
+          10
+        ],
+        "progression": [
+          1.0,
+          1.0
+        ],
+        "algorithm_2d": 6,
+        "algorithm_3d": 1,
+        "curvature_points": 32,
+        "smoothing_steps": 10,
+        "optimize": true,
+        "optimize_netgen": false,
+        "optimize_threshold": 0.3,
+        "extend_boundary_sizes": true
+      },
+      "edge_divisions": [],
+      "regions": [],
+      "local_sizes": [],
+      "refinements": [
+        {
+          "id": 1,
+          "name": "square-distance",
+          "targets": [
+            {
+              "named-selection": "square"
+            }
+          ],
+          "sampling": 128,
+          "size_min": 0.0625,
+          "size_max": 0.25,
+          "distance_min": 0.3,
+          "distance_max": 2.0,
+          "enabled": true
+        }
+      ],
+      "boundary_layers": []
+    },
+    "boundaries": [
+      {
+        "selection": "inlet",
+        "condition": {
+          "parabolic-inlet": {
+            "velocity": {
+              "x": 1.0,
+              "y": 0.0,
+              "z": 0.0
+            },
+            "axis": 1,
+            "center": 4.0,
+            "half_width": 4.0
+          }
+        }
+      },
+      {
+        "selection": "outlet",
+        "condition": {
+          "pressure-outlet-backflow": {
+            "pressure": 0.0,
+            "velocity": {
+              "x": 0.0,
+              "y": 0.0,
+              "z": 0.0
+            }
+          }
+        }
+      },
+      {
+        "selection": "square",
+        "condition": "no-slip-wall"
+      },
+      {
+        "selection": "walls",
+        "condition": "no-slip-wall"
+      }
+    ],
+    "material": {
+      "catalog": null,
+      "density": 1.0,
+      "kinematic_viscosity": 0.01
+    },
+    "solver": {
+      "compute": {
+        "backend": "parallel",
+        "adapter": "",
+        "cpu_fallback": true,
+        "parallel_min_rows": 4096,
+        "gpu_min_rows": 16384,
+        "gpu_memory_fraction": 0.8,
+        "gpu_preconditioner": "auto",
+        "gpu_restart": 24,
+        "gpu_inner_iterations": 8,
+        "gpu_smoothing_sweeps": 2,
+        "gpu_timeout_ms": 10000,
+        "gpu_host_basis_mb": 256
+      },
+      "pressure_coupling": {
+        "algorithm": "pimple",
+        "pressure_correctors": 2,
+        "non_orthogonal_correctors": 0,
+        "non_orthogonal_limiter": 0.5
+      },
+      "volume_models": {
+        "resistance": null,
+        "rotating_frame": null
+      },
+      "cyclic_pairs": [],
+      "initial_profile": null,
+      "compressible": null,
+      "equations": null,
+      "boundary_profiles": {},
+      "scripting": {
+        "contract_version": 1,
+        "scripts": {},
+        "bindings": {}
+      },
+      "thermal": {
+        "enabled": false,
+        "initial_temperature": 293.15,
+        "specific_heat": 1005.0,
+        "conductivity": 0.025,
+        "source_w_m3": 0.0,
+        "relaxation": 0.7,
+        "relative_tolerance": 1e-08,
+        "turbulent_prandtl": 0.85,
+        "wall_treatment": "molecular",
+        "buoyancy": false,
+        "reference_temperature": 293.15,
+        "expansion": 0.0,
+        "gravity": {
+          "x": 0.0,
+          "y": -9.81,
+          "z": 0.0
+        },
+        "max_boussinesq_fraction": 0.1,
+        "boundaries": {}
+      },
+      "time": {
+        "mode": "backward",
+        "dt": 0.02,
+        "steps": 10000
+      },
+      "physical_end_time": null,
+      "force_analysis": {
+        "patches": [
+          "square"
+        ],
+        "frequency_start_time": 0.0,
+        "speed": 1.0,
+        "measure": 1.0,
+        "length": 1.0,
+        "center": {
+          "x": 5.5,
+          "y": 4.0,
+          "z": 0.0
+        },
+        "drag_direction": {
+          "x": 1.0,
+          "y": 0.0,
+          "z": 0.0
+        },
+        "lift_direction": {
+          "x": 0.0,
+          "y": 1.0,
+          "z": 0.0
+        },
+        "reattachment": false,
+        "wall_start": {
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0
+        },
+        "wall_direction": {
+          "x": 1.0,
+          "y": 0.0,
+          "z": 0.0
+        },
+        "wall_tolerance": 1e-06
+      },
+      "turbulence": {
+        "model": "laminar",
+        "wall_treatment": "resolved",
+        "inlets": {},
+        "k": 0.0001,
+        "omega": 1.0,
+        "epsilon": 1e-05,
+        "nu_tilda": 1e-05,
+        "relaxation": 0.5,
+        "relative_tolerance": 1e-06,
+        "ck": 0.094,
+        "ce": 1.048,
+        "cw": 0.325
+      },
+      "convection": "upwind",
+      "threads": 0,
+      "max_outer_iterations": 2000,
+      "continuity_absolute_tolerance": 1e-08,
+      "coupling_relative_tolerance": 1e-06,
+      "velocity_relaxation": 0.4,
+      "pressure_relaxation": 0.2
+    },
+    "runs": []
+  }
+}

@@ -1,0 +1,362 @@
+{
+  "$schema": "../../case.schema.json",
+  "format_version": 2,
+  "id": "lid-driven-cavity",
+  "name": "Lid-driven cavity · 2D",
+  "category": "Internal Flow",
+  "description": "Low-Re closed cavity with one moving wall.",
+  "capabilities": [
+    "2D",
+    "Moving Wall",
+    "Gmsh",
+    "Unstructured"
+  ],
+  "expectations": {
+    "closed_domain": true,
+    "positive_streamwise_flow": false,
+    "curved_boundary": false,
+    "non_ideal_mesh_quality": false,
+    "notes": "Closed-domain flux remains near zero while the top wall drives recirculation. Recipe only; no reference-accuracy certification is implied."
+  },
+  "project_template": {
+    "format_version": 2,
+    "project_id": "template-lid-driven-cavity",
+    "name": "Lid-driven cavity · 2D",
+    "geometry": {
+      "cad_bodies": {},
+      "hidden_profiles": [],
+      "revision": 9,
+      "next_vertex_id": 5,
+      "next_edge_id": 5,
+      "next_face_id": 2,
+      "next_body_id": 1,
+      "next_sketch_id": 1,
+      "next_feature_id": 1,
+      "vertices": {
+        "1": {
+          "id": 1,
+          "position": {
+            "x": 0.0,
+            "y": 0.0,
+            "z": 0.0
+          }
+        },
+        "2": {
+          "id": 2,
+          "position": {
+            "x": 1.0,
+            "y": 0.0,
+            "z": 0.0
+          }
+        },
+        "3": {
+          "id": 3,
+          "position": {
+            "x": 1.0,
+            "y": 1.0,
+            "z": 0.0
+          }
+        },
+        "4": {
+          "id": 4,
+          "position": {
+            "x": 0.0,
+            "y": 1.0,
+            "z": 0.0
+          }
+        }
+      },
+      "edges": {
+        "1": {
+          "id": 1,
+          "geometry": {
+            "Line": {
+              "start": 1,
+              "end": 2
+            }
+          }
+        },
+        "2": {
+          "id": 2,
+          "geometry": {
+            "Line": {
+              "start": 2,
+              "end": 3
+            }
+          }
+        },
+        "3": {
+          "id": 3,
+          "geometry": {
+            "Line": {
+              "start": 3,
+              "end": 4
+            }
+          }
+        },
+        "4": {
+          "id": 4,
+          "geometry": {
+            "Line": {
+              "start": 4,
+              "end": 1
+            }
+          }
+        }
+      },
+      "faces": {
+        "1": {
+          "id": 1,
+          "representation": {
+            "Planar": {
+              "outer_loop": [
+                {
+                  "edge": 1,
+                  "reversed": false
+                },
+                {
+                  "edge": 2,
+                  "reversed": false
+                },
+                {
+                  "edge": 3,
+                  "reversed": false
+                },
+                {
+                  "edge": 4,
+                  "reversed": false
+                }
+              ],
+              "inner_loops": []
+            }
+          }
+        }
+      },
+      "bodies": {},
+      "sketches": {},
+      "extrude_features": {},
+      "pocket_features": {}
+    },
+    "cad_document": "{\"features\":[{\"id\":1,\"name\":\"Fluid profile\",\"plane\":{\"name\":\"XY\",\"type\":\"origin\"},\"sketch\":{\"constraints\":[],\"counters\":{\"a\":4,\"k\":0,\"l\":4,\"p\":4},\"curves\":[{\"a\":0,\"b\":1,\"construction\":false,\"id\":\"edge1\",\"type\":\"line\"},{\"a\":1,\"b\":2,\"construction\":false,\"id\":\"edge2\",\"type\":\"line\"},{\"a\":2,\"b\":3,\"construction\":false,\"id\":\"edge3\",\"type\":\"line\"},{\"a\":3,\"b\":0,\"construction\":false,\"id\":\"edge4\",\"type\":\"line\"}],\"points\":[{\"fixed\":false,\"id\":\"p1\",\"pos\":[0.0,0.0]},{\"fixed\":false,\"id\":\"p2\",\"pos\":[1000.0,0.0]},{\"fixed\":false,\"id\":\"p3\",\"pos\":[1000.0,1000.0]},{\"fixed\":false,\"id\":\"p4\",\"pos\":[0.0,1000.0]}]},\"suppressed\":false,\"type\":\"sketch\"}],\"format\":\"solidcraft/30\",\"name\":\"Lid-driven cavity · 2D\",\"next_id\":2,\"params\":[],\"units\":\"mm\"}",
+    "plane_monitors": [],
+    "fluid_face": 1,
+    "named_selections": [
+      {
+        "name": "top",
+        "targets": [
+          {
+            "Edge": 3
+          }
+        ]
+      },
+      {
+        "name": "bottom",
+        "targets": [
+          {
+            "Edge": 1
+          }
+        ]
+      },
+      {
+        "name": "left",
+        "targets": [
+          {
+            "Edge": 4
+          }
+        ]
+      },
+      {
+        "name": "right",
+        "targets": [
+          {
+            "Edge": 2
+          }
+        ]
+      }
+    ],
+    "mesh": {
+      "threads": 1,
+      "dimension": "two-d",
+      "global_size": 0.12,
+      "min_size": 0.06,
+      "max_size": 0.12,
+      "element_order": 1
+    },
+    "mesh_recipe": {
+      "tuning": {
+        "method": "unstructured",
+        "max_size_growth": null,
+        "divisions": [
+          40,
+          40,
+          10
+        ],
+        "progression": [
+          1.0,
+          1.0
+        ],
+        "algorithm_2d": 6,
+        "algorithm_3d": 1,
+        "curvature_points": 32,
+        "smoothing_steps": 10,
+        "optimize": true,
+        "optimize_netgen": false,
+        "optimize_threshold": 0.3,
+        "extend_boundary_sizes": true
+      },
+      "edge_divisions": [],
+      "regions": [],
+      "local_sizes": [],
+      "refinements": [],
+      "boundary_layers": []
+    },
+    "boundaries": [
+      {
+        "selection": "bottom",
+        "condition": "no-slip-wall"
+      },
+      {
+        "selection": "left",
+        "condition": "no-slip-wall"
+      },
+      {
+        "selection": "right",
+        "condition": "no-slip-wall"
+      },
+      {
+        "selection": "top",
+        "condition": {
+          "moving-wall": {
+            "velocity": {
+              "x": 1.0,
+              "y": 0.0,
+              "z": 0.0
+            }
+          }
+        }
+      }
+    ],
+    "material": {
+      "catalog": null,
+      "density": 1.0,
+      "kinematic_viscosity": 0.1
+    },
+    "solver": {
+      "compute": {
+        "backend": "parallel",
+        "adapter": "",
+        "cpu_fallback": true,
+        "parallel_min_rows": 4096,
+        "gpu_min_rows": 16384,
+        "gpu_memory_fraction": 0.8,
+        "gpu_preconditioner": "auto",
+        "gpu_restart": 24,
+        "gpu_inner_iterations": 8,
+        "gpu_smoothing_sweeps": 2,
+        "gpu_timeout_ms": 10000,
+        "gpu_host_basis_mb": 256
+      },
+      "pressure_coupling": {
+        "algorithm": "simple",
+        "pressure_correctors": 1,
+        "non_orthogonal_correctors": 0,
+        "non_orthogonal_limiter": 0.5
+      },
+      "volume_models": {
+        "resistance": null,
+        "rotating_frame": null
+      },
+      "cyclic_pairs": [],
+      "initial_profile": null,
+      "compressible": null,
+      "equations": null,
+      "boundary_profiles": {},
+      "scripting": {
+        "contract_version": 1,
+        "scripts": {},
+        "bindings": {}
+      },
+      "thermal": {
+        "enabled": false,
+        "initial_temperature": 293.15,
+        "specific_heat": 1005.0,
+        "conductivity": 0.025,
+        "source_w_m3": 0.0,
+        "relaxation": 0.7,
+        "relative_tolerance": 1e-08,
+        "turbulent_prandtl": 0.85,
+        "wall_treatment": "molecular",
+        "buoyancy": false,
+        "reference_temperature": 293.15,
+        "expansion": 0.0,
+        "gravity": {
+          "x": 0.0,
+          "y": -9.81,
+          "z": 0.0
+        },
+        "max_boussinesq_fraction": 0.1,
+        "boundaries": {}
+      },
+      "time": {
+        "mode": "steady"
+      },
+      "physical_end_time": null,
+      "force_analysis": {
+        "patches": [],
+        "frequency_start_time": 0.0,
+        "speed": 1.0,
+        "measure": 1.0,
+        "length": 1.0,
+        "center": {
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0
+        },
+        "drag_direction": {
+          "x": 1.0,
+          "y": 0.0,
+          "z": 0.0
+        },
+        "lift_direction": {
+          "x": 0.0,
+          "y": 1.0,
+          "z": 0.0
+        },
+        "reattachment": false,
+        "wall_start": {
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0
+        },
+        "wall_direction": {
+          "x": 1.0,
+          "y": 0.0,
+          "z": 0.0
+        },
+        "wall_tolerance": 1e-06
+      },
+      "turbulence": {
+        "model": "laminar",
+        "wall_treatment": "resolved",
+        "inlets": {},
+        "k": 0.0001,
+        "omega": 1.0,
+        "epsilon": 1e-05,
+        "nu_tilda": 1e-05,
+        "relaxation": 0.5,
+        "relative_tolerance": 1e-06,
+        "ck": 0.094,
+        "ce": 1.048,
+        "cw": 0.325
+      },
+      "convection": "upwind",
+      "threads": 0,
+      "max_outer_iterations": 400,
+      "continuity_absolute_tolerance": 1e-08,
+      "coupling_relative_tolerance": 1e-06,
+      "velocity_relaxation": 0.7,
+      "pressure_relaxation": 0.3
+    },
+    "runs": []
+  }
+}

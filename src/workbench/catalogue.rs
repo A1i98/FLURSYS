@@ -1,11 +1,8 @@
-//! Built-in, executable Workbench recipes; no source-tree files required.
-#[path = "script_examples.rs"]
-mod script_examples;
-use super::{examples::*, project::*, WorkbenchSession};
-use crate::{
-    unstructured_incompressible::{AdaptiveTimeStep, TimeIntegration},
-    MeshDimension,
-};
+//! Versioned case files with embedded defaults and editable local overrides.
+#[path = "builtin_cases.rs"]
+mod builtin_cases;
+use super::{examples::*, project::*};
+use crate::MeshDimension;
 pub fn normalize_project_name(input: &str) -> Result<String, String> {
     let name = input.trim();
     if name.is_empty() || name.chars().count() > 100 || name.chars().any(char::is_control) {
@@ -39,131 +36,60 @@ pub fn example_slug(id: ExampleProjectId) -> &'static str {
         ExampleProjectId::Channel3D => "channel-3d",
     }
 }
-fn manifest(
-    id: &str,
-    title: &str,
-    category: &str,
-    description: &str,
-    session: WorkbenchSession,
-    notes: &str,
-) -> CaseTemplateManifest {
-    let mut project = session.to_project(title);
-    project.fluid_face = session.fluid_face();
-    project.project_id = format!("template-{id}");
-    CaseTemplateManifest {
-        format_version: WORKBENCH_PROJECT_FORMAT_VERSION,
-        id: id.into(),
-        name: title.into(),
-        category: category.into(),
-        description: description.into(),
-        capabilities: vec![
-            "Workbench".into(),
-            format!("{:?}", session.mesh_dimension()),
-            "Editable".into(),
-        ],
-        expectations: TemplateExpectations {
-            notes: notes.into(),
-            ..Default::default()
-        },
-        project_template: project,
-    }
+pub fn load_case_file(path: &std::path::Path) -> Result<CaseTemplateManifest, String> {
+    let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let mut entry: CaseTemplateManifest =
+        serde_json::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))?;
+    entry.project_template.runs.clear();
+    entry.project_template.mesh_asset = None;
+    entry
+        .validate()
+        .map_err(|e| format!("{}: {e}", path.display()))?;
+    Ok(entry)
 }
 pub fn builtin_templates() -> Result<Vec<CaseTemplateManifest>, String> {
-    let mut templates = Vec::new();
-    for d in example_descriptors() {
-        let session = build_example(d.id).map_err(|e| e.to_string())?;
-        let e = expectations(d.id);
-        let mut entry = manifest(
-            example_slug(d.id),
-            d.title,
-            d.category,
-            d.short_description,
-            session,
-            &format!(
-                "{} Recipe only; no reference-accuracy certification is implied.",
-                d.expected_behavior
-            ),
-        );
-        entry.capabilities = d.capabilities.iter().map(|s| s.to_string()).collect();
-        entry.expectations.closed_domain = e.closed_domain;
-        entry.expectations.positive_streamwise_flow = e.expected_positive_streamwise_flow;
-        entry.expectations.curved_boundary = e.expects_curved_boundary;
-        entry.expectations.non_ideal_mesh_quality = e.expects_non_ideal_quality;
-        templates.push(entry);
+    let mut templates = builtin_cases::CASES
+        .iter()
+        .map(|text| serde_json::from_str::<CaseTemplateManifest>(text).map_err(|e| e.to_string()))
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut roots =
+        vec![std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/cases")];
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(parent) = exe.parent() {
+            roots.push(parent.join("examples/cases"));
+        }
     }
-    let mut blank = WorkbenchProject::blank("New 3D analysis");
-    blank.mesh.dimension = MeshDimension::ThreeD;
-    templates.insert(
-        1,
-        manifest(
-            "blank-3d",
-            "New 3D analysis",
-            "New project",
-            "Empty 3D fluid-volume project.",
-            WorkbenchSession::from_project(&blank).map_err(|e| e.to_string())?,
-            "Create a fluid volume and define named boundaries before meshing.",
-        ),
-    );
-    let mut transient =
-        build_example(ExampleProjectId::LaminarChannel2D).map_err(|e| e.to_string())?;
-    transient
-        .set_flow_models(
-            TimeIntegration::AdaptiveBackward {
-                dt: 0.001,
-                steps: 100,
-                controls: AdaptiveTimeStep::default(),
-            },
-            transient.solver_options().turbulence.clone(),
-        )
-        .map_err(|e| e.to_string())?;
-    transient
-        .set_pressure_coupling(crate::simple::PressureCoupling {
-            algorithm: crate::simple::CouplingAlgorithm::Pimple,
-            ..Default::default()
-        })
-        .map_err(|e| e.to_string())?;
-    let mut entry=manifest("transient-channel","Transient channel · adaptive BDF2","Experimental transient",
-        "Fixed-mesh channel with Courant-controlled variable-step BDF2 and PIMPLE.",transient,
-        "Experimental recipe. Inspect accepted physical steps and Courant; not benchmark validated.");
-    entry.capabilities.extend([
-        "Adaptive BDF2".into(),
-        "PIMPLE".into(),
-        "Experimental".into(),
-    ]);
-    templates.push(entry);
-    let mut rans = build_example(ExampleProjectId::LaminarChannel2D).map_err(|e| e.to_string())?;
-    rans.set_material(1.0, 1e-5).map_err(|e| e.to_string())?;
-    let mut turbulence = rans.solver_options().turbulence.clone();
-    turbulence.model = crate::turbulence::TurbulenceModel::KOmegaSst;
-    turbulence.inlets.insert(
-        "inlet".into(),
-        crate::turbulence::TurbulenceInlet::IntensityDiameter {
-            intensity: 0.05,
-            hydraulic_diameter: 2.0,
-            length_ratio: 0.07,
-        },
-    );
-    rans.set_flow_models(TimeIntegration::Steady, turbulence)
-        .map_err(|e| e.to_string())?;
-    let mut entry=manifest("sst-channel","Channel · k–ω SST setup","Experimental RANS",
-        "Wall-resolved SST starter with intensity/hydraulic-diameter inlet data; not a validated benchmark.",
-        rans,"Draft setup. Review near-wall resolution/y+, domain development length and solver tolerances before relying on results.");
-    entry.capabilities.extend([
-        "k–ω SST".into(),
-        "Intensity / diameter".into(),
-        "Experimental".into(),
-    ]);
-    templates.push(entry);
-    templates.extend(script_examples::templates()?);
-    templates.push(manifest("dfg-cylinder-2d-2","DFG cylinder 2D-2 · Re 100","Experimental transient benchmark",
-        "2.2 x 0.41 m channel, D=0.1 m cylinder, parabolic mean inlet 1 m/s, nu=0.001 m2/s, BDF2/PIMPLE.",
-        super::dfg::session()?,
-        "Source: https://wwwold.mathematik.tu-dortmund.de/~featflow/en/benchmarks/cfdbenchmarking/flow/dfg_benchmark2_re100.html . Geometry, viscosity and parabolic inlet follow DFG 2D-2. IMPORTANT: current strict zero-pressure outlet approximates the benchmark natural/do-nothing outlet; wall loads use first-cell reconstruction. Not reference validated or boundary-condition equivalent. Refine mesh/time step and compare only after periodic shedding is established. Force references: cylinder only, Umean=1, D=0.1. Pressure probes: (0.15,0.2), (0.25,0.2)."));
+    if let Some(root) = std::env::var_os("FLURSYS_EXAMPLES_DIR") {
+        roots.push(root.into());
+    }
+    let mut visited = std::collections::BTreeSet::new();
+    for root in roots {
+        let Ok(identity) = std::fs::canonicalize(&root) else {
+            continue;
+        };
+        if !visited.insert(identity) {
+            continue;
+        }
+        for entry in super::discover_templates(&root) {
+            let mut entry = entry.map_err(|e| e.to_string())?;
+            entry.project_template.runs.clear();
+            entry.project_template.mesh_asset = None;
+            if let Some(existing) = templates.iter_mut().find(|t| t.id == entry.id) {
+                *existing = entry;
+            } else {
+                templates.push(entry);
+            }
+        }
+    }
     for entry in &mut templates {
-        entry.project_template.cad_document = cad_document(&entry.project_template)?;
+        if entry.project_template.cad_document.is_none() {
+            entry.project_template.cad_document = cad_document(&entry.project_template)?;
+        }
         #[cfg(feature = "gui")]
         seed_cad_geometry_hash(&mut entry.project_template)?;
-        entry.validate().map_err(|e| e.to_string())?;
+        entry
+            .validate()
+            .map_err(|e| format!("Case {}: {e}", entry.id))?;
     }
     Ok(templates)
 }
@@ -260,4 +186,40 @@ pub fn seed_cad_geometry_hash(project: &mut WorkbenchProject) -> Result<(), Stri
     }
     project.cad_geometry_hash = Some(model.host_geometry_hash().map_err(|e| e.to_string())?);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn file_library_roundtrips_and_exports_portably() {
+        let cases = super::builtin_templates().expect("load library");
+        for id in [
+            "couette-planar",
+            "natural-convection-ra-1000",
+            "square-cylinder-re100",
+            "taylor-green-2d",
+            "sudden-expansion-re40",
+            "sod-shock-tube",
+        ] {
+            let entry = cases.iter().find(|e| e.id == id).expect("case file");
+            let session = crate::workbench::WorkbenchSession::from_project(&entry.project_template)
+                .expect("canonical project");
+            let project = session.to_project("roundtrip");
+            assert_eq!(
+                project.solver.initial_profile,
+                entry.project_template.solver.initial_profile
+            );
+            assert_eq!(
+                project.solver.compressible,
+                entry.project_template.solver.compressible
+            );
+        }
+        let directory = tempfile::tempdir().expect("directory");
+        let path =
+            crate::workbench::save_case_template(directory.path(), &cases[0]).expect("export");
+        let loaded = super::load_case_file(&path).expect("import");
+        assert_eq!(loaded.id, cases[0].id);
+        assert!(loaded.project_template.runs.is_empty());
+        assert!(loaded.project_template.mesh_asset.is_none());
+    }
 }
