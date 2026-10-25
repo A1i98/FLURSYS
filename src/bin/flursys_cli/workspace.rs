@@ -67,7 +67,7 @@ pub fn help() {
   flursys catalog backup --output NEW.sqlite3 [--db FILE]
   flursys devices [--json]
   flursys examples list [--json]
-  flursys examples create <id> <directory> [--name NAME] [--json]
+  flursys examples create <id> <directory> [--name NAME] [--preset ID] [--json]
   flursys examples export-templates <directory> [--json]
   flursys project inspect <directory> [--json]
   flursys project check <directory> [--json]
@@ -117,14 +117,14 @@ pub fn run(args: &[String]) -> Result<(), String> {
                 let opts = parse(&args[2..], &["json"])?;
                 emit(
                     json!({"summary":templates.iter().map(|t|format!("{} · {}",t.id,t.name)).collect::<Vec<_>>().join("\n"),
-                    "examples":templates.iter().map(|t|json!({"id":t.id,"name":t.name,"dimension":format!("{:?}",t.project_template.mesh.dimension),"description":t.description,"notes":t.expectations.notes})).collect::<Vec<_>>()}),
+                    "examples":templates.iter().map(|t|json!({"id":t.id,"name":t.name,"dimension":format!("{:?}",t.project_template.mesh.dimension),"description":t.description,"notes":t.expectations.notes,"metadata":t.metadata.summary(),"case_format_version":t.format_version})).collect::<Vec<_>>()}),
                     opts.contains_key("json"),
                 );
             }
             "create" => {
                 let id = args.get(2).ok_or("Missing example ID")?;
                 let folder = PathBuf::from(args.get(3).ok_or("Missing destination directory")?);
-                let opts = parse(&args[4..], &["name", "json"])?;
+                let opts = parse(&args[4..], &["name", "preset", "json"])?;
                 if folder.exists()
                     && folder
                         .read_dir()
@@ -141,8 +141,10 @@ pub fn run(args: &[String]) -> Result<(), String> {
                     .into_iter()
                     .find(|t| &t.id == id)
                     .ok_or("Unknown example ID; run flursys examples list")?;
-                let mut project = template.project_template;
-                project.project_id = WorkbenchProject::blank(project.name.clone()).project_id;
+                let mut project = flursys::workbench::case_format::instantiate(
+                    &template,
+                    opts.get("preset").map(String::as_str),
+                )?;
                 catalogue::rename_project(
                     &mut project,
                     opts.get("name")
