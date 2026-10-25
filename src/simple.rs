@@ -555,13 +555,24 @@ pub fn solve_simple_with_observer(
         if let Some(mean) = options.volume_models.mean_velocity {
             let direction = mean.target / mean.target.norm();
             let volume: f64 = mesh.cells().iter().map(|c| c.volume).sum();
-            let average = predictor.values().iter().zip(mesh.cells())
-                .map(|(u,c)| u.dot(direction) * c.volume).sum::<f64>() / volume;
-            let response = r_au.values().iter().zip(mesh.cells())
-                .map(|(r,c)| r * c.volume).sum::<f64>() / volume;
-            let increment = direction * ((mean.target.norm() - average) * mean.relaxation / response);
+            let average = predictor
+                .values()
+                .iter()
+                .zip(mesh.cells())
+                .map(|(u, c)| u.dot(direction) * c.volume)
+                .sum::<f64>()
+                / volume;
+            let response = r_au
+                .values()
+                .iter()
+                .zip(mesh.cells())
+                .map(|(r, c)| r * c.volume)
+                .sum::<f64>()
+                / volume;
+            let increment =
+                direction * ((mean.target.norm() - average) * mean.relaxation / response);
             mean_acceleration += increment;
-            for (u,r) in predictor.values_mut().iter_mut().zip(r_au.values()) {
+            for (u, r) in predictor.values_mut().iter_mut().zip(r_au.values()) {
                 *u += increment * *r;
             }
         }

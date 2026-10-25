@@ -8,7 +8,7 @@ mod output;
 mod time;
 mod viscous;
 pub use output::write_vtu;
-pub use time::{Report, Solution, solve, solve_controlled};
+pub use time::{solve, solve_controlled, Report, Solution};
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct IdealGas {

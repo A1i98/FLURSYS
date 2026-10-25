@@ -10,7 +10,7 @@ mod realizable;
 mod spalart_allmaras;
 mod wall_distance;
 mod wall_functions;
-pub use wall_functions::{WallTreatment, smooth_wall};
+pub use wall_functions::{smooth_wall, WallTreatment};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -471,7 +471,11 @@ impl Closure {
                     let c = 2.0 * self.config.ck * delta * (s2 - trace * trace / 3.0).max(0.0);
                     let disc = (b * b + 4.0 * a * c).sqrt();
                     let sqrt_k = if b >= 0.0 {
-                        if c == 0.0 { 0.0 } else { 2.0 * c / (b + disc) }
+                        if c == 0.0 {
+                            0.0
+                        } else {
+                            2.0 * c / (b + disc)
+                        }
                     } else {
                         (-b + disc) / (2.0 * a)
                     };

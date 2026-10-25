@@ -3,9 +3,9 @@
 //! This module does not parse command-line arguments, print progress, or depend on
 //! a GUI toolkit. Library callers can edit a `WorkbenchSession` and observe typed events.
 use crate::{
-    GmshMesher, RunRecord, WorkbenchProject, WorkbenchSession,
     app::{JobLifecycle, WorkbenchJobEvent, WorkbenchJobExecutor},
     workbench::{finalize_workspace_run, mesh_storage, save_workspace, solve_review},
+    GmshMesher, RunRecord, WorkbenchProject, WorkbenchSession,
 };
 use serde::Serialize;
 /// Version of the headless orchestration contract (independent of file formats).

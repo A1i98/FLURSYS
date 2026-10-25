@@ -1142,7 +1142,11 @@ impl App {
                 }
                 B::FlowRateInlet { rate, mass } => {
                     self.boundary_pressure = rate;
-                    if mass { 11 } else { 10 }
+                    if mass {
+                        11
+                    } else {
+                        10
+                    }
                 }
             };
         }

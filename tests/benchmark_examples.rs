@@ -1,4 +1,4 @@
-use flursys::workbench::{WorkbenchSession, case_format, catalogue};
+use flursys::workbench::{case_format, catalogue, WorkbenchSession};
 use flursys::{GmshMesher, MeshDimension, Vec3};
 
 const CASES: [&str; 6] = [
@@ -75,13 +75,11 @@ fn benchmark_meshes_preserve_patches_and_exclude_the_sphere_volume() {
         assert!(generated.mesh.cell_count() > 0, "{id}");
         if id == "sphere-re100" {
             let centre = Vec3::new(5., 5., 5.);
-            assert!(
-                generated
-                    .mesh
-                    .cells()
-                    .iter()
-                    .all(|c| (c.center - centre).norm() > 0.49)
-            );
+            assert!(generated
+                .mesh
+                .cells()
+                .iter()
+                .all(|c| (c.center - centre).norm() > 0.49));
             let volume: f64 = generated.mesh.cells().iter().map(|c| c.volume).sum();
             let expected = 2500. - std::f64::consts::PI / 6.;
             assert!(
@@ -119,13 +117,11 @@ fn advanced_reference_cases_preserve_operating_points_and_comparison_assets() {
             let p = case_format::instantiate(case, Some(&preset.id)).unwrap();
             let s = WorkbenchSession::from_project(&p).unwrap();
             let (export, _) = s.mesh_generation_inputs().unwrap();
-            assert!(
-                export
-                    .document
-                    .to_geo_string()
-                    .unwrap()
-                    .contains("Physical")
-            );
+            assert!(export
+                .document
+                .to_geo_string()
+                .unwrap()
+                .contains("Physical"));
             if let Some(settings) = &preset.compressible {
                 assert_eq!(p.solver.compressible.as_ref(), Some(settings));
             }

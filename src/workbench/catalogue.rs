@@ -89,7 +89,12 @@ pub fn builtin_templates() -> Result<Vec<CaseTemplateManifest>, String> {
     }
     for entry in &mut templates {
         if entry.project_template.cad_document.is_none()
-            && entry.project_template.geometry.cad_bodies().next().is_none()
+            && entry
+                .project_template
+                .geometry
+                .cad_bodies()
+                .next()
+                .is_none()
         {
             entry.project_template.cad_document = cad_document(&entry.project_template)?;
         }

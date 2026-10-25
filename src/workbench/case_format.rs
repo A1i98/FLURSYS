@@ -1,5 +1,5 @@
 use super::project::{CaseTemplateManifest, MeshRecipe, WorkbenchMeshSettings, WorkbenchProject};
-use crate::{Vec3, unstructured_incompressible::TimeIntegration};
+use crate::{unstructured_incompressible::TimeIntegration, Vec3};
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::path::{Component, Path, PathBuf};
@@ -569,11 +569,9 @@ mod tests {
             .expect("case parent")
             .join(&case.metadata.assets[0].path);
         std::fs::write(asset, "tampered reference").expect("tamper");
-        assert!(
-            crate::workbench::catalogue::load_case_file(&path)
-                .expect_err("checksum rejection")
-                .contains("checksum")
-        );
+        assert!(crate::workbench::catalogue::load_case_file(&path)
+            .expect_err("checksum rejection")
+            .contains("checksum"));
         assert!(relative_asset(Path::new("../escape.csv")).is_err());
         assert!(relative_asset(Path::new("/tmp/escape.csv")).is_err());
     }

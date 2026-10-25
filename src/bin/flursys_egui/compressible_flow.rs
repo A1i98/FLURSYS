@@ -2,8 +2,8 @@ use super::widgets::{heading, number, vector};
 use super::*;
 use flursys::compressible as gas;
 use std::sync::{
-    Arc,
     atomic::{AtomicU8, Ordering},
+    Arc,
 };
 #[derive(Clone, Serialize, Deserialize)]
 struct Saved {

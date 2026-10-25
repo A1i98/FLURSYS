@@ -5,11 +5,10 @@
 //! remains in `crate::simple`.
 
 use crate::{
-    CellField, Diffusivity, FaceField, FieldError, LeastSquaresGradientStencil,
+    initial_face_flux, CellField, Diffusivity, FaceField, FieldError, LeastSquaresGradientStencil,
     LinearSolverOptions, NumericsError, ResolvedScalarBoundaryConditions,
     ResolvedVelocityBoundaryConditions, ScalarBoundaryCondition, SimpleError, SimpleOptions,
     SimpleReport, SimpleState, UnstructuredMesh, Vec3, VelocityBoundaryCondition,
-    initial_face_flux,
 };
 
 mod profiles;
@@ -889,9 +888,9 @@ impl<'a> SolveControl<'a> {
     pub fn with_fields(
         mut self,
         callback: impl Fn(usize, &CellField<Vec3>, &CellField<f64>) -> Result<(), String>
-        + Send
-        + Sync
-        + 'a,
+            + Send
+            + Sync
+            + 'a,
     ) -> Self {
         self.on_fields = Some(Box::new(callback));
         self
@@ -901,9 +900,9 @@ impl<'a> SolveControl<'a> {
         mut self,
         every: usize,
         callback: impl Fn(usize, IncompressibleInitialConditions) -> Result<(), String>
-        + Send
-        + Sync
-        + 'a,
+            + Send
+            + Sync
+            + 'a,
     ) -> Self {
         self.on_restart = Some(Box::new(callback));
         self.restart_every = every;

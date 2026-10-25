@@ -1,13 +1,13 @@
 //! CLI for the same project, mesh and solver objects as the desktop Workbench.
 #[path = "catalog.rs"]
 mod catalog;
-#[path = "transport.rs"]
-mod transport;
 #[path = "compressible.rs"]
 mod compressible;
+#[path = "transport.rs"]
+mod transport;
 use flursys::workbench::{catalogue, mesh_storage, solve_review};
 use flursys::*;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use std::{
     collections::BTreeMap,
     path::{Path, PathBuf},

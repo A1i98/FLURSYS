@@ -1,12 +1,12 @@
 use crate::{
-    GeneratedMesh, GeometryGmshExport, GmshMeshOptions, GmshMesher, IncompressibleCase,
-    IncompressibleSolution, IncompressibleSolveError, MeshingError, SolveControl,
-    solve_incompressible_with_control,
+    solve_incompressible_with_control, GeneratedMesh, GeometryGmshExport, GmshMeshOptions,
+    GmshMesher, IncompressibleCase, IncompressibleSolution, IncompressibleSolveError, MeshingError,
+    SolveControl,
 };
 use std::sync::{
-    Arc, Mutex,
     atomic::{AtomicBool, AtomicUsize, Ordering},
     mpsc::{self, Receiver},
+    Arc, Mutex,
 };
 
 fn wait_for_resume(paused: &AtomicBool, cancellation: &CancellationToken) -> bool {
@@ -300,9 +300,9 @@ impl WorkbenchJobExecutor {
         }
         if let Some(path) = self.restart.as_ref() {
             let recovered = crate::workbench::checkpoint::load_recoverable(path, &case.mesh)
-                .map_err(
-                    |_| "checkpoint cannot be loaded for this mesh; choose it again or Initialize",
-                )?;
+                .map_err(|_| {
+                    "checkpoint cannot be loaded for this mesh; choose it again or Initialize"
+                })?;
             self.completed
                 .store(recovered.info.iteration, Ordering::Release);
             case.initial_conditions = recovered.fields;
@@ -735,10 +735,9 @@ mod tests {
                 let cancelled = wait_for_resume(&worker_pause, &worker_token);
                 tx.send((cancelled, retained_fields)).unwrap();
             });
-            assert!(
-                rx.recv_timeout(std::time::Duration::from_millis(100))
-                    .is_err()
-            );
+            assert!(rx
+                .recv_timeout(std::time::Duration::from_millis(100))
+                .is_err());
             if cancel {
                 token.cancel();
             } else {
@@ -802,12 +801,10 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
         assert!(!executor.is_checkpointing());
-        assert!(
-            executor
-                .drain()
-                .iter()
-                .any(|e| matches!(e,WorkbenchJobEvent::Checkpoint(Ok(info)) if info.iteration==17))
-        );
+        assert!(executor
+            .drain()
+            .iter()
+            .any(|e| matches!(e,WorkbenchJobEvent::Checkpoint(Ok(info)) if info.iteration==17)));
         let (index, fields) = crate::workbench::checkpoint::load(&path, &mesh).unwrap();
         assert_eq!(index, 17);
         assert!(matches!(fields,Initial::Restart{velocity,..} if velocity.values()[0].x==7.));

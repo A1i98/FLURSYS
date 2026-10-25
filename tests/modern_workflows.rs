@@ -396,11 +396,9 @@ fn load_history_frequency_and_archive_round_trip() {
     loads::append(&path, samples.last().unwrap()).unwrap();
     let loaded = loads::load(&path).unwrap();
     assert_eq!(loaded.len(), samples.len());
-    assert!(
-        loads::csv(&loaded, &settings)
-            .unwrap()
-            .starts_with("index,physical_time_s,Cd")
-    );
+    assert!(loads::csv(&loaded, &settings)
+        .unwrap()
+        .starts_with("index,physical_time_s,Cd"));
     let mut count = 0;
     loads::visit_samples(&path, |_| {
         count += 1;

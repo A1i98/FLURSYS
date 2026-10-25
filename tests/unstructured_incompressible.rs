@@ -1155,30 +1155,61 @@ fn inclined_slip_boundary_preserves_tangential_flow() {
 
 #[test]
 fn periodic_mean_forcing_sustains_laminar_and_sst_flow_without_prescribed_inlets() {
-    for model in [flursys::turbulence::TurbulenceModel::Laminar, flursys::turbulence::TurbulenceModel::KOmegaSst] {
+    for model in [
+        flursys::turbulence::TurbulenceModel::Laminar,
+        flursys::turbulence::TurbulenceModel::KOmegaSst,
+    ] {
         let mut solver = IncompressibleSolverOptions::default();
         solver.max_outer_iterations = 60;
         solver.threads = 1;
         solver.turbulence.model = model;
-        solver.cyclic_pairs.push(flursys::periodic::TranslationalCyclicPair {
-            first: "left".into(), second: "right".into(), translation: Vec3::new(2.,0.,0.), tolerance: 1e-8,
-        });
+        solver
+            .cyclic_pairs
+            .push(flursys::periodic::TranslationalCyclicPair {
+                first: "left".into(),
+                second: "right".into(),
+                translation: Vec3::new(2., 0., 0.),
+                tolerance: 1e-8,
+            });
         solver.volume_models.mean_velocity = Some(flursys::volume_models::MeanVelocity {
-            target: Vec3::new(1.,0.,0.), relaxation: 0.5,
+            target: Vec3::new(1., 0., 0.),
+            relaxation: 0.5,
         });
-        let case = IncompressibleCase::steady(four_cell_mesh_with_named_patches(),
-            vec![("bottom".into(), IncompressibleBoundaryCondition::NoSlipWall),
-                 ("top".into(), IncompressibleBoundaryCondition::NoSlipWall)],
-            IncompressibleMaterial { density: 1., kinematic_viscosity: 0.1 }, solver);
+        let case = IncompressibleCase::steady(
+            four_cell_mesh_with_named_patches(),
+            vec![
+                ("bottom".into(), IncompressibleBoundaryCondition::NoSlipWall),
+                ("top".into(), IncompressibleBoundaryCondition::NoSlipWall),
+            ],
+            IncompressibleMaterial {
+                density: 1.,
+                kinematic_viscosity: 0.1,
+            },
+            solver,
+        );
         let solution = solve_incompressible(&case).unwrap();
         let volume: f64 = case.mesh.cells().iter().map(|c| c.volume).sum();
-        let mean: f64 = solution.velocity.values().iter().zip(case.mesh.cells())
-            .map(|(u,c)|u.x*c.volume).sum::<f64>() / volume;
-        assert!((mean-1.).abs()<1e-4, "{model:?}: mean={mean}");
+        let mean: f64 = solution
+            .velocity
+            .values()
+            .iter()
+            .zip(case.mesh.cells())
+            .map(|(u, c)| u.x * c.volume)
+            .sum::<f64>()
+            / volume;
+        assert!((mean - 1.).abs() < 1e-4, "{model:?}: mean={mean}");
         assert!(solution.report.final_continuity_rms < 1e-8);
         if let Some(turbulence) = &solution.turbulence {
-            assert!(turbulence.k.values().iter().all(|v|v.is_finite() && *v >= 0.));
-            assert!(turbulence.omega.values().iter().all(|v|v.is_finite() && *v > 0.));
+            assert!(turbulence
+                .k
+                .values()
+                .iter()
+                .all(|v| v.is_finite() && *v >= 0.));
+            assert!(turbulence
+                .omega
+                .values()
+                .iter()
+                .all(|v| v.is_finite() && *v > 0.));
         }
     }
 }

@@ -756,17 +756,15 @@ mod checkpoint_tests {
             "fixture",
         )
         .unwrap();
-        assert!(
-            write(
-                &path,
-                &signature,
-                101,
-                &[Vec3::ZERO],
-                &[f64::NAN],
-                "fixture"
-            )
-            .is_err()
-        );
+        assert!(write(
+            &path,
+            &signature,
+            101,
+            &[Vec3::ZERO],
+            &[f64::NAN],
+            "fixture"
+        )
+        .is_err());
         assert_eq!(load(&path, &mesh).unwrap().0, 100);
         assert!(write(&path, &signature, 102, &[], &[], "fixture").is_err());
     }
@@ -863,18 +861,16 @@ mod checkpoint_tests {
         assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 2);
         assert!(dir.path().join("iteration-00000005.json").exists());
         policy.max_history_bytes = 1;
-        assert!(
-            write_history(
-                &dir.path().join("iteration-00000006.json"),
-                &signature,
-                6,
-                &fields,
-                false,
-                "fixture",
-                &policy
-            )
-            .is_err()
-        );
+        assert!(write_history(
+            &dir.path().join("iteration-00000006.json"),
+            &signature,
+            6,
+            &fields,
+            false,
+            "fixture",
+            &policy
+        )
+        .is_err());
         assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 2);
     }
 }
