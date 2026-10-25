@@ -1,0 +1,202 @@
+{
+  "cad_bodies": {},
+  "hidden_profiles": [],
+  "revision": 19,
+  "next_vertex_id": 9,
+  "next_edge_id": 9,
+  "next_face_id": 3,
+  "next_body_id": 1,
+  "next_sketch_id": 1,
+  "next_feature_id": 1,
+  "vertices": {
+    "1": {
+      "id": 1,
+      "position": {
+        "x": 0.0,
+        "y": 0.0,
+        "z": 0.0
+      }
+    },
+    "2": {
+      "id": 2,
+      "position": {
+        "x": 30.0,
+        "y": 0.0,
+        "z": 0.0
+      }
+    },
+    "3": {
+      "id": 3,
+      "position": {
+        "x": 30.0,
+        "y": 8.0,
+        "z": 0.0
+      }
+    },
+    "4": {
+      "id": 4,
+      "position": {
+        "x": 0.0,
+        "y": 8.0,
+        "z": 0.0
+      }
+    },
+    "5": {
+      "id": 5,
+      "position": {
+        "x": 5.0,
+        "y": 3.5,
+        "z": 0.0
+      }
+    },
+    "6": {
+      "id": 6,
+      "position": {
+        "x": 5.0,
+        "y": 4.5,
+        "z": 0.0
+      }
+    },
+    "7": {
+      "id": 7,
+      "position": {
+        "x": 6.0,
+        "y": 4.5,
+        "z": 0.0
+      }
+    },
+    "8": {
+      "id": 8,
+      "position": {
+        "x": 6.0,
+        "y": 3.5,
+        "z": 0.0
+      }
+    }
+  },
+  "edges": {
+    "1": {
+      "id": 1,
+      "geometry": {
+        "Line": {
+          "start": 1,
+          "end": 2
+        }
+      }
+    },
+    "2": {
+      "id": 2,
+      "geometry": {
+        "Line": {
+          "start": 2,
+          "end": 3
+        }
+      }
+    },
+    "3": {
+      "id": 3,
+      "geometry": {
+        "Line": {
+          "start": 3,
+          "end": 4
+        }
+      }
+    },
+    "4": {
+      "id": 4,
+      "geometry": {
+        "Line": {
+          "start": 4,
+          "end": 1
+        }
+      }
+    },
+    "5": {
+      "id": 5,
+      "geometry": {
+        "Line": {
+          "start": 5,
+          "end": 6
+        }
+      }
+    },
+    "6": {
+      "id": 6,
+      "geometry": {
+        "Line": {
+          "start": 6,
+          "end": 7
+        }
+      }
+    },
+    "7": {
+      "id": 7,
+      "geometry": {
+        "Line": {
+          "start": 7,
+          "end": 8
+        }
+      }
+    },
+    "8": {
+      "id": 8,
+      "geometry": {
+        "Line": {
+          "start": 8,
+          "end": 5
+        }
+      }
+    }
+  },
+  "faces": {
+    "2": {
+      "id": 2,
+      "representation": {
+        "Planar": {
+          "outer_loop": [
+            {
+              "edge": 1,
+              "reversed": false
+            },
+            {
+              "edge": 2,
+              "reversed": false
+            },
+            {
+              "edge": 3,
+              "reversed": false
+            },
+            {
+              "edge": 4,
+              "reversed": false
+            }
+          ],
+          "inner_loops": [
+            [
+              {
+                "edge": 5,
+                "reversed": false
+              },
+              {
+                "edge": 6,
+                "reversed": false
+              },
+              {
+                "edge": 7,
+                "reversed": false
+              },
+              {
+                "edge": 8,
+                "reversed": false
+              }
+            ]
+          ]
+        }
+      }
+    }
+  },
+  "bodies": {},
+  "sketches": {},
+  "extrude_features": {},
+  "pocket_features": {}
+}

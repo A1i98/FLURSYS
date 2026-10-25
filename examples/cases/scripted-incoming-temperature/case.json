@@ -417,5 +417,376 @@
       "pressure_relaxation": 0.1
     },
     "runs": []
+  },
+  "metadata": {
+    "revision": "1",
+    "sources": [
+      {
+        "id": "recipe",
+        "title": "FLURSYS editable starter recipe",
+        "authors": [],
+        "year": null,
+        "doi": null,
+        "url": null,
+        "relationship": "illustrative",
+        "notes": "Configuration example; no publication equivalence or accuracy claim."
+      }
+    ],
+    "dimensionless": [
+      {
+        "symbol": "Re",
+        "value": 1.0,
+        "formula": "U_ref * L_ref / nu",
+        "scales": [
+          {
+            "symbol": "U_ref",
+            "value": 0.1,
+            "unit": "m/s",
+            "definition": "Configured nominal boundary speed; scripts/time tables can override this scale"
+          },
+          {
+            "symbol": "L_ref",
+            "value": 1.0,
+            "unit": "m",
+            "definition": "Full channel height / plate separation"
+          },
+          {
+            "symbol": "nu",
+            "value": 0.1,
+            "unit": "m2/s",
+            "definition": "Configured kinematic viscosity"
+          }
+        ],
+        "notes": ""
+      },
+      {
+        "symbol": "Pr",
+        "value": 4020.0,
+        "formula": "nu / alpha; alpha = k/(rho*Cp)",
+        "scales": [
+          {
+            "symbol": "nu",
+            "value": 0.1,
+            "unit": "m2/s",
+            "definition": "Kinematic viscosity"
+          },
+          {
+            "symbol": "alpha",
+            "value": 2.4875621890547266e-05,
+            "unit": "m2/s",
+            "definition": "Thermal diffusivity"
+          }
+        ],
+        "notes": ""
+      }
+    ],
+    "display": {
+      "field": "temperature",
+      "mode": "filled-contours",
+      "palette": "viridis",
+      "plane": "surface",
+      "vectors": true,
+      "cell_edges": false,
+      "levels": 16,
+      "probes": [
+        {
+          "name": "left interior",
+          "position": {
+            "x": 0.08,
+            "y": 0.5,
+            "z": 0.0
+          },
+          "quantities": [
+            "pressure",
+            "speed",
+            "temperature"
+          ],
+          "sampling": "nearest-cell"
+        },
+        {
+          "name": "right interior",
+          "position": {
+            "x": 3.92,
+            "y": 0.5,
+            "z": 0.0
+          },
+          "quantities": [
+            "pressure",
+            "speed",
+            "temperature"
+          ],
+          "sampling": "nearest-cell"
+        }
+      ],
+      "plots": [
+        {
+          "name": "Transverse velocity profile",
+          "kind": "line-profile",
+          "quantity": "velocity-x",
+          "start": {
+            "x": 3.2,
+            "y": 0.0,
+            "z": 0.0
+          },
+          "end": {
+            "x": 3.2,
+            "y": 1.0,
+            "z": 0.0
+          },
+          "notes": "Compare away from entrance and before any outlet recirculation; coordinates are model units."
+        }
+      ],
+      "section": null
+    },
+    "comparisons": [],
+    "verification": {
+      "status": "unvalidated",
+      "evidence": [],
+      "notes": "Input recipes and reference definitions only. No mesh/time independence study or measured error certification has been recorded."
+    },
+    "presets": [
+      {
+        "id": "coarse",
+        "name": "Coarse mesh",
+        "description": "Mesh-only refinement: sizes scaled by 2.0, mapped/edge divisions inversely scaled. Time settings remain unchanged. Not a verified accuracy level.",
+        "mesh": {
+          "threads": 1,
+          "dimension": "two-d",
+          "global_size": 0.4,
+          "min_size": 0.2,
+          "max_size": 0.4,
+          "element_order": 1
+        },
+        "mesh_recipe": {
+          "tuning": {
+            "method": "unstructured",
+            "max_size_growth": null,
+            "divisions": [
+              20,
+              20,
+              5
+            ],
+            "progression": [
+              1.0,
+              1.0
+            ],
+            "algorithm_2d": 6,
+            "algorithm_3d": 1,
+            "curvature_points": 32,
+            "smoothing_steps": 10,
+            "optimize": true,
+            "optimize_netgen": false,
+            "optimize_threshold": 0.3,
+            "extend_boundary_sizes": true
+          },
+          "edge_divisions": [],
+          "regions": [],
+          "local_sizes": [],
+          "refinements": [],
+          "boundary_layers": [
+            {
+              "id": 1,
+              "name": "channel-wall-layers",
+              "targets": [
+                {
+                  "named-selection": "top_wall"
+                },
+                {
+                  "named-selection": "bottom_wall"
+                }
+              ],
+              "first_layer_height": 0.02,
+              "growth_ratio": 1.2,
+              "layer_count": 4,
+              "enabled": true
+            }
+          ]
+        },
+        "time": null,
+        "physical_end_time": null,
+        "compressible_time": null
+      },
+      {
+        "id": "time-coarse",
+        "name": "Coarse time step",
+        "description": "Time-only study: step size scaled by 2.0. Mesh remains unchanged. Adaptive step budgets are nominal; set an explicit end time for equal physical duration.",
+        "mesh": null,
+        "mesh_recipe": null,
+        "time": {
+          "mode": "euler",
+          "dt": 0.02,
+          "steps": 50
+        },
+        "physical_end_time": null,
+        "compressible_time": null
+      },
+      {
+        "id": "medium",
+        "name": "Medium mesh",
+        "description": "Mesh-only refinement: sizes scaled by 1.0, mapped/edge divisions inversely scaled. Time settings remain unchanged. Not a verified accuracy level.",
+        "mesh": {
+          "threads": 1,
+          "dimension": "two-d",
+          "global_size": 0.2,
+          "min_size": 0.1,
+          "max_size": 0.2,
+          "element_order": 1
+        },
+        "mesh_recipe": {
+          "tuning": {
+            "method": "unstructured",
+            "max_size_growth": null,
+            "divisions": [
+              40,
+              40,
+              10
+            ],
+            "progression": [
+              1.0,
+              1.0
+            ],
+            "algorithm_2d": 6,
+            "algorithm_3d": 1,
+            "curvature_points": 32,
+            "smoothing_steps": 10,
+            "optimize": true,
+            "optimize_netgen": false,
+            "optimize_threshold": 0.3,
+            "extend_boundary_sizes": true
+          },
+          "edge_divisions": [],
+          "regions": [],
+          "local_sizes": [],
+          "refinements": [],
+          "boundary_layers": [
+            {
+              "id": 1,
+              "name": "channel-wall-layers",
+              "targets": [
+                {
+                  "named-selection": "top_wall"
+                },
+                {
+                  "named-selection": "bottom_wall"
+                }
+              ],
+              "first_layer_height": 0.01,
+              "growth_ratio": 1.2,
+              "layer_count": 4,
+              "enabled": true
+            }
+          ]
+        },
+        "time": null,
+        "physical_end_time": null,
+        "compressible_time": null
+      },
+      {
+        "id": "time-medium",
+        "name": "Medium time step",
+        "description": "Time-only study: step size scaled by 1.0. Mesh remains unchanged. Adaptive step budgets are nominal; set an explicit end time for equal physical duration.",
+        "mesh": null,
+        "mesh_recipe": null,
+        "time": {
+          "mode": "euler",
+          "dt": 0.01,
+          "steps": 100
+        },
+        "physical_end_time": null,
+        "compressible_time": null
+      },
+      {
+        "id": "fine",
+        "name": "Fine mesh",
+        "description": "Mesh-only refinement: sizes scaled by 0.5, mapped/edge divisions inversely scaled. Time settings remain unchanged. Not a verified accuracy level.",
+        "mesh": {
+          "threads": 1,
+          "dimension": "two-d",
+          "global_size": 0.1,
+          "min_size": 0.05,
+          "max_size": 0.1,
+          "element_order": 1
+        },
+        "mesh_recipe": {
+          "tuning": {
+            "method": "unstructured",
+            "max_size_growth": null,
+            "divisions": [
+              80,
+              80,
+              20
+            ],
+            "progression": [
+              1.0,
+              1.0
+            ],
+            "algorithm_2d": 6,
+            "algorithm_3d": 1,
+            "curvature_points": 32,
+            "smoothing_steps": 10,
+            "optimize": true,
+            "optimize_netgen": false,
+            "optimize_threshold": 0.3,
+            "extend_boundary_sizes": true
+          },
+          "edge_divisions": [],
+          "regions": [],
+          "local_sizes": [],
+          "refinements": [],
+          "boundary_layers": [
+            {
+              "id": 1,
+              "name": "channel-wall-layers",
+              "targets": [
+                {
+                  "named-selection": "top_wall"
+                },
+                {
+                  "named-selection": "bottom_wall"
+                }
+              ],
+              "first_layer_height": 0.005,
+              "growth_ratio": 1.2,
+              "layer_count": 4,
+              "enabled": true
+            }
+          ]
+        },
+        "time": null,
+        "physical_end_time": null,
+        "compressible_time": null
+      },
+      {
+        "id": "time-fine",
+        "name": "Fine time step",
+        "description": "Time-only study: step size scaled by 0.5. Mesh remains unchanged. Adaptive step budgets are nominal; set an explicit end time for equal physical duration.",
+        "mesh": null,
+        "mesh_recipe": null,
+        "time": {
+          "mode": "euler",
+          "dt": 0.005,
+          "steps": 200
+        },
+        "physical_end_time": null,
+        "compressible_time": null
+      }
+    ],
+    "assets": [
+      {
+        "path": "geometry/domain.json",
+        "role": "geometry",
+        "media_type": "application/json",
+        "sha256": "87177364c8cb58a2dfdc8437c5a189c4f1b5cc76c45bbeadef2d097919ead4c4",
+        "content": "{\n  \"cad_bodies\": {},\n  \"hidden_profiles\": [],\n  \"revision\": 9,\n  \"next_vertex_id\": 5,\n  \"next_edge_id\": 5,\n  \"next_face_id\": 2,\n  \"next_body_id\": 1,\n  \"next_sketch_id\": 1,\n  \"next_feature_id\": 1,\n  \"vertices\": {\n    \"1\": {\n      \"id\": 1,\n      \"position\": {\n        \"x\": 0.0,\n        \"y\": 0.0,\n        \"z\": 0.0\n      }\n    },\n    \"2\": {\n      \"id\": 2,\n      \"position\": {\n        \"x\": 4.0,\n        \"y\": 0.0,\n        \"z\": 0.0\n      }\n    },\n    \"3\": {\n      \"id\": 3,\n      \"position\": {\n        \"x\": 4.0,\n        \"y\": 1.0,\n        \"z\": 0.0\n      }\n    },\n    \"4\": {\n      \"id\": 4,\n      \"position\": {\n        \"x\": 0.0,\n        \"y\": 1.0,\n        \"z\": 0.0\n      }\n    }\n  },\n  \"edges\": {\n    \"1\": {\n      \"id\": 1,\n      \"geometry\": {\n        \"Line\": {\n          \"start\": 1,\n          \"end\": 2\n        }\n      }\n    },\n    \"2\": {\n      \"id\": 2,\n      \"geometry\": {\n        \"Line\": {\n          \"start\": 2,\n          \"end\": 3\n        }\n      }\n    },\n    \"3\": {\n      \"id\": 3,\n      \"geometry\": {\n        \"Line\": {\n          \"start\": 3,\n          \"end\": 4\n        }\n      }\n    },\n    \"4\": {\n      \"id\": 4,\n      \"geometry\": {\n        \"Line\": {\n          \"start\": 4,\n          \"end\": 1\n        }\n      }\n    }\n  },\n  \"faces\": {\n    \"1\": {\n      \"id\": 1,\n      \"representation\": {\n        \"Planar\": {\n          \"outer_loop\": [\n            {\n              \"edge\": 1,\n              \"reversed\": false\n            },\n            {\n              \"edge\": 2,\n              \"reversed\": false\n            },\n            {\n              \"edge\": 3,\n              \"reversed\": false\n            },\n            {\n              \"edge\": 4,\n              \"reversed\": false\n            }\n          ],\n          \"inner_loops\": []\n        }\n      }\n    }\n  },\n  \"bodies\": {},\n  \"sketches\": {},\n  \"extrude_features\": {},\n  \"pocket_features\": {}\n}\n"
+      },
+      {
+        "path": "scripts/scripted-incoming-temperature.rhai",
+        "role": "script",
+        "media_type": "text/x-rhai",
+        "sha256": "e6d3191a1d38b42260cbdfabf804b7be11fb6d02ada93d05fffe7a2dd97b8d54",
+        "content": "// Inlet/outlet temperature: incoming K; outgoing faces retain zero gradient.\nfn profile(x, y, z, t) {\n    params.base_temperature + params.amplitude * sin(2.0 * PI * params.frequency * t)\n}\n",
+        "linked_script": "scripted-incoming-temperature"
+      }
+    ]
   }
 }

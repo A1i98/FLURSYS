@@ -201,5 +201,174 @@
       "pressure_relaxation": 0.3
     },
     "runs": []
+  },
+  "metadata": {
+    "revision": "1",
+    "sources": [
+      {
+        "id": "recipe",
+        "title": "FLURSYS editable starter recipe",
+        "authors": [],
+        "year": null,
+        "doi": null,
+        "url": null,
+        "relationship": "illustrative",
+        "notes": "Configuration example; no publication equivalence or accuracy claim."
+      }
+    ],
+    "dimensionless": [],
+    "display": {
+      "field": "speed",
+      "mode": "filled-contours",
+      "palette": "viridis",
+      "plane": "surface",
+      "vectors": true,
+      "cell_edges": false,
+      "levels": 16,
+      "probes": [],
+      "plots": [],
+      "section": null
+    },
+    "comparisons": [],
+    "verification": {
+      "status": "unvalidated",
+      "evidence": [],
+      "notes": "Input recipes and reference definitions only. No mesh/time independence study or measured error certification has been recorded."
+    },
+    "presets": [
+      {
+        "id": "coarse",
+        "name": "Coarse mesh",
+        "description": "Mesh-only refinement: sizes scaled by 2.0, mapped/edge divisions inversely scaled. Time settings remain unchanged. Not a verified accuracy level.",
+        "mesh": {
+          "threads": 1,
+          "dimension": "three-d",
+          "global_size": 0.2,
+          "min_size": 0.1,
+          "max_size": 0.4,
+          "element_order": 1
+        },
+        "mesh_recipe": {
+          "tuning": {
+            "method": "unstructured",
+            "max_size_growth": null,
+            "divisions": [
+              20,
+              20,
+              5
+            ],
+            "progression": [
+              1.0,
+              1.0
+            ],
+            "algorithm_2d": 6,
+            "algorithm_3d": 1,
+            "curvature_points": 32,
+            "smoothing_steps": 10,
+            "optimize": true,
+            "optimize_netgen": false,
+            "optimize_threshold": 0.3,
+            "extend_boundary_sizes": true
+          },
+          "edge_divisions": [],
+          "regions": [],
+          "local_sizes": [],
+          "refinements": [],
+          "boundary_layers": []
+        },
+        "time": null,
+        "physical_end_time": null,
+        "compressible_time": null
+      },
+      {
+        "id": "medium",
+        "name": "Medium mesh",
+        "description": "Mesh-only refinement: sizes scaled by 1.0, mapped/edge divisions inversely scaled. Time settings remain unchanged. Not a verified accuracy level.",
+        "mesh": {
+          "threads": 1,
+          "dimension": "three-d",
+          "global_size": 0.1,
+          "min_size": 0.05,
+          "max_size": 0.2,
+          "element_order": 1
+        },
+        "mesh_recipe": {
+          "tuning": {
+            "method": "unstructured",
+            "max_size_growth": null,
+            "divisions": [
+              40,
+              40,
+              10
+            ],
+            "progression": [
+              1.0,
+              1.0
+            ],
+            "algorithm_2d": 6,
+            "algorithm_3d": 1,
+            "curvature_points": 32,
+            "smoothing_steps": 10,
+            "optimize": true,
+            "optimize_netgen": false,
+            "optimize_threshold": 0.3,
+            "extend_boundary_sizes": true
+          },
+          "edge_divisions": [],
+          "regions": [],
+          "local_sizes": [],
+          "refinements": [],
+          "boundary_layers": []
+        },
+        "time": null,
+        "physical_end_time": null,
+        "compressible_time": null
+      },
+      {
+        "id": "fine",
+        "name": "Fine mesh",
+        "description": "Mesh-only refinement: sizes scaled by 0.5, mapped/edge divisions inversely scaled. Time settings remain unchanged. Not a verified accuracy level.",
+        "mesh": {
+          "threads": 1,
+          "dimension": "three-d",
+          "global_size": 0.05,
+          "min_size": 0.025,
+          "max_size": 0.1,
+          "element_order": 1
+        },
+        "mesh_recipe": {
+          "tuning": {
+            "method": "unstructured",
+            "max_size_growth": null,
+            "divisions": [
+              80,
+              80,
+              20
+            ],
+            "progression": [
+              1.0,
+              1.0
+            ],
+            "algorithm_2d": 6,
+            "algorithm_3d": 1,
+            "curvature_points": 32,
+            "smoothing_steps": 10,
+            "optimize": true,
+            "optimize_netgen": false,
+            "optimize_threshold": 0.3,
+            "extend_boundary_sizes": true
+          },
+          "edge_divisions": [],
+          "regions": [],
+          "local_sizes": [],
+          "refinements": [],
+          "boundary_layers": []
+        },
+        "time": null,
+        "physical_end_time": null,
+        "compressible_time": null
+      }
+    ],
+    "assets": []
   }
 }

@@ -398,5 +398,303 @@
       "pressure_relaxation": 0.2
     },
     "runs": []
+  },
+  "metadata": {
+    "revision": "1",
+    "sources": [
+      {
+        "id": "analytical",
+        "title": "Planar Couette solution of steady incompressible Navier–Stokes equations",
+        "authors": [],
+        "year": null,
+        "doi": null,
+        "url": null,
+        "relationship": "analytical-derived",
+        "notes": "u=U*y/H, v=0 and constant pressure; exact velocity prescribed at both open ends."
+      }
+    ],
+    "dimensionless": [
+      {
+        "symbol": "Re",
+        "value": 10.0,
+        "formula": "U_ref * L_ref / nu",
+        "scales": [
+          {
+            "symbol": "U_ref",
+            "value": 1.0,
+            "unit": "m/s",
+            "definition": "Configured nominal boundary speed; scripts/time tables can override this scale"
+          },
+          {
+            "symbol": "L_ref",
+            "value": 1.0,
+            "unit": "m",
+            "definition": "Plate separation"
+          },
+          {
+            "symbol": "nu",
+            "value": 0.1,
+            "unit": "m2/s",
+            "definition": "Configured kinematic viscosity"
+          }
+        ],
+        "notes": ""
+      }
+    ],
+    "display": {
+      "field": "velocity-x",
+      "mode": "filled-contours",
+      "palette": "viridis",
+      "plane": "surface",
+      "vectors": true,
+      "cell_edges": false,
+      "levels": 16,
+      "probes": [
+        {
+          "name": "left interior",
+          "position": {
+            "x": 0.08,
+            "y": 0.5,
+            "z": 0.0
+          },
+          "quantities": [
+            "pressure",
+            "speed"
+          ],
+          "sampling": "nearest-cell"
+        },
+        {
+          "name": "right interior",
+          "position": {
+            "x": 3.92,
+            "y": 0.5,
+            "z": 0.0
+          },
+          "quantities": [
+            "pressure",
+            "speed"
+          ],
+          "sampling": "nearest-cell"
+        }
+      ],
+      "plots": [
+        {
+          "name": "Couette exact velocity",
+          "kind": "line-profile",
+          "quantity": "velocity-x",
+          "start": {
+            "x": 2,
+            "y": 0,
+            "z": 0.0
+          },
+          "end": {
+            "x": 2,
+            "y": 1,
+            "z": 0.0
+          },
+          "notes": "Analytical u=y; end-boundary velocity is prescribed."
+        }
+      ],
+      "section": null
+    },
+    "comparisons": [
+      {
+        "id": "linear-velocity",
+        "quantity": "velocity-x",
+        "unit": "m/s",
+        "source_id": "analytical",
+        "kind": "analytical",
+        "asset": "reference/couette.csv",
+        "expression": "u=U*y/H; U=1, H=1",
+        "target": null,
+        "time": null,
+        "coordinate_column": "y",
+        "value_column": "velocity_x",
+        "error_metric": "volume-weighted-l2",
+        "absolute_tolerance": null,
+        "relative_tolerance": null,
+        "procedure": "Compare at identical coordinates and time. Report L1, L2 and Linf; no acceptance threshold is assigned until a resolution study is completed."
+      },
+      {
+        "id": "wall-shear",
+        "quantity": "wall-shear-magnitude",
+        "unit": "Pa",
+        "source_id": "analytical",
+        "kind": "scalar",
+        "asset": null,
+        "expression": null,
+        "target": 0.1,
+        "time": null,
+        "coordinate_column": null,
+        "value_column": null,
+        "error_metric": "relative-error",
+        "absolute_tolerance": null,
+        "relative_tolerance": null,
+        "procedure": "Compare the magnitude of tangential wall shear: rho*nu*U/H=0.1 Pa; wall orientation changes the signed traction."
+      }
+    ],
+    "verification": {
+      "status": "unvalidated",
+      "evidence": [],
+      "notes": "Input recipes and reference definitions only. No mesh/time independence study or measured error certification has been recorded."
+    },
+    "presets": [
+      {
+        "id": "coarse",
+        "name": "Coarse mesh",
+        "description": "Mesh-only refinement: sizes scaled by 2.0, mapped/edge divisions inversely scaled. Time settings remain unchanged. Not a verified accuracy level.",
+        "mesh": {
+          "threads": 1,
+          "dimension": "two-d",
+          "global_size": 0.1,
+          "min_size": 0.025,
+          "max_size": 0.1,
+          "element_order": 1
+        },
+        "mesh_recipe": {
+          "tuning": {
+            "method": "unstructured",
+            "max_size_growth": null,
+            "divisions": [
+              20,
+              20,
+              5
+            ],
+            "progression": [
+              1.0,
+              1.0
+            ],
+            "algorithm_2d": 6,
+            "algorithm_3d": 1,
+            "curvature_points": 32,
+            "smoothing_steps": 10,
+            "optimize": true,
+            "optimize_netgen": false,
+            "optimize_threshold": 0.3,
+            "extend_boundary_sizes": true
+          },
+          "edge_divisions": [],
+          "regions": [],
+          "local_sizes": [],
+          "refinements": [],
+          "boundary_layers": []
+        },
+        "time": null,
+        "physical_end_time": null,
+        "compressible_time": null
+      },
+      {
+        "id": "medium",
+        "name": "Medium mesh",
+        "description": "Mesh-only refinement: sizes scaled by 1.0, mapped/edge divisions inversely scaled. Time settings remain unchanged. Not a verified accuracy level.",
+        "mesh": {
+          "threads": 1,
+          "dimension": "two-d",
+          "global_size": 0.05,
+          "min_size": 0.0125,
+          "max_size": 0.05,
+          "element_order": 1
+        },
+        "mesh_recipe": {
+          "tuning": {
+            "method": "unstructured",
+            "max_size_growth": null,
+            "divisions": [
+              40,
+              40,
+              10
+            ],
+            "progression": [
+              1.0,
+              1.0
+            ],
+            "algorithm_2d": 6,
+            "algorithm_3d": 1,
+            "curvature_points": 32,
+            "smoothing_steps": 10,
+            "optimize": true,
+            "optimize_netgen": false,
+            "optimize_threshold": 0.3,
+            "extend_boundary_sizes": true
+          },
+          "edge_divisions": [],
+          "regions": [],
+          "local_sizes": [],
+          "refinements": [],
+          "boundary_layers": []
+        },
+        "time": null,
+        "physical_end_time": null,
+        "compressible_time": null
+      },
+      {
+        "id": "fine",
+        "name": "Fine mesh",
+        "description": "Mesh-only refinement: sizes scaled by 0.5, mapped/edge divisions inversely scaled. Time settings remain unchanged. Not a verified accuracy level.",
+        "mesh": {
+          "threads": 1,
+          "dimension": "two-d",
+          "global_size": 0.025,
+          "min_size": 0.00625,
+          "max_size": 0.025,
+          "element_order": 1
+        },
+        "mesh_recipe": {
+          "tuning": {
+            "method": "unstructured",
+            "max_size_growth": null,
+            "divisions": [
+              80,
+              80,
+              20
+            ],
+            "progression": [
+              1.0,
+              1.0
+            ],
+            "algorithm_2d": 6,
+            "algorithm_3d": 1,
+            "curvature_points": 32,
+            "smoothing_steps": 10,
+            "optimize": true,
+            "optimize_netgen": false,
+            "optimize_threshold": 0.3,
+            "extend_boundary_sizes": true
+          },
+          "edge_divisions": [],
+          "regions": [],
+          "local_sizes": [],
+          "refinements": [],
+          "boundary_layers": []
+        },
+        "time": null,
+        "physical_end_time": null,
+        "compressible_time": null
+      }
+    ],
+    "assets": [
+      {
+        "path": "reference/couette.csv",
+        "role": "reference",
+        "media_type": "text/csv",
+        "sha256": "75f414fe5612f23e1d59a1df0abf139d3e8f2ca6641f6556bea84e7167453704",
+        "content": "y,velocity_x\n0.0,0.0\n0.01,0.01\n0.02,0.02\n0.03,0.03\n0.04,0.04\n0.05,0.05\n0.06,0.06\n0.07,0.07\n0.08,0.08\n0.09,0.09\n0.1,0.1\n0.11,0.11\n0.12,0.12\n0.13,0.13\n0.14,0.14\n0.15,0.15\n0.16,0.16\n0.17,0.17\n0.18,0.18\n0.19,0.19\n0.2,0.2\n0.21,0.21\n0.22,0.22\n0.23,0.23\n0.24,0.24\n0.25,0.25\n0.26,0.26\n0.27,0.27\n0.28,0.28\n0.29,0.29\n0.3,0.3\n0.31,0.31\n0.32,0.32\n0.33,0.33\n0.34,0.34\n0.35,0.35\n0.36,0.36\n0.37,0.37\n0.38,0.38\n0.39,0.39\n0.4,0.4\n0.41,0.41\n0.42,0.42\n0.43,0.43\n0.44,0.44\n0.45,0.45\n0.46,0.46\n0.47,0.47\n0.48,0.48\n0.49,0.49\n0.5,0.5\n0.51,0.51\n0.52,0.52\n0.53,0.53\n0.54,0.54\n0.55,0.55\n0.56,0.56\n0.57,0.57\n0.58,0.58\n0.59,0.59\n0.6,0.6\n0.61,0.61\n0.62,0.62\n0.63,0.63\n0.64,0.64\n0.65,0.65\n0.66,0.66\n0.67,0.67\n0.68,0.68\n0.69,0.69\n0.7,0.7\n0.71,0.71\n0.72,0.72\n0.73,0.73\n0.74,0.74\n0.75,0.75\n0.76,0.76\n0.77,0.77\n0.78,0.78\n0.79,0.79\n0.8,0.8\n0.81,0.81\n0.82,0.82\n0.83,0.83\n0.84,0.84\n0.85,0.85\n0.86,0.86\n0.87,0.87\n0.88,0.88\n0.89,0.89\n0.9,0.9\n0.91,0.91\n0.92,0.92\n0.93,0.93\n0.94,0.94\n0.95,0.95\n0.96,0.96\n0.97,0.97\n0.98,0.98\n0.99,0.99\n1.0,1.0\n"
+      },
+      {
+        "path": "geometry/domain.json",
+        "role": "geometry",
+        "media_type": "application/json",
+        "sha256": "87177364c8cb58a2dfdc8437c5a189c4f1b5cc76c45bbeadef2d097919ead4c4",
+        "content": "{\n  \"cad_bodies\": {},\n  \"hidden_profiles\": [],\n  \"revision\": 9,\n  \"next_vertex_id\": 5,\n  \"next_edge_id\": 5,\n  \"next_face_id\": 2,\n  \"next_body_id\": 1,\n  \"next_sketch_id\": 1,\n  \"next_feature_id\": 1,\n  \"vertices\": {\n    \"1\": {\n      \"id\": 1,\n      \"position\": {\n        \"x\": 0.0,\n        \"y\": 0.0,\n        \"z\": 0.0\n      }\n    },\n    \"2\": {\n      \"id\": 2,\n      \"position\": {\n        \"x\": 4.0,\n        \"y\": 0.0,\n        \"z\": 0.0\n      }\n    },\n    \"3\": {\n      \"id\": 3,\n      \"position\": {\n        \"x\": 4.0,\n        \"y\": 1.0,\n        \"z\": 0.0\n      }\n    },\n    \"4\": {\n      \"id\": 4,\n      \"position\": {\n        \"x\": 0.0,\n        \"y\": 1.0,\n        \"z\": 0.0\n      }\n    }\n  },\n  \"edges\": {\n    \"1\": {\n      \"id\": 1,\n      \"geometry\": {\n        \"Line\": {\n          \"start\": 1,\n          \"end\": 2\n        }\n      }\n    },\n    \"2\": {\n      \"id\": 2,\n      \"geometry\": {\n        \"Line\": {\n          \"start\": 2,\n          \"end\": 3\n        }\n      }\n    },\n    \"3\": {\n      \"id\": 3,\n      \"geometry\": {\n        \"Line\": {\n          \"start\": 3,\n          \"end\": 4\n        }\n      }\n    },\n    \"4\": {\n      \"id\": 4,\n      \"geometry\": {\n        \"Line\": {\n          \"start\": 4,\n          \"end\": 1\n        }\n      }\n    }\n  },\n  \"faces\": {\n    \"1\": {\n      \"id\": 1,\n      \"representation\": {\n        \"Planar\": {\n          \"outer_loop\": [\n            {\n              \"edge\": 1,\n              \"reversed\": false\n            },\n            {\n              \"edge\": 2,\n              \"reversed\": false\n            },\n            {\n              \"edge\": 3,\n              \"reversed\": false\n            },\n            {\n              \"edge\": 4,\n              \"reversed\": false\n            }\n          ],\n          \"inner_loops\": []\n        }\n      }\n    }\n  },\n  \"bodies\": {},\n  \"sketches\": {},\n  \"extrude_features\": {},\n  \"pocket_features\": {}\n}\n"
+      },
+      {
+        "path": "scripts/couette-profile.rhai",
+        "role": "script",
+        "media_type": "text/x-rhai",
+        "sha256": "1fa6627e4aa4d45eaf102c339bde0070b24e97bf8c4f1a8c461571cbc2b98d66",
+        "content": "fn profile(x, y, z) {\n    vec3(y, 0.0, 0.0)\n}\n",
+        "linked_script": "couette-profile"
+      }
+    ]
   }
 }

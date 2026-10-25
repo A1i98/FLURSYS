@@ -1,0 +1,62 @@
+{
+  "cad_bodies": {},
+  "hidden_profiles": [],
+  "revision": 7,
+  "next_vertex_id": 1,
+  "next_edge_id": 1,
+  "next_face_id": 7,
+  "next_body_id": 2,
+  "next_sketch_id": 1,
+  "next_feature_id": 1,
+  "vertices": {},
+  "edges": {},
+  "faces": {
+    "1": {
+      "id": 1,
+      "representation": "PrimitiveSurface"
+    },
+    "2": {
+      "id": 2,
+      "representation": "PrimitiveSurface"
+    },
+    "3": {
+      "id": 3,
+      "representation": "PrimitiveSurface"
+    },
+    "4": {
+      "id": 4,
+      "representation": "PrimitiveSurface"
+    },
+    "5": {
+      "id": 5,
+      "representation": "PrimitiveSurface"
+    },
+    "6": {
+      "id": 6,
+      "representation": "PrimitiveSurface"
+    }
+  },
+  "bodies": {
+    "1": {
+      "id": 1,
+      "faces": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6
+      ],
+      "representation": {
+        "Box": {
+          "length": 2.0,
+          "width": 0.6,
+          "height": 0.5
+        }
+      }
+    }
+  },
+  "sketches": {},
+  "extrude_features": {},
+  "pocket_features": {}
+}

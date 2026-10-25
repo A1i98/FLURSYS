@@ -368,5 +368,330 @@
       "pressure_relaxation": 0.2
     },
     "runs": []
+  },
+  "metadata": {
+    "revision": "1",
+    "sources": [
+      {
+        "id": "paper",
+        "title": "Natural convection of air in a square cavity: A bench mark numerical solution",
+        "authors": [
+          "G. de Vahl Davis"
+        ],
+        "year": 1983,
+        "doi": "10.1002/fld.1650030305",
+        "url": "https://doi.org/10.1002/fld.1650030305",
+        "relationship": "similarity-scaled",
+        "notes": "Pr and Ra follow the benchmark; dimensional transport inputs are similarity-scaled."
+      },
+      {
+        "id": "reference-table",
+        "title": "Cardinal square-cavity natural-convection benchmark table",
+        "authors": [],
+        "year": null,
+        "doi": null,
+        "url": "https://cardinal.cels.anl.gov/vv/square_cavity_natural_convection.html",
+        "relationship": "reference-data",
+        "notes": "The Benchmark column reproduces de Vahl Davis values; these are not FLURSYS results."
+      }
+    ],
+    "dimensionless": [
+      {
+        "symbol": "Pr",
+        "value": 0.7100000000000001,
+        "formula": "nu / alpha; alpha = k/(rho*Cp)",
+        "scales": [
+          {
+            "symbol": "nu",
+            "value": 4.818402224804401e-05,
+            "unit": "m2/s",
+            "definition": "Kinematic viscosity"
+          },
+          {
+            "symbol": "alpha",
+            "value": 6.786482006766761e-05,
+            "unit": "m2/s",
+            "definition": "Thermal diffusivity"
+          }
+        ],
+        "notes": ""
+      },
+      {
+        "symbol": "Ra",
+        "value": 10000.000000000005,
+        "formula": "g * beta * DeltaT * L^3 / (nu * alpha)",
+        "scales": [
+          {
+            "symbol": "g",
+            "value": 9.81,
+            "unit": "m/s2",
+            "definition": "Gravity magnitude"
+          },
+          {
+            "symbol": "beta",
+            "value": 0.0033333333333333335,
+            "unit": "1/K",
+            "definition": "Boussinesq expansion"
+          },
+          {
+            "symbol": "DeltaT",
+            "value": 1.0,
+            "unit": "K",
+            "definition": "Hot minus cold wall temperature"
+          },
+          {
+            "symbol": "L",
+            "value": 0.1,
+            "unit": "m",
+            "definition": "Cavity side length"
+          },
+          {
+            "symbol": "nu",
+            "value": 4.818402224804401e-05,
+            "unit": "m2/s",
+            "definition": "Kinematic viscosity"
+          },
+          {
+            "symbol": "alpha",
+            "value": 6.786482006766761e-05,
+            "unit": "m2/s",
+            "definition": "Thermal diffusivity"
+          }
+        ],
+        "notes": ""
+      }
+    ],
+    "display": {
+      "field": "temperature",
+      "mode": "filled-contours",
+      "palette": "viridis",
+      "plane": "surface",
+      "vectors": true,
+      "cell_edges": false,
+      "levels": 16,
+      "probes": [
+        {
+          "name": "left interior",
+          "position": {
+            "x": 0.002,
+            "y": 0.05,
+            "z": 0.0
+          },
+          "quantities": [
+            "pressure",
+            "speed",
+            "temperature"
+          ],
+          "sampling": "nearest-cell"
+        },
+        {
+          "name": "right interior",
+          "position": {
+            "x": 0.098,
+            "y": 0.05,
+            "z": 0.0
+          },
+          "quantities": [
+            "pressure",
+            "speed",
+            "temperature"
+          ],
+          "sampling": "nearest-cell"
+        }
+      ],
+      "plots": [
+        {
+          "name": "Cavity centreline velocity",
+          "kind": "line-profile",
+          "quantity": "velocity-x",
+          "start": {
+            "x": 0.05,
+            "y": 0,
+            "z": 0.0
+          },
+          "end": {
+            "x": 0.05,
+            "y": 0.1,
+            "z": 0.0
+          },
+          "notes": "Normalize velocity with alpha/L before comparing tabulated maxima."
+        }
+      ],
+      "section": null
+    },
+    "comparisons": [
+      {
+        "id": "hot-wall-nusselt",
+        "quantity": "mean-nusselt",
+        "unit": "1",
+        "source_id": "reference-table",
+        "kind": "scalar",
+        "asset": "reference/de-vahl-davis.csv",
+        "expression": null,
+        "target": 2.243,
+        "time": null,
+        "coordinate_column": "Ra",
+        "value_column": "mean_Nu",
+        "error_metric": "relative-error",
+        "absolute_tolerance": null,
+        "relative_tolerance": null,
+        "procedure": "Area-average hot-wall heat flux and compute Nu=q_hot*L/(k*(Th-Tc)); use the inward heat-flux convention. Require steady heat balance and a wall-mesh refinement study; no FLURSYS validation is implied."
+      }
+    ],
+    "verification": {
+      "status": "unvalidated",
+      "evidence": [],
+      "notes": "Input recipes and reference definitions only. No mesh/time independence study or measured error certification has been recorded."
+    },
+    "presets": [
+      {
+        "id": "coarse",
+        "name": "Coarse mesh",
+        "description": "Mesh-only refinement: sizes scaled by 2.0, mapped/edge divisions inversely scaled. Time settings remain unchanged. Not a verified accuracy level.",
+        "mesh": {
+          "threads": 1,
+          "dimension": "two-d",
+          "global_size": 0.005,
+          "min_size": 0.00125,
+          "max_size": 0.005,
+          "element_order": 1
+        },
+        "mesh_recipe": {
+          "tuning": {
+            "method": "unstructured",
+            "max_size_growth": null,
+            "divisions": [
+              20,
+              20,
+              5
+            ],
+            "progression": [
+              1.0,
+              1.0
+            ],
+            "algorithm_2d": 6,
+            "algorithm_3d": 1,
+            "curvature_points": 32,
+            "smoothing_steps": 10,
+            "optimize": true,
+            "optimize_netgen": false,
+            "optimize_threshold": 0.3,
+            "extend_boundary_sizes": true
+          },
+          "edge_divisions": [],
+          "regions": [],
+          "local_sizes": [],
+          "refinements": [],
+          "boundary_layers": []
+        },
+        "time": null,
+        "physical_end_time": null,
+        "compressible_time": null
+      },
+      {
+        "id": "medium",
+        "name": "Medium mesh",
+        "description": "Mesh-only refinement: sizes scaled by 1.0, mapped/edge divisions inversely scaled. Time settings remain unchanged. Not a verified accuracy level.",
+        "mesh": {
+          "threads": 1,
+          "dimension": "two-d",
+          "global_size": 0.0025,
+          "min_size": 0.000625,
+          "max_size": 0.0025,
+          "element_order": 1
+        },
+        "mesh_recipe": {
+          "tuning": {
+            "method": "unstructured",
+            "max_size_growth": null,
+            "divisions": [
+              40,
+              40,
+              10
+            ],
+            "progression": [
+              1.0,
+              1.0
+            ],
+            "algorithm_2d": 6,
+            "algorithm_3d": 1,
+            "curvature_points": 32,
+            "smoothing_steps": 10,
+            "optimize": true,
+            "optimize_netgen": false,
+            "optimize_threshold": 0.3,
+            "extend_boundary_sizes": true
+          },
+          "edge_divisions": [],
+          "regions": [],
+          "local_sizes": [],
+          "refinements": [],
+          "boundary_layers": []
+        },
+        "time": null,
+        "physical_end_time": null,
+        "compressible_time": null
+      },
+      {
+        "id": "fine",
+        "name": "Fine mesh",
+        "description": "Mesh-only refinement: sizes scaled by 0.5, mapped/edge divisions inversely scaled. Time settings remain unchanged. Not a verified accuracy level.",
+        "mesh": {
+          "threads": 1,
+          "dimension": "two-d",
+          "global_size": 0.00125,
+          "min_size": 0.0003125,
+          "max_size": 0.00125,
+          "element_order": 1
+        },
+        "mesh_recipe": {
+          "tuning": {
+            "method": "unstructured",
+            "max_size_growth": null,
+            "divisions": [
+              80,
+              80,
+              20
+            ],
+            "progression": [
+              1.0,
+              1.0
+            ],
+            "algorithm_2d": 6,
+            "algorithm_3d": 1,
+            "curvature_points": 32,
+            "smoothing_steps": 10,
+            "optimize": true,
+            "optimize_netgen": false,
+            "optimize_threshold": 0.3,
+            "extend_boundary_sizes": true
+          },
+          "edge_divisions": [],
+          "regions": [],
+          "local_sizes": [],
+          "refinements": [],
+          "boundary_layers": []
+        },
+        "time": null,
+        "physical_end_time": null,
+        "compressible_time": null
+      }
+    ],
+    "assets": [
+      {
+        "path": "reference/de-vahl-davis.csv",
+        "role": "reference",
+        "media_type": "text/csv",
+        "sha256": "527c71df2ed0dc3ab7cfffbe2b79d7be675c9897477005370d84b1918c0c9009",
+        "content": "Ra,Pr,mean_Nu,umax_dimensionless,vmax_dimensionless\n1000,0.71,1.118,3.649,3.697\n10000,0.71,2.243,16.178,19.617\n100000,0.71,4.519,34.73,68.59\n1000000,0.71,8.8,64.63,219.36\n"
+      },
+      {
+        "path": "geometry/domain.json",
+        "role": "geometry",
+        "media_type": "application/json",
+        "sha256": "4f028f962567cbce26affc6c4f3cef0247117a7af0f3006d1cefb5d3bf900c2d",
+        "content": "{\n  \"cad_bodies\": {},\n  \"hidden_profiles\": [],\n  \"revision\": 9,\n  \"next_vertex_id\": 5,\n  \"next_edge_id\": 5,\n  \"next_face_id\": 2,\n  \"next_body_id\": 1,\n  \"next_sketch_id\": 1,\n  \"next_feature_id\": 1,\n  \"vertices\": {\n    \"1\": {\n      \"id\": 1,\n      \"position\": {\n        \"x\": 0.0,\n        \"y\": 0.0,\n        \"z\": 0.0\n      }\n    },\n    \"2\": {\n      \"id\": 2,\n      \"position\": {\n        \"x\": 0.1,\n        \"y\": 0.0,\n        \"z\": 0.0\n      }\n    },\n    \"3\": {\n      \"id\": 3,\n      \"position\": {\n        \"x\": 0.1,\n        \"y\": 0.1,\n        \"z\": 0.0\n      }\n    },\n    \"4\": {\n      \"id\": 4,\n      \"position\": {\n        \"x\": 0.0,\n        \"y\": 0.1,\n        \"z\": 0.0\n      }\n    }\n  },\n  \"edges\": {\n    \"1\": {\n      \"id\": 1,\n      \"geometry\": {\n        \"Line\": {\n          \"start\": 1,\n          \"end\": 2\n        }\n      }\n    },\n    \"2\": {\n      \"id\": 2,\n      \"geometry\": {\n        \"Line\": {\n          \"start\": 2,\n          \"end\": 3\n        }\n      }\n    },\n    \"3\": {\n      \"id\": 3,\n      \"geometry\": {\n        \"Line\": {\n          \"start\": 3,\n          \"end\": 4\n        }\n      }\n    },\n    \"4\": {\n      \"id\": 4,\n      \"geometry\": {\n        \"Line\": {\n          \"start\": 4,\n          \"end\": 1\n        }\n      }\n    }\n  },\n  \"faces\": {\n    \"1\": {\n      \"id\": 1,\n      \"representation\": {\n        \"Planar\": {\n          \"outer_loop\": [\n            {\n              \"edge\": 1,\n              \"reversed\": false\n            },\n            {\n              \"edge\": 2,\n              \"reversed\": false\n            },\n            {\n              \"edge\": 3,\n              \"reversed\": false\n            },\n            {\n              \"edge\": 4,\n              \"reversed\": false\n            }\n          ],\n          \"inner_loops\": []\n        }\n      }\n    }\n  },\n  \"bodies\": {},\n  \"sketches\": {},\n  \"extrude_features\": {},\n  \"pocket_features\": {}\n}\n"
+      }
+    ]
   }
 }

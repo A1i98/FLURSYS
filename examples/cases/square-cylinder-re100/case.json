@@ -492,5 +492,420 @@
       "pressure_relaxation": 0.2
     },
     "runs": []
+  },
+  "metadata": {
+    "revision": "1",
+    "sources": [
+      {
+        "id": "paper",
+        "title": "Accurate computations of the laminar flow past a square cylinder based on two different methods: lattice-Boltzmann and finite-volume",
+        "authors": [
+          "M. Breuer",
+          "J. Bernsdorf",
+          "T. Zeiser",
+          "F. Durst"
+        ],
+        "year": 2000,
+        "doi": "10.1016/S0142-727X(99)00081-8",
+        "url": "https://doi.org/10.1016/S0142-727X(99)00081-8",
+        "relationship": "inspired",
+        "notes": "Blockage 1/8 and peak-speed Reynolds convention are explicit. Domain and outlet are starter approximations, not asserted publication-equivalent."
+      }
+    ],
+    "dimensionless": [
+      {
+        "symbol": "Re",
+        "value": 100.0,
+        "formula": "U_ref * L_ref / nu",
+        "scales": [
+          {
+            "symbol": "U_ref",
+            "value": 1.0,
+            "unit": "m/s",
+            "definition": "Configured nominal boundary speed; scripts/time tables can override this scale"
+          },
+          {
+            "symbol": "L_ref",
+            "value": 1.0,
+            "unit": "m",
+            "definition": "Square side length; U is peak inlet speed"
+          },
+          {
+            "symbol": "nu",
+            "value": 0.01,
+            "unit": "m2/s",
+            "definition": "Configured kinematic viscosity"
+          }
+        ],
+        "notes": ""
+      },
+      {
+        "symbol": "B",
+        "value": 0.125,
+        "formula": "D/H",
+        "scales": [
+          {
+            "symbol": "D",
+            "value": 1.0,
+            "unit": "m",
+            "definition": "Square side"
+          },
+          {
+            "symbol": "H",
+            "value": 8.0,
+            "unit": "m",
+            "definition": "Channel height"
+          }
+        ],
+        "notes": "Confinement blockage ratio"
+      }
+    ],
+    "display": {
+      "field": "speed",
+      "mode": "filled-contours",
+      "palette": "viridis",
+      "plane": "surface",
+      "vectors": true,
+      "cell_edges": false,
+      "levels": 16,
+      "probes": [
+        {
+          "name": "left interior",
+          "position": {
+            "x": 0.6,
+            "y": 4.0,
+            "z": 0.0
+          },
+          "quantities": [
+            "pressure",
+            "speed"
+          ],
+          "sampling": "nearest-cell"
+        },
+        {
+          "name": "right interior",
+          "position": {
+            "x": 29.4,
+            "y": 4.0,
+            "z": 0.0
+          },
+          "quantities": [
+            "pressure",
+            "speed"
+          ],
+          "sampling": "nearest-cell"
+        }
+      ],
+      "plots": [
+        {
+          "name": "Transverse velocity profile",
+          "kind": "line-profile",
+          "quantity": "velocity-x",
+          "start": {
+            "x": 24.0,
+            "y": 0.0,
+            "z": 0.0
+          },
+          "end": {
+            "x": 24.0,
+            "y": 8.0,
+            "z": 0.0
+          },
+          "notes": "Compare away from entrance and before any outlet recirculation; coordinates are model units."
+        }
+      ],
+      "section": null
+    },
+    "comparisons": [
+      {
+        "id": "drag-coefficient",
+        "quantity": "drag-coefficient",
+        "unit": "1",
+        "source_id": "paper",
+        "kind": "external-reference",
+        "asset": null,
+        "expression": null,
+        "target": null,
+        "time": null,
+        "coordinate_column": null,
+        "value_column": null,
+        "error_metric": "l2",
+        "absolute_tolerance": null,
+        "relative_tolerance": null,
+        "procedure": "Use the cited source with matching Reynolds definition, domain and outlet. Extract periodic-state force statistics and shedding frequency, excluding initial transients. No numerical target is bundled; do not assign a pass/fail status without the source data and an uncertainty/tolerance definition."
+      },
+      {
+        "id": "lift-coefficient",
+        "quantity": "lift-coefficient",
+        "unit": "1",
+        "source_id": "paper",
+        "kind": "external-reference",
+        "asset": null,
+        "expression": null,
+        "target": null,
+        "time": null,
+        "coordinate_column": null,
+        "value_column": null,
+        "error_metric": "l2",
+        "absolute_tolerance": null,
+        "relative_tolerance": null,
+        "procedure": "Use the cited source with matching Reynolds definition, domain and outlet. Extract periodic-state force statistics and shedding frequency, excluding initial transients. No numerical target is bundled; do not assign a pass/fail status without the source data and an uncertainty/tolerance definition."
+      },
+      {
+        "id": "strouhal-number",
+        "quantity": "strouhal-number",
+        "unit": "1",
+        "source_id": "paper",
+        "kind": "external-reference",
+        "asset": null,
+        "expression": null,
+        "target": null,
+        "time": null,
+        "coordinate_column": null,
+        "value_column": null,
+        "error_metric": "l2",
+        "absolute_tolerance": null,
+        "relative_tolerance": null,
+        "procedure": "Use the cited source with matching Reynolds definition, domain and outlet. Extract periodic-state force statistics and shedding frequency, excluding initial transients. No numerical target is bundled; do not assign a pass/fail status without the source data and an uncertainty/tolerance definition."
+      }
+    ],
+    "verification": {
+      "status": "unvalidated",
+      "evidence": [],
+      "notes": "Input recipes and reference definitions only. No mesh/time independence study or measured error certification has been recorded."
+    },
+    "presets": [
+      {
+        "id": "coarse",
+        "name": "Coarse mesh",
+        "description": "Mesh-only refinement: sizes scaled by 2.0, mapped/edge divisions inversely scaled. Time settings remain unchanged. Not a verified accuracy level.",
+        "mesh": {
+          "threads": 1,
+          "dimension": "two-d",
+          "global_size": 0.5,
+          "min_size": 0.125,
+          "max_size": 0.5,
+          "element_order": 1
+        },
+        "mesh_recipe": {
+          "tuning": {
+            "method": "unstructured",
+            "max_size_growth": null,
+            "divisions": [
+              20,
+              20,
+              5
+            ],
+            "progression": [
+              1.0,
+              1.0
+            ],
+            "algorithm_2d": 6,
+            "algorithm_3d": 1,
+            "curvature_points": 32,
+            "smoothing_steps": 10,
+            "optimize": true,
+            "optimize_netgen": false,
+            "optimize_threshold": 0.3,
+            "extend_boundary_sizes": true
+          },
+          "edge_divisions": [],
+          "regions": [],
+          "local_sizes": [],
+          "refinements": [
+            {
+              "id": 1,
+              "name": "square-distance",
+              "targets": [
+                {
+                  "named-selection": "square"
+                }
+              ],
+              "sampling": 128,
+              "size_min": 0.125,
+              "size_max": 0.5,
+              "distance_min": 0.3,
+              "distance_max": 2.0,
+              "enabled": true
+            }
+          ],
+          "boundary_layers": []
+        },
+        "time": null,
+        "physical_end_time": null,
+        "compressible_time": null
+      },
+      {
+        "id": "time-coarse",
+        "name": "Coarse time step",
+        "description": "Time-only study: step size scaled by 2.0. Mesh remains unchanged. Adaptive step budgets are nominal; set an explicit end time for equal physical duration.",
+        "mesh": null,
+        "mesh_recipe": null,
+        "time": {
+          "mode": "backward",
+          "dt": 0.04,
+          "steps": 5000
+        },
+        "physical_end_time": null,
+        "compressible_time": null
+      },
+      {
+        "id": "medium",
+        "name": "Medium mesh",
+        "description": "Mesh-only refinement: sizes scaled by 1.0, mapped/edge divisions inversely scaled. Time settings remain unchanged. Not a verified accuracy level.",
+        "mesh": {
+          "threads": 1,
+          "dimension": "two-d",
+          "global_size": 0.25,
+          "min_size": 0.0625,
+          "max_size": 0.25,
+          "element_order": 1
+        },
+        "mesh_recipe": {
+          "tuning": {
+            "method": "unstructured",
+            "max_size_growth": null,
+            "divisions": [
+              40,
+              40,
+              10
+            ],
+            "progression": [
+              1.0,
+              1.0
+            ],
+            "algorithm_2d": 6,
+            "algorithm_3d": 1,
+            "curvature_points": 32,
+            "smoothing_steps": 10,
+            "optimize": true,
+            "optimize_netgen": false,
+            "optimize_threshold": 0.3,
+            "extend_boundary_sizes": true
+          },
+          "edge_divisions": [],
+          "regions": [],
+          "local_sizes": [],
+          "refinements": [
+            {
+              "id": 1,
+              "name": "square-distance",
+              "targets": [
+                {
+                  "named-selection": "square"
+                }
+              ],
+              "sampling": 128,
+              "size_min": 0.0625,
+              "size_max": 0.25,
+              "distance_min": 0.3,
+              "distance_max": 2.0,
+              "enabled": true
+            }
+          ],
+          "boundary_layers": []
+        },
+        "time": null,
+        "physical_end_time": null,
+        "compressible_time": null
+      },
+      {
+        "id": "time-medium",
+        "name": "Medium time step",
+        "description": "Time-only study: step size scaled by 1.0. Mesh remains unchanged. Adaptive step budgets are nominal; set an explicit end time for equal physical duration.",
+        "mesh": null,
+        "mesh_recipe": null,
+        "time": {
+          "mode": "backward",
+          "dt": 0.02,
+          "steps": 10000
+        },
+        "physical_end_time": null,
+        "compressible_time": null
+      },
+      {
+        "id": "fine",
+        "name": "Fine mesh",
+        "description": "Mesh-only refinement: sizes scaled by 0.5, mapped/edge divisions inversely scaled. Time settings remain unchanged. Not a verified accuracy level.",
+        "mesh": {
+          "threads": 1,
+          "dimension": "two-d",
+          "global_size": 0.125,
+          "min_size": 0.03125,
+          "max_size": 0.125,
+          "element_order": 1
+        },
+        "mesh_recipe": {
+          "tuning": {
+            "method": "unstructured",
+            "max_size_growth": null,
+            "divisions": [
+              80,
+              80,
+              20
+            ],
+            "progression": [
+              1.0,
+              1.0
+            ],
+            "algorithm_2d": 6,
+            "algorithm_3d": 1,
+            "curvature_points": 32,
+            "smoothing_steps": 10,
+            "optimize": true,
+            "optimize_netgen": false,
+            "optimize_threshold": 0.3,
+            "extend_boundary_sizes": true
+          },
+          "edge_divisions": [],
+          "regions": [],
+          "local_sizes": [],
+          "refinements": [
+            {
+              "id": 1,
+              "name": "square-distance",
+              "targets": [
+                {
+                  "named-selection": "square"
+                }
+              ],
+              "sampling": 128,
+              "size_min": 0.03125,
+              "size_max": 0.125,
+              "distance_min": 0.3,
+              "distance_max": 2.0,
+              "enabled": true
+            }
+          ],
+          "boundary_layers": []
+        },
+        "time": null,
+        "physical_end_time": null,
+        "compressible_time": null
+      },
+      {
+        "id": "time-fine",
+        "name": "Fine time step",
+        "description": "Time-only study: step size scaled by 0.5. Mesh remains unchanged. Adaptive step budgets are nominal; set an explicit end time for equal physical duration.",
+        "mesh": null,
+        "mesh_recipe": null,
+        "time": {
+          "mode": "backward",
+          "dt": 0.01,
+          "steps": 20000
+        },
+        "physical_end_time": null,
+        "compressible_time": null
+      }
+    ],
+    "assets": [
+      {
+        "path": "geometry/domain.json",
+        "role": "geometry",
+        "media_type": "application/json",
+        "sha256": "16487b4aebaf601f2b2c69d27bda9d8503cb29a32480b53c9361ca8234b32577",
+        "content": "{\n  \"cad_bodies\": {},\n  \"hidden_profiles\": [],\n  \"revision\": 19,\n  \"next_vertex_id\": 9,\n  \"next_edge_id\": 9,\n  \"next_face_id\": 3,\n  \"next_body_id\": 1,\n  \"next_sketch_id\": 1,\n  \"next_feature_id\": 1,\n  \"vertices\": {\n    \"1\": {\n      \"id\": 1,\n      \"position\": {\n        \"x\": 0.0,\n        \"y\": 0.0,\n        \"z\": 0.0\n      }\n    },\n    \"2\": {\n      \"id\": 2,\n      \"position\": {\n        \"x\": 30.0,\n        \"y\": 0.0,\n        \"z\": 0.0\n      }\n    },\n    \"3\": {\n      \"id\": 3,\n      \"position\": {\n        \"x\": 30.0,\n        \"y\": 8.0,\n        \"z\": 0.0\n      }\n    },\n    \"4\": {\n      \"id\": 4,\n      \"position\": {\n        \"x\": 0.0,\n        \"y\": 8.0,\n        \"z\": 0.0\n      }\n    },\n    \"5\": {\n      \"id\": 5,\n      \"position\": {\n        \"x\": 5.0,\n        \"y\": 3.5,\n        \"z\": 0.0\n      }\n    },\n    \"6\": {\n      \"id\": 6,\n      \"position\": {\n        \"x\": 5.0,\n        \"y\": 4.5,\n        \"z\": 0.0\n      }\n    },\n    \"7\": {\n      \"id\": 7,\n      \"position\": {\n        \"x\": 6.0,\n        \"y\": 4.5,\n        \"z\": 0.0\n      }\n    },\n    \"8\": {\n      \"id\": 8,\n      \"position\": {\n        \"x\": 6.0,\n        \"y\": 3.5,\n        \"z\": 0.0\n      }\n    }\n  },\n  \"edges\": {\n    \"1\": {\n      \"id\": 1,\n      \"geometry\": {\n        \"Line\": {\n          \"start\": 1,\n          \"end\": 2\n        }\n      }\n    },\n    \"2\": {\n      \"id\": 2,\n      \"geometry\": {\n        \"Line\": {\n          \"start\": 2,\n          \"end\": 3\n        }\n      }\n    },\n    \"3\": {\n      \"id\": 3,\n      \"geometry\": {\n        \"Line\": {\n          \"start\": 3,\n          \"end\": 4\n        }\n      }\n    },\n    \"4\": {\n      \"id\": 4,\n      \"geometry\": {\n        \"Line\": {\n          \"start\": 4,\n          \"end\": 1\n        }\n      }\n    },\n    \"5\": {\n      \"id\": 5,\n      \"geometry\": {\n        \"Line\": {\n          \"start\": 5,\n          \"end\": 6\n        }\n      }\n    },\n    \"6\": {\n      \"id\": 6,\n      \"geometry\": {\n        \"Line\": {\n          \"start\": 6,\n          \"end\": 7\n        }\n      }\n    },\n    \"7\": {\n      \"id\": 7,\n      \"geometry\": {\n        \"Line\": {\n          \"start\": 7,\n          \"end\": 8\n        }\n      }\n    },\n    \"8\": {\n      \"id\": 8,\n      \"geometry\": {\n        \"Line\": {\n          \"start\": 8,\n          \"end\": 5\n        }\n      }\n    }\n  },\n  \"faces\": {\n    \"2\": {\n      \"id\": 2,\n      \"representation\": {\n        \"Planar\": {\n          \"outer_loop\": [\n            {\n              \"edge\": 1,\n              \"reversed\": false\n            },\n            {\n              \"edge\": 2,\n              \"reversed\": false\n            },\n            {\n              \"edge\": 3,\n              \"reversed\": false\n            },\n            {\n              \"edge\": 4,\n              \"reversed\": false\n            }\n          ],\n          \"inner_loops\": [\n            [\n              {\n                \"edge\": 5,\n                \"reversed\": false\n              },\n              {\n                \"edge\": 6,\n                \"reversed\": false\n              },\n              {\n                \"edge\": 7,\n                \"reversed\": false\n              },\n              {\n                \"edge\": 8,\n                \"reversed\": false\n              }\n            ]\n          ]\n        }\n      }\n    }\n  },\n  \"bodies\": {},\n  \"sketches\": {},\n  \"extrude_features\": {},\n  \"pocket_features\": {}\n}\n"
+      }
+    ]
   }
 }

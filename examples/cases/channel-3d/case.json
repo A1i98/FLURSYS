@@ -322,5 +322,329 @@
       "pressure_relaxation": 0.25
     },
     "runs": []
+  },
+  "metadata": {
+    "revision": "1",
+    "sources": [
+      {
+        "id": "recipe",
+        "title": "FLURSYS editable starter recipe",
+        "authors": [],
+        "year": null,
+        "doi": null,
+        "url": null,
+        "relationship": "illustrative",
+        "notes": "Configuration example; no publication equivalence or accuracy claim."
+      }
+    ],
+    "dimensionless": [
+      {
+        "symbol": "Re",
+        "value": 0.3,
+        "formula": "U_ref * L_ref / nu",
+        "scales": [
+          {
+            "symbol": "U_ref",
+            "value": 0.05,
+            "unit": "m/s",
+            "definition": "Configured nominal boundary speed; scripts/time tables can override this scale"
+          },
+          {
+            "symbol": "L_ref",
+            "value": 0.6,
+            "unit": "m",
+            "definition": "Full channel height / plate separation"
+          },
+          {
+            "symbol": "nu",
+            "value": 0.1,
+            "unit": "m2/s",
+            "definition": "Configured kinematic viscosity"
+          }
+        ],
+        "notes": ""
+      }
+    ],
+    "display": {
+      "field": "speed",
+      "mode": "filled-contours",
+      "palette": "viridis",
+      "plane": "case-section",
+      "vectors": true,
+      "cell_edges": false,
+      "levels": 16,
+      "probes": [
+        {
+          "name": "left interior",
+          "position": {
+            "x": 0.04,
+            "y": 0.3,
+            "z": 0.25
+          },
+          "quantities": [
+            "pressure",
+            "speed"
+          ],
+          "sampling": "nearest-cell"
+        },
+        {
+          "name": "right interior",
+          "position": {
+            "x": 1.96,
+            "y": 0.3,
+            "z": 0.25
+          },
+          "quantities": [
+            "pressure",
+            "speed"
+          ],
+          "sampling": "nearest-cell"
+        }
+      ],
+      "plots": [
+        {
+          "name": "Transverse velocity profile",
+          "kind": "line-profile",
+          "quantity": "velocity-x",
+          "start": {
+            "x": 1.6,
+            "y": 0.0,
+            "z": 0.25
+          },
+          "end": {
+            "x": 1.6,
+            "y": 0.6,
+            "z": 0.25
+          },
+          "notes": "Compare away from entrance and before any outlet recirculation; coordinates are model units."
+        }
+      ],
+      "section": {
+        "id": "case-section",
+        "name": "Example midplane XY",
+        "origin": {
+          "x": 1.0,
+          "y": 0.3,
+          "z": 0.25
+        },
+        "u": {
+          "x": 1.0,
+          "y": 0.0,
+          "z": 0.0
+        },
+        "v": {
+          "x": 0.0,
+          "y": 1.0,
+          "z": 0.0
+        },
+        "enabled": true,
+        "every": 100,
+        "display": {
+          "field": 0,
+          "plot": 2,
+          "palette": 1,
+          "levels": 16,
+          "vectors": true,
+          "edges": false
+        }
+      }
+    },
+    "comparisons": [],
+    "verification": {
+      "status": "unvalidated",
+      "evidence": [],
+      "notes": "Input recipes and reference definitions only. No mesh/time independence study or measured error certification has been recorded."
+    },
+    "presets": [
+      {
+        "id": "coarse",
+        "name": "Coarse mesh",
+        "description": "Mesh-only refinement: sizes scaled by 2.0, mapped/edge divisions inversely scaled. Time settings remain unchanged. Not a verified accuracy level.",
+        "mesh": {
+          "threads": 1,
+          "dimension": "three-d",
+          "global_size": 0.4,
+          "min_size": 0.2,
+          "max_size": 0.4,
+          "element_order": 1
+        },
+        "mesh_recipe": {
+          "tuning": {
+            "method": "unstructured",
+            "max_size_growth": null,
+            "divisions": [
+              20,
+              20,
+              5
+            ],
+            "progression": [
+              1.0,
+              1.0
+            ],
+            "algorithm_2d": 6,
+            "algorithm_3d": 1,
+            "curvature_points": 32,
+            "smoothing_steps": 10,
+            "optimize": true,
+            "optimize_netgen": false,
+            "optimize_threshold": 0.3,
+            "extend_boundary_sizes": true
+          },
+          "edge_divisions": [],
+          "regions": [],
+          "local_sizes": [],
+          "refinements": [
+            {
+              "id": 1,
+              "name": "inlet-distance",
+              "targets": [
+                {
+                  "named-selection": "inlet"
+                }
+              ],
+              "sampling": 48,
+              "size_min": 0.2,
+              "size_max": 0.4,
+              "distance_min": 0.0,
+              "distance_max": 0.4,
+              "enabled": true
+            }
+          ],
+          "boundary_layers": []
+        },
+        "time": null,
+        "physical_end_time": null,
+        "compressible_time": null
+      },
+      {
+        "id": "medium",
+        "name": "Medium mesh",
+        "description": "Mesh-only refinement: sizes scaled by 1.0, mapped/edge divisions inversely scaled. Time settings remain unchanged. Not a verified accuracy level.",
+        "mesh": {
+          "threads": 1,
+          "dimension": "three-d",
+          "global_size": 0.2,
+          "min_size": 0.1,
+          "max_size": 0.2,
+          "element_order": 1
+        },
+        "mesh_recipe": {
+          "tuning": {
+            "method": "unstructured",
+            "max_size_growth": null,
+            "divisions": [
+              40,
+              40,
+              10
+            ],
+            "progression": [
+              1.0,
+              1.0
+            ],
+            "algorithm_2d": 6,
+            "algorithm_3d": 1,
+            "curvature_points": 32,
+            "smoothing_steps": 10,
+            "optimize": true,
+            "optimize_netgen": false,
+            "optimize_threshold": 0.3,
+            "extend_boundary_sizes": true
+          },
+          "edge_divisions": [],
+          "regions": [],
+          "local_sizes": [],
+          "refinements": [
+            {
+              "id": 1,
+              "name": "inlet-distance",
+              "targets": [
+                {
+                  "named-selection": "inlet"
+                }
+              ],
+              "sampling": 48,
+              "size_min": 0.1,
+              "size_max": 0.2,
+              "distance_min": 0.0,
+              "distance_max": 0.4,
+              "enabled": true
+            }
+          ],
+          "boundary_layers": []
+        },
+        "time": null,
+        "physical_end_time": null,
+        "compressible_time": null
+      },
+      {
+        "id": "fine",
+        "name": "Fine mesh",
+        "description": "Mesh-only refinement: sizes scaled by 0.5, mapped/edge divisions inversely scaled. Time settings remain unchanged. Not a verified accuracy level.",
+        "mesh": {
+          "threads": 1,
+          "dimension": "three-d",
+          "global_size": 0.1,
+          "min_size": 0.05,
+          "max_size": 0.1,
+          "element_order": 1
+        },
+        "mesh_recipe": {
+          "tuning": {
+            "method": "unstructured",
+            "max_size_growth": null,
+            "divisions": [
+              80,
+              80,
+              20
+            ],
+            "progression": [
+              1.0,
+              1.0
+            ],
+            "algorithm_2d": 6,
+            "algorithm_3d": 1,
+            "curvature_points": 32,
+            "smoothing_steps": 10,
+            "optimize": true,
+            "optimize_netgen": false,
+            "optimize_threshold": 0.3,
+            "extend_boundary_sizes": true
+          },
+          "edge_divisions": [],
+          "regions": [],
+          "local_sizes": [],
+          "refinements": [
+            {
+              "id": 1,
+              "name": "inlet-distance",
+              "targets": [
+                {
+                  "named-selection": "inlet"
+                }
+              ],
+              "sampling": 48,
+              "size_min": 0.05,
+              "size_max": 0.1,
+              "distance_min": 0.0,
+              "distance_max": 0.4,
+              "enabled": true
+            }
+          ],
+          "boundary_layers": []
+        },
+        "time": null,
+        "physical_end_time": null,
+        "compressible_time": null
+      }
+    ],
+    "assets": [
+      {
+        "path": "geometry/domain.json",
+        "role": "geometry",
+        "media_type": "application/json",
+        "sha256": "06c2b3dbff24a2eb52d5ab49c9ad699d896b8d54a8b4f5cf52e6c69380d43879",
+        "content": "{\n  \"cad_bodies\": {},\n  \"hidden_profiles\": [],\n  \"revision\": 7,\n  \"next_vertex_id\": 1,\n  \"next_edge_id\": 1,\n  \"next_face_id\": 7,\n  \"next_body_id\": 2,\n  \"next_sketch_id\": 1,\n  \"next_feature_id\": 1,\n  \"vertices\": {},\n  \"edges\": {},\n  \"faces\": {\n    \"1\": {\n      \"id\": 1,\n      \"representation\": \"PrimitiveSurface\"\n    },\n    \"2\": {\n      \"id\": 2,\n      \"representation\": \"PrimitiveSurface\"\n    },\n    \"3\": {\n      \"id\": 3,\n      \"representation\": \"PrimitiveSurface\"\n    },\n    \"4\": {\n      \"id\": 4,\n      \"representation\": \"PrimitiveSurface\"\n    },\n    \"5\": {\n      \"id\": 5,\n      \"representation\": \"PrimitiveSurface\"\n    },\n    \"6\": {\n      \"id\": 6,\n      \"representation\": \"PrimitiveSurface\"\n    }\n  },\n  \"bodies\": {\n    \"1\": {\n      \"id\": 1,\n      \"faces\": [\n        1,\n        2,\n        3,\n        4,\n        5,\n        6\n      ],\n      \"representation\": {\n        \"Box\": {\n          \"length\": 2.0,\n          \"width\": 0.6,\n          \"height\": 0.5\n        }\n      }\n    }\n  },\n  \"sketches\": {},\n  \"extrude_features\": {},\n  \"pocket_features\": {}\n}\n"
+      }
+    ]
   }
 }
