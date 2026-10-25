@@ -1,0 +1,681 @@
+{
+  "$schema": "../../case.schema.json",
+  "format_version": 2,
+  "id": "supersonic-wedge-mach2",
+  "name": "Supersonic Wedge · Mach 2 · 10°",
+  "category": "Validation benchmarks",
+  "description": "Inviscid attached oblique shock with weak-branch analytical pressure, density and shock-angle references.",
+  "capabilities": [
+    "Workbench",
+    "Editable",
+    "Unvalidated",
+    "TwoD",
+    "Compressible",
+    "Oblique shock",
+    "Analytical reference"
+  ],
+  "expectations": {
+    "closed_domain": false,
+    "positive_streamwise_flow": true,
+    "curved_boundary": false,
+    "non_ideal_mesh_quality": false,
+    "notes": "Inviscid Mach-2 flow with a 10-degree turn and attached weak oblique shock. Exclude the leading-edge cells and upper-boundary interaction from post-shock comparisons."
+  },
+  "project_template": {
+    "format_version": 2,
+    "project_id": "template-supersonic-wedge-mach2",
+    "name": "Supersonic Wedge · Mach 2 · 10°",
+    "geometry": {
+      "cad_bodies": {},
+      "hidden_profiles": [],
+      "revision": 11,
+      "next_vertex_id": 6,
+      "next_edge_id": 6,
+      "next_face_id": 2,
+      "next_body_id": 1,
+      "next_sketch_id": 1,
+      "next_feature_id": 1,
+      "vertices": {
+        "1": {
+          "id": 1,
+          "position": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          }
+        },
+        "2": {
+          "id": 2,
+          "position": {
+            "x": 0.5,
+            "y": 0,
+            "z": 0
+          }
+        },
+        "3": {
+          "id": 3,
+          "position": {
+            "x": 3,
+            "y": 0.44081745177116244,
+            "z": 0
+          }
+        },
+        "4": {
+          "id": 4,
+          "position": {
+            "x": 3,
+            "y": 2,
+            "z": 0
+          }
+        },
+        "5": {
+          "id": 5,
+          "position": {
+            "x": 0,
+            "y": 2,
+            "z": 0
+          }
+        }
+      },
+      "edges": {
+        "1": {
+          "id": 1,
+          "geometry": {
+            "Line": {
+              "start": 1,
+              "end": 2
+            }
+          }
+        },
+        "2": {
+          "id": 2,
+          "geometry": {
+            "Line": {
+              "start": 2,
+              "end": 3
+            }
+          }
+        },
+        "3": {
+          "id": 3,
+          "geometry": {
+            "Line": {
+              "start": 3,
+              "end": 4
+            }
+          }
+        },
+        "4": {
+          "id": 4,
+          "geometry": {
+            "Line": {
+              "start": 4,
+              "end": 5
+            }
+          }
+        },
+        "5": {
+          "id": 5,
+          "geometry": {
+            "Line": {
+              "start": 5,
+              "end": 1
+            }
+          }
+        }
+      },
+      "faces": {
+        "1": {
+          "id": 1,
+          "representation": {
+            "Planar": {
+              "outer_loop": [
+                {
+                  "edge": 1,
+                  "reversed": false
+                },
+                {
+                  "edge": 2,
+                  "reversed": false
+                },
+                {
+                  "edge": 3,
+                  "reversed": false
+                },
+                {
+                  "edge": 4,
+                  "reversed": false
+                },
+                {
+                  "edge": 5,
+                  "reversed": false
+                }
+              ],
+              "inner_loops": []
+            }
+          }
+        }
+      },
+      "bodies": {},
+      "sketches": {},
+      "extrude_features": {},
+      "pocket_features": {}
+    },
+    "plane_monitors": [],
+    "fluid_face": 1,
+    "named_selections": [
+      {
+        "name": "upstream-wall",
+        "targets": [
+          {
+            "Edge": 1
+          }
+        ]
+      },
+      {
+        "name": "wedge",
+        "targets": [
+          {
+            "Edge": 2
+          }
+        ]
+      },
+      {
+        "name": "outlet",
+        "targets": [
+          {
+            "Edge": 3
+          }
+        ]
+      },
+      {
+        "name": "farfield",
+        "targets": [
+          {
+            "Edge": 4
+          }
+        ]
+      },
+      {
+        "name": "inlet",
+        "targets": [
+          {
+            "Edge": 5
+          }
+        ]
+      }
+    ],
+    "mesh": {
+      "threads": 1,
+      "dimension": "two-d",
+      "global_size": 0.05,
+      "min_size": 0.00625,
+      "max_size": 0.05,
+      "element_order": 1
+    },
+    "mesh_recipe": {
+      "tuning": {
+        "method": "unstructured",
+        "max_size_growth": null,
+        "divisions": [
+          40,
+          40,
+          10
+        ],
+        "progression": [
+          1.0,
+          1.0
+        ],
+        "algorithm_2d": 6,
+        "algorithm_3d": 1,
+        "curvature_points": 32,
+        "smoothing_steps": 10,
+        "optimize": true,
+        "optimize_netgen": false,
+        "optimize_threshold": 0.3,
+        "extend_boundary_sizes": true
+      },
+      "edge_divisions": [],
+      "regions": [],
+      "local_sizes": [],
+      "refinements": [],
+      "boundary_layers": []
+    },
+    "boundaries": [
+      {
+        "selection": "upstream-wall",
+        "condition": "symmetry"
+      },
+      {
+        "selection": "wedge",
+        "condition": "symmetry"
+      },
+      {
+        "selection": "outlet",
+        "condition": "symmetry"
+      },
+      {
+        "selection": "farfield",
+        "condition": "symmetry"
+      },
+      {
+        "selection": "inlet",
+        "condition": "symmetry"
+      }
+    ],
+    "material": {
+      "catalog": null,
+      "density": 1.0,
+      "kinematic_viscosity": 0.01
+    },
+    "solver": {
+      "compute": {
+        "backend": "parallel",
+        "adapter": "",
+        "cpu_fallback": true,
+        "parallel_min_rows": 4096,
+        "gpu_min_rows": 16384,
+        "gpu_memory_fraction": 0.8,
+        "gpu_preconditioner": "auto",
+        "gpu_restart": 24,
+        "gpu_inner_iterations": 8,
+        "gpu_smoothing_sweeps": 2,
+        "gpu_timeout_ms": 10000,
+        "gpu_host_basis_mb": 256
+      },
+      "pressure_coupling": {
+        "algorithm": "simple",
+        "pressure_correctors": 1,
+        "non_orthogonal_correctors": 0,
+        "non_orthogonal_limiter": 0.5
+      },
+      "volume_models": {
+        "resistance": null,
+        "rotating_frame": null
+      },
+      "cyclic_pairs": [],
+      "initial_profile": null,
+      "compressible": {
+        "gas": {
+          "gamma": 1.4,
+          "gas_constant": 287.05
+        },
+        "viscosity": {
+          "type": "inviscid"
+        },
+        "flux": "hllc",
+        "courant": 0.3,
+        "max_time_step": 1e-05,
+        "min_time_step": 1e-14,
+        "end_time": 0.015,
+        "max_steps": 100000,
+        "initial": {
+          "density": 1.225,
+          "pressure": 101325.0,
+          "velocity": {
+            "x": 680.5879810869421,
+            "y": 0,
+            "z": 0
+          }
+        },
+        "regions": [],
+        "boundaries": {
+          "inlet": {
+            "type": "supersonic-inlet",
+            "state": {
+              "density": 1.225,
+              "pressure": 101325.0,
+              "velocity": {
+                "x": 680.5879810869421,
+                "y": 0,
+                "z": 0
+              }
+            }
+          },
+          "farfield": {
+            "type": "far-field",
+            "state": {
+              "density": 1.225,
+              "pressure": 101325.0,
+              "velocity": {
+                "x": 680.5879810869421,
+                "y": 0,
+                "z": 0
+              }
+            }
+          },
+          "outlet": {
+            "type": "transmissive"
+          },
+          "upstream-wall": {
+            "type": "slip-wall"
+          },
+          "wedge": {
+            "type": "slip-wall"
+          }
+        },
+        "cyclic_pairs": []
+      },
+      "equations": {
+        "velocity": {
+          "absolute_tolerance": 1e-10,
+          "relative_tolerance": 1e-07,
+          "max_iterations": 5000,
+          "preconditioner": "jacobi"
+        },
+        "k": {
+          "absolute_tolerance": 1e-10,
+          "relative_tolerance": 1e-07,
+          "max_iterations": 5000,
+          "preconditioner": "jacobi"
+        },
+        "omega": {
+          "absolute_tolerance": 1e-10,
+          "relative_tolerance": 1e-07,
+          "max_iterations": 5000,
+          "preconditioner": "jacobi"
+        }
+      },
+      "boundary_profiles": {},
+      "scripting": {
+        "contract_version": 1,
+        "scripts": {},
+        "bindings": {}
+      },
+      "thermal": {
+        "enabled": false,
+        "initial_temperature": 293.15,
+        "specific_heat": 1005.0,
+        "conductivity": 0.025,
+        "source_w_m3": 0.0,
+        "relaxation": 0.7,
+        "relative_tolerance": 1e-08,
+        "turbulent_prandtl": 0.85,
+        "wall_treatment": "molecular",
+        "buoyancy": false,
+        "reference_temperature": 293.15,
+        "expansion": 0.0,
+        "gravity": {
+          "x": 0.0,
+          "y": -9.81,
+          "z": 0.0
+        },
+        "max_boussinesq_fraction": 0.1,
+        "boundaries": {}
+      },
+      "time": {
+        "mode": "steady"
+      },
+      "physical_end_time": null,
+      "force_analysis": {
+        "patches": [],
+        "frequency_start_time": 0.0,
+        "speed": 1.0,
+        "measure": 1.0,
+        "length": 1.0,
+        "center": {
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0
+        },
+        "drag_direction": {
+          "x": 1.0,
+          "y": 0.0,
+          "z": 0.0
+        },
+        "lift_direction": {
+          "x": 0.0,
+          "y": 1.0,
+          "z": 0.0
+        },
+        "reattachment": false,
+        "wall_start": {
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0
+        },
+        "wall_direction": {
+          "x": 1.0,
+          "y": 0.0,
+          "z": 0.0
+        },
+        "wall_tolerance": 1e-06
+      },
+      "turbulence": {
+        "model": "laminar",
+        "wall_treatment": "resolved",
+        "inlets": {},
+        "k": 0.0001,
+        "omega": 1.0,
+        "epsilon": 1e-05,
+        "nu_tilda": 1e-05,
+        "relaxation": 0.5,
+        "relative_tolerance": 1e-06,
+        "ck": 0.094,
+        "ce": 1.048,
+        "cw": 0.325
+      },
+      "convection": "upwind",
+      "threads": 0,
+      "max_outer_iterations": 2000,
+      "continuity_absolute_tolerance": 1e-10,
+      "coupling_relative_tolerance": 1e-06,
+      "velocity_relaxation": 0.4,
+      "pressure_relaxation": 0.2
+    },
+    "runs": [],
+    "cad_document": null
+  },
+  "metadata": {
+    "revision": "1",
+    "sources": [
+      {
+        "id": "naca1135",
+        "title": "NASA Glenn: Oblique shock relations (NACA 1135)",
+        "url": "https://www.grc.nasa.gov/WWW/BGH/oblique.html",
+        "doi": null,
+        "relationship": "reference",
+        "notes": ""
+      }
+    ],
+    "dimensionless": [
+      {
+        "symbol": "M1",
+        "value": 2,
+        "formula": "U1 / a1",
+        "scales": [],
+        "notes": ""
+      },
+      {
+        "symbol": "theta",
+        "value": 10,
+        "formula": "Flow deflection (degrees)",
+        "scales": [],
+        "notes": ""
+      }
+    ],
+    "display": {
+      "field": "mach",
+      "mode": "filled-contours",
+      "palette": "viridis",
+      "plane": "surface",
+      "vectors": false,
+      "cell_edges": false,
+      "levels": 16,
+      "probes": [],
+      "plots": []
+    },
+    "comparisons": [
+      {
+        "id": "shock-angle",
+        "quantity": "shock-angle-deg",
+        "source_id": "naca1135",
+        "kind": "external-reference",
+        "error_metric": "l2",
+        "procedure": "Measure the shock line away from the leading edge and top boundary; compare the weak theta-beta-M root.",
+        "target": 39.31393184481887
+      },
+      {
+        "id": "postshock-pressure",
+        "quantity": "pressure",
+        "source_id": "naca1135",
+        "kind": "external-reference",
+        "error_metric": "l2",
+        "procedure": "Sample only the uniform region between wedge and shock.",
+        "asset": "reference/weak-shock.csv",
+        "coordinate_column": "x",
+        "value_column": "pressure"
+      },
+      {
+        "id": "postshock-mach",
+        "quantity": "mach",
+        "source_id": "naca1135",
+        "kind": "external-reference",
+        "error_metric": "l2",
+        "procedure": "Sample the uniform post-shock region.",
+        "asset": "reference/weak-shock.csv",
+        "coordinate_column": "x",
+        "value_column": "mach"
+      }
+    ],
+    "verification": {
+      "status": "unvalidated",
+      "evidence": [],
+      "notes": ""
+    },
+    "presets": [
+      {
+        "id": "coarse",
+        "name": "Coarse mesh",
+        "description": "Spatial refinement; physical conditions remain unchanged.",
+        "mesh": {
+          "threads": 1,
+          "dimension": "two-d",
+          "global_size": 0.1,
+          "min_size": 0.0125,
+          "max_size": 0.1,
+          "element_order": 1
+        },
+        "mesh_recipe": {
+          "tuning": {
+            "method": "unstructured",
+            "max_size_growth": null,
+            "divisions": [
+              40,
+              40,
+              10
+            ],
+            "progression": [
+              1.0,
+              1.0
+            ],
+            "algorithm_2d": 6,
+            "algorithm_3d": 1,
+            "curvature_points": 32,
+            "smoothing_steps": 10,
+            "optimize": true,
+            "optimize_netgen": false,
+            "optimize_threshold": 0.3,
+            "extend_boundary_sizes": true
+          },
+          "edge_divisions": [],
+          "regions": [],
+          "local_sizes": [],
+          "refinements": [],
+          "boundary_layers": []
+        }
+      },
+      {
+        "id": "medium",
+        "name": "Medium mesh",
+        "description": "Spatial refinement; physical conditions remain unchanged.",
+        "mesh": {
+          "threads": 1,
+          "dimension": "two-d",
+          "global_size": 0.05,
+          "min_size": 0.00625,
+          "max_size": 0.05,
+          "element_order": 1
+        },
+        "mesh_recipe": {
+          "tuning": {
+            "method": "unstructured",
+            "max_size_growth": null,
+            "divisions": [
+              40,
+              40,
+              10
+            ],
+            "progression": [
+              1.0,
+              1.0
+            ],
+            "algorithm_2d": 6,
+            "algorithm_3d": 1,
+            "curvature_points": 32,
+            "smoothing_steps": 10,
+            "optimize": true,
+            "optimize_netgen": false,
+            "optimize_threshold": 0.3,
+            "extend_boundary_sizes": true
+          },
+          "edge_divisions": [],
+          "regions": [],
+          "local_sizes": [],
+          "refinements": [],
+          "boundary_layers": []
+        }
+      },
+      {
+        "id": "fine",
+        "name": "Fine mesh",
+        "description": "Spatial refinement; physical conditions remain unchanged.",
+        "mesh": {
+          "threads": 1,
+          "dimension": "two-d",
+          "global_size": 0.025,
+          "min_size": 0.003125,
+          "max_size": 0.025,
+          "element_order": 1
+        },
+        "mesh_recipe": {
+          "tuning": {
+            "method": "unstructured",
+            "max_size_growth": null,
+            "divisions": [
+              40,
+              40,
+              10
+            ],
+            "progression": [
+              1.0,
+              1.0
+            ],
+            "algorithm_2d": 6,
+            "algorithm_3d": 1,
+            "curvature_points": 32,
+            "smoothing_steps": 10,
+            "optimize": true,
+            "optimize_netgen": false,
+            "optimize_threshold": 0.3,
+            "extend_boundary_sizes": true
+          },
+          "edge_divisions": [],
+          "regions": [],
+          "local_sizes": [],
+          "refinements": [],
+          "boundary_layers": []
+        }
+      }
+    ],
+    "assets": [
+      {
+        "path": "reference/weak-shock.csv",
+        "role": "reference-data",
+        "media_type": "text/csv",
+        "sha256": "eb9ba45c346447e7010e6323948c0765f3c85ae7233b0d344db0fec62f203417",
+        "content": "x,y,pressure,density,mach,velocity_x,velocity_y\n0.75,0.12440295390940716,172919.07705030334,1.7865713758183042,1.640522229001082,594.7149622341543,104.8642936728972\n1,0.24880590781881431,172919.07705030334,1.7865713758183042,1.640522229001082,594.7149622341543,104.8642936728972\n1.5,0.49761181563762863,172919.07705030334,1.7865713758183042,1.640522229001082,594.7149622341543,104.8642936728972\n2,0.746417723456443,172919.07705030334,1.7865713758183042,1.640522229001082,594.7149622341543,104.8642936728972\n2.5,0.9952236312752573,172919.07705030334,1.7865713758183042,1.640522229001082,594.7149622341543,104.8642936728972\n"
+      }
+    ]
+  }
+}

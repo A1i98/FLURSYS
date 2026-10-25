@@ -1,0 +1,627 @@
+{
+  "$schema": "../../case.schema.json",
+  "format_version": 2,
+  "id": "rayleigh-benard-ra10000",
+  "name": "Rayleigh–Bénard Convection · Ra 10000 · Pr 0.71",
+  "category": "Validation benchmarks",
+  "description": "Transient bottom-heated convection with fixed plate temperatures, insulated side walls and a reproducible small initial velocity perturbation.",
+  "capabilities": [
+    "Workbench",
+    "Editable",
+    "Unvalidated",
+    "TwoD",
+    "Transient",
+    "Heat transfer",
+    "Buoyancy"
+  ],
+  "expectations": {
+    "closed_domain": true,
+    "positive_streamwise_flow": false,
+    "curved_boundary": false,
+    "non_ideal_mesh_quality": false,
+    "notes": "Pressure is relative to the reference-density hydrostatic head. Rigid insulated sidewalls form a finite aspect-ratio cell."
+  },
+  "project_template": {
+    "format_version": 2,
+    "project_id": "template-rayleigh-benard-ra10000",
+    "name": "Rayleigh–Bénard Convection · Ra 10000 · Pr 0.71",
+    "geometry": {
+      "cad_bodies": {},
+      "hidden_profiles": [],
+      "revision": 9,
+      "next_vertex_id": 5,
+      "next_edge_id": 5,
+      "next_face_id": 2,
+      "next_body_id": 1,
+      "next_sketch_id": 1,
+      "next_feature_id": 1,
+      "vertices": {
+        "1": {
+          "id": 1,
+          "position": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          }
+        },
+        "2": {
+          "id": 2,
+          "position": {
+            "x": 0.02016,
+            "y": 0,
+            "z": 0
+          }
+        },
+        "3": {
+          "id": 3,
+          "position": {
+            "x": 0.02016,
+            "y": 0.01,
+            "z": 0
+          }
+        },
+        "4": {
+          "id": 4,
+          "position": {
+            "x": 0,
+            "y": 0.01,
+            "z": 0
+          }
+        }
+      },
+      "edges": {
+        "1": {
+          "id": 1,
+          "geometry": {
+            "Line": {
+              "start": 1,
+              "end": 2
+            }
+          }
+        },
+        "2": {
+          "id": 2,
+          "geometry": {
+            "Line": {
+              "start": 2,
+              "end": 3
+            }
+          }
+        },
+        "3": {
+          "id": 3,
+          "geometry": {
+            "Line": {
+              "start": 3,
+              "end": 4
+            }
+          }
+        },
+        "4": {
+          "id": 4,
+          "geometry": {
+            "Line": {
+              "start": 4,
+              "end": 1
+            }
+          }
+        }
+      },
+      "faces": {
+        "1": {
+          "id": 1,
+          "representation": {
+            "Planar": {
+              "outer_loop": [
+                {
+                  "edge": 1,
+                  "reversed": false
+                },
+                {
+                  "edge": 2,
+                  "reversed": false
+                },
+                {
+                  "edge": 3,
+                  "reversed": false
+                },
+                {
+                  "edge": 4,
+                  "reversed": false
+                }
+              ],
+              "inner_loops": []
+            }
+          }
+        }
+      },
+      "bodies": {},
+      "sketches": {},
+      "extrude_features": {},
+      "pocket_features": {}
+    },
+    "plane_monitors": [],
+    "fluid_face": 1,
+    "named_selections": [
+      {
+        "name": "hot",
+        "targets": [
+          {
+            "Edge": 1
+          }
+        ]
+      },
+      {
+        "name": "right",
+        "targets": [
+          {
+            "Edge": 2
+          }
+        ]
+      },
+      {
+        "name": "cold",
+        "targets": [
+          {
+            "Edge": 3
+          }
+        ]
+      },
+      {
+        "name": "left",
+        "targets": [
+          {
+            "Edge": 4
+          }
+        ]
+      }
+    ],
+    "mesh": {
+      "threads": 1,
+      "dimension": "two-d",
+      "global_size": 0.0003125,
+      "min_size": 3.90625e-05,
+      "max_size": 0.0003125,
+      "element_order": 1
+    },
+    "mesh_recipe": {
+      "tuning": {
+        "method": "mapped-quad",
+        "max_size_growth": null,
+        "divisions": [
+          64,
+          32,
+          1
+        ],
+        "progression": [
+          1.0,
+          1.0
+        ],
+        "algorithm_2d": 6,
+        "algorithm_3d": 1,
+        "curvature_points": 32,
+        "smoothing_steps": 10,
+        "optimize": true,
+        "optimize_netgen": false,
+        "optimize_threshold": 0.3,
+        "extend_boundary_sizes": true
+      },
+      "edge_divisions": [],
+      "regions": [],
+      "local_sizes": [],
+      "refinements": [],
+      "boundary_layers": []
+    },
+    "boundaries": [
+      {
+        "selection": "hot",
+        "condition": "no-slip-wall"
+      },
+      {
+        "selection": "cold",
+        "condition": "no-slip-wall"
+      },
+      {
+        "selection": "left",
+        "condition": "no-slip-wall"
+      },
+      {
+        "selection": "right",
+        "condition": "no-slip-wall"
+      }
+    ],
+    "material": {
+      "density": 1.0,
+      "kinematic_viscosity": 1.5237125713204576e-06
+    },
+    "solver": {
+      "compute": {
+        "backend": "parallel",
+        "adapter": "",
+        "cpu_fallback": true,
+        "parallel_min_rows": 4096,
+        "gpu_min_rows": 16384,
+        "gpu_memory_fraction": 0.8,
+        "gpu_preconditioner": "auto",
+        "gpu_restart": 24,
+        "gpu_inner_iterations": 8,
+        "gpu_smoothing_sweeps": 2,
+        "gpu_timeout_ms": 10000,
+        "gpu_host_basis_mb": 256
+      },
+      "pressure_coupling": {
+        "algorithm": "simple",
+        "pressure_correctors": 1,
+        "non_orthogonal_correctors": 0,
+        "non_orthogonal_limiter": 0.5
+      },
+      "volume_models": {
+        "resistance": null,
+        "rotating_frame": null
+      },
+      "cyclic_pairs": [],
+      "initial_profile": {
+        "type": "taylor-green2-d",
+        "length": 0.02016,
+        "speed": 1e-05
+      },
+      "compressible": null,
+      "equations": {
+        "velocity": {
+          "absolute_tolerance": 1e-10,
+          "relative_tolerance": 1e-07,
+          "max_iterations": 5000,
+          "preconditioner": "jacobi"
+        },
+        "k": {
+          "absolute_tolerance": 1e-10,
+          "relative_tolerance": 1e-07,
+          "max_iterations": 5000,
+          "preconditioner": "jacobi"
+        },
+        "omega": {
+          "absolute_tolerance": 1e-10,
+          "relative_tolerance": 1e-07,
+          "max_iterations": 5000,
+          "preconditioner": "jacobi"
+        }
+      },
+      "boundary_profiles": {},
+      "scripting": {
+        "contract_version": 1,
+        "scripts": {},
+        "bindings": {}
+      },
+      "thermal": {
+        "enabled": true,
+        "initial_temperature": 300.0,
+        "specific_heat": 1005.0,
+        "conductivity": 0.0021568044143338875,
+        "source_w_m3": 0.0,
+        "relaxation": 0.7,
+        "relative_tolerance": 1e-06,
+        "turbulent_prandtl": 0.85,
+        "wall_treatment": "molecular",
+        "buoyancy": true,
+        "reference_temperature": 300.0,
+        "expansion": 0.0033333333333333335,
+        "gravity": {
+          "x": 0,
+          "y": -9.81,
+          "z": 0
+        },
+        "max_boussinesq_fraction": 0.1,
+        "boundaries": {
+          "hot": {
+            "type": "fixed-temperature",
+            "temperature": 300.5
+          },
+          "cold": {
+            "type": "fixed-temperature",
+            "temperature": 299.5
+          },
+          "left": {
+            "type": "adiabatic"
+          },
+          "right": {
+            "type": "adiabatic"
+          }
+        },
+        "reduced_pressure": true
+      },
+      "time": {
+        "mode": "euler",
+        "dt": 0.01,
+        "steps": 2000
+      },
+      "physical_end_time": null,
+      "force_analysis": {
+        "patches": [],
+        "frequency_start_time": 0.0,
+        "speed": 1.0,
+        "measure": 1.0,
+        "length": 1.0,
+        "center": {
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0
+        },
+        "drag_direction": {
+          "x": 1.0,
+          "y": 0.0,
+          "z": 0.0
+        },
+        "lift_direction": {
+          "x": 0.0,
+          "y": 1.0,
+          "z": 0.0
+        },
+        "reattachment": false,
+        "wall_start": {
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0
+        },
+        "wall_direction": {
+          "x": 1.0,
+          "y": 0.0,
+          "z": 0.0
+        },
+        "wall_tolerance": 1e-06
+      },
+      "turbulence": {
+        "model": "laminar",
+        "wall_treatment": "resolved",
+        "inlets": {},
+        "k": 0.0001,
+        "omega": 1.0,
+        "epsilon": 1e-05,
+        "nu_tilda": 1e-05,
+        "relaxation": 0.5,
+        "relative_tolerance": 1e-06,
+        "ck": 0.094,
+        "ce": 1.048,
+        "cw": 0.325
+      },
+      "convection": "upwind",
+      "threads": 0,
+      "max_outer_iterations": 100,
+      "continuity_absolute_tolerance": 1e-10,
+      "coupling_relative_tolerance": 1e-05,
+      "velocity_relaxation": 0.4,
+      "pressure_relaxation": 0.2
+    },
+    "runs": [],
+    "cad_document": null
+  },
+  "metadata": {
+    "revision": "1",
+    "sources": [
+      {
+        "id": "kao-yang",
+        "title": "Kao & Yang: Oscillatory Rayleigh–Bénard convection",
+        "url": "https://doi.org/10.1016/j.ijheatmasstransfer.2007.01.035",
+        "doi": "10.1016/j.ijheatmasstransfer.2007.01.035",
+        "relationship": "reference",
+        "notes": ""
+      },
+      {
+        "id": "container",
+        "title": "Rayleigh–Bénard convection: The container shape matters",
+        "url": "https://doi.org/10.1103/PhysRevFluids.6.090502",
+        "doi": "10.1103/PhysRevFluids.6.090502",
+        "relationship": "reference",
+        "notes": "Rigid side walls raise the onset threshold relative to the infinite/periodic layer; Ra_c=1707.762 is not an exact finite-box acceptance target."
+      }
+    ],
+    "dimensionless": [
+      {
+        "symbol": "Ra_H",
+        "value": 10000,
+        "formula": "g beta deltaT H³ / (nu alpha)",
+        "scales": [],
+        "notes": ""
+      },
+      {
+        "symbol": "Pr",
+        "value": 0.71,
+        "formula": "nu / alpha",
+        "scales": [],
+        "notes": ""
+      },
+      {
+        "symbol": "Gamma",
+        "value": 2.016,
+        "formula": "Width / height",
+        "scales": [],
+        "notes": ""
+      }
+    ],
+    "display": {
+      "field": "temperature",
+      "mode": "filled-contours",
+      "palette": "viridis",
+      "plane": "surface",
+      "vectors": true,
+      "cell_edges": false,
+      "levels": 16,
+      "probes": [
+        {
+          "name": "Centre",
+          "position": {
+            "x": 0.01008,
+            "y": 0.005,
+            "z": 0
+          },
+          "quantities": [
+            "temperature",
+            "velocity-y",
+            "speed"
+          ],
+          "sampling": "nearest-cell"
+        }
+      ],
+      "plots": []
+    },
+    "comparisons": [
+      {
+        "id": "conduction-temperature",
+        "quantity": "temperature",
+        "source_id": "kao-yang",
+        "kind": "external-reference",
+        "error_metric": "l2",
+        "procedure": "Use the conduction profile as an initial/below-onset baseline, not as the expected convecting Ra=10000 solution.",
+        "asset": "reference/conduction.csv",
+        "coordinate_column": "y",
+        "value_column": "temperature"
+      },
+      {
+        "id": "heat-transfer",
+        "quantity": "nusselt",
+        "source_id": "container",
+        "kind": "external-reference",
+        "error_metric": "l2",
+        "procedure": "Nu=Q H/(k A deltaT); compare hot/cold plate heat rates after the stored thermal energy becomes stationary."
+      }
+    ],
+    "verification": {
+      "status": "unvalidated",
+      "evidence": [],
+      "notes": ""
+    },
+    "presets": [
+      {
+        "id": "coarse",
+        "name": "Coarse mesh",
+        "description": "Spatial refinement; physical conditions remain unchanged.",
+        "mesh": {
+          "threads": 1,
+          "dimension": "two-d",
+          "global_size": 0.000625,
+          "min_size": 7.8125e-05,
+          "max_size": 0.000625,
+          "element_order": 1
+        },
+        "mesh_recipe": {
+          "tuning": {
+            "method": "mapped-quad",
+            "max_size_growth": null,
+            "divisions": [
+              32,
+              16,
+              2
+            ],
+            "progression": [
+              1.0,
+              1.0
+            ],
+            "algorithm_2d": 6,
+            "algorithm_3d": 1,
+            "curvature_points": 32,
+            "smoothing_steps": 10,
+            "optimize": true,
+            "optimize_netgen": false,
+            "optimize_threshold": 0.3,
+            "extend_boundary_sizes": true
+          },
+          "edge_divisions": [],
+          "regions": [],
+          "local_sizes": [],
+          "refinements": [],
+          "boundary_layers": []
+        }
+      },
+      {
+        "id": "medium",
+        "name": "Medium mesh",
+        "description": "Spatial refinement; physical conditions remain unchanged.",
+        "mesh": {
+          "threads": 1,
+          "dimension": "two-d",
+          "global_size": 0.0003125,
+          "min_size": 3.90625e-05,
+          "max_size": 0.0003125,
+          "element_order": 1
+        },
+        "mesh_recipe": {
+          "tuning": {
+            "method": "mapped-quad",
+            "max_size_growth": null,
+            "divisions": [
+              64,
+              32,
+              2
+            ],
+            "progression": [
+              1.0,
+              1.0
+            ],
+            "algorithm_2d": 6,
+            "algorithm_3d": 1,
+            "curvature_points": 32,
+            "smoothing_steps": 10,
+            "optimize": true,
+            "optimize_netgen": false,
+            "optimize_threshold": 0.3,
+            "extend_boundary_sizes": true
+          },
+          "edge_divisions": [],
+          "regions": [],
+          "local_sizes": [],
+          "refinements": [],
+          "boundary_layers": []
+        }
+      },
+      {
+        "id": "fine",
+        "name": "Fine mesh",
+        "description": "Spatial refinement; physical conditions remain unchanged.",
+        "mesh": {
+          "threads": 1,
+          "dimension": "two-d",
+          "global_size": 0.00015625,
+          "min_size": 1.953125e-05,
+          "max_size": 0.00015625,
+          "element_order": 1
+        },
+        "mesh_recipe": {
+          "tuning": {
+            "method": "mapped-quad",
+            "max_size_growth": null,
+            "divisions": [
+              128,
+              64,
+              2
+            ],
+            "progression": [
+              1.0,
+              1.0
+            ],
+            "algorithm_2d": 6,
+            "algorithm_3d": 1,
+            "curvature_points": 32,
+            "smoothing_steps": 10,
+            "optimize": true,
+            "optimize_netgen": false,
+            "optimize_threshold": 0.3,
+            "extend_boundary_sizes": true
+          },
+          "edge_divisions": [],
+          "regions": [],
+          "local_sizes": [],
+          "refinements": [],
+          "boundary_layers": []
+        }
+      }
+    ],
+    "assets": [
+      {
+        "path": "reference/conduction.csv",
+        "role": "reference-data",
+        "media_type": "text/csv",
+        "sha256": "6bad14d204077701eab693b6232748416d62667bf0ca9a44be5e3f4d6aedc4f9",
+        "content": "y,temperature,nusselt\n0.0,300.5,1\n0.0003125,300.46875,1\n0.000625,300.4375,1\n0.0009375,300.40625,1\n0.00125,300.375,1\n0.0015625,300.34375,1\n0.001875,300.3125,1\n0.0021875,300.28125,1\n0.0025,300.25,1\n0.0028125,300.21875,1\n0.003125,300.1875,1\n0.0034375,300.15625,1\n0.00375,300.125,1\n0.0040625,300.09375,1\n0.004375,300.0625,1\n0.0046875,300.03125,1\n0.005,300.0,1\n0.0053125,299.96875,1\n0.005625,299.9375,1\n0.0059375,299.90625,1\n0.00625,299.875,1\n0.0065625,299.84375,1\n0.006875,299.8125,1\n0.0071875,299.78125,1\n0.0075,299.75,1\n0.0078125,299.71875,1\n0.008125,299.6875,1\n0.0084375,299.65625,1\n0.00875,299.625,1\n0.0090625,299.59375,1\n0.009375,299.5625,1\n0.0096875,299.53125,1\n0.01,299.5,1\n"
+      }
+    ]
+  }
+}
