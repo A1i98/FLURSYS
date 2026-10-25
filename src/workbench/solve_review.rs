@@ -262,6 +262,7 @@ mod tests {
     }
     fn fields(case: &IncompressibleCase, flux: Vec<f64>) -> IncompressibleInitialConditions {
         IncompressibleInitialConditions::Restart {
+            previous: None,
             velocity: CellField::from_values(&case.mesh, vec![Vec3::new(3., 4., 0.)]).unwrap(),
             pressure: CellField::from_values(&case.mesh, vec![2.]).unwrap(),
             face_flux: FaceField::from_values(&case.mesh, flux).unwrap(),

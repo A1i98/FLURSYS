@@ -1287,6 +1287,7 @@ impl App {
                 }
             }
             1 => {
+                self.recovery_properties(ui);
                 heading(ui, "SOLVER CONTROLS");
                 ui.horizontal(|ui| {
                     ui.label("Additional iterations / inner correctors");
@@ -1513,6 +1514,18 @@ impl App {
             if icon_button(ui, "stop", "Stop", self.jobs.is_running()).clicked() {
                 self.jobs.cancel();
                 self.message("Stop requested; accepted fields are retained for continuation.");
+            }
+            if icon_button(
+                ui,
+                "save",
+                "Checkpoint",
+                !self.jobs.is_checkpointing() && self.solve_recording.is_some(),
+            )
+            .clicked()
+            {
+                if let Err(e) = self.jobs.checkpoint_now() {
+                    self.message(e);
+                }
             }
             if icon_button(ui, "restart", "Initialize", !self.busy()).clicked() {
                 self.show_initialization = true;

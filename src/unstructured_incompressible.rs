@@ -102,8 +102,12 @@ impl IncompressibleSolverOptions {
         mesh: &UnstructuredMesh,
     ) -> Result<crate::periodic::CyclicMap, String> {
         if !self.cyclic_pairs.is_empty() {
-            if !matches!(self.turbulence.model, crate::turbulence::TurbulenceModel::Laminar | crate::turbulence::TurbulenceModel::KOmega | crate::turbulence::TurbulenceModel::KOmegaSst)
-                || self.thermal.enabled
+            if !matches!(
+                self.turbulence.model,
+                crate::turbulence::TurbulenceModel::Laminar
+                    | crate::turbulence::TurbulenceModel::KOmega
+                    | crate::turbulence::TurbulenceModel::KOmegaSst
+            ) || self.thermal.enabled
                 || self.convection != crate::momentum::MomentumConvection::Upwind
                 || self.volume_models.rotating_frame.is_some()
             {
@@ -154,6 +158,7 @@ impl Default for IncompressibleSolverOptions {
 #[allow(clippy::large_enum_variant)] // Preserve the public value-based API.
 pub enum IncompressibleInitialConditions {
     Restart {
+        previous: Option<Box<IncompressibleInitialConditions>>,
         velocity: CellField<Vec3>,
         pressure: CellField<f64>,
         face_flux: FaceField<f64>,
@@ -173,6 +178,14 @@ pub enum IncompressibleInitialConditions {
 }
 
 impl IncompressibleInitialConditions {
+    pub fn without_history(&self) -> Self {
+        let mut state = self.clone();
+        if let Self::Restart { previous, .. } = &mut state {
+            *previous = None;
+        }
+        state
+    }
+
     pub fn uniform(velocity: Vec3, pressure: f64) -> Self {
         Self::Uniform { velocity, pressure }
     }
@@ -801,6 +814,7 @@ impl IncompressibleSolveReport {
 
 #[derive(Clone, Debug)]
 pub struct IncompressibleSolution {
+    pub previous: Option<Box<IncompressibleInitialConditions>>,
     pub max_diffusion_number: Option<f64>,
     pub budgets: Result<crate::workbench::budgets::Report, String>,
     pub nonlinear_iterations: usize,
@@ -932,6 +946,7 @@ impl<'a> SolveControl<'a> {
 impl IncompressibleSolution {
     pub fn restart(&self) -> IncompressibleInitialConditions {
         IncompressibleInitialConditions::Restart {
+            previous: self.previous.clone(),
             velocity: self.velocity.clone(),
             pressure: self.pressure.clone(),
             face_flux: self.face_flux.clone(),
@@ -1427,6 +1442,7 @@ fn solve_incompressible_on_pool(
                     callback(
                         iteration,
                         IncompressibleInitialConditions::Restart {
+                            previous: None,
                             velocity: state.velocity.clone(),
                             pressure: state.pressure.clone(),
                             face_flux: state.face_flux.clone(),
@@ -1453,6 +1469,7 @@ fn solve_incompressible_on_pool(
                     if let Err(error) = callback(
                         last_completed.get(),
                         IncompressibleInitialConditions::Restart {
+                            previous: None,
                             velocity: state.velocity.clone(),
                             pressure: state.pressure.clone(),
                             face_flux: state.face_flux.clone(),
@@ -1538,6 +1555,7 @@ fn solve_incompressible_on_pool(
             }
         });
     let mut solution = IncompressibleSolution {
+        previous: None,
         max_diffusion_number: None,
         budgets: Err("Budget calculation pending".into()),
         nonlinear_iterations: simple.outer_iterations,

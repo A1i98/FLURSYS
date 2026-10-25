@@ -9,6 +9,8 @@ struct SolveSession {
     folder: Option<PathBuf>,
     family: serde_json::Value,
     every: usize,
+    #[serde(default)]
+    recovery: workbench::checkpoint::RecoveryPolicy,
     initial: Option<(Vec3, f64)>,
 }
 pub(super) fn insert_sample(
@@ -24,10 +26,11 @@ pub(super) fn insert_sample(
 }
 impl App {
     fn equation_family(&self) -> serde_json::Value {
-        serde_json::json!({"transient":self.project.solver.time.is_transient(),"turbulence":self.project.solver.turbulence.model,"thermal":self.project.solver.thermal.enabled})
+        serde_json::json!({"transient":self.project.solver.time.is_transient(),"backward":matches!(self.project.solver.time, flursys::unstructured_incompressible::TimeIntegration::Backward{..}|flursys::unstructured_incompressible::TimeIntegration::AdaptiveBackward{..}),"reduced_pressure":self.project.solver.thermal.reduced_pressure,"turbulence":self.project.solver.turbulence.model,"thermal":self.project.solver.thermal.enabled})
     }
     pub(super) fn reset_solve_session(&mut self) {
         self.jobs = WorkbenchJobExecutor::new();
+        self.checkpoint_info = None;
         self.monitoring.reset_history();
         self.continuation_run = None;
         self.recording = None;
@@ -63,18 +66,22 @@ impl App {
             })
             .transpose()?;
         let state = SolveSession {
-            format: 1,
+            format: 2,
             monitors: self.monitoring.options.clone(),
             run: self.continuation_run.clone(),
             folder,
             family: self.equation_family(),
             every: self.checkpoint_every,
+            recovery: self.recovery_policy.clone(),
             initial: self
                 .initialized
                 .then_some((self.initial_velocity, self.initial_pressure)),
         };
         let mut file = tempfile::NamedTempFile::new_in(workspace).map_err(|e| e.to_string())?;
         serde_json::to_writer_pretty(file.as_file_mut(), &state).map_err(|e| e.to_string())?;
+        use std::io::Write;
+        file.flush().map_err(|e| e.to_string())?;
+        file.as_file().sync_all().map_err(|e| e.to_string())?;
         file.persist(workspace.join("solve-session.json"))
             .map_err(|e| e.to_string())?;
         Ok(())
@@ -87,7 +94,7 @@ impl App {
             return;
         }
         let state_path = workspace.join("solve-session.json");
-        let state = if state_path.exists() {
+        let mut state = if state_path.exists() {
             match std::fs::read(&state_path)
                 .map_err(|e| e.to_string())
                 .and_then(|b| serde_json::from_slice::<SolveSession>(&b).map_err(|e| e.to_string()))
@@ -129,16 +136,26 @@ impl App {
                 folder: Some(PathBuf::from(folder)),
                 family,
                 every: 100,
+                recovery: Default::default(),
                 initial: None,
             }
         };
-        if state.format != 1 || state.family != self.equation_family() {
+        if let Some(family) = state.family.as_object_mut() {
+            family
+                .entry("reduced_pressure")
+                .or_insert(serde_json::json!(false));
+            family.entry("backward").or_insert(serde_json::json!(false));
+        }
+        if ![1, 2].contains(&state.format) || state.family != self.equation_family() {
             self.message(
                 "Saved solve uses a different equation family; initialization is required.",
             );
             return;
         }
         self.checkpoint_every = state.every.min(1_000_000);
+        if state.recovery.validate().is_ok() {
+            self.recovery_policy = state.recovery;
+        }
         self.monitoring.options = state.monitors;
         let Some(folder) = state.folder else {
             if let Some((velocity, pressure)) = state.initial {
@@ -162,19 +179,15 @@ impl App {
         }
         let folder = workspace.join(folder);
         let mesh = &self.session.mesh().unwrap().mesh;
-        let mut restored = workbench::checkpoint::load(&folder.join("checkpoint.json"), mesh);
-        if let Ok(sample) =
-            workbench::checkpoint::load(&folder.join("failed-last-sample.json"), mesh)
-        {
-            if restored
-                .as_ref()
-                .map_or(true, |(iteration, _)| sample.0 > *iteration)
-            {
-                restored = Ok(sample);
-            }
-        }
+        let restored = workbench::checkpoint::recover(&folder, mesh);
         match restored {
-            Ok((iteration, fields)) => {
+            Ok(recovered) => {
+                let iteration = recovered.info.iteration;
+                let fields = recovered.fields;
+                self.checkpoint_info = Some(recovered.info);
+                for warning in recovered.warnings {
+                    self.append_log(format!("Recovery: {warning}"));
+                }
                 self.remember_time(iteration, &fields);
                 self.jobs.set_continuation_fields(
                     self.session.mesh().unwrap().mesh.id(),
@@ -265,7 +278,41 @@ pub(super) fn read_histories(
     out
 }
 impl App {
+    pub(super) fn recovery_properties(&mut self, ui: &mut egui::Ui) {
+        widgets::heading(ui, "RECOVERY CHECKPOINTS");
+        ui.add_enabled_ui(!self.jobs.is_running(),|ui|{
+            ui.horizontal(|ui|{ui.label("Every N iterations / accepted steps (0 = off)");ui.add(egui::DragValue::new(&mut self.recovery_policy.every_iterations).range(0..=1_000_000));});
+            ui.horizontal(|ui|{ui.label("Every wall-clock seconds (0 = off)");ui.add(egui::DragValue::new(&mut self.recovery_policy.every_seconds).range(0..=86400));});
+            ui.checkbox(&mut self.recovery_policy.stop_on_error,"Stop safely if a recovery save fails");
+            ui.weak("Recovery keeps the latest state and two verified previous generations. It is independent of playback recording.");
+        });
+        if ui
+            .add_enabled(
+                !self.jobs.is_checkpointing(),
+                egui::Button::new("Save checkpoint now"),
+            )
+            .clicked()
+        {
+            match self.jobs.checkpoint_now() {
+                Ok(()) => self.message("Saving accepted fields in the background…"),
+                Err(e) => self.message(e),
+            }
+        }
+        if self.jobs.is_checkpointing() {
+            ui.label("Writing checkpoint…");
+        }
+        if let Some(info) = &self.checkpoint_info {
+            ui.label(format!(
+                "Saved at iteration/step {} · {:.1} MiB",
+                info.iteration,
+                info.bytes as f64 / (1024. * 1024.)
+            ));
+            ui.small(info.path.display().to_string());
+        }
+        ui.separator();
+    }
     pub(super) fn recording_properties(&mut self, ui: &mut egui::Ui) {
+        self.recovery_properties(ui);
         widgets::heading(ui, "AUTOSAVE FIELD HISTORY");
         ui.add_enabled_ui(!self.jobs.is_running(), |ui| {
             let mut enabled = self.checkpoint_every > 0;
@@ -286,7 +333,28 @@ impl App {
             }
         });
         ui.weak("Retains separate velocity, pressure and available temperature/turbulence snapshots for playback, probes and GIF export. Changing N applies on Run / Continue. Steady iterations are not physical time.");
-        if ui.button("Save recording preferences").clicked() {
+        ui.horizontal(|ui| {
+            ui.label("Maximum saved frames (0 = unlimited)");
+            ui.add(
+                egui::DragValue::new(&mut self.recovery_policy.max_history_frames)
+                    .range(0..=1_000_000),
+            );
+        });
+        let mut mib = self.recovery_policy.max_history_bytes / (1024 * 1024);
+        if ui
+            .horizontal(|ui| {
+                ui.label("History storage budget (MiB, 0 = unlimited)");
+                ui.add(egui::DragValue::new(&mut mib).range(0..=1_048_576))
+                    .changed()
+            })
+            .inner
+        {
+            self.recovery_policy.max_history_bytes = mib * 1024 * 1024;
+        }
+        if ui
+            .button("Save recovery and recording preferences")
+            .clicked()
+        {
             match self.persist_continuation() {
                 Ok(()) => self.message("Recording interval saved for the active solve."),
                 Err(e) => self.message(e),
@@ -443,7 +511,9 @@ impl App {
             .ok_or("Open or generate the matching mesh first")?
             .mesh;
         let mesh_id = mesh.id();
-        let (iteration, fields) = workbench::checkpoint::load(path, mesh)?;
+        let recovered = workbench::checkpoint::load_recoverable(path, mesh)?;
+        let iteration = recovered.info.iteration;
+        let fields = recovered.fields;
         let archived = if let Some(workspace) = &self.workspace {
             let folder = workspace.join("monitors").join(format!(
                 "restart-{}",

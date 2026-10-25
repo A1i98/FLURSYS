@@ -158,6 +158,9 @@ struct App {
     result_iteration: usize,
     segment_start: usize,
     checkpoint_every: usize,
+    recovery_policy: workbench::checkpoint::RecoveryPolicy,
+    checkpoint_info: Option<workbench::checkpoint::CheckpointInfo>,
+    shutdown_after_checkpoint: bool,
     iteration: usize,
     limit: usize,
     wall_reports: Vec<workbench::wall_reports::WallPatchReport>,
@@ -357,6 +360,9 @@ impl App {
             result_iteration: 0,
             segment_start: 0,
             checkpoint_every: 100,
+            recovery_policy: Default::default(),
+            checkpoint_info: None,
+            shutdown_after_checkpoint: false,
             iteration: 0,
             limit: 0,
             wall_reports: vec![],
@@ -496,6 +502,7 @@ impl App {
     }
     fn busy(&self) -> bool {
         self.jobs.is_running()
+            || self.jobs.is_checkpointing()
             || self.gas_flow.busy()
             || self.migration.mapping_active()
             || self.publishing.is_some()
@@ -578,6 +585,8 @@ impl App {
         self.migration = migration::State::new();
         self.monitoring = monitoring::State::default();
         self.gas_flow = compressible_flow::State::default();
+        self.checkpoint_info = None;
+        self.shutdown_after_checkpoint = false;
         self.apply_case_display();
         self.initialized = false;
         self.refresh_geometry();
@@ -613,6 +622,12 @@ impl App {
         }
     }
     fn request(&mut self, p: Pending) {
+        if matches!(p, Pending::Quit) && (self.jobs.is_running() || self.jobs.is_checkpointing()) {
+            self.shutdown_after_checkpoint = true;
+            self.jobs.cancel();
+            self.message("Stopping the solver and saving accepted fields before closing…");
+            return;
+        }
         if self.busy() {
             self.message("Finish or stop the active job before replacing the project.");
             return;
@@ -921,6 +936,8 @@ impl App {
             self.configure_engineering()?;
             self.jobs.set_checkpoint_interval(self.checkpoint_every);
             self.jobs
+                .set_recovery_policy(self.recovery_policy.clone())?;
+            self.jobs
                 .start_solve_with_planes(case, self.project.plane_monitors.clone(), folder.clone())
                 .map_err(str::to_string)?;
             self.solve_recording = Some(folder.clone());
@@ -1122,6 +1139,25 @@ impl App {
         }
         for event in self.jobs.drain() {
             match event {
+                WorkbenchJobEvent::Checkpoint(saved) => match saved {
+                    Ok(info) => {
+                        self.append_log(format!(
+                            "Checkpoint saved: iteration/step {} · time {:?} · {:.2} MiB · {}",
+                            info.iteration,
+                            info.physical_time,
+                            info.bytes as f64 / (1024. * 1024.),
+                            info.path.display()
+                        ));
+                        self.checkpoint_info = Some(info);
+                    }
+                    Err(e) => {
+                        self.shutdown_after_checkpoint = false;
+                        self.show_log = true;
+                        self.message(format!(
+                            "CHECKPOINT ERROR: {e}. Previous valid checkpoints were preserved."
+                        ));
+                    }
+                },
                 WorkbenchJobEvent::SolveProgress(JobProgress::StartedAt { iteration }) => {
                     self.append_log(format!("Solve starting after iteration {iteration}"));
                     self.append_log(format!(
@@ -1352,6 +1388,13 @@ impl App {
 impl eframe::App for App {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.poll();
+        if self.shutdown_after_checkpoint
+            && !self.jobs.is_running()
+            && !self.jobs.is_checkpointing()
+        {
+            self.shutdown_after_checkpoint = false;
+            self.request(Pending::Quit);
+        }
         self.poll_angle_design_points();
         self.poll_field_frame(ctx);
         self.seed_case_probes();

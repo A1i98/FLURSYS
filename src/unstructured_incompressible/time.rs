@@ -283,10 +283,15 @@ pub(super) fn solve_time_loop(
     );
     if backward {
         if let Some(cb) = control.and_then(|c| c.on_message.as_ref()) {
-            cb("BDF2: first step uses Euler; a restarted invocation rebuilds two-level history with one Euler step.".into());
+            cb("BDF2: complete checkpoints retain both time levels; only a fresh or legacy one-level start uses Euler.".into());
         }
     }
-    let mut older = None;
+    let mut older = match &case.initial_conditions {
+        IncompressibleInitialConditions::Restart { previous, .. } if backward => previous
+            .as_deref()
+            .map(IncompressibleInitialConditions::without_history),
+        _ => None,
+    };
     let adaptive = case.solver.time.adaptive();
     let mut step_case = case.clone();
     step_case.solver.time = TimeIntegration::Steady;
@@ -321,13 +326,22 @@ pub(super) fn solve_time_loop(
         let b = step_case.resolve_boundaries()?;
         let phi = initial_face_flux(&case.mesh, &u, b.boundary_flux())?;
         step_case.initial_conditions = IncompressibleInitialConditions::Restart {
+            previous: None,
             velocity: u,
             pressure: p,
             face_flux: phi,
             time,
             last_dt: None,
-            temperature: None,
-            turbulence: None,
+            temperature: case
+                .solver
+                .thermal
+                .enabled
+                .then(|| CellField::filled(&case.mesh, case.solver.thermal.initial_temperature)),
+            turbulence: (case.solver.turbulence.model
+                != crate::turbulence::TurbulenceModel::Laminar)
+                .then(|| {
+                    crate::turbulence::TurbulenceFields::new(&case.mesh, &case.solver.turbulence)
+                }),
         };
     }
     let mut dt = if adaptive.is_some() {
@@ -518,6 +532,9 @@ pub(super) fn solve_time_loop(
             result.max_diffusion_number = Some(diffusion);
             diffusion_rate = next_diffusion_rate;
             result.completed_time_steps = step;
+            if backward {
+                result.previous = Some(Box::new(step_case.initial_conditions.without_history()));
+            }
             result.max_courant = Some(co);
             result.nonlinear_iterations = correctors;
             time = next;
@@ -558,7 +575,7 @@ pub(super) fn solve_time_loop(
             }
         }
         if backward {
-            older = Some(step_case.initial_conditions.clone());
+            older = Some(step_case.initial_conditions.without_history());
         }
         step_case.initial_conditions = result.restart();
         last = Some(result);

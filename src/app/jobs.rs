@@ -1,12 +1,12 @@
 use crate::{
-    solve_incompressible_with_control, GeneratedMesh, GeometryGmshExport, GmshMeshOptions,
-    GmshMesher, IncompressibleCase, IncompressibleSolution, IncompressibleSolveError, MeshingError,
-    SolveControl,
+    GeneratedMesh, GeometryGmshExport, GmshMeshOptions, GmshMesher, IncompressibleCase,
+    IncompressibleSolution, IncompressibleSolveError, MeshingError, SolveControl,
+    solve_incompressible_with_control,
 };
 use std::sync::{
+    Arc, Mutex,
     atomic::{AtomicBool, AtomicUsize, Ordering},
     mpsc::{self, Receiver},
-    Arc, Mutex,
 };
 
 fn wait_for_resume(paused: &AtomicBool, cancellation: &CancellationToken) -> bool {
@@ -66,6 +66,7 @@ pub enum JobLifecycle {
 #[derive(Debug)]
 #[allow(clippy::large_enum_variant)] // Preserve the public value-based API.
 pub enum WorkbenchJobEvent {
+    Checkpoint(Result<crate::workbench::checkpoint::CheckpointInfo, String>),
     MeshProgress(JobProgress),
     MeshCompleted(Result<GeneratedMesh, MeshingError>),
     SolveProgress(JobProgress),
@@ -98,9 +99,14 @@ pub struct WorkbenchJobExecutor {
     paused: Arc<AtomicBool>,
     restart: Option<std::path::PathBuf>,
     checkpoint_every: usize,
+    recovery_policy: crate::workbench::checkpoint::RecoveryPolicy,
+    recovery_writer: Option<Arc<crate::workbench::checkpoint::RecoveryWriter>>,
+    checkpoint_pending: Arc<AtomicBool>,
+    checkpoint_result:
+        Arc<Mutex<Option<Result<crate::workbench::checkpoint::CheckpointInfo, String>>>>,
     engineering_every: usize,
     completed: Arc<AtomicUsize>,
-    retained: Arc<Mutex<Option<(crate::MeshId, crate::IncompressibleInitialConditions)>>>,
+    retained: Arc<Mutex<Option<(crate::MeshId, usize, crate::IncompressibleInitialConditions)>>>,
 }
 
 impl Drop for WorkbenchJobExecutor {
@@ -126,6 +132,10 @@ impl WorkbenchJobExecutor {
             paused: Arc::new(AtomicBool::new(false)),
             restart: None,
             checkpoint_every: 100,
+            recovery_policy: Default::default(),
+            recovery_writer: None,
+            checkpoint_pending: Arc::new(AtomicBool::new(false)),
+            checkpoint_result: Arc::new(Mutex::new(None)),
             engineering_every: 10,
             completed: Arc::new(AtomicUsize::new(0)),
             retained: Arc::new(Mutex::new(None)),
@@ -140,8 +150,8 @@ impl WorkbenchJobExecutor {
             .lock()
             .ok()?
             .as_ref()
-            .filter(|(id, _)| *id == mesh)
-            .map(|(_, fields)| (self.completed_iterations(), fields.clone()))
+            .filter(|(id, _, _)| *id == mesh)
+            .map(|(_, index, fields)| (*index, fields.clone()))
     }
     pub fn completed_iterations(&self) -> usize {
         self.completed.load(Ordering::Acquire)
@@ -151,6 +161,44 @@ impl WorkbenchJobExecutor {
     }
     pub fn set_checkpoint_interval(&mut self, every: usize) {
         self.checkpoint_every = every.min(1_000_000);
+        self.recovery_policy.every_iterations = self.checkpoint_every;
+    }
+    pub fn set_recovery_policy(
+        &mut self,
+        policy: crate::workbench::checkpoint::RecoveryPolicy,
+    ) -> Result<(), String> {
+        policy.validate()?;
+        self.recovery_policy = policy;
+        Ok(())
+    }
+    pub fn is_checkpointing(&self) -> bool {
+        self.checkpoint_pending.load(Ordering::Acquire)
+    }
+    pub fn checkpoint_now(&self) -> Result<(), String> {
+        let writer = self
+            .recovery_writer
+            .clone()
+            .ok_or("Run the solver before requesting a checkpoint")?;
+        let (_, index, fields) = self
+            .retained
+            .lock()
+            .map_err(|_| "Retained state is unavailable")?
+            .as_ref()
+            .cloned()
+            .ok_or("Wait for an accepted iteration or physical time step")?;
+        if self.checkpoint_pending.swap(true, Ordering::AcqRel) {
+            return Err("A checkpoint write is already in progress".into());
+        }
+        let pending = self.checkpoint_pending.clone();
+        let result = self.checkpoint_result.clone();
+        std::thread::spawn(move || {
+            let saved = writer
+                .save(index, &fields, true)
+                .and_then(|v| v.ok_or("No checkpoint was written".into()));
+            *result.lock().unwrap() = Some(saved);
+            pending.store(false, Ordering::Release);
+        });
+        Ok(())
     }
     pub fn set_restart(&mut self, path: Option<std::path::PathBuf>) {
         self.completed.store(0, Ordering::Release);
@@ -164,7 +212,7 @@ impl WorkbenchJobExecutor {
     ) {
         self.completed.store(0, Ordering::Release);
         self.restart = None;
-        *self.retained.lock().unwrap() = Some((mesh, fields));
+        *self.retained.lock().unwrap() = Some((mesh, 0, fields));
     }
     pub fn set_continuation_fields(
         &mut self,
@@ -177,6 +225,9 @@ impl WorkbenchJobExecutor {
             return;
         }
         self.set_initial_fields(mesh, fields);
+        if let Some((_, index, _)) = self.retained.lock().unwrap().as_mut() {
+            *index = completed;
+        }
         self.completed.store(completed, Ordering::Release);
     }
     pub fn set_paused(&self, paused: bool) {
@@ -233,12 +284,12 @@ impl WorkbenchJobExecutor {
         planes: Vec<crate::workbench::plane_monitor::FlowPlaneMonitor>,
         folder: std::path::PathBuf,
     ) -> Result<(), &'static str> {
-        if self.is_running() {
-            return Err("a workbench job is already running");
+        if self.is_running() || self.is_checkpointing() {
+            return Err("a solve or checkpoint write is already running");
         }
         {
             let mut retained = self.retained.lock().unwrap();
-            if let Some((mesh, fields)) = retained.as_ref() {
+            if let Some((mesh, 0, fields)) = retained.as_ref() {
                 if *mesh == case.mesh.id() {
                     case.initial_conditions = fields.clone();
                 } else {
@@ -248,12 +299,13 @@ impl WorkbenchJobExecutor {
             }
         }
         if let Some(path) = self.restart.as_ref() {
-            let (iteration, fields) = crate::workbench::checkpoint::load(path, &case.mesh)
-                .map_err(|_| {
-                    "checkpoint cannot be loaded for this mesh; choose it again or Initialize"
-                })?;
-            self.completed.store(iteration, Ordering::Release);
-            case.initial_conditions = fields;
+            let recovered = crate::workbench::checkpoint::load_recoverable(path, &case.mesh)
+                .map_err(
+                    |_| "checkpoint cannot be loaded for this mesh; choose it again or Initialize",
+                )?;
+            self.completed
+                .store(recovered.info.iteration, Ordering::Release);
+            case.initial_conditions = recovered.fields;
             self.restart = None;
         }
         let offset = self.completed_iterations();
@@ -268,6 +320,20 @@ impl WorkbenchJobExecutor {
         let paused = self.paused.clone();
         let retained = self.retained.clone();
         let retained_mesh = case.mesh.id();
+        let policy = self.recovery_policy.clone();
+        let recovery = (!folder.as_os_str().is_empty()).then(|| {
+            Arc::new(crate::workbench::checkpoint::RecoveryWriter::new(
+                folder.join("checkpoint.json"),
+                format!(
+                    "material={:?}; solver={:?}; boundaries={:?}",
+                    case.material, case.solver, case.boundaries
+                ),
+                physical,
+                policy.clone(),
+            ))
+        });
+        self.recovery_writer = recovery.clone();
+
         self.start(|sender, cancellation| {
             std::thread::spawn(move || {
                 let case=Arc::new(case);
@@ -337,6 +403,10 @@ impl WorkbenchJobExecutor {
                 let checkpoint_mesh = (!folder.as_os_str().is_empty()).then(|| {
                     Arc::new(crate::workbench::checkpoint::MeshSignature::new(&case.mesh))
                 });
+                if let (Some(writer),Some(signature))=(&recovery,&checkpoint_mesh) {writer.set_mesh(signature.clone());}
+                let iteration_recovery=recovery.clone();let completed_recovery=recovery.clone();
+                let iteration_policy=policy.clone();let completed_policy=policy.clone();
+                let history_disabled=Arc::new(AtomicBool::new(false));let iteration_history_disabled=history_disabled.clone();let completed_history_disabled=history_disabled.clone();
                 let checkpoint_path = folder.join("checkpoint.json");
                 let checkpoint_context = format!(
                     "material={:?}; solver={:?}; boundaries={:?}",
@@ -409,18 +479,24 @@ impl WorkbenchJobExecutor {
                     if let Some(health)=crate::workbench::solve_review::health(&health_case,&initial,index) {
                         let _=iteration_sender.send(WorkbenchJobEvent::Health(health));
                     }
-                    if let Some(mesh)=iteration_mesh.as_ref().filter(|_|checkpoint_every>0 && (local_index==1||local_index%checkpoint_every==0)) {
-                        if let Err(error)=crate::workbench::checkpoint::write_restart(&iteration_path,mesh,index,&initial,false,&iteration_context) {
-                            let _=iteration_sender.send(WorkbenchJobEvent::SolveProgress(JobProgress::Message(format!("Restart checkpoint failed: {error}"))));
+                    *iteration_retained.lock().unwrap()=Some((retained_mesh,index,initial.clone()));
+                    if let Some(writer)=&iteration_recovery {
+                        match writer.save(index,&initial,false) {
+                            Ok(Some(info))=>{let _=iteration_sender.send(WorkbenchJobEvent::Checkpoint(Ok(info)));},
+                            Ok(None)=>{},
+                            Err(e)=>{let _=iteration_sender.send(WorkbenchJobEvent::Checkpoint(Err(e.clone())));if iteration_policy.stop_on_error {return Err(format!("Recovery save failed; solve stopped safely: {e}"));}}
                         }
                     }
-                    if !physical && checkpoint_every > 0 && index % checkpoint_every == 0 {
+                    if !physical && checkpoint_every > 0 && index % checkpoint_every == 0 && !iteration_history_disabled.load(Ordering::Acquire) {
                         if let Some(mesh)=iteration_mesh.as_ref() {
                             let path=iteration_path.parent().unwrap_or(std::path::Path::new(".")).join("fields").join(format!("iteration-{index:010}.json"));
-                            crate::workbench::checkpoint::write_restart(&path,mesh,index,&initial,false,&iteration_context).map_err(|e|format!("Field history: {e}"))?;
+                            if let Err(e)=crate::workbench::checkpoint::write_history(&path,mesh,index,&initial,false,&iteration_context,&iteration_policy) {
+                                iteration_history_disabled.store(true,Ordering::Release);
+                                let _=iteration_sender.send(WorkbenchJobEvent::SolveProgress(JobProgress::Message(format!("Field history paused: {e}. Recovery checkpoints remain active."))));
+                            }
                         }
                     }
-                    *iteration_retained.lock().unwrap()=Some((retained_mesh,initial));Ok(())
+                    *iteration_retained.lock().unwrap()=Some((retained_mesh,index,initial));Ok(())
                 });
                 let control=control.with_completed_step(move |index,solution| {
                     let local_index=index;
@@ -448,38 +524,39 @@ impl WorkbenchJobExecutor {
                         let _=completed_sender.send(WorkbenchJobEvent::WallReports{iteration:index,physical_time:solution.physical_time,reports});
                     }
                     *completed_time.lock().unwrap()=solution.physical_time;
-                    *completed_retained.lock().unwrap()=Some((retained_mesh,solution.restart()));
-                    if let Some(mesh)=completed_mesh.as_ref().filter(|_|checkpoint_every>0 && (local_index==1||local_index%checkpoint_every==0)) {
-                        if let Err(error)=crate::workbench::checkpoint::write_solution(&completed_path,mesh,index,solution,&completed_context) {
-                            let _=completed_sender.send(WorkbenchJobEvent::SolveProgress(JobProgress::Message(format!("Complete-state checkpoint failed: {error}"))));
+                    *completed_retained.lock().unwrap()=Some((retained_mesh,index,solution.restart()));
+                    if let Some(writer)=&completed_recovery {
+                        match writer.save(index,&solution.restart(),false) {
+                            Ok(Some(info))=>{let _=completed_sender.send(WorkbenchJobEvent::Checkpoint(Ok(info)));},
+                            Ok(None)=>{},
+                            Err(e)=>{let _=completed_sender.send(WorkbenchJobEvent::Checkpoint(Err(e.clone())));if completed_policy.stop_on_error {return Err(format!("Recovery save failed; solve stopped safely: {e}"));}}
                         }
                     }
-                    if physical && checkpoint_every > 0 && index % checkpoint_every == 0 {
+                    if physical && checkpoint_every > 0 && index % checkpoint_every == 0 && !completed_history_disabled.load(Ordering::Acquire) {
                         if let Some(mesh)=completed_mesh.as_ref() {
                             let path=completed_path.parent().unwrap_or(std::path::Path::new(".")).join("fields").join(format!("iteration-{index:010}.json"));
-                            crate::workbench::checkpoint::write_solution(&path,mesh,index,solution,&completed_context).map_err(|e|format!("Field history: {e}"))?;
+                            if let Err(e)=crate::workbench::checkpoint::write_history(&path,mesh,index,&solution.restart(),true,&completed_context,&completed_policy) {
+                                completed_history_disabled.store(true,Ordering::Release);
+                                let _=completed_sender.send(WorkbenchJobEvent::SolveProgress(JobProgress::Message(format!("Field history paused: {e}. Recovery checkpoints remain active."))));
+                            }
                         }
                     }
                     if let Some(time)=solution.physical_time {let _=completed_sender.send(WorkbenchJobEvent::SolveProgress(JobProgress::Message(format!("Completed physical time step {index}: t={time:.9e} s, dt={:.6e} s, nonlinear correctors={}, max Co={:.4e}, rejected steps={}",solution.last_time_step.unwrap_or(0.0),solution.report.outer_iterations,solution.max_courant.unwrap_or(0.0),solution.rejected_time_steps))));}
                     Ok(())
                 });
                 let mut result = solve_incompressible_with_control(&case, &control);
+                let mut final_storage_error = None;
                 if let Ok(solution) = &mut result {
                     if physical { solution.completed_time_steps = offset.saturating_add(solution.completed_time_steps); }
                     else { solution.report.outer_iterations = offset.saturating_add(solution.report.outer_iterations); }
                 }
                 if let Ok(solution) = &result {
-                    *retained.lock().unwrap()=Some((retained_mesh,solution.restart()));
+                    *retained.lock().unwrap()=Some((retained_mesh,if physical {solution.completed_time_steps}else{solution.report.outer_iterations},solution.restart()));
                     final_counter.store(if physical { solution.completed_time_steps } else { solution.report.outer_iterations }, Ordering::Release);
-                    if let Some(final_checkpoint_mesh) = final_checkpoint_mesh.as_ref() {
-                        if let Err(error) = crate::workbench::checkpoint::write_solution(
-                            &final_checkpoint_path, final_checkpoint_mesh,
-                            if physical {solution.completed_time_steps}else{solution.report.outer_iterations},
-                            solution,&final_checkpoint_context,
-                        ) {
-                            let _ = sender.send(WorkbenchJobEvent::SolveProgress(
-                                JobProgress::Message(format!("Final checkpoint failed: {error}")),
-                            ));
+                    if let Some(writer)=&recovery {
+                        match writer.save(final_counter.load(Ordering::Acquire),&solution.restart(),true) {
+                            Ok(Some(info))=>{let _=sender.send(WorkbenchJobEvent::Checkpoint(Ok(info)));},Ok(None)=>{},
+                            Err(e)=>{final_storage_error=Some(e.clone());let _=sender.send(WorkbenchJobEvent::Checkpoint(Err(e)));}
                         }
                     }
                     let iteration = if physical {solution.completed_time_steps}else{solution.report.outer_iterations};
@@ -518,7 +595,7 @@ impl WorkbenchJobExecutor {
                 }
                 {
                 let retained_guard=retained.lock().unwrap();
-                if let Some((_,initial))=retained_guard.as_ref() {
+                if let Some((_,_,initial))=retained_guard.as_ref() {
                     let index=final_counter.load(Ordering::Acquire);
                     if let Some(health)=crate::workbench::solve_review::health(&case,&initial,index) {
                         if !folder.as_os_str().is_empty() {
@@ -534,8 +611,8 @@ impl WorkbenchJobExecutor {
                         let _=sender.send(WorkbenchJobEvent::Health(health));
                     }
                 }
-                if result.is_err() {
-                    if let Some((_,initial))=retained_guard.as_ref() {
+                if result.is_err() && !matches!(&result,Err(IncompressibleSolveError::Cancelled)) {
+                    if let Some((_,_,initial))=retained_guard.as_ref() {
                         if let Some(signature)=final_checkpoint_mesh.as_ref() {
                             let path=final_checkpoint_path.with_file_name("failed-last-sample.json");
                             let index=final_counter.load(Ordering::Acquire);
@@ -549,6 +626,14 @@ impl WorkbenchJobExecutor {
                 }
                 }
                 let cancelled = cancellation.is_cancelled();
+                if cancelled {
+                    if let (Some(writer),Some((_,index,fields)))=(&recovery,retained.lock().unwrap().as_ref()) {
+                        let saved=writer.save(*index,fields,true);
+                        if let Ok(Some(info))=saved {let _=sender.send(WorkbenchJobEvent::Checkpoint(Ok(info)));}
+                        else if let Err(e)=saved {let _=sender.send(WorkbenchJobEvent::Checkpoint(Err(e)));}
+                    }
+                }
+                if policy.stop_on_error { if let Some(error)=final_storage_error { result=Err(IncompressibleSolveError::Simple(crate::SimpleError::Monitor(format!("Final recovery save failed: {error}")))); } }
                 let _ = sender.send(WorkbenchJobEvent::SolveCompleted(result));
                 let _ = sender.send(WorkbenchJobEvent::SolveProgress(if cancelled {
                     JobProgress::Cancelled
@@ -569,6 +654,9 @@ impl WorkbenchJobExecutor {
 
     pub fn drain(&mut self) -> Vec<WorkbenchJobEvent> {
         let mut events = Vec::new();
+        if let Some(saved) = self.checkpoint_result.lock().unwrap().take() {
+            events.push(WorkbenchJobEvent::Checkpoint(saved));
+        }
         let Some(receiver) = self.receiver.take() else {
             return events;
         };
@@ -647,9 +735,10 @@ mod tests {
                 let cancelled = wait_for_resume(&worker_pause, &worker_token);
                 tx.send((cancelled, retained_fields)).unwrap();
             });
-            assert!(rx
-                .recv_timeout(std::time::Duration::from_millis(100))
-                .is_err());
+            assert!(
+                rx.recv_timeout(std::time::Duration::from_millis(100))
+                    .is_err()
+            );
             if cancel {
                 token.cancel();
             } else {
@@ -663,6 +752,68 @@ mod tests {
     }
 
     #[test]
+    fn manual_checkpoint_saves_coherent_retained_state_while_paused() {
+        use crate::{
+            CellDefinition, CellField, FaceField, IncompressibleInitialConditions as Initial,
+            MeshDimension, Point, UnstructuredMesh, Vec3,
+        };
+        let mesh = UnstructuredMesh::from_cells(
+            MeshDimension::TwoD,
+            vec![
+                Point::new(0., 0., 0.),
+                Point::new(1., 0., 0.),
+                Point::new(0., 1., 0.),
+            ],
+            vec![CellDefinition::polygon(vec![0, 1, 2])],
+        )
+        .unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("checkpoint.json");
+        let writer = Arc::new(crate::workbench::checkpoint::RecoveryWriter::new(
+            path.clone(),
+            "manual".into(),
+            false,
+            Default::default(),
+        ));
+        writer.set_mesh(Arc::new(crate::workbench::checkpoint::MeshSignature::new(
+            &mesh,
+        )));
+        let mut executor = WorkbenchJobExecutor::new();
+        executor.set_continuation_fields(
+            mesh.id(),
+            Initial::Restart {
+                velocity: CellField::filled(&mesh, Vec3::new(7., 0., 0.)),
+                pressure: CellField::filled(&mesh, 2.),
+                face_flux: FaceField::from_values(&mesh, vec![0.; mesh.faces().len()]).unwrap(),
+                time: 0.,
+                last_dt: None,
+                temperature: None,
+                turbulence: None,
+                previous: None,
+            },
+            17,
+        );
+        executor.completed.store(18, Ordering::Release);
+        executor.recovery_writer = Some(writer);
+        executor.set_paused(true);
+        executor.checkpoint_now().unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        while executor.is_checkpointing() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(!executor.is_checkpointing());
+        assert!(
+            executor
+                .drain()
+                .iter()
+                .any(|e| matches!(e,WorkbenchJobEvent::Checkpoint(Ok(info)) if info.iteration==17))
+        );
+        let (index, fields) = crate::workbench::checkpoint::load(&path, &mesh).unwrap();
+        assert_eq!(index, 17);
+        assert!(matches!(fields,Initial::Restart{velocity,..} if velocity.values()[0].x==7.));
+    }
+
+    #[test]
     fn cancellation_token_is_shared() {
         let token = CancellationToken::default();
         assert!(!token.is_cancelled());
@@ -673,17 +824,10 @@ mod tests {
     #[test]
     fn cancelled_mesh_completion_transitions_executor() {
         let (sender, receiver) = mpsc::channel();
-        let mut executor = WorkbenchJobExecutor {
-            receiver: Some(receiver),
-            cancellation: Some(CancellationToken::default()),
-            lifecycle: JobLifecycle::Running,
-            paused: Arc::new(AtomicBool::new(false)),
-            restart: None,
-            checkpoint_every: 100,
-            engineering_every: 10,
-            completed: Arc::new(AtomicUsize::new(0)),
-            retained: Arc::new(Mutex::new(None)),
-        };
+        let mut executor = WorkbenchJobExecutor::new();
+        executor.receiver = Some(receiver);
+        executor.cancellation = Some(CancellationToken::default());
+        executor.lifecycle = JobLifecycle::Running;
         sender
             .send(WorkbenchJobEvent::MeshCompleted(Err(
                 MeshingError::Cancelled,

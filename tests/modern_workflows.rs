@@ -323,8 +323,7 @@ fn headless_run_saves_load_history_and_physical_restart() {
     let output = std::process::Command::new(env!("CARGO_BIN_EXE_flursys"))
         .args(["project", "solve"])
         .arg(directory.path())
-        .arg("--restart")
-        .arg(checkpoint)
+        .arg("--resume-latest")
         .args([
             "--dt",
             "0.007",
@@ -334,6 +333,14 @@ fn headless_run_saves_load_history_and_physical_restart() {
             "0.03",
             "--checkpoint-every",
             "0",
+            "--recovery-every",
+            "1",
+            "--recovery-seconds",
+            "0",
+            "--history-max-frames",
+            "2",
+            "--history-max-mib",
+            "1",
             "--json",
         ])
         .output()
@@ -389,9 +396,11 @@ fn load_history_frequency_and_archive_round_trip() {
     loads::append(&path, samples.last().unwrap()).unwrap();
     let loaded = loads::load(&path).unwrap();
     assert_eq!(loaded.len(), samples.len());
-    assert!(loads::csv(&loaded, &settings)
-        .unwrap()
-        .starts_with("index,physical_time_s,Cd"));
+    assert!(
+        loads::csv(&loaded, &settings)
+            .unwrap()
+            .starts_with("index,physical_time_s,Cd")
+    );
     let mut count = 0;
     loads::visit_samples(&path, |_| {
         count += 1;
@@ -417,4 +426,65 @@ fn final_adaptive_remainder_can_be_below_minimum_step() {
     assert_eq!(s.completed_time_steps, 2);
     assert!((s.last_time_step.unwrap() - 0.005).abs() < 1e-14);
     assert!((s.physical_time.unwrap() - 0.015).abs() < 1e-14);
+}
+
+#[test]
+fn backward_checkpoint_resume_matches_uninterrupted_time_levels() {
+    use flursys::workbench::checkpoint;
+    let mut full = case();
+    full.solver.thermal = heating().solver.thermal;
+    full.solver.time = TimeIntegration::Backward { dt: 0.01, steps: 4 };
+    let uninterrupted = solve_incompressible(&full).unwrap();
+    let mut split = full.clone();
+    split.solver.time = TimeIntegration::Backward { dt: 0.01, steps: 2 };
+    let first = solve_incompressible(&split).unwrap();
+    assert!(first.previous.is_some());
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("checkpoint.json");
+    checkpoint::write_solution(
+        &path,
+        &checkpoint::MeshSignature::new(&split.mesh),
+        2,
+        &first,
+        "BDF2",
+    )
+    .unwrap();
+    assert!(checkpoint::inspect(&path).unwrap().backward_history);
+    split.initial_conditions = checkpoint::load(&path, &split.mesh).unwrap().1;
+    let resumed = solve_incompressible(&split).unwrap();
+    assert!((resumed.physical_time.unwrap() - 0.04).abs() < 1e-14);
+    for (a, b) in uninterrupted
+        .velocity
+        .values()
+        .iter()
+        .zip(resumed.velocity.values())
+    {
+        assert!((*a - *b).norm() < 1e-11, "{a:?} != {b:?}");
+    }
+    for (a, b) in uninterrupted
+        .pressure
+        .values()
+        .iter()
+        .zip(resumed.pressure.values())
+    {
+        assert!((a - b).abs() < 1e-11);
+    }
+    for (a, b) in uninterrupted
+        .temperature
+        .as_ref()
+        .unwrap()
+        .values()
+        .iter()
+        .zip(resumed.temperature.as_ref().unwrap().values())
+    {
+        assert!((a - b).abs() < 1e-11);
+    }
+    for (a, b) in uninterrupted
+        .face_flux
+        .values()
+        .iter()
+        .zip(resumed.face_flux.values())
+    {
+        assert!((a - b).abs() < 1e-11);
+    }
 }

@@ -3,9 +3,9 @@
 //! This module does not parse command-line arguments, print progress, or depend on
 //! a GUI toolkit. Library callers can edit a `WorkbenchSession` and observe typed events.
 use crate::{
+    GmshMesher, RunRecord, WorkbenchProject, WorkbenchSession,
     app::{JobLifecycle, WorkbenchJobEvent, WorkbenchJobExecutor},
     workbench::{finalize_workspace_run, mesh_storage, save_workspace, solve_review},
-    GmshMesher, RunRecord, WorkbenchProject, WorkbenchSession,
 };
 use serde::Serialize;
 /// Version of the headless orchestration contract (independent of file formats).
@@ -56,14 +56,16 @@ pub fn mesh(
 #[derive(Clone, Debug)]
 pub struct RunOptions {
     pub restart: Option<PathBuf>,
-    /// Zero disables periodic writes; retained final state is still saved.
+    /// Full-field playback cadence; zero disables playback snapshots.
     pub checkpoint_every: usize,
+    pub recovery: crate::workbench::checkpoint::RecoveryPolicy,
 }
 impl Default for RunOptions {
     fn default() -> Self {
         Self {
             restart: None,
             checkpoint_every: 100,
+            recovery: Default::default(),
         }
     }
 }
@@ -77,8 +79,14 @@ pub struct RunOutcome {
 /// Thread-safe cooperative control shared with a running headless job.
 /// Stop is terminal; resume cannot revoke a stop request.
 #[derive(Clone, Default)]
-pub struct ExecutionControl(std::sync::Arc<std::sync::atomic::AtomicU8>);
+pub struct ExecutionControl(
+    std::sync::Arc<std::sync::atomic::AtomicU8>,
+    std::sync::Arc<std::sync::atomic::AtomicBool>,
+);
 impl ExecutionControl {
+    pub fn checkpoint(&self) {
+        self.1.store(true, std::sync::atomic::Ordering::Release);
+    }
     pub fn pause(&self) {
         let _ = self.0.compare_exchange(
             0,
@@ -145,8 +153,9 @@ pub fn run_with_control(
     }
     let mut jobs = WorkbenchJobExecutor::new();
     jobs.set_checkpoint_interval(options.checkpoint_every);
+    jobs.set_recovery_policy(options.recovery.clone())?;
     if let Some(path) = &options.restart {
-        crate::workbench::checkpoint::load(path, &case.mesh)?;
+        crate::workbench::checkpoint::load_recoverable(path, &case.mesh)?;
         jobs.set_restart(Some(path.clone()));
     }
     sync_intent(project, session);
@@ -172,6 +181,11 @@ pub fn run_with_control(
     let mut outcome = None;
     let mut health = None;
     while outcome.is_none() {
+        if control.1.swap(false, std::sync::atomic::Ordering::AcqRel) {
+            if let Err(e) = jobs.checkpoint_now() {
+                observe(&WorkbenchJobEvent::Checkpoint(Err(e)));
+            }
+        }
         match control.0.load(std::sync::atomic::Ordering::Acquire) {
             2 => {
                 jobs.cancel();
@@ -201,7 +215,10 @@ pub fn run_with_control(
     }
     let result = outcome.ok_or("Solve worker returned no outcome")?;
     let failure = result.as_ref().err().map(ToString::to_string);
-    let retained_checkpoint = if let Some((index, fields)) = jobs.retained_fields(mesh.id()) {
+    let retained_checkpoint = if let Some((index, fields)) =
+        jobs.retained_fields(mesh.id()).filter(|_| {
+            result.is_ok() || matches!(&result, Err(crate::IncompressibleSolveError::Cancelled))
+        }) {
         let relative = recording.join("retained-checkpoint.json");
         crate::workbench::checkpoint::write_restart(
             &directory.join(&relative),

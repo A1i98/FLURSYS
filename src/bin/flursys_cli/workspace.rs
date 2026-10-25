@@ -3,9 +3,11 @@
 mod catalog;
 #[path = "transport.rs"]
 mod transport;
+#[path = "compressible.rs"]
+mod compressible;
 use flursys::workbench::{catalogue, mesh_storage, solve_review};
 use flursys::*;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::{
     collections::BTreeMap,
     path::{Path, PathBuf},
@@ -29,7 +31,11 @@ fn parse(args: &[String], allowed: &[&str]) -> Result<BTreeMap<String, String>, 
         if !allowed.contains(&name) {
             return Err(format!("Unknown option --{name}"));
         }
-        let value = if name == "json" || name == "gpu-required" || name == "include-gpu" {
+        let value = if name == "json"
+            || name == "gpu-required"
+            || name == "include-gpu"
+            || name == "resume-latest"
+        {
             "true".into()
         } else {
             i += 1;
@@ -69,8 +75,10 @@ pub fn help() {
   flursys examples list [--json]
   flursys examples create <id> <directory> [--name NAME] [--preset ID] [--json]
   flursys examples export-templates <directory> [--json]
+  flursys compressible CASE.json|WORKSPACE_DIRECTORY OUTPUT_DIRECTORY
   flursys project inspect <directory> [--json]
   flursys project check <directory> [--json]
+  flursys project checkpoint <directory> [--json]
   flursys project mesh <directory> [--gmsh PATH] [--threads N] [--json]
   flursys project solve <directory> [--threads N] [--iterations N] [--restart FILE] [--backend serial|parallel|gpu] [--adapter NAME] [--gpu-required] [--gpu-min-rows N] [--json]
   flursys project transport-template <directory> --output transport.json [--json]
@@ -83,13 +91,18 @@ Project commands use the GUI Workbench backend and saved mesh assets.
 Restart requires the exact saved mesh; solve does not silently generate a mesh.
 Progress goes to stderr; --json keeps stdout machine-readable.
 Transient controls: --dt SECONDS --steps N --end-time SECONDS --max-diffusion NUMBER
-Checkpoint cadence: --checkpoint-every N (0 disables periodic writes)
+Playback cadence: --checkpoint-every N (0 disables playback writes)
+Recovery: --recovery-every N --recovery-seconds N --resume-latest
+Playback limits: --history-max-frames N --history-max-mib N (0 unlimited)
 GPU controls: --gpu-preconditioner auto|jacobi --gpu-restart 2..64
   --gpu-inner-iterations 1..64 --gpu-smoothing 1..8 --gpu-timeout-ms 100..60000
   --gpu-basis-mb 16..16384. Small-row crossover applies only when fallback is allowed."
     );
 }
 pub fn run(args: &[String]) -> Result<(), String> {
+    if args.first().is_some_and(|s| s == "compressible") {
+        return compressible::run(&args[1..]);
+    }
     if args.iter().any(|s| s == "--help" || s == "-h") {
         help();
         return Ok(());
@@ -181,7 +194,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
     let action = args[1].as_str();
     let folder = Path::new(args.get(2).ok_or("Missing project directory")?);
     let allowed: &[&str] = match action {
-        "inspect" | "check" => &["json"],
+        "inspect" | "check" | "checkpoint" => &["json"],
         "transport-template" => &["json", "output"],
         "transport" => &["json", "config", "output", "restart"],
         "benchmark" => &[
@@ -205,6 +218,11 @@ pub fn run(args: &[String]) -> Result<(), String> {
             "end-time",
             "max-diffusion",
             "checkpoint-every",
+            "recovery-every",
+            "recovery-seconds",
+            "history-max-frames",
+            "history-max-mib",
+            "resume-latest",
             "json",
             "threads",
             "iterations",
@@ -309,6 +327,18 @@ pub fn run(args: &[String]) -> Result<(), String> {
         emit(report, json_output);
         return Ok(());
     }
+    if action == "checkpoint" {
+        let mesh = &session
+            .mesh()
+            .ok_or("Restore the project mesh before inspecting recovery")?
+            .mesh;
+        let recovered = flursys::workbench::checkpoint::discover(folder, mesh)?;
+        emit(
+            json!({"summary":format!("Recovery checkpoint at iteration/step {}",recovered.info.iteration),"checkpoint":recovered.info,"warnings":recovered.warnings}),
+            json_output,
+        );
+        return Ok(());
+    }
     if action == "inspect" {
         emit(
             json!({"summary":format!("{}\n{}\nDimension {:?} · mesh restored: {} · {} saved runs",project.name,folder.display(),session.mesh_dimension(),restored,project.runs.len()),
@@ -408,12 +438,37 @@ pub fn run(args: &[String]) -> Result<(), String> {
     if action == "benchmark" {
         return benchmark(&case, &opts, json_output);
     }
+    if opts.contains_key("resume-latest") && opts.contains_key("restart") {
+        return Err("Use either --resume-latest or --restart".into());
+    }
+    let restart = if opts.contains_key("resume-latest") {
+        let recovered = flursys::workbench::checkpoint::discover(folder, &case.mesh)?;
+        for warning in &recovered.warnings {
+            eprintln!("Recovery: {warning}");
+        }
+        eprintln!(
+            "Resuming checkpoint at iteration {}",
+            recovered.info.iteration
+        );
+        Some(recovered.info.path)
+    } else {
+        opts.get("restart").map(PathBuf::from)
+    };
+    let mut recovery = flursys::workbench::checkpoint::RecoveryPolicy::default();
+    recovery.every_iterations = number(&opts, "recovery-every")?.unwrap_or(100);
+    recovery.every_seconds = number(&opts, "recovery-seconds")?.unwrap_or(60) as u64;
+    recovery.max_history_frames = number(&opts, "history-max-frames")?.unwrap_or(500);
+    let mib = number(&opts, "history-max-mib")?.unwrap_or(1024) as u64;
+    recovery.max_history_bytes = mib
+        .checked_mul(1024 * 1024)
+        .ok_or("History size is too large")?;
     let outcome = flursys::headless::run(
         folder,
         &mut project,
         &mut session,
         &flursys::headless::RunOptions {
-            restart: opts.get("restart").map(PathBuf::from),
+            restart,
+            recovery,
             checkpoint_every: number(&opts, "checkpoint-every")?.unwrap_or(100),
         },
         |event| {
@@ -427,6 +482,12 @@ pub fn run(args: &[String]) -> Result<(), String> {
                     "step {current}/{max} · continuity {:.6e}",
                     residual.unwrap_or(f64::NAN)
                 ),
+                E::Checkpoint(Ok(info)) => eprintln!(
+                    "Checkpoint saved: iteration {} · {}",
+                    info.iteration,
+                    info.path.display()
+                ),
+                E::Checkpoint(Err(e)) => eprintln!("Checkpoint failed: {e}"),
                 E::SolveProgress(P::Message(message)) => eprintln!("{message}"),
                 _ => {}
             }
