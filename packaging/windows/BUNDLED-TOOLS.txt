@@ -1,0 +1,22 @@
+FLURSYS for Windows
+
+This package contains the FLURSYS desktop workbench, headless command-line tools,
+editable example cases, and an unmodified official Gmsh distribution.
+
+Gmsh is installed privately under gmsh/ beside FLURSYS. FLURSYS discovers it
+without changing the system PATH. A Gmsh path explicitly selected in application
+settings takes precedence over the bundled executable.
+
+Gmsh: https://gmsh.info
+Copyright: Christophe Geuzaine, Jean-Francois Remacle and contributors.
+Gmsh retains its own GPL-2.0-or-later license and upstream notices in gmsh/.
+The corresponding upstream Gmsh source archive is included under gmsh/source/.
+Version, original download locations and SHA256 values are in gmsh/bundle.json.
+
+FLURSYS and SolidCraft license texts are included alongside the application.
+Microsoft Visual C++ runtime DLLs are redistributed app-locally as runtime
+components from the Visual Studio redistributable directory.
+
+The installer is per-user and does not require administrative privileges.
+Uninstalling removes installed application files, not workspaces saved elsewhere.
+Keep your projects in a writable user folder rather than the installation folder.

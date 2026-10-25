@@ -1,0 +1,11 @@
+{
+  "version": "4.15.2",
+  "archive_url": "https://gmsh.info/bin/Windows/gmsh-4.15.2-Windows64.zip",
+  "archive_sha256": "a8208b56aedee3434907a893e303422acacd9003140766e09f2abbc664ba7157",
+  "archive_checksum_source": "https://community.chocolatey.org/packages/gmsh/4.15.2",
+  "source_url": "https://gmsh.info/src/gmsh-4.15.2-source.tgz",
+  "source_sha256": "be3f66f225d27ba9fa014f07e83169285da8a051b0e8ab7103d88066b39bdd3e",
+  "source_checksum_source": "https://github.com/JuliaBinaryWrappers/gmsh_jll.jl",
+  "license": "GPL-2.0-or-later",
+  "executable": "gmsh.exe"
+}

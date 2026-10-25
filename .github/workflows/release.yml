@@ -1,12 +1,22 @@
 name: FLURSYS release
 
 on:
+  workflow_dispatch:
+    inputs:
+      platform:
+        description: Build Windows installer only, or all platform packages
+        type: choice
+        options:
+          - windows
+          - all
+        default: windows
+        required: true
   push:
     tags:
       - "v*"
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -18,16 +28,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - os: ubuntu-latest
-            target: linux-x86_64
-            archive: tar.gz
-          - os: macos-latest
-            target: macos
-            archive: tar.gz
-          - os: windows-latest
-            target: windows-x86_64
-            archive: zip
+        include: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.platform == 'windows' && '[{"os":"windows-latest","target":"windows-x86_64","archive":"zip"}]' || '[{"os":"ubuntu-latest","target":"linux-x86_64","archive":"tar.gz"},{"os":"macos-latest","target":"macos","archive":"tar.gz"},{"os":"windows-latest","target":"windows-x86_64","archive":"zip"}]') }}
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -44,14 +45,14 @@ jobs:
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install --yes libfontconfig1-dev
       - name: Build CLI and desktop workbench
-        run: cargo build -p flursys --locked --release --bin flursys --bin flursys-gui --features gui
+        run: cargo build -p flursys --locked --release --bin flursys --bin flursys-gui --bin flursys-compressible --features gui
       - name: Package Unix binaries
         if: matrix.archive == 'tar.gz'
         run: |
           mkdir -p dist
           stage="${RUNNER_TEMP}/flursys-package"
           mkdir -p "$stage"
-          cp target/release/flursys target/release/flursys-gui "$stage/"
+          cp target/release/flursys target/release/flursys-gui target/release/flursys-compressible "$stage/"
           if [ "${{ runner.os }}" = "Linux" ]; then
             mkdir -p "$stage/share/applications" "$stage/share/icons/hicolor/512x512/apps" "$stage/share/icons/hicolor/scalable/apps"
             cp packaging/linux/flursys.desktop "$stage/share/applications/"
@@ -71,13 +72,32 @@ jobs:
           fi
           tar -C "$stage" -czf "dist/flursys-${{ github.ref_name }}-${{ matrix.target }}.tar.gz" .
           sha256sum dist/* > "dist/flursys-${{ matrix.target }}-checksums.txt"
-      - name: Package Windows binaries
-        if: matrix.archive == 'zip'
+      - name: Cache verified Gmsh archives
+        if: runner.os == 'Windows'
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/flursys-gmsh-cache
+          key: windows-gmsh-${{ hashFiles('packaging/windows/gmsh.json') }}
+      - name: Ensure Inno Setup is available
+        if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force dist | Out-Null
-          Compress-Archive -Path target/release/flursys.exe,target/release/flursys-gui.exe -DestinationPath "dist/flursys-${{ github.ref_name }}-${{ matrix.target }}.zip"
-          Get-FileHash -Algorithm SHA256 dist/* | ForEach-Object { "{0}  {1}" -f $_.Hash.ToLower(), $_.Path } | Set-Content "dist/flursys-${{ matrix.target }}-checksums.txt"
+          $candidates = @("${env:ProgramFiles(x86)}/Inno Setup 6/ISCC.exe", "$env:ProgramFiles/Inno Setup 6/ISCC.exe")
+          if (-not ($candidates | Where-Object { Test-Path $_ })) {
+            choco install innosetup --yes --no-progress
+            if ($LASTEXITCODE -ne 0) { throw 'Cannot install Inno Setup.' }
+          }
+      - name: Package Windows installer and portable bundle
+        if: runner.os == 'Windows'
+        id: windows-package
+        shell: pwsh
+        run: ./packaging/windows/package.ps1
+      - name: Smoke test Windows installation and bundled mesher
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          FLURSYS_INSTALLER: ${{ steps.windows-package.outputs.installer }}
+        run: ./packaging/windows/smoke-test.ps1 -Installer $env:FLURSYS_INSTALLER
       - uses: actions/upload-artifact@v4
         with:
           name: flursys-${{ matrix.target }}
@@ -88,6 +108,9 @@ jobs:
   publish:
     name: Publish GitHub release
     needs: build
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
