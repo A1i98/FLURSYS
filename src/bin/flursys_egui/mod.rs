@@ -486,9 +486,12 @@ impl App {
             eprintln!("Preview: {text}");
         }
         self.feedback = text.clone();
-        self.log.push(text);
-        if self.log.len() > 2000 {
-            self.log.drain(..500);
+        self.append_log(text);
+    }
+    fn append_log(&mut self, text: impl AsRef<str>) {
+        self.log.extend(text.as_ref().lines().map(str::to_owned));
+        if self.log.len() > 10000 {
+            self.log.drain(..self.log.len() - 10000);
         }
     }
     fn busy(&self) -> bool {
@@ -527,6 +530,17 @@ impl App {
         self.transport.options = p.scalar_transport.clone().unwrap_or_default();
         self.published_document = Some(self.cad.session.doc.to_json());
         self.project = p;
+        (self.initial_velocity, self.initial_pressure) = self
+            .project
+            .boundaries
+            .iter()
+            .find_map(|b| match b.condition {
+                workbench::PhysicalBoundaryCondition::FarField { velocity, pressure } => {
+                    Some((velocity, pressure))
+                }
+                _ => None,
+            })
+            .unwrap_or((Vec3::ZERO, 0.0));
         self.session = s;
         self.workspace = path;
         self.dirty = false;
@@ -817,6 +831,7 @@ impl App {
             != self.project.solver.time.is_transient()
             || p.solver.turbulence.model != self.project.solver.turbulence.model
             || p.solver.thermal.enabled != self.project.solver.thermal.enabled
+            || p.solver.thermal.reduced_pressure != self.project.solver.thermal.reduced_pressure
             || p.solver.initial_profile != self.project.solver.initial_profile
             || p.solver.compressible.is_some() != self.project.solver.compressible.is_some();
         if !mesh_changed {
@@ -1107,6 +1122,22 @@ impl App {
         }
         for event in self.jobs.drain() {
             match event {
+                WorkbenchJobEvent::SolveProgress(JobProgress::StartedAt { iteration }) => {
+                    self.append_log(format!("Solve starting after iteration {iteration}"));
+                    self.append_log(format!(
+                        "Cells: {} · model: {:?} · time: {:?} · additional iterations: {}",
+                        self.session.mesh().map_or(0, |m| m.mesh.cell_count()),
+                        self.project.solver.turbulence.model,
+                        self.project.solver.time,
+                        self.project.solver.max_outer_iterations,
+                    ));
+                    self.append_log(format!(
+                        "Relaxation: velocity {} · pressure {} · continuity tolerance {:.3e} · coupling tolerance {:.3e}",
+                        self.project.solver.velocity_relaxation, self.project.solver.pressure_relaxation,
+                        self.project.solver.continuity_absolute_tolerance, self.project.solver.coupling_relative_tolerance,
+                    ));
+                    self.append_log("  Iteration       Continuity RMS     Momentum relative     Velocity change      Pressure linear");
+                }
                 WorkbenchJobEvent::MeshCompleted(result) => match result {
                     Ok(m) => {
                         self.session.install_mesh(m);
@@ -1135,6 +1166,10 @@ impl App {
                     }
                 }
                 WorkbenchJobEvent::SolveProgress(JobProgress::Metrics { iteration, values }) => {
+                    self.append_log(format!(
+                        "{iteration:>11} {0:>20.8e} {1:>21.8e} {2:>19.8e} {3:>20.8e}",
+                        values[0], values[1], values[2], values[3],
+                    ));
                     for (i, v) in values.into_iter().enumerate().skip(1) {
                         if iteration <= self.segment_start {
                             continue;
@@ -1149,6 +1184,18 @@ impl App {
                 WorkbenchJobEvent::SolveProgress(JobProgress::Message(m)) => self.message(m),
                 WorkbenchJobEvent::SolveCompleted(result) => {
                     self.iteration = self.jobs.completed_iterations();
+                    match &result {
+                        Ok(solution) => self.message(format!(
+                            "Solve {:?} at iteration {} · continuity RMS {:.8e} · inflow {:.8e} · outflow {:.8e} · net flux {:.8e}",
+                            solution.report.status, self.iteration,
+                            solution.report.final_continuity_rms, solution.report.total_inflow,
+                            solution.report.total_outflow, solution.report.net_boundary_flux,
+                        )),
+                        Err(error) => {
+                            self.show_log = true;
+                            self.message(format!("ERROR after iteration {}: {error}", self.iteration));
+                        }
+                    }
                     for series in &mut self.solve_histories {
                         series.retain(|(x, _)| *x <= self.iteration as f64);
                     }
@@ -1165,6 +1212,10 @@ impl App {
                             self.continuation_run.as_deref(),
                         ) {
                             Ok(Some(run)) => {
+                                self.append_log(format!(
+                                    "Run report: {}",
+                                    path.join(&run.report_path).display()
+                                ));
                                 self.continuation_run = Some(run.id.clone());
                                 self.histories = self.solve_histories.clone();
                                 if let Err(e) = self.persist_continuation() {
@@ -1244,6 +1295,7 @@ impl App {
                     self.monitoring.time_state = Some((index, time, dt, courant, rejected));
                 }
                 WorkbenchJobEvent::Engineering(sample) => self.accept_engineering(sample),
+                WorkbenchJobEvent::Health(health) => self.append_log(health.summary()),
                 WorkbenchJobEvent::Performance(p) => self.session.set_performance(p),
                 WorkbenchJobEvent::MeshProgress(JobProgress::Meshing { fraction, stage }) => {
                     self.feedback = format!("Meshing {:.0}% · {stage}", fraction * 100.);

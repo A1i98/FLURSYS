@@ -172,14 +172,24 @@ impl App {
                         if ui.small_button("Clear").clicked() {
                             self.log.clear();
                         }
+                        if ui.small_button("Copy").clicked() {
+                            ui.ctx().copy_text(self.log.join("\n"));
+                        }
                     });
-                    egui::ScrollArea::vertical()
-                        .stick_to_bottom(true)
-                        .show(ui, |ui| {
-                            for line in &self.log {
-                                ui.monospace(line);
+                    let row_height = ui.text_style_height(&egui::TextStyle::Monospace);
+                    egui::ScrollArea::both().stick_to_bottom(true).show_rows(
+                        ui,
+                        row_height,
+                        self.log.len(),
+                        |ui, rows| {
+                            for line in &self.log[rows] {
+                                ui.add(
+                                    egui::Label::new(egui::RichText::new(line).monospace())
+                                        .extend(),
+                                );
                             }
-                        });
+                        },
+                    );
                 });
         }
         if self.stage == Stage::Geometry {
@@ -1132,11 +1142,7 @@ impl App {
                 }
                 B::FlowRateInlet { rate, mass } => {
                     self.boundary_pressure = rate;
-                    if mass {
-                        11
-                    } else {
-                        10
-                    }
+                    if mass { 11 } else { 10 }
                 }
             };
         }
