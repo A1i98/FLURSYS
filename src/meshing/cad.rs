@@ -18,8 +18,42 @@ impl GmshGeometryExporter {
         let data = geometry
             .cad_body(body)
             .ok_or_else(|| error("Select a CAD body"))?;
-        if data.brep["boundaries"].as_array().map(|a| a.len()) != Some(1) {
-            return Err(error("Faceted meshing currently requires one closed shell; export STEP for multi-shell solids"));
+        let solid: truck_modeling::Solid = serde_json::from_value(data.brep.as_ref().clone())
+            .map_err(|e| error(format!("Invalid CAD solid: {e}")))?;
+        let mut offset = 0;
+        let mut shells = Vec::new();
+        for shell in solid.boundaries() {
+            let end = offset + shell.len();
+            let faces = data
+                .face_meshes
+                .get(offset..end)
+                .ok_or_else(|| error("CAD shell face mapping is inconsistent"))?;
+            let origin = faces
+                .iter()
+                .flat_map(|f| &f.triangles)
+                .next()
+                .ok_or_else(|| error("CAD shell has no surface triangles"))?[0];
+            let volume = faces
+                .iter()
+                .flat_map(|f| &f.triangles)
+                .map(|t| (t[0] - origin).dot((t[1] - origin).cross(t[2] - origin)) / 6.)
+                .sum::<f64>();
+            if !volume.is_finite()
+                || if shells.is_empty() {
+                    volume <= 0.
+                } else {
+                    volume >= 0.
+                }
+            {
+                return Err(error(
+                    "CAD volume requires an outward outer shell followed by inward cavity shells",
+                ));
+            }
+            shells.push(faces.iter().map(|f| f.face).collect::<Vec<_>>());
+            offset = end;
+        }
+        if shells.is_empty() || offset != data.face_meshes.len() {
+            return Err(error("CAD solid has no complete shell mapping"));
         }
         if fluid.is_empty() || fluid.contains(['"', '\n', '\r']) {
             return Err(error("Invalid fluid name"));
@@ -230,12 +264,24 @@ impl GmshGeometryExporter {
             surfaces.push(tag);
             face_groups.insert(*face, vec![tag]);
         }
-        let all = surfaces
-            .iter()
-            .map(ToString::to_string)
+        for (index, faces) in shells.iter().enumerate() {
+            let tags = faces
+                .iter()
+                .flat_map(|face| &face_groups[face])
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(",");
+            writeln!(source, "Surface Loop({}) = {{{tags}}};", index + 1).unwrap();
+        }
+        let loops = (1..=shells.len())
+            .map(|n| n.to_string())
             .collect::<Vec<_>>()
             .join(",");
-        writeln!(source,"Surface Loop(1) = {{{all}}};\nVolume(1) = {{1}};\nPhysical Volume(\"{fluid}\") = {{1}};").unwrap();
+        writeln!(
+            source,
+            "Volume(1) = {{{loops}}};\nPhysical Volume(\"{fluid}\") = {{1}};"
+        )
+        .unwrap();
         for (name, faces) in groups {
             if name.is_empty() || name.contains(['"', '\n', '\r']) {
                 return Err(error("Invalid boundary group name"));
