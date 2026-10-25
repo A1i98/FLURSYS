@@ -242,6 +242,17 @@ pub struct GmshMesher {
     executable: GmshExecutable,
 }
 
+fn bundled_executable(directory: &Path) -> Option<PathBuf> {
+    let name = if cfg!(windows) { "gmsh.exe" } else { "gmsh" };
+    [
+        directory.join("gmsh").join(name),
+        directory.join("gmsh/bin").join(name),
+        directory.join(name),
+    ]
+    .into_iter()
+    .find(|path| path.is_file())
+}
+
 static EXECUTABLE_OVERRIDE: std::sync::RwLock<Option<PathBuf>> = std::sync::RwLock::new(None);
 impl GmshMesher {
     pub fn set_executable_override(path: Option<PathBuf>) {
@@ -254,6 +265,11 @@ impl GmshMesher {
             .read()
             .ok()
             .and_then(|p| p.clone())
+            .or_else(|| {
+                std::env::current_exe()
+                    .ok()
+                    .and_then(|exe| exe.parent().and_then(bundled_executable))
+            })
             .unwrap_or_else(|| PathBuf::from("gmsh"))
     }
     pub fn auto() -> Self {
@@ -572,5 +588,30 @@ mod tests {
         assert!(live.exists());
         assert!(live_child.exists());
         assert!(project.join("project.json").exists());
+    }
+}
+
+#[cfg(test)]
+mod bundled_tests {
+    #[test]
+    fn bundled_gmsh_is_found_relative_to_the_application() {
+        let root = tempfile::tempdir().expect("temporary directory");
+        let directory = root.path().join("FLURSYS with spaces");
+        std::fs::create_dir_all(&directory).expect("application directory");
+        let name = if cfg!(windows) { "gmsh.exe" } else { "gmsh" };
+        assert!(super::bundled_executable(&directory).is_none());
+        let adjacent = directory.join(name);
+        std::fs::write(&adjacent, []).expect("adjacent executable");
+        assert_eq!(
+            super::bundled_executable(&directory),
+            Some(adjacent.clone())
+        );
+        if !cfg!(windows) {
+            std::fs::remove_file(adjacent).expect("clear adjacent Unix executable");
+        }
+        std::fs::create_dir_all(directory.join("gmsh")).expect("bundle");
+        let bundled = directory.join("gmsh").join(name);
+        std::fs::write(&bundled, []).expect("bundled executable");
+        assert_eq!(super::bundled_executable(&directory), Some(bundled));
     }
 }
