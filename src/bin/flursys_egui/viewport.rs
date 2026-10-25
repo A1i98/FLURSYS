@@ -1446,6 +1446,8 @@ impl GeometryGpu {
                     0.
                 },
                 ssaa: 1.,
+                hover_tint: [0.; 3],
+                selection_tint: [0.; 3],
             }),
         ));
     }

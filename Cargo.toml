@@ -17,6 +17,8 @@ schemars = "1.2"
 serde_path_to_error = "0.1"
 encoding_rs = "0.8"
 chardetng = "0.1"
+robust = "1.2"
+nix = { version = "0.31", default-features = false, features = ["signal"] }
 # internal
 solidcraft-geom = { path = "vendor/cad-workbench/crates/geom" }
 solidcraft-sketch = { path = "vendor/cad-workbench/crates/sketch" }
@@ -67,9 +69,9 @@ gltf = { version = "1.4", default-features = false, features = ["names"] }
 # Pinned: its IR and codec APIs change between minor versions. Open formats only: no default
 # features, so cadmpeg's codecs for commercial formats (f3d, sldprt, inventor, catia, creo, nx)
 # and its ShapeManager/ACIS `sat` codec are not compiled in. `step` is the writer we restate through.
-cadmpeg-core = "=0.6.1"
-cadmpeg-ir = "=0.6.1"
-cadmpeg-registry = { version = "=0.6.1", default-features = false, features = ["fcstd", "rhino", "step"] }
+cadmpeg-core = "=0.6.3"
+cadmpeg-ir = "=0.6.3"
+cadmpeg-registry = { version = "=0.6.3", default-features = false, features = ["fcstd", "rhino", "step"] }
 
 # fonts (sketch text outlines; MIT OR Apache-2.0, pure Rust)
 ttf-parser = { version = "0.25", default-features = false, features = ["std"] }
