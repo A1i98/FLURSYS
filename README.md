@@ -1,81 +1,68 @@
-# FLURSYS
+<p align="center">
+  <img src="ui/assets/flursys-icon.png" alt="FLURSYS" width="112">
+</p>
 
-<img src="ui/assets/flursys-logo.svg" alt="FLURSYS logo" width="220">
+<h1 align="center">FLURSYS</h1>
 
-**FLU**id + **R**ust + **SYS**tem
+<p align="center">
+  <strong>A CFD workbench built in Rust.</strong><br>
+  Create geometry, generate a mesh, solve fluid flow and explore the results.<br>
+  Use the desktop interface or automate runs with the command line and Rust API.
+</p>
 
-FLURSYS is a Rust-based scientific simulation project. It currently contains a finite-volume solver
-for incompressible fluid flow, with a few standard test cases and multi-core CPU support.
+<p align="center">
+  <a href="https://github.com/A1i98/FLURSYS/releases/latest"><img src="https://img.shields.io/badge/Windows-Download-0078D4?style=for-the-badge" alt="Download for Windows"></a>
+  <a href="https://github.com/A1i98/FLURSYS/releases/latest"><img src="https://img.shields.io/badge/macOS-Download-444444?style=for-the-badge&logo=apple&logoColor=white" alt="Download for macOS"></a>
+  <a href="https://github.com/A1i98/FLURSYS/releases/latest"><img src="https://img.shields.io/badge/Linux-Download-E95420?style=for-the-badge&logo=linux&logoColor=white" alt="Download for Linux"></a>
+</p>
 
-The project is still under development. It includes structured and unstructured workflows,
-a structured three-dimensional cavity solver, and an optional graphical workbench with
-CAD, Gmsh meshing, steady unstructured flow, and result inspection. Experimental
-unstructured implicit-Euler transient flow and k-omega/SST/Smagorinsky/WALE
-closures are also connected; see [scope and validation limits](docs/TRANSIENT_TURBULENCE.md). Physics and time-integration
-support differ between backends; see the implementation-backed documentation below.
+<p align="center">
+  <a href="docs/README.md">Documentation</a> ·
+  <a href="examples/README.md">Examples</a> ·
+  <a href="https://github.com/A1i98/FLURSYS/issues">Issues</a> ·
+  <a href="CONTRIBUTING.md">Contributing</a>
+</p>
 
-### Current mesh workflow
+<p align="center">
+  <a href="https://github.com/A1i98/FLURSYS/actions/workflows/ci.yml"><img src="https://github.com/A1i98/FLURSYS/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/A1i98/FLURSYS/releases"><img src="https://img.shields.io/github/v/release/A1i98/FLURSYS" alt="Latest release"></a>
+  <a href="https://github.com/A1i98/FLURSYS/releases"><img src="https://img.shields.io/github/downloads/A1i98/FLURSYS/total" alt="Downloads"></a>
+  <a href="#license"><img src="https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue" alt="MIT or Apache 2.0"></a>
+</p>
 
-The Mesh workspace supports direct edge/surface scoping, local and distance
-refinement, 3D volume sizing boxes, and 2D inflation controls. Inspection includes
-transparent wireframe, 3D whole-cell cutaway and quantitative quality histograms.
-Arbitrary-CAD 3D prismatic inflation remains unavailable. See
-[Meshing](docs/MESHING.md), [Workbench](docs/WORKBENCH.md) and
-[Numerical Methods](docs/NUMERICAL_METHODS.md) for exact capability boundaries.
+---
+
+FLURSYS combines SolidCraft CAD, Gmsh meshing and finite-volume solvers in one workspace. It includes steady and transient flow, turbulence models, heat transfer, buoyancy, compressible flow, boundary scripts and result playback.
+
+## Build and run
+
+Install Rust and Gmsh. On Linux, install the Fontconfig development package as well.
+
+```sh
+git clone --recurse-submodules https://github.com/A1i98/FLURSYS.git
+cd FLURSYS
+cargo run --release --bin flursys-gui
+```
+
+Windows packages include Gmsh. For other installations, put `gmsh` on PATH or select its executable in Settings.
+
+## Run an example
+
+Open **File → Examples**, or use the CLI:
+
+```sh
+cargo build -p flursys --release --no-default-features --bin flursys
+./target/release/flursys examples create laminar-channel ./channel
+./target/release/flursys project mesh ./channel
+./target/release/flursys project solve ./channel
+```
+
+Cases are editable JSON files in [examples/cases](examples/cases). The library includes Couette flow, natural convection, cylinder flow, Taylor–Green vortex, sudden expansion and Sod shock tube.
 
 ## Documentation
 
-- [Numerical methods and current limitations](docs/NUMERICAL_METHODS.md)
-- [CAD/mesh workbench, project storage and result artifacts](docs/WORKBENCH.md)
-
-## Build
-
-The CAD workbench is a pinned Git submodule. After cloning, initialize it before building:
-
-```bash
-git submodule update --init --recursive
-```
-
-```bash
-cargo build --release
-cargo test
-```
-
-## Run
-
-```bash
-cargo run --release --bin flursys -- list
-cargo run --release --bin flursys -- cavity --threads 4
-cargo run --release --bin flursys -- cavity --coupling simple --max-steps 10000
-cargo run --release --bin flursys -- cavity-3d --nx 32 --ny 32 --nz 32
-cargo run --release --bin flursys -- --project examples/cavity-3d.flursys.json
-cargo run --release --features gui --bin flursys-gui
-cargo run --release --bin flursys -- --project examples/cavity.flursys.json
-```
-
-Available cases include a lid-driven cavity, cylinder flow, backward-facing step, and plane
-Poiseuille channel flow. Results are
-written to the selected output directory in CSV, VTK, and PPM formats. The current solver supports
-transient projection and a steady SIMPLE-style coupling for laminar incompressible flow.
-The optional Slint desktop interface keeps the solver on a separate worker thread and shows live
-residual, force, and field updates.
-
-Versioned `.flursys.json` files are read-only legacy import input. The workbench imports
-recoverable intent into a new portable directory workspace with `project.json`,
-separate autosave data, and per-run artifacts. It persists canonical geometry, Named Selections,
-mesh intent, physical boundaries, material, SIMPLE controls, and run metadata; generated meshes,
-solution fields, and UI caches are derived artifacts.
-
-The workbench can extrude a canonical planar face into stable cap/side faces and a body, pass
-Named-Selection physical surfaces through Gmsh, and generate a real 3D unstructured mesh.
-The workbench VTK writer supports 2D polygons and tetrahedral 3D cells. This is a scoped CFD
-preprocessing workflow, not a general CAD kernel or a completed 3D CAD GUI. See
-[`docs/WORKBENCH.md`](docs/WORKBENCH.md), [`docs/GEOMETRY.md`](docs/GEOMETRY.md), and
-[`docs/MESHING.md`](docs/MESHING.md) for the supported scope and limitations.
+[Workbench](docs/WORKBENCH.md) · [Meshing](docs/MESHING.md) · [CLI](docs/CLI.md) · [Numerical methods](docs/NUMERICAL_METHODS.md) · [Development](docs/DEVELOPMENT.md)
 
 ## License
 
-FLURSYS-owned code is available under either the [MIT License](LICENSE) or
-[Apache License, Version 2.0](LICENSE-APACHE), at your option
-(`MIT OR Apache-2.0`). Existing third-party code, assets and dependencies retain
-their own licenses; see [THIRD_PARTY_NOTICES.txt](THIRD_PARTY_NOTICES.txt)
+FLURSYS is available under [MIT](LICENSE) or [Apache 2.0](LICENSE-APACHE). Third-party components retain their own licenses; see [THIRD_PARTY_NOTICES.txt](THIRD_PARTY_NOTICES.txt).
