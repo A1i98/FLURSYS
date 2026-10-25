@@ -163,16 +163,85 @@ fn pixels(capture: Capture, dimensions: Option<(u32, u32)>) -> Result<image::Rgb
     let source =
         image::RgbaImage::from_raw(w as u32, h as u32, rgba).ok_or("Invalid image buffer")?;
     if let Some((width, height)) = dimensions {
-        Ok(image::imageops::resize(
+        // Preserve geometry if the window size or DPI changed during capture.
+        // Letterbox instead of stretching scientific plots to the output aspect.
+        let scale = (width as f64 / w as f64).min(height as f64 / h as f64);
+        let fitted_width = ((w as f64 * scale).round() as u32).clamp(1, width);
+        let fitted_height = ((h as f64 * scale).round() as u32).clamp(1, height);
+        let fitted = image::imageops::resize(
             &source,
-            width,
-            height,
-            image::imageops::FilterType::Triangle,
-        ))
+            fitted_width,
+            fitted_height,
+            image::imageops::FilterType::Lanczos3,
+        );
+        let mut output = image::RgbaImage::from_pixel(width, height, *source.get_pixel(0, 0));
+        image::imageops::overlay(
+            &mut output,
+            &fitted,
+            ((width - fitted_width) / 2) as i64,
+            ((height - fitted_height) / 2) as i64,
+        );
+        Ok(output)
     } else {
         Ok(source)
     }
 }
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn capture(size: [usize; 2], rect: egui::Rect) -> Capture {
+        Capture {
+            ticket: Ticket {
+                id: 1,
+                rect,
+                scale: 1.0,
+            },
+            image: Arc::new(egui::ColorImage::filled(size, egui::Color32::WHITE)),
+        }
+    }
+
+    #[test]
+    fn crop_preserves_full_brightness() {
+        let image = pixels(
+            capture(
+                [8, 6],
+                egui::Rect::from_min_max(egui::pos2(2., 1.), egui::pos2(6., 5.)),
+            ),
+            None,
+        )
+        .unwrap();
+        assert_eq!(image.dimensions(), (4, 4));
+        assert!(image.pixels().all(|p| p.0 == [255; 4]));
+    }
+
+    #[test]
+    fn rejects_capture_outside_window() {
+        assert!(pixels(
+            capture(
+                [8, 6],
+                egui::Rect::from_min_max(egui::pos2(20., 20.), egui::pos2(30., 30.),)
+            ),
+            None
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn resize_produces_exact_output_dimensions() {
+        let image = pixels(
+            capture(
+                [8, 6],
+                egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(8., 6.)),
+            ),
+            Some((16, 9)),
+        )
+        .unwrap();
+        assert_eq!(image.dimensions(), (16, 9));
+        assert!(image.pixels().all(|p| p.0 == [255; 4]));
+    }
+}
+
 fn worker(
     path: PathBuf,
     gif: bool,
@@ -343,7 +412,12 @@ fn worker(
                         10,
                     )
                 };
-                frame.delay = (100. / options.fps as f64).round().max(1.) as u16;
+                // GIF stores centiseconds. Distribute rounding error between
+                // frames so e.g. 30 FPS does not become 33.3 FPS.
+                let fps = u64::from(options.fps.max(1));
+                let timestamp = |n: usize| (n as u64 * 100 + fps / 2) / fps;
+                frame.delay = (timestamp(frames + 1) - timestamp(frames)).max(1) as u16;
+                frame.dispose = gif::DisposalMethod::Keep;
                 if cancel.load(Ordering::Acquire) {
                     return Ok(Outcome {
                         frames,
@@ -454,7 +528,7 @@ impl App {
         indices
     }
     pub(super) fn gif_settings_window(&mut self, ctx: &egui::Context) {
-        if !self.show_gif_options {
+        if self.export.is_some() || !self.show_gif_options {
             return;
         }
         let mut open = true;

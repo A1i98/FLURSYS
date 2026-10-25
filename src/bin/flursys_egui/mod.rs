@@ -1351,7 +1351,14 @@ impl eframe::App for App {
         if let Some(job) = &self.export {
             self.camera = job.frozen_camera();
         }
-        ui.add_enabled_ui(self.export.is_none(), |ui| self.shell(ui));
+        ui.scope(|ui| {
+            // Lock interaction, not rendering: disabled widgets normally fade every
+            // painted primitive, including the viewport captured for PNG/GIF.
+            if self.export.is_some() {
+                ui.visuals_mut().disabled_alpha = 1.0;
+            }
+            ui.add_enabled_ui(self.export.is_none(), |ui| self.shell(ui));
+        });
         self.gif_settings_window(ui.ctx());
         self.request_export_capture(ui.ctx());
     }

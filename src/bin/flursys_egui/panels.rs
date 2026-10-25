@@ -370,6 +370,12 @@ impl App {
                 }
             });
         }
+        // Root windows and context-level shortcuts bypass the disabled shell.
+        // Keep them out of composited captures and preserve their open state
+        // so they return unchanged after completion or cancellation.
+        if self.export.is_some() {
+            return;
+        }
         self.windows(&ctx);
         if ctx.input(|i| i.modifiers.command && i.key_pressed(egui::Key::S)) {
             if let Err(e) = self.save() {
