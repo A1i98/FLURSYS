@@ -40,6 +40,10 @@ pub fn load_case_file(path: &std::path::Path) -> Result<CaseTemplateManifest, St
     let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
     let mut entry: CaseTemplateManifest =
         serde_json::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))?;
+    super::case_format::hydrate(
+        &mut entry,
+        path.parent().ok_or("Case file has no parent directory")?,
+    )?;
     entry.project_template.runs.clear();
     entry.project_template.mesh_asset = None;
     entry
@@ -72,6 +76,8 @@ pub fn builtin_templates() -> Result<Vec<CaseTemplateManifest>, String> {
         }
         for entry in super::discover_templates(&root) {
             let mut entry = entry.map_err(|e| e.to_string())?;
+            let asset_root = root.join(&entry.id);
+            super::case_format::hydrate(&mut entry, &asset_root)?;
             entry.project_template.runs.clear();
             entry.project_template.mesh_asset = None;
             if let Some(existing) = templates.iter_mut().find(|t| t.id == entry.id) {

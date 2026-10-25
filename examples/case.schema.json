@@ -86,7 +86,548 @@
           "type": "null"
         }
       }
+    },
+    "metadata": {
+      "$ref": "#/$defs/metadata"
     }
   },
-  "description": "Portable geometry and solver intent only. Complete numerical and topology validation is performed by the canonical FLURSYS project loader."
+  "description": "Version 2 of the case-template envelope is independent of the nested project format. Optional metadata defaults preserve older v2 files. Quantities and source equivalence are explicit. A missing tolerance does not imply passing validation.",
+  "$defs": {
+    "source": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "authors": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "year": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "doi": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "url": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "relationship": {
+          "type": "string"
+        },
+        "notes": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "title"
+      ]
+    },
+    "scale": {
+      "type": "object",
+      "properties": {
+        "symbol": {
+          "type": "string"
+        },
+        "value": {
+          "type": "number"
+        },
+        "unit": {
+          "type": "string"
+        },
+        "definition": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "symbol",
+        "value",
+        "unit"
+      ]
+    },
+    "dimensionless": {
+      "type": "object",
+      "properties": {
+        "symbol": {
+          "type": "string"
+        },
+        "value": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "formula": {
+          "type": "string"
+        },
+        "scales": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/scale"
+          }
+        },
+        "notes": {
+          "type": "string"
+        }
+      }
+    },
+    "probe": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "position": {
+          "type": "object",
+          "properties": {
+            "x": {
+              "type": "number"
+            },
+            "y": {
+              "type": "number"
+            },
+            "z": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "x",
+            "y",
+            "z"
+          ]
+        },
+        "quantities": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "sampling": {
+          "enum": [
+            "nearest-cell"
+          ]
+        }
+      }
+    },
+    "plot": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string"
+        },
+        "quantity": {
+          "type": "string"
+        },
+        "start": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "x": {
+                  "type": "number"
+                },
+                "y": {
+                  "type": "number"
+                },
+                "z": {
+                  "type": "number"
+                }
+              },
+              "required": [
+                "x",
+                "y",
+                "z"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "end": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "x": {
+                  "type": "number"
+                },
+                "y": {
+                  "type": "number"
+                },
+                "z": {
+                  "type": "number"
+                }
+              },
+              "required": [
+                "x",
+                "y",
+                "z"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "notes": {
+          "type": "string"
+        }
+      }
+    },
+    "display": {
+      "type": "object",
+      "properties": {
+        "field": {
+          "enum": [
+            "speed",
+            "pressure",
+            "temperature",
+            "velocity-x",
+            "velocity-y",
+            "velocity-z",
+            "density",
+            "absolute-pressure",
+            "mach",
+            "vorticity"
+          ]
+        },
+        "mode": {
+          "enum": [
+            "filled-contours",
+            "filled-cells",
+            "contours",
+            "vectors",
+            "profiles"
+          ]
+        },
+        "palette": {
+          "enum": [
+            "viridis",
+            "turbo"
+          ]
+        },
+        "plane": {
+          "type": "string"
+        },
+        "vectors": {
+          "type": "boolean"
+        },
+        "cell_edges": {
+          "type": "boolean"
+        },
+        "levels": {
+          "type": "integer",
+          "minimum": 3,
+          "maximum": 32
+        },
+        "probes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/probe"
+          }
+        },
+        "plots": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/plot"
+          }
+        },
+        "section": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "description": "Optional FlowPlaneMonitor with origin and orthonormal u/v axes; created when the case is instantiated."
+        }
+      }
+    },
+    "verification": {
+      "type": "object",
+      "properties": {
+        "status": {
+          "enum": [
+            "unvalidated",
+            "inputs-reviewed",
+            "numerically-verified"
+          ]
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "notes": {
+          "type": "string"
+        }
+      }
+    },
+    "comparison": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "quantity": {
+          "type": "string"
+        },
+        "unit": {
+          "type": "string"
+        },
+        "source_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "kind": {
+          "enum": [
+            "analytical",
+            "scalar",
+            "tabulated",
+            "external-reference"
+          ]
+        },
+        "asset": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "expression": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "target": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "time": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "coordinate_column": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "value_column": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "error_metric": {
+          "enum": [
+            "l1",
+            "l2",
+            "linf",
+            "relative-l2",
+            "relative-error",
+            "volume-weighted-l2"
+          ]
+        },
+        "absolute_tolerance": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "relative_tolerance": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "procedure": {
+          "type": "string"
+        }
+      }
+    },
+    "compressible-time": {
+      "type": "object",
+      "properties": {
+        "courant": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "maximum": 0.5
+        },
+        "max_time_step": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "end_time": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "max_steps": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "preset": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "mesh": {
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "mesh_recipe": {
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "time": {
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "physical_end_time": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "compressible_time": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/compressible-time"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "asset": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "pattern": "^(?!/)(?!.*\\\\)(?!.*:)(?!.*(?:^|/)\\.\\.(?:/|$)).+$"
+        },
+        "role": {
+          "enum": [
+            "geometry",
+            "script",
+            "reference",
+            "data"
+          ]
+        },
+        "media_type": {
+          "type": "string"
+        },
+        "sha256": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[a-fA-F0-9]{64}$"
+        },
+        "linked_script": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "content": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Optional inline UTF-8 fallback. File bytes must match SHA256. Keeps imported/exported cases portable."
+        }
+      },
+      "required": [
+        "path",
+        "role",
+        "media_type"
+      ]
+    },
+    "metadata": {
+      "type": "object",
+      "properties": {
+        "revision": {
+          "type": "string"
+        },
+        "sources": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/source"
+          }
+        },
+        "dimensionless": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/dimensionless"
+          }
+        },
+        "display": {
+          "$ref": "#/$defs/display"
+        },
+        "comparisons": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/comparison"
+          }
+        },
+        "verification": {
+          "$ref": "#/$defs/verification"
+        },
+        "presets": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/preset"
+          }
+        },
+        "assets": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/asset"
+          }
+        }
+      }
+    }
+  }
 }

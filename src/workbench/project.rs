@@ -514,6 +514,8 @@ pub struct RunRecord {
 pub struct WorkbenchProject {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mesh_asset: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub case_context: Option<super::case_format::CaseContext>,
 
     pub format_version: u32,
     pub project_id: String,
@@ -553,6 +555,7 @@ impl WorkbenchProject {
     pub fn blank(name: impl Into<String>) -> Self {
         Self {
             mesh_asset: None,
+            case_context: None,
             format_version: WORKBENCH_PROJECT_FORMAT_VERSION,
             project_id: unique_id("project"),
             name: name.into(),
@@ -619,6 +622,12 @@ impl WorkbenchProject {
             return Err(ProjectDocumentError::Invalid(
                 "project ID and name must be non-empty".into(),
             ));
+        }
+        if let Some(context) = &self.case_context {
+            context
+                .metadata
+                .validate()
+                .map_err(ProjectDocumentError::Invalid)?;
         }
         if let Some(profile) = &self.solver.initial_profile {
             profile.validate().map_err(ProjectDocumentError::Invalid)?;
@@ -763,6 +772,8 @@ pub struct CaseTemplateManifest {
     pub capabilities: Vec<String>,
     #[serde(default)]
     pub expectations: TemplateExpectations,
+    #[serde(default)]
+    pub metadata: super::case_format::CaseMetadata,
     pub project_template: WorkbenchProject,
 }
 
@@ -780,7 +791,7 @@ pub struct TemplateExpectations {
 
 impl CaseTemplateManifest {
     pub fn validate(&self) -> Result<(), ProjectDocumentError> {
-        if self.format_version != WORKBENCH_PROJECT_FORMAT_VERSION
+        if self.format_version != super::case_format::CASE_FORMAT_VERSION
             || self.id.trim().is_empty()
             || self.name.trim().is_empty()
         {
@@ -788,6 +799,9 @@ impl CaseTemplateManifest {
                 "invalid case template manifest".into(),
             ));
         }
+        self.metadata
+            .validate()
+            .map_err(ProjectDocumentError::Invalid)?;
         self.project_template.validate()
     }
 }
@@ -835,6 +849,10 @@ pub fn save_workspace(
     project.validate()?;
     fs::create_dir_all(workspace).map_err(io_error)?;
     fs::create_dir_all(workspace.join("runs")).map_err(io_error)?;
+    if let Some(context) = &project.case_context {
+        super::case_format::write_assets(&workspace.join("case-assets"), &context.metadata.assets)
+            .map_err(ProjectDocumentError::Invalid)?;
+    }
     let destination = workspace.join(PROJECT_DOCUMENT_FILE);
     atomic_json_write(&destination, project)?;
     // JSON is portable and authoritative. Index failure must state that the
@@ -1160,6 +1178,14 @@ pub fn save_case_template(
     let mut portable_manifest = manifest.clone();
     portable_manifest.project_template.runs.clear();
     portable_manifest.project_template.mesh_asset = None;
+    portable_manifest.project_template.case_context = None;
+    super::case_format::write_assets(
+        destination
+            .parent()
+            .ok_or_else(|| ProjectDocumentError::Invalid("Case directory missing".into()))?,
+        &portable_manifest.metadata.assets,
+    )
+    .map_err(ProjectDocumentError::Invalid)?;
     atomic_json_write(&destination, &portable_manifest)?;
     Ok(destination)
 }
@@ -2255,6 +2281,7 @@ mod tests {
                 description: "test template".into(),
                 capabilities: Vec::new(),
                 expectations: TemplateExpectations::default(),
+                metadata: Default::default(),
                 project_template: WorkbenchProject::blank(name),
             };
             fs::write(
@@ -2323,6 +2350,7 @@ mod tests {
             description: "built-in template".into(),
             capabilities: Vec::new(),
             expectations: TemplateExpectations::default(),
+            metadata: Default::default(),
             project_template: WorkbenchProject::blank("Built in"),
         };
         save_case_template(&built_in_root, &built_in).unwrap();
@@ -2335,6 +2363,7 @@ mod tests {
             description: "saved user template".into(),
             capabilities: vec!["Editable".into()],
             expectations: TemplateExpectations::default(),
+            metadata: Default::default(),
             project_template: WorkbenchProject::blank("User Case"),
         };
         let saved_path = save_case_template(&user_root, &user).unwrap();
@@ -2360,6 +2389,7 @@ mod tests {
             description: "intent only".into(),
             capabilities: Vec::new(),
             expectations: TemplateExpectations::default(),
+            metadata: Default::default(),
             project_template: project,
         };
 
@@ -2388,6 +2418,7 @@ mod tests {
             description: "safe template".into(),
             capabilities: Vec::new(),
             expectations: TemplateExpectations::default(),
+            metadata: Default::default(),
             project_template: WorkbenchProject::blank("Safe"),
         };
         save_case_template(directory.path(), &manifest).unwrap();

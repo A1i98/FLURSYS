@@ -2,6 +2,7 @@
 
 pub mod boundary_reports;
 pub mod budgets;
+pub mod case_format;
 pub mod catalogue;
 pub mod checkpoint;
 pub mod dfg;

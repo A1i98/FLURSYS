@@ -115,6 +115,7 @@ pub struct WorkbenchSession {
     catalog_history: Vec<serde_json::Value>,
     scalar_transport: Option<crate::multiphysics::Options>,
     initial_profile: Option<super::initialization::InitialProfile>,
+    case_context: Option<super::case_format::CaseContext>,
     compressible: Option<crate::compressible::Settings>,
     solver: IncompressibleSolverOptions,
     solution: Option<IncompressibleSolution>,
@@ -153,6 +154,7 @@ impl WorkbenchSession {
             catalog_history: Vec::new(),
             scalar_transport: None,
             initial_profile: None,
+            case_context: None,
             compressible: None,
             material: IncompressibleMaterial {
                 density: 1.0,
@@ -179,6 +181,7 @@ impl WorkbenchSession {
         let mut session = Self::new();
         session.geometry = project.geometry.clone();
         session.initial_profile = project.solver.initial_profile.clone();
+        session.case_context = project.case_context.clone();
         session.compressible = project.solver.compressible.clone();
         session.fluid_face_selection = project.fluid_face;
         session.solver.equations = project.solver.equations.clone();
@@ -272,6 +275,7 @@ impl WorkbenchSession {
         project.catalog_history = self.catalog_history.clone();
         project.scalar_transport = self.scalar_transport.clone();
         project.solver.initial_profile = self.initial_profile.clone();
+        project.case_context = self.case_context.clone();
         project.solver.compressible = self.compressible.clone();
         project.solver.equations = self.solver.equations.clone();
         project.solver.pressure_coupling = self.solver.pressure_coupling;
