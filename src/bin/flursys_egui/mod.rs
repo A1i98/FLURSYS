@@ -1,10 +1,13 @@
 //! Native, model-driven egui workbench. CFD state stays in the shared core.
 mod cad;
+mod compressible_flow;
 mod continuation;
 mod export;
+mod initialization;
 mod migration;
 mod monitoring;
 mod panels;
+mod performance;
 mod post;
 mod property_editors;
 mod transport;
@@ -83,6 +86,8 @@ impl Default for Preferences {
 struct App {
     migration: migration::State,
     monitoring: monitoring::State,
+    gas_flow: compressible_flow::State,
+    field_loader: performance::FieldLoader,
     project: WorkbenchProject,
     session: WorkbenchSession,
     workspace: Option<PathBuf>,
@@ -193,6 +198,9 @@ struct App {
     mesh_cut_axis: usize,
     mesh_cut_fraction: f64,
     examples: Vec<workbench::CaseTemplateManifest>,
+    example_search: String,
+    example_category: String,
+    example_selected: Option<usize>,
     save_error: Option<String>,
     initialized: bool,
     show_initialization: bool,
@@ -260,6 +268,8 @@ impl App {
         let mut app = Self {
             migration: migration::State::new(),
             monitoring: monitoring::State::default(),
+            gas_flow: compressible_flow::State::default(),
+            field_loader: performance::FieldLoader::default(),
             editor: project.clone(),
             project,
             session,
@@ -365,6 +375,9 @@ impl App {
             mesh_cut_axis: 0,
             mesh_cut_fraction: 0.5,
             examples: vec![],
+            example_search: String::new(),
+            example_category: String::new(),
+            example_selected: None,
             save_error: None,
             initialized: false,
             show_initialization: false,
@@ -446,6 +459,7 @@ impl App {
     }
     fn busy(&self) -> bool {
         self.jobs.is_running()
+            || self.gas_flow.busy()
             || self.migration.mapping_active()
             || self.publishing.is_some()
             || self.loading.is_some()
@@ -508,9 +522,11 @@ impl App {
         self.plane_playing = false;
         self.field_frames.clear();
         self.field_playing = false;
+        self.field_loader = performance::FieldLoader::default();
         self.force_series.clear();
         self.migration = migration::State::new();
         self.monitoring = monitoring::State::default();
+        self.gas_flow = compressible_flow::State::default();
         self.initialized = false;
         self.refresh_geometry();
         self.refresh_mesh();
@@ -645,7 +661,8 @@ impl App {
         Ok(true)
     }
     fn stage(&mut self, next: Stage) {
-        if next == Stage::Geometry && (self.jobs.is_running() || self.transport.receiver.is_some())
+        if next == Stage::Geometry
+            && (self.jobs.is_running() || self.transport.receiver.is_some() || self.gas_flow.busy())
         {
             self.message("Stop the active job before editing CAD.");
             return;
@@ -677,7 +694,10 @@ impl App {
         self.stage = next;
         self.page = 0;
         self.editor = self.project.clone();
-        if next == Stage::Results && self.result.is_none() {
+        if next == Stage::Results
+            && self.result.is_none()
+            && self.project.solver.compressible.is_none()
+        {
             self.ensure_result();
         }
     }
@@ -698,7 +718,9 @@ impl App {
         let equations_changed = p.solver.time.is_transient()
             != self.project.solver.time.is_transient()
             || p.solver.turbulence.model != self.project.solver.turbulence.model
-            || p.solver.thermal.enabled != self.project.solver.thermal.enabled;
+            || p.solver.thermal.enabled != self.project.solver.thermal.enabled
+            || p.solver.initial_profile != self.project.solver.initial_profile
+            || p.solver.compressible.is_some() != self.project.solver.compressible.is_some();
         if !mesh_changed {
             if let Some(m) = mesh {
                 s.install_mesh(m);
@@ -734,6 +756,10 @@ impl App {
         }
     }
     fn start_solve(&mut self) {
+        if self.editor.solver.compressible.is_some() {
+            self.start_compressible();
+            return;
+        }
         if self.jobs.is_running() {
             if self.jobs.is_paused() {
                 self.jobs.set_paused(false);
@@ -840,6 +866,7 @@ impl App {
         }
     }
     fn poll(&mut self) {
+        self.poll_compressible();
         self.poll_mapping();
         self.poll_transport();
         if let Some((id, rx)) = &self.frame_scan {
@@ -1174,6 +1201,7 @@ impl App {
 impl eframe::App for App {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.poll();
+        self.poll_field_frame(ctx);
         self.post_logic(ctx);
         if self.capture.is_some() {
             for event in ctx.input(|i| i.events.clone()) {

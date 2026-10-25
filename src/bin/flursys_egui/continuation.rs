@@ -675,8 +675,9 @@ impl App {
             "Velocity Z (m/s)",
             "Temperature (K)",
         ][self.probe_quantity.min(5)];
-        let series = self.probe_series.clone();
+        let series = std::mem::take(&mut self.probe_series);
         self.native_series_plot(ui, &series, title, "Iteration / physical step");
+        self.probe_series = series;
     }
     pub(super) fn native_series_plot(
         &mut self,
@@ -779,7 +780,7 @@ impl App {
         }
         for (i, s) in series.iter().take(8).enumerate() {
             let mut previous = None;
-            for &(x, y) in &s.points {
+            for (x, y) in performance::envelope(&s.points, plot.width().ceil() as usize) {
                 if let Some(y) = y.filter(|v| v.is_finite()) {
                     let q = point(x, y);
                     if let Some(a) = previous {

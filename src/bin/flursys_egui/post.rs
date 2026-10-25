@@ -147,7 +147,7 @@ impl App {
         }
         let p = ui.painter_at(r);
         let ink = ui.visuals().text_color();
-        let mut series: [Vec<(f64, f64)>; 4] = Default::default();
+        let mut series: [Vec<(f64, Option<f64>)>; 4] = Default::default();
         for (i, out) in series.iter_mut().enumerate() {
             if !self.curve_visible[i] {
                 continue;
@@ -161,19 +161,30 @@ impl App {
             } else {
                 1.
             };
-            for &(x, y) in &self.plot_histories()[i] {
+            for (x, y) in
+                performance::envelope(&self.plot_histories()[i], plot.width().ceil() as usize)
+            {
                 if let Some(y) = y.filter(|y| y.is_finite()) {
                     let y = y / base;
-                    if self.curve_log && y <= 0. {
-                        continue;
-                    }
-                    out.push((x, if self.curve_log { y.log10() } else { y }));
+                    out.push((
+                        x,
+                        if self.curve_log && y <= 0. {
+                            None
+                        } else {
+                            Some(if self.curve_log { y.log10() } else { y })
+                        },
+                    ));
+                } else {
+                    out.push((x, None));
                 }
             }
         }
         let mut low = [f64::INFINITY; 2];
         let mut high = [f64::NEG_INFINITY; 2];
         for &(x, y) in series.iter().flatten() {
+            let Some(y) = y else {
+                continue;
+            };
             low[0] = low[0].min(x);
             low[1] = low[1].min(y);
             high[0] = high[0].max(x);
@@ -254,8 +265,11 @@ impl App {
         );
         for i in 0..4 {
             for pair in series[i].windows(2) {
+                let (Some(a), Some(b)) = (pair[0].1, pair[1].1) else {
+                    continue;
+                };
                 p.line_segment(
-                    [point(pair[0].0, pair[0].1), point(pair[1].0, pair[1].1)],
+                    [point(pair[0].0, a), point(pair[1].0, b)],
                     Stroke::new(1.7, colors[i]),
                 );
             }
@@ -414,9 +428,13 @@ impl App {
                     .changed()
                 {
                     self.live_fields = false;
-                    self.read_field_frame();
+                    self.request_field_frame(ui.ctx());
                 }
                 ui.label(format!("Iteration / step {}", self.result_iteration));
+                if self.field_loader.busy() {
+                    ui.spinner();
+                    ui.weak("Loading saved field…");
+                }
             }
             if !self.plane_frames.is_empty() {
                 if ui
@@ -774,12 +792,13 @@ impl App {
             }
         }
         if self.field_playing
+            && !self.field_loader.busy()
             && !self.field_frames.is_empty()
             && self.plane_tick.elapsed().as_secs_f64() > 1. / self.playback_fps.max(1.)
         {
             self.plane_tick = Instant::now();
             self.field_frame = (self.field_frame + 1) % self.field_frames.len();
-            self.read_field_frame();
+            self.request_field_frame(ctx);
         }
         let dt = self.post_tick.elapsed().as_secs_f64().min(0.2);
         self.post_tick = Instant::now();
@@ -846,18 +865,16 @@ impl App {
         }
         if let Some(cache) = &self.mesh_cache {
             let values = cache.quality().values(metrics[self.mesh_quality]);
-            let mut sorted: Vec<_> = values.iter().copied().filter(|v| v.is_finite()).collect();
-            sorted.sort_by(f64::total_cmp);
-            if sorted.is_empty() {
+            let Some(summary) = cache.quality_summary(metrics[self.mesh_quality]) else {
                 return;
-            }
-            let low = sorted[0];
-            let high = *sorted.last().unwrap();
-            let mean = sorted.iter().sum::<f64>() / sorted.len() as f64;
+            };
+            let low = summary.low;
+            let high = summary.high;
+            let mean = summary.mean;
             ui.label(format!(
                 "{} cells · {} finite samples",
                 values.len(),
-                sorted.len()
+                summary.count
             ));
             egui::Grid::new("quality-statistics")
                 .num_columns(2)
@@ -866,8 +883,8 @@ impl App {
                     for (name, value) in [
                         ("Minimum", low),
                         ("Mean", mean),
-                        ("Median", sorted[sorted.len() / 2]),
-                        ("95th percentile", sorted[(sorted.len() - 1) * 95 / 100]),
+                        ("Median", summary.median),
+                        ("95th percentile", summary.percentile95),
                         ("Maximum", high),
                     ] {
                         ui.label(name);
@@ -875,11 +892,7 @@ impl App {
                         ui.end_row();
                     }
                 });
-            let mut bins = [0usize; 12];
-            for v in &sorted {
-                let i = (((v - low) / (high - low).max(1e-30) * 12.).floor() as usize).min(11);
-                bins[i] += 1;
-            }
+            let bins = &summary.bins;
             heading(ui, "CELL DISTRIBUTION");
             let (rect, response) = ui
                 .allocate_exact_size(egui::vec2(ui.available_width(), 140.), egui::Sense::hover());
@@ -924,20 +937,11 @@ impl App {
                 }
             });
             if self.mesh_quality == 0 {
-                ui.label(format!(
-                    "Above 70°: {} cells",
-                    values.iter().filter(|v| **v > 70.).count()
-                ));
+                ui.label(format!("Above 70°: {} cells", summary.above70));
             }
             ui.weak("Colour range uses the actual selected metric. Skewness is this solver's centre-line displacement ratio, not another mesher's normalized definition.");
             egui::CollapsingHeader::new("Worst cells").show(ui, |ui| {
-                let mut order: Vec<_> = values
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, v)| v.is_finite())
-                    .collect();
-                order.sort_by(|a, b| b.1.total_cmp(a.1));
-                for (i, v) in order.into_iter().take(15) {
+                for &(i, v) in &summary.largest {
                     ui.monospace(format!("Cell {i}: {v:.6e}"));
                 }
             });

@@ -298,7 +298,7 @@ impl App {
                         });
                     });
                 }
-                if self.stage == Stage::Solution {
+                if self.stage == Stage::Solution && self.project.solver.compressible.is_none() {
                     egui::Panel::bottom("solution-controls")
                         .resizable(false)
                         .show(ui, |ui| {
@@ -340,10 +340,12 @@ impl App {
                             .wrap(),
                         );
                     });
-                if self.stage == Stage::Results || (self.stage == Stage::Solution && self.page >= 7) {
+                if self.project.solver.compressible.is_none() && (self.stage == Stage::Results || (self.stage == Stage::Solution && self.page >= 7)) {
                     egui::Panel::top("post-source").show(ui, |ui| self.post_toolbar(ui));
                 }
-                if self.stage == Stage::Solution && self.page == 6 {
+                if matches!(self.stage,Stage::Solution|Stage::Results) && self.project.solver.compressible.is_some() {
+                    self.compressible_view(ui);
+                } else if self.stage == Stage::Solution && self.page == 6 {
                     self.engineering_chart(ui);
                 } else if (self.stage == Stage::Solution && self.page == 0)
                     || (self.stage == Stage::Results && self.page == 3)
@@ -376,6 +378,11 @@ impl App {
         }
     }
     fn pages(&self) -> Vec<&'static str> {
+        if matches!(self.stage, Stage::Setup | Stage::Solution | Stage::Results)
+            && self.project.solver.compressible.is_some()
+        {
+            return vec!["Compressible flow"];
+        }
         match self.stage {
             Stage::Geometry => vec![],
             Stage::Mesh => vec!["Boundaries", "Sizing", "Quality", "Method"],
@@ -491,6 +498,12 @@ impl App {
         });
     }
     fn properties(&mut self, ui: &mut egui::Ui) {
+        if matches!(self.stage, Stage::Setup | Stage::Solution | Stage::Results)
+            && self.editor.solver.compressible.is_some()
+        {
+            self.compressible_properties(ui);
+            return;
+        }
         match self.stage {
             Stage::Mesh => self.mesh_properties(ui),
             Stage::Setup => self.setup_properties(ui),
@@ -500,6 +513,11 @@ impl App {
         }
     }
     fn has_property_apply(&self) -> bool {
+        if matches!(self.stage, Stage::Solution | Stage::Results)
+            && self.project.solver.compressible.is_some()
+        {
+            return true;
+        }
         match self.stage {
             Stage::Mesh => self.page == 1 || self.page >= 3,
             Stage::Setup => self.page != 5,
@@ -2165,7 +2183,7 @@ impl App {
         }
         if self.show_initialization {
             let mut open = true;
-            egui::Window::new("Initialize solution").open(&mut open).default_width(460.).frame(widgets::dialog_frame(ctx)).scroll(true).max_height(ctx.content_rect().height() * 0.85).show(ctx,|ui|{self.mapping_editor(ui);ui.separator();ui.label("Uniform initialization resets accepted fields, physical time and iteration numbering. Existing run archives are retained.");vector(ui,"Uniform velocity (m/s)",&mut self.initial_velocity);number(ui,"Kinematic gauge pressure p/ρ",&mut self.initial_pressure);if self.editor.solver.thermal.enabled{number(ui,"Initial temperature (K)",&mut self.editor.solver.thermal.initial_temperature);}if ui.add_enabled(!self.busy(),egui::Button::new("Initialize fields")).clicked(){let valid=[self.initial_velocity.x,self.initial_velocity.y,self.initial_velocity.z,self.initial_pressure].iter().all(|v|v.is_finite());if !valid{self.message("Initialization values must be finite.");}else if let Some(mesh)=self.session.mesh().map(|m|m.mesh.id()){self.reset_solve_session();self.jobs.set_initial_fields(mesh,flursys::IncompressibleInitialConditions::Uniform{velocity:self.initial_velocity,pressure:self.initial_pressure});self.session.initialize_solution();self.histories=Default::default();self.iteration=0;self.force_history.clear();self.streamlines.clear();self.probes.clear();self.result=None;self.result_cache=None;self.result_run.clear();self.plane_snapshot=None;self.plane_frames.clear();self.plane_playing=false;self.archived_report=None;self.initialized=true;if let Err(e)=self.persist_continuation(){self.message(e);}self.show_initialization=false;self.message("Fields initialized; time and iteration numbering reset.");}else{self.message("Generate a mesh before initializing fields.");}}});
+            egui::Window::new("Initialize solution").open(&mut open).default_width(460.).frame(widgets::dialog_frame(ctx)).scroll(true).max_height(ctx.content_rect().height() * 0.85).show(ctx,|ui|{self.mapping_editor(ui);ui.separator();self.analytical_initialization(ui);ui.label("Uniform initialization resets accepted fields, physical time and iteration numbering. Existing run archives are retained.");vector(ui,"Uniform velocity (m/s)",&mut self.initial_velocity);number(ui,"Kinematic gauge pressure p/ρ",&mut self.initial_pressure);if self.editor.solver.thermal.enabled{number(ui,"Initial temperature (K)",&mut self.editor.solver.thermal.initial_temperature);}if ui.add_enabled(!self.busy(),egui::Button::new("Initialize fields")).clicked(){let valid=[self.initial_velocity.x,self.initial_velocity.y,self.initial_velocity.z,self.initial_pressure].iter().all(|v|v.is_finite());if !valid{self.message("Initialization values must be finite.");}else if let Some(mesh)=self.session.mesh().map(|m|m.mesh.id()){self.reset_solve_session();self.jobs.set_initial_fields(mesh,flursys::IncompressibleInitialConditions::Uniform{velocity:self.initial_velocity,pressure:self.initial_pressure});self.session.initialize_solution();self.histories=Default::default();self.iteration=0;self.force_history.clear();self.streamlines.clear();self.probes.clear();self.result=None;self.result_cache=None;self.result_run.clear();self.plane_snapshot=None;self.plane_frames.clear();self.plane_playing=false;self.archived_report=None;self.initialized=true;if let Err(e)=self.persist_continuation(){self.message(e);}self.show_initialization=false;self.message("Fields initialized; time and iteration numbering reset.");}else{self.message("Generate a mesh before initializing fields.");}}});
             self.show_initialization &= open;
         }
 
@@ -2262,25 +2280,131 @@ impl App {
             }
             let mut open = true;
             let mut choice = None;
-            egui::Window::new("Example workspaces")
+            let mut imported = None;
+            let mut exported = None;
+            let mut reload = false;
+            egui::Window::new("Example library")
                 .open(&mut open)
-                .default_width(650.)
+                .default_size([940., 640.])
+                .min_width(640.)
                 .frame(widgets::dialog_frame(ctx))
-                .max_height(ctx.content_rect().height() * 0.85)
-                .default_height(600.)
+                .max_height(ctx.content_rect().height() * 0.88)
                 .show(ctx, |ui| {
-                    egui::ScrollArea::vertical().show(ui, |ui| {
-                        for (i, t) in self.examples.iter().enumerate() {
-                            ui.group(|ui| {
-                                ui.strong(&t.name);
-                                ui.label(&t.description);
-                                if ui.button("Create editable workspace").clicked() {
-                                    choice = Some(i);
+                    ui.heading("Start from an example");
+                    ui.label("Editable cases with geometry, boundaries, mesh settings and solver models.");
+                    ui.horizontal(|ui| {
+                        if ui.button("Import case file…").clicked(){ imported=rfd::FileDialog::new().add_filter("FLURSYS case",&["json"]).pick_file(); }
+                        if ui.add_enabled(self.example_selected.is_some(),egui::Button::new("Export selected…")).clicked(){ exported=rfd::FileDialog::new().pick_folder(); }
+                        if ui.button("Reload files").clicked(){reload=true;}
+                    });
+                    ui.add_space(10.);
+                    ui.horizontal(|ui| {
+                        ui.add(egui::TextEdit::singleline(&mut self.example_search)
+                            .hint_text("Search cases, physics or capabilities…").desired_width(320.));
+                        let categories = self.examples.iter().map(|t| t.category.clone())
+                            .collect::<std::collections::BTreeSet<_>>();
+                        egui::ComboBox::from_id_salt("example-category")
+                            .selected_text(if self.example_category.is_empty() { "All categories" } else { &self.example_category })
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(&mut self.example_category, String::new(), "All categories");
+                                for category in categories {
+                                    ui.selectable_value(&mut self.example_category, category.clone(), category);
                                 }
                             });
+                    });
+                    let query = self.example_search.trim().to_lowercase();
+                    let visible = self.examples.iter().enumerate().filter(|(_, t)| {
+                        (self.example_category.is_empty() || t.category == self.example_category)
+                            && (query.is_empty() || format!("{} {} {} {}", t.name, t.category, t.description, t.capabilities.join(" ")).to_lowercase().contains(&query))
+                    }).map(|(i, _)| i).collect::<Vec<_>>();
+                    if !self.example_selected.is_some_and(|i| visible.contains(&i)) {
+                        self.example_selected = visible.first().copied();
+                    }
+                    ui.add_space(6.);
+                    ui.weak(format!("{} cases", visible.len()));
+                    ui.separator();
+                    ui.columns(2, |columns| {
+                        let height = (columns[0].available_height() - 8.).max(300.);
+                        egui::ScrollArea::vertical().id_salt("example-list").max_height(height).show(&mut columns[0], |ui| {
+                            for i in visible {
+                                let t = &self.examples[i];
+                                let selected = self.example_selected == Some(i);
+                                egui::Frame::group(ui.style()).fill(if selected { ui.visuals().selection.bg_fill } else { ui.visuals().faint_bg_color })
+                                    .inner_margin(10.).show(ui, |ui| {
+                                        ui.set_width(ui.available_width());
+                                        if ui.selectable_label(selected, egui::RichText::new(&t.name).strong()).clicked() {
+                                            self.example_selected = Some(i);
+                                        }
+                                        ui.small(&t.category);
+                                        ui.label(&t.description);
+                                    });
+                                ui.add_space(6.);
+                            }
+                        });
+                        let ui = &mut columns[1];
+                        if let Some(t) = self.example_selected.and_then(|i| self.examples.get(i)) {
+                            ui.heading(&t.name);
+                            ui.weak(&t.category);
+                            ui.add_space(8.);
+                            ui.horizontal_wrapped(|ui| {
+                                for capability in &t.capabilities {
+                                    ui.label(egui::RichText::new(capability).small().color(ui.visuals().selection.stroke.color));
+                                }
+                            });
+                            ui.separator();
+                            let detail_height = (height - 130.).max(150.);
+                            egui::ScrollArea::vertical().id_salt("example-details").max_height(detail_height).show(ui, |ui| {
+                                ui.label(&t.description);
+                                ui.add_space(12.);
+                                ui.strong("Setup and comparison notes");
+                                ui.label(&t.expectations.notes);
+                                for word in t.expectations.notes.split_whitespace().filter(|w| w.starts_with("https://")) {
+                                    ui.hyperlink_to("Open reference", word.trim_end_matches(['.', ',', ';']));
+                                }
+                            });
+                            ui.add_space(12.);
+                            if ui.add_sized([ui.available_width(), 36.], egui::Button::new("Create editable workspace")).clicked() {
+                                choice = self.example_selected;
+                            }
+                            ui.small("Creates a new workspace. Save it to keep your changes.");
+                        } else {
+                            ui.label("No matching examples. Change the search or category.");
                         }
                     });
                 });
+            if let Some(path) = imported {
+                match workbench::catalogue::load_case_file(&path) {
+                    Ok(entry) => {
+                        let index = self
+                            .examples
+                            .iter()
+                            .position(|t| t.id == entry.id)
+                            .unwrap_or(self.examples.len());
+                        if index < self.examples.len() {
+                            self.examples[index] = entry;
+                        } else {
+                            self.examples.push(entry);
+                        }
+                        self.example_search.clear();
+                        self.example_category.clear();
+                        self.example_selected = Some(index);
+                        self.message("Editable case imported into the library for this session. Export it to an examples directory to keep it.");
+                    }
+                    Err(e) => self.message(e),
+                }
+            }
+            if let Some(folder) = exported {
+                if let Some(entry) = self.example_selected.and_then(|i| self.examples.get(i)) {
+                    match workbench::save_case_template(&folder, entry) {
+                        Ok(path) => self.message(format!("Case saved to {}", path.display())),
+                        Err(e) => self.message(e.to_string()),
+                    }
+                }
+            }
+            if reload {
+                self.examples.clear();
+                self.example_selected = None;
+            }
             self.show_examples = open;
             if let Some(i) = choice {
                 self.show_examples = false;

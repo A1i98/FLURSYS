@@ -109,7 +109,7 @@ pub fn edge_path(g: &GeometryTopology, e: &EdgeGeometry) -> Option<Vec<Vec3>> {
         }
     }
 }
-fn scalar_color(x: f64, lo: f64, hi: f64, palette: usize) -> Color32 {
+pub(super) fn scalar_color(x: f64, lo: f64, hi: f64, palette: usize) -> Color32 {
     let t = ((x - lo) / (hi - lo).max(1e-30)).clamp(0., 1.);
     let stops = match palette {
         0 => [
@@ -311,7 +311,7 @@ impl App {
                 &painter,
                 &self.camera,
                 rect,
-                &contour_triangles,
+                contour_triangles.iter().copied(),
                 lo,
                 hi,
                 style.levels,
@@ -550,7 +550,7 @@ impl App {
                             &painter,
                             &self.camera,
                             rect,
-                            &contour_triangles,
+                            contour_triangles.iter().copied(),
                             lo,
                             hi,
                             self.result_levels,
@@ -635,27 +635,16 @@ impl App {
                 painter.add(Shape::mesh(mesh));
             }
             if self.post_view() && matches!(self.result_plot, 1 | 2) {
-                if let (Some(v), Some((lo, hi)), Some(source)) = (&values, range, source_mesh) {
-                    let mut nodes = vec![(0.0, 0usize); cache.positions().len()];
-                    for (t, f) in cache.surface_triangles().iter().zip(cache.triangle_faces()) {
-                        let value = v[source.faces()[*f].owner];
-                        for &i in t {
-                            nodes[i].0 += value;
-                            nodes[i].1 += 1;
-                        }
-                    }
-                    let triangles: Vec<_> = cache
-                        .surface_triangles()
-                        .iter()
-                        .map(|t| {
-                            t.map(|i| (cache.positions()[i], nodes[i].0 / nodes[i].1.max(1) as f64))
-                        })
-                        .collect();
+                if let (Some(result_cache), Some((lo, hi))) = (&self.result_cache, range) {
+                    let nodes = result_cache.surface_node_values(self.result_field);
                     draw_contours(
                         &painter,
                         &self.camera,
                         rect,
-                        &triangles,
+                        cache
+                            .surface_triangles()
+                            .iter()
+                            .map(|t| t.map(|i| (cache.positions()[i], nodes[i]))),
                         lo,
                         hi,
                         self.result_levels,
@@ -1184,7 +1173,7 @@ fn triangulate(f: &flursys::RenderableFace) -> Vec<[Vec3; 3]> {
         .map(|t| t.map(|p| origin + x * (p.x * unit) + y * (p.y * unit)))
         .collect()
 }
-fn legend(p: &egui::Painter, r: Rect, lo: f64, hi: f64, palette: usize) {
+pub(super) fn legend(p: &egui::Painter, r: Rect, lo: f64, hi: f64, palette: usize) {
     if r.width() < 300. || r.height() < 300. {
         let bar = Rect::from_min_max(
             r.left_bottom() + egui::vec2(12., -34.),
@@ -1267,7 +1256,7 @@ fn draw_contours(
     painter: &egui::Painter,
     view: &View,
     rect: Rect,
-    triangles: &[[(Vec3, f64); 3]],
+    triangles: impl IntoIterator<Item = [(Vec3, f64); 3]>,
     lo: f64,
     hi: f64,
     levels: usize,
@@ -1278,18 +1267,22 @@ fn draw_contours(
     for tri in triangles {
         for level in 1..levels.clamp(3, 32) {
             let iso = lo + (hi - lo) * level as f64 / levels as f64;
-            let mut points = Vec::with_capacity(2);
+            let mut points = [Pos2::ZERO; 2];
+            let mut count = 0;
             for i in 0..3 {
                 let (a, av) = tri[i];
                 let (b, bv) = tri[(i + 1) % 3];
                 if (av < iso && bv >= iso) || (bv < iso && av >= iso) {
                     let t = (iso - av) / (bv - av);
                     if let Some((p, _)) = view.screen(a + (b - a) * t, rect) {
-                        points.push(p);
+                        if count < 2 {
+                            points[count] = p;
+                            count += 1;
+                        }
                     }
                 }
             }
-            if points.len() == 2 {
+            if count == 2 {
                 painter.line_segment(
                     [points[0], points[1]],
                     Stroke::new(0.8, Color32::from_white_alpha(190)),
