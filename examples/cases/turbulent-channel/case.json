@@ -1,0 +1,713 @@
+{
+  "$schema": "../../case.schema.json",
+  "format_version": 2,
+  "id": "turbulent-channel",
+  "name": "Turbulent channel · wall functions",
+  "category": "Validation benchmarks",
+  "description": "Long plane channel, Re_b=20,000; k-epsilon equilibrium walls, downstream velocity profile and wall shear.",
+  "capabilities": [
+    "Workbench",
+    "TwoD",
+    "Editable",
+    "RANS",
+    "Force reports",
+    "Unvalidated",
+    "Wall functions"
+  ],
+  "expectations": {
+    "closed_domain": false,
+    "positive_streamwise_flow": true,
+    "curved_boundary": false,
+    "non_ideal_mesh_quality": false,
+    "notes": "Open developing channel of length 50 full heights. Equilibrium k-epsilon walls require first-cell centres in the log layer (approximately y+=30–100); verify y+ before comparing. Mesh presets retain first-layer height. Compare downstream stations to confirm development."
+  },
+  "project_template": {
+    "format_version": 2,
+    "project_id": "template-turbulent-channel",
+    "name": "Turbulent channel · wall functions",
+    "geometry": {
+      "cad_bodies": {},
+      "hidden_profiles": [],
+      "revision": 10,
+      "next_vertex_id": 5,
+      "next_edge_id": 5,
+      "next_face_id": 2,
+      "next_body_id": 1,
+      "next_sketch_id": 1,
+      "next_feature_id": 1,
+      "vertices": {
+        "1": {
+          "id": 1,
+          "position": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          }
+        },
+        "2": {
+          "id": 2,
+          "position": {
+            "x": 100,
+            "y": 0,
+            "z": 0
+          }
+        },
+        "3": {
+          "id": 3,
+          "position": {
+            "x": 100,
+            "y": 2,
+            "z": 0
+          }
+        },
+        "4": {
+          "id": 4,
+          "position": {
+            "x": 0,
+            "y": 2,
+            "z": 0
+          }
+        }
+      },
+      "edges": {
+        "1": {
+          "id": 1,
+          "geometry": {
+            "Line": {
+              "start": 1,
+              "end": 2
+            }
+          }
+        },
+        "2": {
+          "id": 2,
+          "geometry": {
+            "Line": {
+              "start": 2,
+              "end": 3
+            }
+          }
+        },
+        "3": {
+          "id": 3,
+          "geometry": {
+            "Line": {
+              "start": 3,
+              "end": 4
+            }
+          }
+        },
+        "4": {
+          "id": 4,
+          "geometry": {
+            "Line": {
+              "start": 4,
+              "end": 1
+            }
+          }
+        }
+      },
+      "faces": {
+        "1": {
+          "id": 1,
+          "representation": {
+            "Planar": {
+              "outer_loop": [
+                {
+                  "edge": 1,
+                  "reversed": false
+                },
+                {
+                  "edge": 2,
+                  "reversed": false
+                },
+                {
+                  "edge": 3,
+                  "reversed": false
+                },
+                {
+                  "edge": 4,
+                  "reversed": false
+                }
+              ],
+              "inner_loops": []
+            }
+          }
+        }
+      },
+      "bodies": {},
+      "sketches": {},
+      "extrude_features": {},
+      "pocket_features": {}
+    },
+    "cad_document": null,
+    "plane_monitors": [],
+    "fluid_face": 1,
+    "named_selections": [
+      {
+        "name": "inlet",
+        "targets": [
+          {
+            "Edge": 4
+          }
+        ]
+      },
+      {
+        "name": "outlet",
+        "targets": [
+          {
+            "Edge": 2
+          }
+        ]
+      },
+      {
+        "name": "walls",
+        "targets": [
+          {
+            "Edge": 1
+          },
+          {
+            "Edge": 3
+          }
+        ]
+      }
+    ],
+    "mesh": {
+      "threads": 1,
+      "dimension": "two-d",
+      "global_size": 0.6,
+      "min_size": 0.12,
+      "max_size": 0.6,
+      "element_order": 1
+    },
+    "mesh_recipe": {
+      "tuning": {
+        "method": "unstructured",
+        "max_size_growth": null,
+        "divisions": [
+          40,
+          40,
+          10
+        ],
+        "progression": [
+          1.0,
+          1.0
+        ],
+        "algorithm_2d": 6,
+        "algorithm_3d": 1,
+        "curvature_points": 32,
+        "smoothing_steps": 10,
+        "optimize": true,
+        "optimize_netgen": false,
+        "optimize_threshold": 0.3,
+        "extend_boundary_sizes": true
+      },
+      "edge_divisions": [],
+      "regions": [],
+      "local_sizes": [],
+      "refinements": [],
+      "boundary_layers": [
+        {
+          "id": 1,
+          "name": "walls-layers",
+          "targets": [
+            {
+              "named-selection": "walls"
+            }
+          ],
+          "first_layer_height": 0.12,
+          "growth_ratio": 1.1,
+          "layer_count": 5,
+          "enabled": true
+        }
+      ]
+    },
+    "boundaries": [
+      {
+        "selection": "inlet",
+        "condition": {
+          "velocity-inlet": {
+            "velocity": {
+              "x": 1,
+              "y": 0,
+              "z": 0
+            }
+          }
+        }
+      },
+      {
+        "selection": "outlet",
+        "condition": {
+          "pressure-outlet-backflow": {
+            "pressure": 0.0,
+            "velocity": {
+              "x": 1,
+              "y": 0,
+              "z": 0
+            }
+          }
+        }
+      },
+      {
+        "selection": "walls",
+        "condition": "no-slip-wall"
+      }
+    ],
+    "material": {
+      "catalog": null,
+      "density": 1.0,
+      "kinematic_viscosity": 0.0001
+    },
+    "solver": {
+      "compute": {
+        "backend": "parallel",
+        "adapter": "",
+        "cpu_fallback": true,
+        "parallel_min_rows": 4096,
+        "gpu_min_rows": 16384,
+        "gpu_memory_fraction": 0.8,
+        "gpu_preconditioner": "auto",
+        "gpu_restart": 24,
+        "gpu_inner_iterations": 8,
+        "gpu_smoothing_sweeps": 2,
+        "gpu_timeout_ms": 10000,
+        "gpu_host_basis_mb": 256
+      },
+      "pressure_coupling": {
+        "algorithm": "simple",
+        "pressure_correctors": 1,
+        "non_orthogonal_correctors": 0,
+        "non_orthogonal_limiter": 0.5
+      },
+      "volume_models": {
+        "resistance": null,
+        "rotating_frame": null
+      },
+      "cyclic_pairs": [],
+      "initial_profile": null,
+      "compressible": null,
+      "equations": null,
+      "boundary_profiles": {},
+      "scripting": {
+        "contract_version": 1,
+        "scripts": {},
+        "bindings": {}
+      },
+      "thermal": {
+        "enabled": false,
+        "initial_temperature": 293.15,
+        "specific_heat": 1005.0,
+        "conductivity": 0.025,
+        "source_w_m3": 0.0,
+        "relaxation": 0.7,
+        "relative_tolerance": 1e-08,
+        "turbulent_prandtl": 0.85,
+        "wall_treatment": "molecular",
+        "buoyancy": false,
+        "reference_temperature": 293.15,
+        "expansion": 0.0,
+        "gravity": {
+          "x": 0.0,
+          "y": -9.81,
+          "z": 0.0
+        },
+        "max_boussinesq_fraction": 0.1,
+        "boundaries": {}
+      },
+      "time": {
+        "mode": "steady"
+      },
+      "physical_end_time": null,
+      "force_analysis": {
+        "patches": [
+          "walls"
+        ],
+        "frequency_start_time": 60.0,
+        "speed": 1.0,
+        "measure": 200,
+        "length": 2,
+        "center": {
+          "x": 0,
+          "y": 1,
+          "z": 0
+        },
+        "drag_direction": {
+          "x": 1.0,
+          "y": 0.0,
+          "z": 0
+        },
+        "lift_direction": {
+          "x": -0.0,
+          "y": 1.0,
+          "z": 0
+        },
+        "reattachment": false,
+        "wall_start": {
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0
+        },
+        "wall_direction": {
+          "x": 1.0,
+          "y": 0.0,
+          "z": 0.0
+        },
+        "wall_tolerance": 1e-06
+      },
+      "turbulence": {
+        "model": "k-epsilon",
+        "wall_treatment": "equilibrium-k-epsilon",
+        "inlets": {
+          "inlet": {
+            "type": "intensity-viscosity-ratio",
+            "intensity": 0.05,
+            "viscosity_ratio": 100
+          },
+          "outlet": {
+            "type": "intensity-viscosity-ratio",
+            "intensity": 0.05,
+            "viscosity_ratio": 100
+          }
+        },
+        "k": 0.0037500000000000007,
+        "omega": 0.37500000000000006,
+        "epsilon": 0.00012656250000000005,
+        "nu_tilda": 1e-05,
+        "relaxation": 0.5,
+        "relative_tolerance": 1e-06,
+        "ck": 0.094,
+        "ce": 1.048,
+        "cw": 0.325
+      },
+      "convection": "limited-linear",
+      "threads": 0,
+      "max_outer_iterations": 3000,
+      "continuity_absolute_tolerance": 1e-08,
+      "coupling_relative_tolerance": 1e-06,
+      "velocity_relaxation": 0.4,
+      "pressure_relaxation": 0.2
+    },
+    "runs": []
+  },
+  "metadata": {
+    "revision": "1",
+    "sources": [
+      {
+        "id": "dean",
+        "title": "Reynolds Number Dependence of Skin Friction and Other Bulk Flow Variables in Two-Dimensional Rectangular Duct Flow",
+        "authors": [
+          "R. B. Dean"
+        ],
+        "year": 1978,
+        "doi": "10.1115/1.3448633",
+        "url": "https://doi.org/10.1115/1.3448633",
+        "relationship": "inspired",
+        "notes": "Compare a fully developed downstream station; inlet development is included in this example."
+      },
+      {
+        "id": "mkm",
+        "title": "DNS Data for Turbulent Channel Flow",
+        "authors": [
+          "R. D. Moser",
+          "J. Kim",
+          "N. N. Mansour"
+        ],
+        "year": 1999,
+        "doi": null,
+        "url": "https://turbulence.oden.utexas.edu/MKM_1999.html",
+        "relationship": "inspired",
+        "notes": "Use only after matching the measured friction Reynolds number; no Re_tau is prescribed by this case."
+      }
+    ],
+    "dimensionless": [
+      {
+        "symbol": "Re_b",
+        "value": 20000.0,
+        "formula": "U_b (2 delta) / nu",
+        "scales": [
+          {
+            "symbol": "U_b",
+            "value": 1.0,
+            "unit": "m/s",
+            "definition": "Bulk inlet speed"
+          },
+          {
+            "symbol": "2 delta",
+            "value": 2.0,
+            "unit": "m",
+            "definition": "Full channel height"
+          },
+          {
+            "symbol": "nu",
+            "value": 0.0001,
+            "unit": "m2/s",
+            "definition": "Kinematic viscosity"
+          }
+        ],
+        "notes": ""
+      }
+    ],
+    "display": {
+      "field": "speed",
+      "mode": "filled-contours",
+      "palette": "viridis",
+      "plane": "surface",
+      "vectors": true,
+      "cell_edges": false,
+      "levels": 16,
+      "probes": [
+        {
+          "name": "developed core",
+          "position": {
+            "x": 90,
+            "y": 1,
+            "z": 0
+          },
+          "quantities": [
+            "pressure",
+            "speed",
+            "velocity-x",
+            "velocity-y"
+          ],
+          "sampling": "nearest-cell"
+        }
+      ],
+      "plots": [
+        {
+          "name": "Velocity at x=80",
+          "kind": "line-profile",
+          "quantity": "velocity-x",
+          "start": {
+            "x": 80,
+            "y": 0,
+            "z": 0
+          },
+          "end": {
+            "x": 80,
+            "y": 2,
+            "z": 0
+          },
+          "notes": ""
+        },
+        {
+          "name": "Velocity at x=90",
+          "kind": "line-profile",
+          "quantity": "velocity-x",
+          "start": {
+            "x": 90,
+            "y": 0,
+            "z": 0
+          },
+          "end": {
+            "x": 90,
+            "y": 2,
+            "z": 0
+          },
+          "notes": ""
+        }
+      ],
+      "section": null
+    },
+    "comparisons": [
+      {
+        "id": "wall-shear",
+        "quantity": "skin-friction-coefficient",
+        "unit": "1",
+        "source_id": "dean",
+        "kind": "external-reference",
+        "error_metric": "l2",
+        "procedure": "At x=80 and 90 evaluate Cf=tau_w/(0.5 rho U_b²), Re_b=U_b (2 delta)/nu and local pressure slope. Compare Cf=0.073 Re_b^(-1/4) only after station independence."
+      },
+      {
+        "id": "wall-profile",
+        "quantity": "velocity-x",
+        "unit": "m/s",
+        "source_id": "mkm",
+        "kind": "external-reference",
+        "error_metric": "l2",
+        "procedure": "Compute u_tau=sqrt(tau_w/rho), u+=U/u_tau, y+=y u_tau/nu and Re_tau=u_tau delta/nu. Select matching DNS Re_tau; the case is RANS, not a DNS reproduction."
+      }
+    ],
+    "verification": {
+      "status": "unvalidated",
+      "evidence": [],
+      "notes": "Case recipe; no numerical validation claimed."
+    },
+    "presets": [
+      {
+        "id": "coarse",
+        "name": "Coarse mesh",
+        "description": "Mesh spacing ×2; wall-normal spacing retained for wall functions.",
+        "mesh": {
+          "threads": 1,
+          "dimension": "two-d",
+          "global_size": 1.2,
+          "min_size": 0.24,
+          "max_size": 1.2,
+          "element_order": 1
+        },
+        "mesh_recipe": {
+          "tuning": {
+            "method": "unstructured",
+            "max_size_growth": null,
+            "divisions": [
+              40,
+              40,
+              10
+            ],
+            "progression": [
+              1.0,
+              1.0
+            ],
+            "algorithm_2d": 6,
+            "algorithm_3d": 1,
+            "curvature_points": 32,
+            "smoothing_steps": 10,
+            "optimize": true,
+            "optimize_netgen": false,
+            "optimize_threshold": 0.3,
+            "extend_boundary_sizes": true
+          },
+          "edge_divisions": [],
+          "regions": [],
+          "local_sizes": [],
+          "refinements": [],
+          "boundary_layers": [
+            {
+              "id": 1,
+              "name": "walls-layers",
+              "targets": [
+                {
+                  "named-selection": "walls"
+                }
+              ],
+              "first_layer_height": 0.12,
+              "growth_ratio": 1.1,
+              "layer_count": 5,
+              "enabled": true
+            }
+          ]
+        }
+      },
+      {
+        "id": "medium",
+        "name": "Medium mesh",
+        "description": "Mesh spacing ×1; wall-normal spacing retained for wall functions.",
+        "mesh": {
+          "threads": 1,
+          "dimension": "two-d",
+          "global_size": 0.6,
+          "min_size": 0.12,
+          "max_size": 0.6,
+          "element_order": 1
+        },
+        "mesh_recipe": {
+          "tuning": {
+            "method": "unstructured",
+            "max_size_growth": null,
+            "divisions": [
+              40,
+              40,
+              10
+            ],
+            "progression": [
+              1.0,
+              1.0
+            ],
+            "algorithm_2d": 6,
+            "algorithm_3d": 1,
+            "curvature_points": 32,
+            "smoothing_steps": 10,
+            "optimize": true,
+            "optimize_netgen": false,
+            "optimize_threshold": 0.3,
+            "extend_boundary_sizes": true
+          },
+          "edge_divisions": [],
+          "regions": [],
+          "local_sizes": [],
+          "refinements": [],
+          "boundary_layers": [
+            {
+              "id": 1,
+              "name": "walls-layers",
+              "targets": [
+                {
+                  "named-selection": "walls"
+                }
+              ],
+              "first_layer_height": 0.12,
+              "growth_ratio": 1.1,
+              "layer_count": 5,
+              "enabled": true
+            }
+          ]
+        }
+      },
+      {
+        "id": "fine",
+        "name": "Fine mesh",
+        "description": "Mesh spacing ×0.5; wall-normal spacing retained for wall functions.",
+        "mesh": {
+          "threads": 1,
+          "dimension": "two-d",
+          "global_size": 0.3,
+          "min_size": 0.06,
+          "max_size": 0.3,
+          "element_order": 1
+        },
+        "mesh_recipe": {
+          "tuning": {
+            "method": "unstructured",
+            "max_size_growth": null,
+            "divisions": [
+              40,
+              40,
+              10
+            ],
+            "progression": [
+              1.0,
+              1.0
+            ],
+            "algorithm_2d": 6,
+            "algorithm_3d": 1,
+            "curvature_points": 32,
+            "smoothing_steps": 10,
+            "optimize": true,
+            "optimize_netgen": false,
+            "optimize_threshold": 0.3,
+            "extend_boundary_sizes": true
+          },
+          "edge_divisions": [],
+          "regions": [],
+          "local_sizes": [],
+          "refinements": [],
+          "boundary_layers": [
+            {
+              "id": 1,
+              "name": "walls-layers",
+              "targets": [
+                {
+                  "named-selection": "walls"
+                }
+              ],
+              "first_layer_height": 0.12,
+              "growth_ratio": 1.1,
+              "layer_count": 5,
+              "enabled": true
+            }
+          ]
+        }
+      }
+    ],
+    "assets": [
+      {
+        "path": "geometry/domain.json",
+        "role": "geometry",
+        "media_type": "application/json",
+        "sha256": "2c790d8bf4232f76fd4eeb5e938c3a77f3860b439af3a7159fed302564d56339",
+        "content": "{\n  \"cad_bodies\": {},\n  \"hidden_profiles\": [],\n  \"revision\": 10,\n  \"next_vertex_id\": 5,\n  \"next_edge_id\": 5,\n  \"next_face_id\": 2,\n  \"next_body_id\": 1,\n  \"next_sketch_id\": 1,\n  \"next_feature_id\": 1,\n  \"vertices\": {\n    \"1\": {\n      \"id\": 1,\n      \"position\": {\n        \"x\": 0,\n        \"y\": 0,\n        \"z\": 0\n      }\n    },\n    \"2\": {\n      \"id\": 2,\n      \"position\": {\n        \"x\": 100,\n        \"y\": 0,\n        \"z\": 0\n      }\n    },\n    \"3\": {\n      \"id\": 3,\n      \"position\": {\n        \"x\": 100,\n        \"y\": 2,\n        \"z\": 0\n      }\n    },\n    \"4\": {\n      \"id\": 4,\n      \"position\": {\n        \"x\": 0,\n        \"y\": 2,\n        \"z\": 0\n      }\n    }\n  },\n  \"edges\": {\n    \"1\": {\n      \"id\": 1,\n      \"geometry\": {\n        \"Line\": {\n          \"start\": 1,\n          \"end\": 2\n        }\n      }\n    },\n    \"2\": {\n      \"id\": 2,\n      \"geometry\": {\n        \"Line\": {\n          \"start\": 2,\n          \"end\": 3\n        }\n      }\n    },\n    \"3\": {\n      \"id\": 3,\n      \"geometry\": {\n        \"Line\": {\n          \"start\": 3,\n          \"end\": 4\n        }\n      }\n    },\n    \"4\": {\n      \"id\": 4,\n      \"geometry\": {\n        \"Line\": {\n          \"start\": 4,\n          \"end\": 1\n        }\n      }\n    }\n  },\n  \"faces\": {\n    \"1\": {\n      \"id\": 1,\n      \"representation\": {\n        \"Planar\": {\n          \"outer_loop\": [\n            {\n              \"edge\": 1,\n              \"reversed\": false\n            },\n            {\n              \"edge\": 2,\n              \"reversed\": false\n            },\n            {\n              \"edge\": 3,\n              \"reversed\": false\n            },\n            {\n              \"edge\": 4,\n              \"reversed\": false\n            }\n          ],\n          \"inner_loops\": []\n        }\n      }\n    }\n  },\n  \"bodies\": {},\n  \"sketches\": {},\n  \"extrude_features\": {},\n  \"pocket_features\": {}\n}\n"
+      }
+    ]
+  }
+}

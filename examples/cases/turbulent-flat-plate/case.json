@@ -1,0 +1,816 @@
+{
+  "$schema": "../../case.schema.json",
+  "format_version": 2,
+  "id": "turbulent-flat-plate",
+  "name": "Turbulent flat plate · SST",
+  "category": "Validation benchmarks",
+  "description": "Zero-pressure-gradient boundary layer, Re_x=5 million at x=1 m; wall-resolved SST and skin-friction/profile comparisons.",
+  "capabilities": [
+    "Workbench",
+    "TwoD",
+    "Editable",
+    "RANS",
+    "Force reports",
+    "Unvalidated"
+  ],
+  "expectations": {
+    "closed_domain": false,
+    "positive_streamwise_flow": true,
+    "curved_boundary": false,
+    "non_ideal_mesh_quality": false,
+    "notes": "Wall starts at x=0; upstream lower edge is slip. U=1, nu=2e-7, Re_x=5e6 at x=1. Incoming intensity=0.1%, nut/nu=10. First layer 5e-6 m; check measured y+ near 1. NASA compressible and this incompressible setup are not identical."
+  },
+  "project_template": {
+    "format_version": 2,
+    "project_id": "template-turbulent-flat-plate",
+    "name": "Turbulent flat plate · SST",
+    "geometry": {
+      "cad_bodies": {},
+      "hidden_profiles": [],
+      "revision": 12,
+      "next_vertex_id": 6,
+      "next_edge_id": 6,
+      "next_face_id": 2,
+      "next_body_id": 1,
+      "next_sketch_id": 1,
+      "next_feature_id": 1,
+      "vertices": {
+        "1": {
+          "id": 1,
+          "position": {
+            "x": -0.3333333333333333,
+            "y": 0,
+            "z": 0
+          }
+        },
+        "2": {
+          "id": 2,
+          "position": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          }
+        },
+        "3": {
+          "id": 3,
+          "position": {
+            "x": 2,
+            "y": 0,
+            "z": 0
+          }
+        },
+        "4": {
+          "id": 4,
+          "position": {
+            "x": 2,
+            "y": 1,
+            "z": 0
+          }
+        },
+        "5": {
+          "id": 5,
+          "position": {
+            "x": -0.3333333333333333,
+            "y": 1,
+            "z": 0
+          }
+        }
+      },
+      "edges": {
+        "1": {
+          "id": 1,
+          "geometry": {
+            "Line": {
+              "start": 1,
+              "end": 2
+            }
+          }
+        },
+        "2": {
+          "id": 2,
+          "geometry": {
+            "Line": {
+              "start": 2,
+              "end": 3
+            }
+          }
+        },
+        "3": {
+          "id": 3,
+          "geometry": {
+            "Line": {
+              "start": 3,
+              "end": 4
+            }
+          }
+        },
+        "4": {
+          "id": 4,
+          "geometry": {
+            "Line": {
+              "start": 4,
+              "end": 5
+            }
+          }
+        },
+        "5": {
+          "id": 5,
+          "geometry": {
+            "Line": {
+              "start": 5,
+              "end": 1
+            }
+          }
+        }
+      },
+      "faces": {
+        "1": {
+          "id": 1,
+          "representation": {
+            "Planar": {
+              "outer_loop": [
+                {
+                  "edge": 1,
+                  "reversed": false
+                },
+                {
+                  "edge": 2,
+                  "reversed": false
+                },
+                {
+                  "edge": 3,
+                  "reversed": false
+                },
+                {
+                  "edge": 4,
+                  "reversed": false
+                },
+                {
+                  "edge": 5,
+                  "reversed": false
+                }
+              ],
+              "inner_loops": []
+            }
+          }
+        }
+      },
+      "bodies": {},
+      "sketches": {},
+      "extrude_features": {},
+      "pocket_features": {}
+    },
+    "cad_document": null,
+    "plane_monitors": [],
+    "fluid_face": 1,
+    "named_selections": [
+      {
+        "name": "inlet",
+        "targets": [
+          {
+            "Edge": 5
+          }
+        ]
+      },
+      {
+        "name": "outlet",
+        "targets": [
+          {
+            "Edge": 3
+          }
+        ]
+      },
+      {
+        "name": "freestream",
+        "targets": [
+          {
+            "Edge": 4
+          }
+        ]
+      },
+      {
+        "name": "upstream-slip",
+        "targets": [
+          {
+            "Edge": 1
+          }
+        ]
+      },
+      {
+        "name": "plate",
+        "targets": [
+          {
+            "Edge": 2
+          }
+        ]
+      }
+    ],
+    "mesh": {
+      "threads": 1,
+      "dimension": "two-d",
+      "global_size": 0.05,
+      "min_size": 0.001,
+      "max_size": 0.05,
+      "element_order": 1
+    },
+    "mesh_recipe": {
+      "tuning": {
+        "method": "unstructured",
+        "max_size_growth": null,
+        "divisions": [
+          40,
+          40,
+          10
+        ],
+        "progression": [
+          1.0,
+          1.0
+        ],
+        "algorithm_2d": 6,
+        "algorithm_3d": 1,
+        "curvature_points": 32,
+        "smoothing_steps": 10,
+        "optimize": true,
+        "optimize_netgen": false,
+        "optimize_threshold": 0.3,
+        "extend_boundary_sizes": true
+      },
+      "edge_divisions": [],
+      "regions": [],
+      "local_sizes": [],
+      "refinements": [
+        {
+          "id": 1,
+          "name": "plate-distance",
+          "targets": [
+            {
+              "named-selection": "plate"
+            }
+          ],
+          "sampling": 256,
+          "size_min": 0.015,
+          "size_max": 0.05,
+          "distance_min": 0.016,
+          "distance_max": 0.08,
+          "enabled": true
+        }
+      ],
+      "boundary_layers": [
+        {
+          "id": 2,
+          "name": "plate-layers",
+          "targets": [
+            {
+              "named-selection": "plate"
+            }
+          ],
+          "first_layer_height": 5e-06,
+          "growth_ratio": 1.2,
+          "layer_count": 40,
+          "enabled": true
+        }
+      ]
+    },
+    "boundaries": [
+      {
+        "selection": "inlet",
+        "condition": {
+          "velocity-inlet": {
+            "velocity": {
+              "x": 1,
+              "y": 0,
+              "z": 0
+            }
+          }
+        }
+      },
+      {
+        "selection": "outlet",
+        "condition": {
+          "pressure-outlet-backflow": {
+            "pressure": 0.0,
+            "velocity": {
+              "x": 1,
+              "y": 0,
+              "z": 0
+            }
+          }
+        }
+      },
+      {
+        "selection": "freestream",
+        "condition": {
+          "far-field": {
+            "velocity": {
+              "x": 1,
+              "y": 0,
+              "z": 0
+            },
+            "pressure": 0.0
+          }
+        }
+      },
+      {
+        "selection": "upstream-slip",
+        "condition": "slip"
+      },
+      {
+        "selection": "plate",
+        "condition": "no-slip-wall"
+      }
+    ],
+    "material": {
+      "catalog": null,
+      "density": 1.0,
+      "kinematic_viscosity": 2e-07
+    },
+    "solver": {
+      "compute": {
+        "backend": "parallel",
+        "adapter": "",
+        "cpu_fallback": true,
+        "parallel_min_rows": 4096,
+        "gpu_min_rows": 16384,
+        "gpu_memory_fraction": 0.8,
+        "gpu_preconditioner": "auto",
+        "gpu_restart": 24,
+        "gpu_inner_iterations": 8,
+        "gpu_smoothing_sweeps": 2,
+        "gpu_timeout_ms": 10000,
+        "gpu_host_basis_mb": 256
+      },
+      "pressure_coupling": {
+        "algorithm": "simple",
+        "pressure_correctors": 1,
+        "non_orthogonal_correctors": 0,
+        "non_orthogonal_limiter": 0.5
+      },
+      "volume_models": {
+        "resistance": null,
+        "rotating_frame": null
+      },
+      "cyclic_pairs": [],
+      "initial_profile": null,
+      "compressible": null,
+      "equations": null,
+      "boundary_profiles": {},
+      "scripting": {
+        "contract_version": 1,
+        "scripts": {},
+        "bindings": {}
+      },
+      "thermal": {
+        "enabled": false,
+        "initial_temperature": 293.15,
+        "specific_heat": 1005.0,
+        "conductivity": 0.025,
+        "source_w_m3": 0.0,
+        "relaxation": 0.7,
+        "relative_tolerance": 1e-08,
+        "turbulent_prandtl": 0.85,
+        "wall_treatment": "molecular",
+        "buoyancy": false,
+        "reference_temperature": 293.15,
+        "expansion": 0.0,
+        "gravity": {
+          "x": 0.0,
+          "y": -9.81,
+          "z": 0.0
+        },
+        "max_boussinesq_fraction": 0.1,
+        "boundaries": {}
+      },
+      "time": {
+        "mode": "steady"
+      },
+      "physical_end_time": null,
+      "force_analysis": {
+        "patches": [
+          "plate"
+        ],
+        "frequency_start_time": 60.0,
+        "speed": 1.0,
+        "measure": 2,
+        "length": 2,
+        "center": {
+          "x": 0,
+          "y": 0,
+          "z": 0
+        },
+        "drag_direction": {
+          "x": 1.0,
+          "y": 0.0,
+          "z": 0
+        },
+        "lift_direction": {
+          "x": -0.0,
+          "y": 1.0,
+          "z": 0
+        },
+        "reattachment": false,
+        "wall_start": {
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0
+        },
+        "wall_direction": {
+          "x": 1.0,
+          "y": 0.0,
+          "z": 0.0
+        },
+        "wall_tolerance": 1e-06
+      },
+      "turbulence": {
+        "model": "k-omega-sst",
+        "wall_treatment": "resolved",
+        "inlets": {
+          "inlet": {
+            "type": "intensity-viscosity-ratio",
+            "intensity": 0.001,
+            "viscosity_ratio": 10
+          },
+          "freestream": {
+            "type": "intensity-viscosity-ratio",
+            "intensity": 0.001,
+            "viscosity_ratio": 10
+          },
+          "outlet": {
+            "type": "intensity-viscosity-ratio",
+            "intensity": 0.001,
+            "viscosity_ratio": 10
+          }
+        },
+        "k": 1.5e-06,
+        "omega": 0.75,
+        "epsilon": 1.0125000000000001e-07,
+        "nu_tilda": 1e-05,
+        "relaxation": 0.5,
+        "relative_tolerance": 1e-06,
+        "ck": 0.094,
+        "ce": 1.048,
+        "cw": 0.325
+      },
+      "convection": "limited-linear",
+      "threads": 0,
+      "max_outer_iterations": 3000,
+      "continuity_absolute_tolerance": 1e-08,
+      "coupling_relative_tolerance": 1e-06,
+      "velocity_relaxation": 0.4,
+      "pressure_relaxation": 0.2
+    },
+    "runs": []
+  },
+  "metadata": {
+    "revision": "1",
+    "sources": [
+      {
+        "id": "nasa-flat-plate",
+        "title": "NASA TMR: 2D zero-pressure-gradient flat plate",
+        "authors": [],
+        "year": null,
+        "doi": null,
+        "url": "https://tmbwg.github.io/turbmodels/flatplate.html",
+        "relationship": "inspired",
+        "notes": "Incompressible approximation to the M=0.2 reference. Same Re_x; freestream turbulence is explicitly specified here."
+      }
+    ],
+    "dimensionless": [
+      {
+        "symbol": "Re_x",
+        "value": 5000000.0,
+        "formula": "U x / nu",
+        "scales": [
+          {
+            "symbol": "U",
+            "value": 1.0,
+            "unit": "m/s",
+            "definition": "Freestream speed"
+          },
+          {
+            "symbol": "x",
+            "value": 1.0,
+            "unit": "m",
+            "definition": "Distance from leading edge"
+          },
+          {
+            "symbol": "nu",
+            "value": 2e-07,
+            "unit": "m2/s",
+            "definition": "Kinematic viscosity"
+          }
+        ],
+        "notes": ""
+      }
+    ],
+    "display": {
+      "field": "speed",
+      "mode": "filled-contours",
+      "palette": "viridis",
+      "plane": "surface",
+      "vectors": true,
+      "cell_edges": false,
+      "levels": 16,
+      "probes": [
+        {
+          "name": "boundary layer at x=1",
+          "position": {
+            "x": 1,
+            "y": 0.01,
+            "z": 0
+          },
+          "quantities": [
+            "pressure",
+            "speed",
+            "velocity-x",
+            "velocity-y"
+          ],
+          "sampling": "nearest-cell"
+        }
+      ],
+      "plots": [
+        {
+          "name": "Boundary layer at x=0.97",
+          "kind": "line-profile",
+          "quantity": "velocity-x",
+          "start": {
+            "x": 0.97,
+            "y": 0,
+            "z": 0
+          },
+          "end": {
+            "x": 0.97,
+            "y": 0.06,
+            "z": 0
+          },
+          "notes": ""
+        },
+        {
+          "name": "Boundary layer at x=1.9",
+          "kind": "line-profile",
+          "quantity": "velocity-x",
+          "start": {
+            "x": 1.9,
+            "y": 0,
+            "z": 0
+          },
+          "end": {
+            "x": 1.9,
+            "y": 0.08,
+            "z": 0
+          },
+          "notes": ""
+        }
+      ],
+      "section": null
+    },
+    "comparisons": [
+      {
+        "id": "skin-friction",
+        "quantity": "skin-friction-coefficient",
+        "unit": "1",
+        "source_id": "nasa-flat-plate",
+        "kind": "external-reference",
+        "error_metric": "l2",
+        "procedure": "Export plate wall reports: Cf(x)=tau_w/(0.5 rho U∞²). Compare SST and model-specific source results at x=0.97; report first-cell y+."
+      },
+      {
+        "id": "velocity-profile",
+        "quantity": "velocity-x",
+        "unit": "m/s",
+        "source_id": "nasa-flat-plate",
+        "kind": "external-reference",
+        "error_metric": "l2",
+        "procedure": "Compare boundary-layer and u+/y+ profiles at x=0.97 after matching turbulence inflow and checking wall resolution."
+      }
+    ],
+    "verification": {
+      "status": "unvalidated",
+      "evidence": [],
+      "notes": "Case recipe; no numerical validation claimed."
+    },
+    "presets": [
+      {
+        "id": "coarse",
+        "name": "Coarse mesh",
+        "description": "Mesh spacing ×2; verify wall y+ after solving.",
+        "mesh": {
+          "threads": 1,
+          "dimension": "two-d",
+          "global_size": 0.1,
+          "min_size": 0.002,
+          "max_size": 0.1,
+          "element_order": 1
+        },
+        "mesh_recipe": {
+          "tuning": {
+            "method": "unstructured",
+            "max_size_growth": null,
+            "divisions": [
+              40,
+              40,
+              10
+            ],
+            "progression": [
+              1.0,
+              1.0
+            ],
+            "algorithm_2d": 6,
+            "algorithm_3d": 1,
+            "curvature_points": 32,
+            "smoothing_steps": 10,
+            "optimize": true,
+            "optimize_netgen": false,
+            "optimize_threshold": 0.3,
+            "extend_boundary_sizes": true
+          },
+          "edge_divisions": [],
+          "regions": [],
+          "local_sizes": [],
+          "refinements": [
+            {
+              "id": 1,
+              "name": "plate-distance",
+              "targets": [
+                {
+                  "named-selection": "plate"
+                }
+              ],
+              "sampling": 256,
+              "size_min": 0.03,
+              "size_max": 0.1,
+              "distance_min": 0.016,
+              "distance_max": 0.08,
+              "enabled": true
+            }
+          ],
+          "boundary_layers": [
+            {
+              "id": 2,
+              "name": "plate-layers",
+              "targets": [
+                {
+                  "named-selection": "plate"
+                }
+              ],
+              "first_layer_height": 1e-05,
+              "growth_ratio": 1.2,
+              "layer_count": 40,
+              "enabled": true
+            }
+          ]
+        }
+      },
+      {
+        "id": "medium",
+        "name": "Medium mesh",
+        "description": "Mesh spacing ×1; verify wall y+ after solving.",
+        "mesh": {
+          "threads": 1,
+          "dimension": "two-d",
+          "global_size": 0.05,
+          "min_size": 0.001,
+          "max_size": 0.05,
+          "element_order": 1
+        },
+        "mesh_recipe": {
+          "tuning": {
+            "method": "unstructured",
+            "max_size_growth": null,
+            "divisions": [
+              40,
+              40,
+              10
+            ],
+            "progression": [
+              1.0,
+              1.0
+            ],
+            "algorithm_2d": 6,
+            "algorithm_3d": 1,
+            "curvature_points": 32,
+            "smoothing_steps": 10,
+            "optimize": true,
+            "optimize_netgen": false,
+            "optimize_threshold": 0.3,
+            "extend_boundary_sizes": true
+          },
+          "edge_divisions": [],
+          "regions": [],
+          "local_sizes": [],
+          "refinements": [
+            {
+              "id": 1,
+              "name": "plate-distance",
+              "targets": [
+                {
+                  "named-selection": "plate"
+                }
+              ],
+              "sampling": 256,
+              "size_min": 0.015,
+              "size_max": 0.05,
+              "distance_min": 0.016,
+              "distance_max": 0.08,
+              "enabled": true
+            }
+          ],
+          "boundary_layers": [
+            {
+              "id": 2,
+              "name": "plate-layers",
+              "targets": [
+                {
+                  "named-selection": "plate"
+                }
+              ],
+              "first_layer_height": 5e-06,
+              "growth_ratio": 1.2,
+              "layer_count": 40,
+              "enabled": true
+            }
+          ]
+        }
+      },
+      {
+        "id": "fine",
+        "name": "Fine mesh",
+        "description": "Mesh spacing ×0.5; verify wall y+ after solving.",
+        "mesh": {
+          "threads": 1,
+          "dimension": "two-d",
+          "global_size": 0.025,
+          "min_size": 0.0005,
+          "max_size": 0.025,
+          "element_order": 1
+        },
+        "mesh_recipe": {
+          "tuning": {
+            "method": "unstructured",
+            "max_size_growth": null,
+            "divisions": [
+              40,
+              40,
+              10
+            ],
+            "progression": [
+              1.0,
+              1.0
+            ],
+            "algorithm_2d": 6,
+            "algorithm_3d": 1,
+            "curvature_points": 32,
+            "smoothing_steps": 10,
+            "optimize": true,
+            "optimize_netgen": false,
+            "optimize_threshold": 0.3,
+            "extend_boundary_sizes": true
+          },
+          "edge_divisions": [],
+          "regions": [],
+          "local_sizes": [],
+          "refinements": [
+            {
+              "id": 1,
+              "name": "plate-distance",
+              "targets": [
+                {
+                  "named-selection": "plate"
+                }
+              ],
+              "sampling": 256,
+              "size_min": 0.0075,
+              "size_max": 0.025,
+              "distance_min": 0.016,
+              "distance_max": 0.08,
+              "enabled": true
+            }
+          ],
+          "boundary_layers": [
+            {
+              "id": 2,
+              "name": "plate-layers",
+              "targets": [
+                {
+                  "named-selection": "plate"
+                }
+              ],
+              "first_layer_height": 2.5e-06,
+              "growth_ratio": 1.2,
+              "layer_count": 40,
+              "enabled": true
+            }
+          ]
+        }
+      }
+    ],
+    "assets": [
+      {
+        "path": "geometry/domain.json",
+        "role": "geometry",
+        "media_type": "application/json",
+        "sha256": "af61557bbe99a490dd73bb216db4399157bba909ea6649589dcf8d8e108a2ff4",
+        "content": "{\n  \"cad_bodies\": {},\n  \"hidden_profiles\": [],\n  \"revision\": 12,\n  \"next_vertex_id\": 6,\n  \"next_edge_id\": 6,\n  \"next_face_id\": 2,\n  \"next_body_id\": 1,\n  \"next_sketch_id\": 1,\n  \"next_feature_id\": 1,\n  \"vertices\": {\n    \"1\": {\n      \"id\": 1,\n      \"position\": {\n        \"x\": -0.3333333333333333,\n        \"y\": 0,\n        \"z\": 0\n      }\n    },\n    \"2\": {\n      \"id\": 2,\n      \"position\": {\n        \"x\": 0,\n        \"y\": 0,\n        \"z\": 0\n      }\n    },\n    \"3\": {\n      \"id\": 3,\n      \"position\": {\n        \"x\": 2,\n        \"y\": 0,\n        \"z\": 0\n      }\n    },\n    \"4\": {\n      \"id\": 4,\n      \"position\": {\n        \"x\": 2,\n        \"y\": 1,\n        \"z\": 0\n      }\n    },\n    \"5\": {\n      \"id\": 5,\n      \"position\": {\n        \"x\": -0.3333333333333333,\n        \"y\": 1,\n        \"z\": 0\n      }\n    }\n  },\n  \"edges\": {\n    \"1\": {\n      \"id\": 1,\n      \"geometry\": {\n        \"Line\": {\n          \"start\": 1,\n          \"end\": 2\n        }\n      }\n    },\n    \"2\": {\n      \"id\": 2,\n      \"geometry\": {\n        \"Line\": {\n          \"start\": 2,\n          \"end\": 3\n        }\n      }\n    },\n    \"3\": {\n      \"id\": 3,\n      \"geometry\": {\n        \"Line\": {\n          \"start\": 3,\n          \"end\": 4\n        }\n      }\n    },\n    \"4\": {\n      \"id\": 4,\n      \"geometry\": {\n        \"Line\": {\n          \"start\": 4,\n          \"end\": 5\n        }\n      }\n    },\n    \"5\": {\n      \"id\": 5,\n      \"geometry\": {\n        \"Line\": {\n          \"start\": 5,\n          \"end\": 1\n        }\n      }\n    }\n  },\n  \"faces\": {\n    \"1\": {\n      \"id\": 1,\n      \"representation\": {\n        \"Planar\": {\n          \"outer_loop\": [\n            {\n              \"edge\": 1,\n              \"reversed\": false\n            },\n            {\n              \"edge\": 2,\n              \"reversed\": false\n            },\n            {\n              \"edge\": 3,\n              \"reversed\": false\n            },\n            {\n              \"edge\": 4,\n              \"reversed\": false\n            },\n            {\n              \"edge\": 5,\n              \"reversed\": false\n            }\n          ],\n          \"inner_loops\": []\n        }\n      }\n    }\n  },\n  \"bodies\": {},\n  \"sketches\": {},\n  \"extrude_features\": {},\n  \"pocket_features\": {}\n}\n"
+      }
+    ]
+  }
+}

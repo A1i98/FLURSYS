@@ -88,7 +88,9 @@ pub fn builtin_templates() -> Result<Vec<CaseTemplateManifest>, String> {
         }
     }
     for entry in &mut templates {
-        if entry.project_template.cad_document.is_none() {
+        if entry.project_template.cad_document.is_none()
+            && entry.project_template.geometry.cad_bodies().next().is_none()
+        {
             entry.project_template.cad_document = cad_document(&entry.project_template)?;
         }
         #[cfg(feature = "gui")]
@@ -203,6 +205,11 @@ mod tests {
             "couette-planar",
             "natural-convection-ra-1000",
             "square-cylinder-re100",
+            "sphere-re100",
+            "turbulent-flat-plate",
+            "turbulent-channel",
+            "naca0012-re6000000",
+            "cylinder-ogrid-re100",
             "taylor-green-2d",
             "sudden-expansion-re40",
             "sod-shock-tube",

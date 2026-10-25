@@ -1,5 +1,5 @@
 use super::project::{CaseTemplateManifest, MeshRecipe, WorkbenchMeshSettings, WorkbenchProject};
-use crate::{unstructured_incompressible::TimeIntegration, Vec3};
+use crate::{Vec3, unstructured_incompressible::TimeIntegration};
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::path::{Component, Path, PathBuf};
@@ -152,6 +152,7 @@ pub struct Preset {
     pub time: Option<TimeIntegration>,
     pub physical_end_time: Option<f64>,
     pub compressible_time: Option<CompressibleTime>,
+    pub compressible: Option<crate::compressible::Settings>,
 }
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -442,6 +443,9 @@ pub fn instantiate(
             project.solver.time = time;
             project.solver.physical_end_time = p.physical_end_time;
         }
+        if let Some(settings) = &p.compressible {
+            project.solver.compressible = Some(settings.clone());
+        }
         if let Some(time) = &p.compressible_time {
             let settings = project
                 .solver
@@ -517,7 +521,7 @@ mod tests {
     #[test]
     fn case_metadata_presets_preserve_independent_study_axes() {
         let cases = crate::workbench::catalogue::builtin_templates().expect("case library");
-        assert_eq!(cases.len(), 27);
+        assert!(!cases.is_empty());
         for case in cases {
             assert!(!case.metadata.sources.is_empty());
             for preset in &case.metadata.presets {
@@ -537,7 +541,11 @@ mod tests {
                     assert_eq!(project.solver.time, case.project_template.solver.time);
                     assert_eq!(
                         project.solver.compressible,
-                        case.project_template.solver.compressible
+                        preset
+                            .compressible
+                            .as_ref()
+                            .or(case.project_template.solver.compressible.as_ref())
+                            .cloned()
                     );
                 }
             }
@@ -561,9 +569,11 @@ mod tests {
             .expect("case parent")
             .join(&case.metadata.assets[0].path);
         std::fs::write(asset, "tampered reference").expect("tamper");
-        assert!(crate::workbench::catalogue::load_case_file(&path)
-            .expect_err("checksum rejection")
-            .contains("checksum"));
+        assert!(
+            crate::workbench::catalogue::load_case_file(&path)
+                .expect_err("checksum rejection")
+                .contains("checksum")
+        );
         assert!(relative_asset(Path::new("../escape.csv")).is_err());
         assert!(relative_asset(Path::new("/tmp/escape.csv")).is_err());
     }

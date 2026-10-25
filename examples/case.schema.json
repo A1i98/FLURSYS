@@ -537,6 +537,13 @@
               "type": "null"
             }
           ]
+        },
+        "compressible": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "description": "Complete compressible operating point, including inlet/outlet states and initial fields."
         }
       }
     },

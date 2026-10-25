@@ -1,0 +1,719 @@
+{
+  "$schema": "../../case.schema.json",
+  "format_version": 2,
+  "id": "cylinder-ogrid-re100",
+  "name": "Circular cylinder · structured O-grid",
+  "category": "External Flow",
+  "description": "A compact 2D cylinder-flow case using a four-block structured O-grid around an analytic circular boundary.",
+  "capabilities": [
+    "2D",
+    "Curved Geometry",
+    "Gmsh",
+    "Unstructured",
+    "Mesh Quality",
+    "Structured",
+    "O-grid"
+  ],
+  "expectations": {
+    "closed_domain": false,
+    "positive_streamwise_flow": true,
+    "curved_boundary": true,
+    "non_ideal_mesh_quality": false,
+    "notes": "Topology exercise for the four-block O-grid generator; the case is not an accuracy certification."
+  },
+  "project_template": {
+    "format_version": 2,
+    "project_id": "template-cylinder-ogrid-re100",
+    "name": "Circular cylinder · structured O-grid",
+    "geometry": {
+      "cad_bodies": {},
+      "hidden_profiles": [],
+      "revision": 19,
+      "next_vertex_id": 10,
+      "next_edge_id": 9,
+      "next_face_id": 2,
+      "next_body_id": 1,
+      "next_sketch_id": 1,
+      "next_feature_id": 1,
+      "vertices": {
+        "1": {
+          "id": 1,
+          "position": {
+            "x": 0.0,
+            "y": 0.0,
+            "z": 0.0
+          }
+        },
+        "2": {
+          "id": 2,
+          "position": {
+            "x": 6.0,
+            "y": 0.0,
+            "z": 0.0
+          }
+        },
+        "3": {
+          "id": 3,
+          "position": {
+            "x": 6.0,
+            "y": 2.0,
+            "z": 0.0
+          }
+        },
+        "4": {
+          "id": 4,
+          "position": {
+            "x": 0.0,
+            "y": 2.0,
+            "z": 0.0
+          }
+        },
+        "5": {
+          "id": 5,
+          "position": {
+            "x": 2.0,
+            "y": 1.0,
+            "z": 0.0
+          }
+        },
+        "6": {
+          "id": 6,
+          "position": {
+            "x": 2.2474873734152916,
+            "y": 1.2474873734152916,
+            "z": 0.0
+          }
+        },
+        "7": {
+          "id": 7,
+          "position": {
+            "x": 1.7525126265847084,
+            "y": 1.2474873734152916,
+            "z": 0.0
+          }
+        },
+        "8": {
+          "id": 8,
+          "position": {
+            "x": 1.7525126265847084,
+            "y": 0.7525126265847084,
+            "z": 0.0
+          }
+        },
+        "9": {
+          "id": 9,
+          "position": {
+            "x": 2.2474873734152916,
+            "y": 0.7525126265847083,
+            "z": 0.0
+          }
+        }
+      },
+      "edges": {
+        "1": {
+          "id": 1,
+          "geometry": {
+            "Line": {
+              "start": 1,
+              "end": 2
+            }
+          }
+        },
+        "2": {
+          "id": 2,
+          "geometry": {
+            "Line": {
+              "start": 2,
+              "end": 3
+            }
+          }
+        },
+        "3": {
+          "id": 3,
+          "geometry": {
+            "Line": {
+              "start": 3,
+              "end": 4
+            }
+          }
+        },
+        "4": {
+          "id": 4,
+          "geometry": {
+            "Line": {
+              "start": 4,
+              "end": 1
+            }
+          }
+        },
+        "5": {
+          "id": 5,
+          "geometry": {
+            "CircularArc": {
+              "start": 6,
+              "center": 5,
+              "end": 7
+            }
+          }
+        },
+        "6": {
+          "id": 6,
+          "geometry": {
+            "CircularArc": {
+              "start": 7,
+              "center": 5,
+              "end": 8
+            }
+          }
+        },
+        "7": {
+          "id": 7,
+          "geometry": {
+            "CircularArc": {
+              "start": 8,
+              "center": 5,
+              "end": 9
+            }
+          }
+        },
+        "8": {
+          "id": 8,
+          "geometry": {
+            "CircularArc": {
+              "start": 9,
+              "center": 5,
+              "end": 6
+            }
+          }
+        }
+      },
+      "faces": {
+        "1": {
+          "id": 1,
+          "representation": {
+            "Planar": {
+              "outer_loop": [
+                {
+                  "edge": 1,
+                  "reversed": false
+                },
+                {
+                  "edge": 2,
+                  "reversed": false
+                },
+                {
+                  "edge": 3,
+                  "reversed": false
+                },
+                {
+                  "edge": 4,
+                  "reversed": false
+                }
+              ],
+              "inner_loops": [
+                [
+                  {
+                    "edge": 8,
+                    "reversed": true
+                  },
+                  {
+                    "edge": 7,
+                    "reversed": true
+                  },
+                  {
+                    "edge": 6,
+                    "reversed": true
+                  },
+                  {
+                    "edge": 5,
+                    "reversed": true
+                  }
+                ]
+              ]
+            }
+          }
+        }
+      },
+      "bodies": {},
+      "sketches": {},
+      "extrude_features": {},
+      "pocket_features": {}
+    },
+    "cad_document": null,
+    "plane_monitors": [],
+    "fluid_face": 1,
+    "named_selections": [
+      {
+        "name": "inlet",
+        "targets": [
+          {
+            "Edge": 4
+          }
+        ]
+      },
+      {
+        "name": "outlet",
+        "targets": [
+          {
+            "Edge": 2
+          }
+        ]
+      },
+      {
+        "name": "top_wall",
+        "targets": [
+          {
+            "Edge": 3
+          }
+        ]
+      },
+      {
+        "name": "bottom_wall",
+        "targets": [
+          {
+            "Edge": 1
+          }
+        ]
+      },
+      {
+        "name": "cylinder",
+        "targets": [
+          {
+            "Edge": 5
+          },
+          {
+            "Edge": 6
+          },
+          {
+            "Edge": 7
+          },
+          {
+            "Edge": 8
+          }
+        ]
+      }
+    ],
+    "mesh": {
+      "threads": 1,
+      "dimension": "two-d",
+      "global_size": 0.2,
+      "min_size": 0.03,
+      "max_size": 0.2,
+      "element_order": 1
+    },
+    "mesh_recipe": {
+      "tuning": {
+        "method": "o-grid",
+        "max_size_growth": null,
+        "divisions": [
+          24,
+          14,
+          10
+        ],
+        "progression": [
+          1.0,
+          1.12
+        ],
+        "algorithm_2d": 6,
+        "algorithm_3d": 1,
+        "curvature_points": 32,
+        "smoothing_steps": 10,
+        "optimize": true,
+        "optimize_netgen": false,
+        "optimize_threshold": 0.3,
+        "extend_boundary_sizes": true
+      },
+      "edge_divisions": [],
+      "regions": [],
+      "local_sizes": [],
+      "refinements": [],
+      "boundary_layers": []
+    },
+    "boundaries": [
+      {
+        "selection": "bottom_wall",
+        "condition": "no-slip-wall"
+      },
+      {
+        "selection": "cylinder",
+        "condition": "no-slip-wall"
+      },
+      {
+        "selection": "inlet",
+        "condition": {
+          "velocity-inlet": {
+            "velocity": {
+              "x": 0.1,
+              "y": 0.0,
+              "z": 0.0
+            }
+          }
+        }
+      },
+      {
+        "selection": "outlet",
+        "condition": {
+          "pressure-outlet": {
+            "pressure": 0.0
+          }
+        }
+      },
+      {
+        "selection": "top_wall",
+        "condition": "no-slip-wall"
+      }
+    ],
+    "material": {
+      "catalog": null,
+      "density": 1.0,
+      "kinematic_viscosity": 0.1
+    },
+    "solver": {
+      "compute": {
+        "backend": "parallel",
+        "adapter": "",
+        "cpu_fallback": true,
+        "parallel_min_rows": 4096,
+        "gpu_min_rows": 16384,
+        "gpu_memory_fraction": 0.8,
+        "gpu_preconditioner": "auto",
+        "gpu_restart": 24,
+        "gpu_inner_iterations": 8,
+        "gpu_smoothing_sweeps": 2,
+        "gpu_timeout_ms": 10000,
+        "gpu_host_basis_mb": 256
+      },
+      "pressure_coupling": {
+        "algorithm": "simple",
+        "pressure_correctors": 1,
+        "non_orthogonal_correctors": 0,
+        "non_orthogonal_limiter": 0.5
+      },
+      "volume_models": {
+        "resistance": null,
+        "rotating_frame": null
+      },
+      "cyclic_pairs": [],
+      "initial_profile": null,
+      "compressible": null,
+      "equations": null,
+      "boundary_profiles": {},
+      "scripting": {
+        "contract_version": 1,
+        "scripts": {},
+        "bindings": {}
+      },
+      "thermal": {
+        "enabled": false,
+        "initial_temperature": 293.15,
+        "specific_heat": 1005.0,
+        "conductivity": 0.025,
+        "source_w_m3": 0.0,
+        "relaxation": 0.7,
+        "relative_tolerance": 1e-08,
+        "turbulent_prandtl": 0.85,
+        "wall_treatment": "molecular",
+        "buoyancy": false,
+        "reference_temperature": 293.15,
+        "expansion": 0.0,
+        "gravity": {
+          "x": 0.0,
+          "y": -9.81,
+          "z": 0.0
+        },
+        "max_boussinesq_fraction": 0.1,
+        "boundaries": {}
+      },
+      "time": {
+        "mode": "steady"
+      },
+      "physical_end_time": null,
+      "force_analysis": {
+        "patches": [
+          "cylinder"
+        ],
+        "frequency_start_time": 0.0,
+        "speed": 1.0,
+        "measure": 1.0,
+        "length": 1.0,
+        "center": {
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0
+        },
+        "drag_direction": {
+          "x": 1.0,
+          "y": 0.0,
+          "z": 0.0
+        },
+        "lift_direction": {
+          "x": 0.0,
+          "y": 1.0,
+          "z": 0.0
+        },
+        "reattachment": false,
+        "wall_start": {
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0
+        },
+        "wall_direction": {
+          "x": 1.0,
+          "y": 0.0,
+          "z": 0.0
+        },
+        "wall_tolerance": 1e-06
+      },
+      "turbulence": {
+        "model": "laminar",
+        "wall_treatment": "resolved",
+        "inlets": {},
+        "k": 0.0001,
+        "omega": 1.0,
+        "epsilon": 1e-05,
+        "nu_tilda": 1e-05,
+        "relaxation": 0.5,
+        "relative_tolerance": 1e-06,
+        "ck": 0.094,
+        "ce": 1.048,
+        "cw": 0.325
+      },
+      "convection": "upwind",
+      "threads": 0,
+      "max_outer_iterations": 400,
+      "continuity_absolute_tolerance": 1e-08,
+      "coupling_relative_tolerance": 1e-06,
+      "velocity_relaxation": 0.7,
+      "pressure_relaxation": 0.3
+    },
+    "runs": [],
+    "cad_geometry_hash": null
+  },
+  "metadata": {
+    "revision": "1",
+    "sources": [
+      {
+        "id": "recipe",
+        "title": "FLURSYS editable starter recipe",
+        "authors": [],
+        "year": null,
+        "doi": null,
+        "url": null,
+        "relationship": "illustrative",
+        "notes": "Configuration example; no publication equivalence or accuracy claim."
+      }
+    ],
+    "dimensionless": [
+      {
+        "symbol": "Re",
+        "value": 0.6999999999999998,
+        "formula": "U_ref * L_ref / nu",
+        "scales": [
+          {
+            "symbol": "U_ref",
+            "value": 0.1,
+            "unit": "m/s",
+            "definition": "Configured nominal boundary speed; scripts/time tables can override this scale"
+          },
+          {
+            "symbol": "L_ref",
+            "value": 0.7,
+            "unit": "m",
+            "definition": "Cylinder diameter"
+          },
+          {
+            "symbol": "nu",
+            "value": 0.1,
+            "unit": "m2/s",
+            "definition": "Configured kinematic viscosity"
+          }
+        ],
+        "notes": ""
+      }
+    ],
+    "display": {
+      "field": "speed",
+      "mode": "filled-contours",
+      "palette": "viridis",
+      "plane": "surface",
+      "vectors": true,
+      "cell_edges": false,
+      "levels": 16,
+      "probes": [
+        {
+          "name": "left interior",
+          "position": {
+            "x": 0.12,
+            "y": 1.0,
+            "z": 0.0
+          },
+          "quantities": [
+            "pressure",
+            "speed"
+          ],
+          "sampling": "nearest-cell"
+        },
+        {
+          "name": "right interior",
+          "position": {
+            "x": 5.88,
+            "y": 1.0,
+            "z": 0.0
+          },
+          "quantities": [
+            "pressure",
+            "speed"
+          ],
+          "sampling": "nearest-cell"
+        }
+      ],
+      "plots": [
+        {
+          "name": "Transverse velocity profile",
+          "kind": "line-profile",
+          "quantity": "velocity-x",
+          "start": {
+            "x": 4.800000000000001,
+            "y": 0.0,
+            "z": 0.0
+          },
+          "end": {
+            "x": 4.800000000000001,
+            "y": 2.0,
+            "z": 0.0
+          },
+          "notes": "Compare away from entrance and before any outlet recirculation; coordinates are model units."
+        }
+      ],
+      "section": null
+    },
+    "comparisons": [],
+    "verification": {
+      "status": "unvalidated",
+      "evidence": [],
+      "notes": "Input recipes and reference definitions only. No mesh/time independence study or measured error certification has been recorded."
+    },
+    "presets": [
+      {
+        "id": "coarse",
+        "name": "Coarse mesh",
+        "description": "Mesh-only refinement: sizes scaled by 2.0, mapped/edge divisions inversely scaled. Time settings remain unchanged. Not a verified accuracy level.",
+        "mesh": null,
+        "mesh_recipe": {
+          "tuning": {
+            "method": "o-grid",
+            "max_size_growth": null,
+            "divisions": [
+              16,
+              10,
+              10
+            ],
+            "progression": [
+              1.0,
+              1.12
+            ],
+            "algorithm_2d": 6,
+            "algorithm_3d": 1,
+            "curvature_points": 32,
+            "smoothing_steps": 10,
+            "optimize": true,
+            "optimize_netgen": false,
+            "optimize_threshold": 0.3,
+            "extend_boundary_sizes": true
+          },
+          "edge_divisions": [],
+          "regions": [],
+          "local_sizes": [],
+          "refinements": [],
+          "boundary_layers": []
+        },
+        "time": null,
+        "physical_end_time": null,
+        "compressible_time": null
+      },
+      {
+        "id": "medium",
+        "name": "Medium mesh",
+        "description": "Mesh-only refinement: sizes scaled by 1.0, mapped/edge divisions inversely scaled. Time settings remain unchanged. Not a verified accuracy level.",
+        "mesh": null,
+        "mesh_recipe": {
+          "tuning": {
+            "method": "o-grid",
+            "max_size_growth": null,
+            "divisions": [
+              24,
+              14,
+              10
+            ],
+            "progression": [
+              1.0,
+              1.12
+            ],
+            "algorithm_2d": 6,
+            "algorithm_3d": 1,
+            "curvature_points": 32,
+            "smoothing_steps": 10,
+            "optimize": true,
+            "optimize_netgen": false,
+            "optimize_threshold": 0.3,
+            "extend_boundary_sizes": true
+          },
+          "edge_divisions": [],
+          "regions": [],
+          "local_sizes": [],
+          "refinements": [],
+          "boundary_layers": []
+        },
+        "time": null,
+        "physical_end_time": null,
+        "compressible_time": null
+      },
+      {
+        "id": "fine",
+        "name": "Fine mesh",
+        "description": "Mesh-only refinement: sizes scaled by 0.5, mapped/edge divisions inversely scaled. Time settings remain unchanged. Not a verified accuracy level.",
+        "mesh": null,
+        "mesh_recipe": {
+          "tuning": {
+            "method": "o-grid",
+            "max_size_growth": null,
+            "divisions": [
+              32,
+              18,
+              10
+            ],
+            "progression": [
+              1.0,
+              1.12
+            ],
+            "algorithm_2d": 6,
+            "algorithm_3d": 1,
+            "curvature_points": 32,
+            "smoothing_steps": 10,
+            "optimize": true,
+            "optimize_netgen": false,
+            "optimize_threshold": 0.3,
+            "extend_boundary_sizes": true
+          },
+          "edge_divisions": [],
+          "regions": [],
+          "local_sizes": [],
+          "refinements": [],
+          "boundary_layers": []
+        },
+        "time": null,
+        "physical_end_time": null,
+        "compressible_time": null
+      }
+    ],
+    "assets": [
+      {
+        "path": "geometry/domain.json",
+        "role": "geometry",
+        "media_type": "application/json",
+        "sha256": "32d7973a963fe81d4e007f9074dac9cd67301c1a29af627201a9e2e373d77619",
+        "content": "{\n  \"cad_bodies\": {},\n  \"hidden_profiles\": [],\n  \"revision\": 19,\n  \"next_vertex_id\": 10,\n  \"next_edge_id\": 9,\n  \"next_face_id\": 2,\n  \"next_body_id\": 1,\n  \"next_sketch_id\": 1,\n  \"next_feature_id\": 1,\n  \"vertices\": {\n    \"1\": {\n      \"id\": 1,\n      \"position\": {\n        \"x\": 0.0,\n        \"y\": 0.0,\n        \"z\": 0.0\n      }\n    },\n    \"2\": {\n      \"id\": 2,\n      \"position\": {\n        \"x\": 6.0,\n        \"y\": 0.0,\n        \"z\": 0.0\n      }\n    },\n    \"3\": {\n      \"id\": 3,\n      \"position\": {\n        \"x\": 6.0,\n        \"y\": 2.0,\n        \"z\": 0.0\n      }\n    },\n    \"4\": {\n      \"id\": 4,\n      \"position\": {\n        \"x\": 0.0,\n        \"y\": 2.0,\n        \"z\": 0.0\n      }\n    },\n    \"5\": {\n      \"id\": 5,\n      \"position\": {\n        \"x\": 2.0,\n        \"y\": 1.0,\n        \"z\": 0.0\n      }\n    },\n    \"6\": {\n      \"id\": 6,\n      \"position\": {\n        \"x\": 2.2474873734152916,\n        \"y\": 1.2474873734152916,\n        \"z\": 0.0\n      }\n    },\n    \"7\": {\n      \"id\": 7,\n      \"position\": {\n        \"x\": 1.7525126265847084,\n        \"y\": 1.2474873734152916,\n        \"z\": 0.0\n      }\n    },\n    \"8\": {\n      \"id\": 8,\n      \"position\": {\n        \"x\": 1.7525126265847084,\n        \"y\": 0.7525126265847084,\n        \"z\": 0.0\n      }\n    },\n    \"9\": {\n      \"id\": 9,\n      \"position\": {\n        \"x\": 2.2474873734152916,\n        \"y\": 0.7525126265847083,\n        \"z\": 0.0\n      }\n    }\n  },\n  \"edges\": {\n    \"1\": {\n      \"id\": 1,\n      \"geometry\": {\n        \"Line\": {\n          \"start\": 1,\n          \"end\": 2\n        }\n      }\n    },\n    \"2\": {\n      \"id\": 2,\n      \"geometry\": {\n        \"Line\": {\n          \"start\": 2,\n          \"end\": 3\n        }\n      }\n    },\n    \"3\": {\n      \"id\": 3,\n      \"geometry\": {\n        \"Line\": {\n          \"start\": 3,\n          \"end\": 4\n        }\n      }\n    },\n    \"4\": {\n      \"id\": 4,\n      \"geometry\": {\n        \"Line\": {\n          \"start\": 4,\n          \"end\": 1\n        }\n      }\n    },\n    \"5\": {\n      \"id\": 5,\n      \"geometry\": {\n        \"CircularArc\": {\n          \"start\": 6,\n          \"center\": 5,\n          \"end\": 7\n        }\n      }\n    },\n    \"6\": {\n      \"id\": 6,\n      \"geometry\": {\n        \"CircularArc\": {\n          \"start\": 7,\n          \"center\": 5,\n          \"end\": 8\n        }\n      }\n    },\n    \"7\": {\n      \"id\": 7,\n      \"geometry\": {\n        \"CircularArc\": {\n          \"start\": 8,\n          \"center\": 5,\n          \"end\": 9\n        }\n      }\n    },\n    \"8\": {\n      \"id\": 8,\n      \"geometry\": {\n        \"CircularArc\": {\n          \"start\": 9,\n          \"center\": 5,\n          \"end\": 6\n        }\n      }\n    }\n  },\n  \"faces\": {\n    \"1\": {\n      \"id\": 1,\n      \"representation\": {\n        \"Planar\": {\n          \"outer_loop\": [\n            {\n              \"edge\": 1,\n              \"reversed\": false\n            },\n            {\n              \"edge\": 2,\n              \"reversed\": false\n            },\n            {\n              \"edge\": 3,\n              \"reversed\": false\n            },\n            {\n              \"edge\": 4,\n              \"reversed\": false\n            }\n          ],\n          \"inner_loops\": [\n            [\n              {\n                \"edge\": 8,\n                \"reversed\": true\n              },\n              {\n                \"edge\": 7,\n                \"reversed\": true\n              },\n              {\n                \"edge\": 6,\n                \"reversed\": true\n              },\n              {\n                \"edge\": 5,\n                \"reversed\": true\n              }\n            ]\n          ]\n        }\n      }\n    }\n  },\n  \"bodies\": {},\n  \"sketches\": {},\n  \"extrude_features\": {},\n  \"pocket_features\": {}\n}\n"
+      }
+    ]
+  }
+}
