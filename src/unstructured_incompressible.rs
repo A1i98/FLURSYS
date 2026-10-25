@@ -5,10 +5,11 @@
 //! remains in `crate::simple`.
 
 use crate::{
-    initial_face_flux, CellField, Diffusivity, FaceField, FieldError, LeastSquaresGradientStencil,
+    CellField, Diffusivity, FaceField, FieldError, LeastSquaresGradientStencil,
     LinearSolverOptions, NumericsError, ResolvedScalarBoundaryConditions,
     ResolvedVelocityBoundaryConditions, ScalarBoundaryCondition, SimpleError, SimpleOptions,
     SimpleReport, SimpleState, UnstructuredMesh, Vec3, VelocityBoundaryCondition,
+    initial_face_flux,
 };
 
 mod profiles;
@@ -197,12 +198,21 @@ impl IncompressibleCase {
         material: IncompressibleMaterial,
         solver: IncompressibleSolverOptions,
     ) -> Self {
+        let freestream = boundaries
+            .iter()
+            .find_map(|(_, condition)| match condition {
+                IncompressibleBoundaryCondition::FarField { velocity, pressure } => {
+                    Some((*velocity, *pressure))
+                }
+                _ => None,
+            });
+        let (velocity, pressure) = freestream.unwrap_or((Vec3::ZERO, 0.0));
         Self {
             mesh,
             boundaries,
             material,
             solver,
-            initial_conditions: IncompressibleInitialConditions::uniform(Vec3::ZERO, 0.0),
+            initial_conditions: IncompressibleInitialConditions::uniform(velocity, pressure),
         }
     }
 
@@ -865,9 +875,9 @@ impl<'a> SolveControl<'a> {
     pub fn with_fields(
         mut self,
         callback: impl Fn(usize, &CellField<Vec3>, &CellField<f64>) -> Result<(), String>
-            + Send
-            + Sync
-            + 'a,
+        + Send
+        + Sync
+        + 'a,
     ) -> Self {
         self.on_fields = Some(Box::new(callback));
         self
@@ -877,9 +887,9 @@ impl<'a> SolveControl<'a> {
         mut self,
         every: usize,
         callback: impl Fn(usize, IncompressibleInitialConditions) -> Result<(), String>
-            + Send
-            + Sync
-            + 'a,
+        + Send
+        + Sync
+        + 'a,
     ) -> Self {
         self.on_restart = Some(Box::new(callback));
         self.restart_every = every;
@@ -1197,9 +1207,56 @@ fn solve_incompressible_on_pool(
         }
         flux
     } else {
-        initial_face_flux(&case.mesh, &velocity, resolved.boundary_flux())?
+        let mut flux = initial_face_flux(&case.mesh, &velocity, resolved.boundary_flux())?;
+        for (i, face) in case.mesh.faces().iter().enumerate() {
+            if face.neighbour.is_none()
+                && matches!(
+                    resolved.pressure_correction_boundary().condition(i),
+                    Some(ScalarBoundaryCondition::FixedValue(_))
+                )
+                && matches!(
+                    resolved
+                        .velocity_boundary()
+                        .component(crate::MomentumComponent::X)
+                        .condition(i),
+                    Some(ScalarBoundaryCondition::ZeroGradient)
+                )
+            {
+                flux[i] = velocity[face.owner].dot(face.area_vector);
+            }
+        }
+        flux
     };
     let mut state = SimpleState::new(&case.mesh, velocity, pressure, face_flux)?;
+    if !matches!(
+        case.initial_conditions,
+        IncompressibleInitialConditions::Restart { .. }
+    ) && case
+        .boundaries
+        .iter()
+        .any(|(_, b)| matches!(b, IncompressibleBoundaryCondition::FarField { .. }))
+    {
+        let pressure_control = case
+            .solver
+            .equations
+            .as_ref()
+            .map(|e| e.pressure)
+            .unwrap_or(crate::equations::EquationControl {
+                preconditioner: crate::equations::EquationPreconditioner::Ic0,
+                ..crate::equations::EquationControl::from_options(case.solver.pressure_solver)
+            });
+        crate::simple::initialize_far_field_flux(
+            &case.mesh,
+            &mut state,
+            resolved.pressure_correction_boundary(),
+            pressure_control,
+        )?;
+        if let Some(message) = control.and_then(|c| c.on_message.as_ref()) {
+            message(
+                "Far-field initialization: conservative potential-flow startup completed.".into(),
+            );
+        }
+    }
     let mut options = SimpleOptions::steady(
         Diffusivity::Constant(case.material.kinematic_viscosity),
         resolved.velocity_boundary(),
@@ -1230,10 +1287,7 @@ fn solve_incompressible_on_pool(
     }) {
         options.boundary_case = Some(case);
     }
-    if case.mesh.dimension() == crate::MeshDimension::ThreeD {
-        options.momentum_diffusion.non_orthogonal_correction =
-            crate::NonOrthogonalCorrection::Limited;
-    }
+    options.momentum_diffusion.non_orthogonal_correction = crate::NonOrthogonalCorrection::Limited;
     options.convection = case.solver.convection;
     options.max_outer_iterations = case.solver.max_outer_iterations;
     options.continuity_absolute_tolerance = case.solver.continuity_absolute_tolerance;

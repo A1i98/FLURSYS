@@ -1317,18 +1317,46 @@ pub fn initial_face_flux(
     Ok(flux)
 }
 
-/// Use a bounded face-pressure Gauss gradient consistently throughout the 3D
-/// coupling. A one-sided tetrahedral LSQ reconstruction can amplify pressure
-/// noise in directions poorly resolved by neighbouring cell centres.
+pub(crate) fn initialize_far_field_flux(
+    mesh: &UnstructuredMesh,
+    state: &mut SimpleState,
+    boundary: &ResolvedScalarBoundaryConditions,
+    control: crate::equations::EquationControl,
+) -> Result<(), SimpleError> {
+    let response = CellField::filled(mesh, 1.0);
+    let coefficients = pressure_face_coefficients_with_boundary(mesh, &response, boundary)?;
+    let system = assemble_pressure_correction_with_boundary(
+        mesh,
+        &state.face_flux,
+        &coefficients,
+        boundary,
+    )?;
+    let mut potential = CellField::filled(mesh, 0.0);
+    let report = solve_pressure_correction_controlled(&system, &mut potential, control)?;
+    if !report.converged() {
+        return Err(SimpleError::PressureLinearDidNotConverge);
+    }
+    let stencil = LeastSquaresGradientStencil::new(mesh, boundary)?;
+    let gradient = pressure_coupling_gradient(mesh, &potential, &stencil, Some(boundary))?;
+    state.velocity =
+        correct_cell_velocity_from_gradient(mesh, &state.velocity, &response, &gradient)?;
+    state.face_flux = correct_face_flux_with_boundary(
+        mesh,
+        &state.face_flux,
+        &coefficients,
+        &potential,
+        boundary,
+    )?;
+    Ok(())
+}
+
+/// Use bounded face pressures where one-sided cell stencils amplify noise.
 fn pressure_coupling_gradient(
     mesh: &UnstructuredMesh,
     pressure: &CellField<f64>,
-    stencil: &LeastSquaresGradientStencil,
+    _stencil: &LeastSquaresGradientStencil,
     boundary: Option<&ResolvedScalarBoundaryConditions>,
 ) -> Result<CellField<Vec3>, SimpleError> {
-    if mesh.dimension() != crate::MeshDimension::ThreeD {
-        return Ok(least_squares_gradient(mesh, stencil, pressure)?);
-    }
     let mut faces = FaceField::filled(mesh, 0.0);
     for (i, f) in mesh.faces().iter().enumerate() {
         faces[i] = if let Some(n) = f.neighbour {

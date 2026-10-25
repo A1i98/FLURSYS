@@ -1025,7 +1025,7 @@ pub fn finalize_workspace_run_continuing(
         "cpu_worker_threads": session.solution().map(|s| s.report.cpu_threads),
         "performance": session.performance(),
         "boundaries": &project.boundaries,
-        "spatial_methods": session.mesh().map(|m| if m.mesh.dimension()==MeshDimension::ThreeD {serde_json::json!({"pressure_gradient":"Gauss with bounded face-pressure interpolation","momentum_nonorthogonal":"limited correction: abs(explicit flux) <= abs(two-point flux)","rhie_chow":"interpolated cell pressure response; response-gradient covariance retained"})}else{serde_json::json!({"pressure_gradient":"least squares","momentum_nonorthogonal":"explicit Gauss correction","rhie_chow":"interpolated cell pressure response; response-gradient covariance retained"})}),
+        "spatial_methods": session.mesh().map(|_| serde_json::json!({"pressure_gradient":"Gauss with bounded face-pressure interpolation","momentum_nonorthogonal":"limited correction: abs(explicit flux) <= abs(two-point flux)","rhie_chow":"interpolated cell pressure response; response-gradient covariance retained"})),
         "mesh_preflight": session.mesh().map(|m|super::diagnostics::mesh_preflight(&m.mesh)),
         "conservation": session.mesh().zip(session.solution()).map(|(m,s)|super::boundary_reports::conservation_report(&m.mesh,s,session.material().density)),
         "boundary_flow_reports": session.mesh().zip(session.solution()).map(|(mesh,solution)|super::boundary_reports::boundary_flow_reports(&mesh.mesh,solution,session.material().density)),

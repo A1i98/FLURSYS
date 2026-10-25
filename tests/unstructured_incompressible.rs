@@ -1026,8 +1026,13 @@ fn slip_and_symmetry_channel_preserve_uniform_flow_with_serial_and_parallel_work
 
 #[test]
 fn far_field_allows_both_flow_directions_without_outlet_backflow_rejection() {
-    for speed in [1.0, -1.0] {
-        let case = IncompressibleCase::steady(
+    for (speed, viscosity, zero_start) in [
+        (1.0, 0.1, false),
+        (-1.0, 0.1, false),
+        (1.0, 1.6666666666666668e-7, false),
+        (1.0, 1.6666666666666668e-7, true),
+    ] {
+        let mut case = IncompressibleCase::steady(
             four_cell_mesh_with_named_patches(),
             ["left", "right", "bottom", "top"]
                 .into_iter()
@@ -1043,7 +1048,7 @@ fn far_field_allows_both_flow_directions_without_outlet_backflow_rejection() {
                 .collect(),
             IncompressibleMaterial {
                 density: 1.0,
-                kinematic_viscosity: 0.1,
+                kinematic_viscosity: viscosity,
             },
             IncompressibleSolverOptions {
                 threads: 1,
@@ -1051,6 +1056,10 @@ fn far_field_allows_both_flow_directions_without_outlet_backflow_rejection() {
                 ..Default::default()
             },
         );
+        if zero_start {
+            case.initial_conditions =
+                flursys::IncompressibleInitialConditions::uniform(Vec3::ZERO, 0.0);
+        }
         let solution = solve_incompressible(&case).unwrap();
         assert!(solution.report.converged(), "{:?}", solution.report);
         for u in solution.velocity.values() {
