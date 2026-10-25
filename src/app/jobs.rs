@@ -73,6 +73,8 @@ pub enum WorkbenchJobEvent {
     PlaneSample(crate::workbench::plane_monitor::PlaneSnapshot),
     Health(crate::workbench::solve_review::SolveHealth),
     Performance(crate::compute::PerformanceReport),
+    Engineering(crate::workbench::engineering::Sample),
+    TimeStep { index: usize, time: f64, dt: Option<f64>, courant: Option<f64>, rejected: usize },
     WallReports {
         iteration: usize,
         physical_time: Option<f64>,
@@ -90,6 +92,7 @@ pub struct WorkbenchJobExecutor {
     paused: Arc<AtomicBool>,
     restart: Option<std::path::PathBuf>,
     checkpoint_every: usize,
+    engineering_every: usize,
     completed: Arc<AtomicUsize>,
     retained: Arc<Mutex<Option<(crate::MeshId, crate::IncompressibleInitialConditions)>>>,
 }
@@ -117,6 +120,7 @@ impl WorkbenchJobExecutor {
             paused: Arc::new(AtomicBool::new(false)),
             restart: None,
             checkpoint_every: 100,
+            engineering_every: 10,
             completed: Arc::new(AtomicUsize::new(0)),
             retained: Arc::new(Mutex::new(None)),
         }
@@ -136,6 +140,7 @@ impl WorkbenchJobExecutor {
     pub fn completed_iterations(&self) -> usize {
         self.completed.load(Ordering::Acquire)
     }
+    pub fn set_engineering_interval(&mut self, every: usize) { self.engineering_every=every.clamp(1,1_000_000); }
     pub fn set_checkpoint_interval(&mut self, every: usize) {
         self.checkpoint_every = every.min(1_000_000);
     }
@@ -246,6 +251,7 @@ impl WorkbenchJobExecutor {
         let offset = self.completed_iterations();
         let completed_counter = self.completed.clone();
         let physical = case.solver.time.is_transient();
+        let engineering_every=self.engineering_every;
         let checkpoint_every = if folder.as_os_str().is_empty() {
             0
         } else {
@@ -376,6 +382,8 @@ impl WorkbenchJobExecutor {
                     }
                     Ok(())
                 });
+                let engineering_path=(!folder.as_os_str().is_empty()).then(||folder.join("engineering.jsonl"));
+                let engineering_step_path=engineering_path.clone();
                 let health_case=case.clone();
                 // Retain every accepted state: stopping between disk writes must not
                 // roll continuation backwards or skip absolute recording intervals.
@@ -384,6 +392,12 @@ impl WorkbenchJobExecutor {
                     let local_index=index;
                     let index = offset.saturating_add(index);
                     completed_counter.store(index, Ordering::Release);
+                    if !physical && (local_index==1 || index%engineering_every==0) {
+                        if let Some(sample)=crate::workbench::engineering::Sample::from_initial(&health_case.mesh,health_case.material.density,&initial,index,false) {
+                            if let Some(path)=&engineering_path {if let Err(e)=crate::workbench::engineering::append(path,&sample){let _=iteration_sender.send(WorkbenchJobEvent::SolveProgress(JobProgress::Message(format!("Engineering archive: {e}"))));}}
+                            let _=iteration_sender.send(WorkbenchJobEvent::Engineering(sample));
+                        }
+                    }
                     if let Some(health)=crate::workbench::solve_review::health(&health_case,&initial,index) {
                         let _=iteration_sender.send(WorkbenchJobEvent::Health(health));
                     }
@@ -404,6 +418,13 @@ impl WorkbenchJobExecutor {
                     let local_index=index;
                     let index = offset.saturating_add(index);
                     step_counter.store(index, Ordering::Release);
+                    if let Some(time)=solution.physical_time {let _=completed_sender.send(WorkbenchJobEvent::TimeStep{index,time,dt:solution.last_time_step,courant:solution.max_courant,rejected:solution.rejected_time_steps});}
+                    if local_index==1 || index%engineering_every==0 {
+                        if let Some(sample)=crate::workbench::engineering::Sample::from_solution(&completed_case.mesh,completed_case.material.density,solution,index) {
+                            if let Some(path)=&engineering_step_path {if let Err(e)=crate::workbench::engineering::append(path,&sample){let _=completed_sender.send(WorkbenchJobEvent::SolveProgress(JobProgress::Message(format!("Engineering archive: {e}"))));}}
+                            let _=completed_sender.send(WorkbenchJobEvent::Engineering(sample));
+                        }
+                    }
                     if matches!(completed_case.solver.turbulence.wall_treatment,crate::turbulence::WallTreatment::EquilibriumKEpsilon|crate::turbulence::WallTreatment::EquilibriumKOmega) {
                         match crate::workbench::wall_reports::reports_with_turbulence(&completed_case,&solution.velocity,&solution.pressure,solution.turbulence.as_ref(),false){
                             Ok(reports)=>{
@@ -454,6 +475,10 @@ impl WorkbenchJobExecutor {
                         }
                     }
                     let iteration = if physical {solution.completed_time_steps}else{solution.report.outer_iterations};
+                    if let Some(sample)=crate::workbench::engineering::Sample::from_solution(&case.mesh,case.material.density,solution,iteration) {
+                        if !folder.as_os_str().is_empty(){if let Err(e)=crate::workbench::engineering::append(&folder.join("engineering.jsonl"),&sample){let _=sender.send(WorkbenchJobEvent::SolveProgress(JobProgress::Message(format!("Engineering archive: {e}"))));}}
+                        let _=sender.send(WorkbenchJobEvent::Engineering(sample));
+                    }
                     for (plane, cells) in plans.iter().filter(|(p, _)| iteration % p.every != 0) {
                         let saved = crate::workbench::plane_monitor::sample(
                             plane,
@@ -647,6 +672,7 @@ mod tests {
             paused: Arc::new(AtomicBool::new(false)),
             restart: None,
             checkpoint_every: 100,
+            engineering_every: 10,
             completed: Arc::new(AtomicUsize::new(0)),
             retained: Arc::new(Mutex::new(None)),
         };

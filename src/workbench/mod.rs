@@ -7,6 +7,7 @@ pub mod checkpoint;
 pub mod dfg;
 pub mod diagnostics;
 pub mod editor;
+pub mod engineering;
 pub mod examples;
 pub mod field_mapping;
 pub mod force_analysis;
