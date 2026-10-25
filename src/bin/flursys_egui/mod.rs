@@ -1,5 +1,6 @@
 //! Native, model-driven egui workbench. CFD state stays in the shared core.
 mod cad;
+mod case_library;
 mod compressible_flow;
 mod continuation;
 mod export;
@@ -201,6 +202,10 @@ struct App {
     example_search: String,
     example_category: String,
     example_selected: Option<usize>,
+    example_preset: String,
+    case_probes_seeded: bool,
+    case_comparison_time: f64,
+    case_comparison_report: String,
     save_error: Option<String>,
     initialized: bool,
     show_initialization: bool,
@@ -378,6 +383,10 @@ impl App {
             example_search: String::new(),
             example_category: String::new(),
             example_selected: None,
+            example_preset: String::new(),
+            case_probes_seeded: false,
+            case_comparison_time: 0.,
+            case_comparison_report: String::new(),
             save_error: None,
             initialized: false,
             show_initialization: false,
@@ -508,6 +517,8 @@ impl App {
         self.result_run.clear();
         self.result_iteration = 0;
         self.probes.clear();
+        self.case_probes_seeded = false;
+        self.case_comparison_report.clear();
         self.probe_series.clear();
         self.probe_history_job = None;
         self.show_probe_plot = false;
@@ -527,6 +538,7 @@ impl App {
         self.migration = migration::State::new();
         self.monitoring = monitoring::State::default();
         self.gas_flow = compressible_flow::State::default();
+        self.apply_case_display();
         self.initialized = false;
         self.refresh_geometry();
         self.refresh_mesh();
@@ -586,9 +598,16 @@ impl App {
             }
             Pending::Example(i) => {
                 if let Some(template) = self.examples.get(i) {
-                    let mut p = template.project_template.clone();
-                    p.name = template.name.clone();
-                    p.runs.clear();
+                    let p = match workbench::case_format::instantiate(
+                        template,
+                        (!self.example_preset.is_empty()).then_some(self.example_preset.as_str()),
+                    ) {
+                        Ok(p) => p,
+                        Err(e) => {
+                            self.message(e);
+                            return;
+                        }
+                    };
                     match WorkbenchSession::from_project(&p)
                         .map_err(|e| e.to_string())
                         .and_then(|s| self.set_project(p, s, None))
@@ -1202,6 +1221,7 @@ impl eframe::App for App {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.poll();
         self.poll_field_frame(ctx);
+        self.seed_case_probes();
         self.post_logic(ctx);
         if self.capture.is_some() {
             for event in ctx.input(|i| i.events.clone()) {

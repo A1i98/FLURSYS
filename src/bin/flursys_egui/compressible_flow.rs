@@ -34,6 +34,16 @@ pub(super) struct State {
     display: usize,
 }
 impl State {
+    pub(super) fn set_defaults(&mut self, field: &str, mode: &str) {
+        self.quantity = match field {
+            "absolute-pressure" => 1,
+            "velocity-x" => 2,
+            "temperature" => 3,
+            "mach" => 4,
+            _ => 0,
+        };
+        self.display = usize::from(mode == "profiles");
+    }
     pub fn busy(&self) -> bool {
         self.receiver.is_some()
     }

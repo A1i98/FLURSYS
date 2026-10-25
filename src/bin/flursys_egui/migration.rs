@@ -545,7 +545,7 @@ impl App {
                 }
             });
     }
-    fn add_profile_curve(&mut self) -> Result<(), String> {
+    pub(super) fn add_profile_curve(&mut self) -> Result<(), String> {
         let data = self.result.as_ref().ok_or("Select a result")?;
         if data.mesh().dimension() != MeshDimension::TwoD {
             return Err("Line sampling currently requires a 2D mesh".into());
@@ -706,5 +706,17 @@ impl App {
                 }
             }
         }
+    }
+}
+
+impl State {
+    pub(super) fn prepare_case_profile(&mut self, start: Vec3, end: Vec3) {
+        self.profile_start = start;
+        self.profile_end = end;
+        self.curves.clear();
+        self.context = None;
+    }
+    pub(super) fn add_case_reference(&mut self, reference: workbench::series_plot::Series) {
+        self.curves.push(reference);
     }
 }

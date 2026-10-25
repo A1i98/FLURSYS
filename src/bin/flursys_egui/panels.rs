@@ -1523,6 +1523,7 @@ impl App {
         });
     }
     fn results_properties(&mut self, ui: &mut egui::Ui) {
+        self.case_reference_properties(ui);
         if self.page == 5 {
             self.probe_properties(ui);
             return;
@@ -2334,6 +2335,7 @@ impl App {
                                         ui.set_width(ui.available_width());
                                         if ui.selectable_label(selected, egui::RichText::new(&t.name).strong()).clicked() {
                                             self.example_selected = Some(i);
+                                            self.example_preset.clear();
                                         }
                                         ui.small(&t.category);
                                         ui.label(&t.description);
@@ -2356,6 +2358,8 @@ impl App {
                             egui::ScrollArea::vertical().id_salt("example-details").max_height(detail_height).show(ui, |ui| {
                                 ui.label(&t.description);
                                 ui.add_space(12.);
+                                case_library::metadata_panel(ui,&t.metadata,Some(&mut self.example_preset));
+                                ui.separator();
                                 ui.strong("Setup and comparison notes");
                                 ui.label(&t.expectations.notes);
                                 for word in t.expectations.notes.split_whitespace().filter(|w| w.starts_with("https://")) {
