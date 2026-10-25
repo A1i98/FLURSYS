@@ -1,9 +1,9 @@
-use super::widgets::{heading, number};
+use super::widgets::{heading, number, vector};
 use super::*;
 use flursys::compressible as gas;
 use std::sync::{
-    atomic::{AtomicU8, Ordering},
     Arc,
+    atomic::{AtomicU8, Ordering},
 };
 #[derive(Clone, Serialize, Deserialize)]
 struct Saved {
@@ -256,6 +256,7 @@ impl App {
                             gas::Boundary::PressureOutlet { .. } => 3,
                             gas::Boundary::NoSlipWall { .. } => 4,
                             gas::Boundary::SupersonicInlet { .. } => 5,
+                            gas::Boundary::TotalInlet { .. } => 6,
                         };
                         let old = kind;
                         let labels = [
@@ -265,6 +266,7 @@ impl App {
                             "Pressure outlet",
                             "No-slip wall",
                             "Supersonic inlet",
+                            "Total pressure / temperature inlet",
                         ];
                         egui::ComboBox::from_id_salt(("gas-bc", name))
                             .selected_text(labels[kind])
@@ -284,12 +286,26 @@ impl App {
                                     pressure: settings.initial.pressure,
                                 },
                                 4 => gas::Boundary::NoSlipWall { temperature: None },
-                                _ => gas::Boundary::SupersonicInlet {
+                                5 => gas::Boundary::SupersonicInlet {
                                     state: settings.initial,
+                                },
+                                _ => gas::Boundary::TotalInlet {
+                                    pressure: settings.initial.pressure,
+                                    temperature: settings.gas.temperature(settings.initial),
+                                    direction: Vec3::new(1., 0., 0.),
                                 },
                             };
                         }
                         match boundary {
+                            gas::Boundary::TotalInlet {
+                                pressure,
+                                temperature,
+                                direction,
+                            } => {
+                                number(ui, "Total pressure (Pa)", pressure);
+                                number(ui, "Total temperature (K)", temperature);
+                                vector(ui, "Incoming direction", direction);
+                            }
                             gas::Boundary::FarField { state }
                             | gas::Boundary::SupersonicInlet { state } => {
                                 primitive_editor(ui, state)

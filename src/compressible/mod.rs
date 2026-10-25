@@ -8,7 +8,7 @@ mod output;
 mod time;
 mod viscous;
 pub use output::write_vtu;
-pub use time::{solve, solve_controlled, Report, Solution};
+pub use time::{Report, Solution, solve, solve_controlled};
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct IdealGas {
@@ -139,6 +139,11 @@ pub enum Boundary {
     SupersonicInlet {
         state: Primitive,
     },
+    TotalInlet {
+        pressure: f64,
+        temperature: f64,
+        direction: Vec3,
+    },
     Transmissive,
     /// Basic subsonic pressure ghost state; not a general characteristic outlet.
     PressureOutlet {
@@ -153,6 +158,39 @@ impl Boundary {
                 ..owner
             },
             Self::FarField { state } => state,
+            Self::TotalInlet {
+                pressure,
+                temperature,
+                direction,
+            } => {
+                let direction = direction / direction.norm();
+                let cosine = direction.dot(normal);
+                if cosine >= 0.0 {
+                    return Err("Total-condition inlet direction must point into the domain".into());
+                }
+                let invariant =
+                    owner.velocity.dot(normal) + 2.0 * gas.sound_speed(owner) / (gas.gamma - 1.0);
+                let mut lo = 0.0;
+                let mut hi =
+                    (2.0 * gas.gamma * gas.gas_constant * temperature / (gas.gamma + 1.0)).sqrt();
+                for _ in 0..64 {
+                    let q = 0.5 * (lo + hi);
+                    let a = ((gas.gamma - 1.0) * (gas.cp() * temperature - 0.5 * q * q)).sqrt();
+                    if q * cosine + 2.0 * a / (gas.gamma - 1.0) > invariant {
+                        lo = q;
+                    } else {
+                        hi = q;
+                    }
+                }
+                let speed = 0.5 * (lo + hi);
+                let t = temperature - speed * speed / (2.0 * gas.cp());
+                let p = pressure * (t / temperature).powf(gas.gamma / (gas.gamma - 1.0));
+                Primitive {
+                    density: p / (gas.gas_constant * t),
+                    pressure: p,
+                    velocity: direction * speed,
+                }
+            }
             Self::SupersonicInlet { state } => {
                 if state.velocity.dot(normal) >= -gas.sound_speed(state) {
                     return Err("Supersonic inlet requires inward normal Mach > 1 on every inlet face; use far-field for a prescribed subsonic exterior state".into());
@@ -341,13 +379,35 @@ impl Settings {
                 .get(&patch.name)
                 .ok_or_else(|| format!("Missing compressible boundary {:?}", patch.name))?;
             match b {
+                Boundary::TotalInlet {
+                    pressure,
+                    temperature,
+                    direction,
+                } => {
+                    if !pressure.is_finite()
+                        || pressure <= 0.0
+                        || !temperature.is_finite()
+                        || temperature <= 0.0
+                        || !direction.norm().is_finite()
+                        || direction.norm() <= 0.0
+                    {
+                        return Err("Total inlet requires positive finite stagnation pressure, temperature and nonzero direction".into());
+                    }
+                    for &i in &patch.face_indices {
+                        if direction.dot(mesh.faces()[i].normal) >= 0.0 {
+                            return Err(
+                                "Total inlet direction must be inward on every inlet face".into()
+                            );
+                        }
+                    }
+                }
                 Boundary::FarField { state } | Boundary::SupersonicInlet { state } => {
                     state.validate()?
                 }
                 Boundary::PressureOutlet { pressure }
                     if !pressure.is_finite() || pressure <= 0.0 =>
                 {
-                    return Err("Outlet absolute pressure must be positive".into())
+                    return Err("Outlet absolute pressure must be positive".into());
                 }
                 Boundary::NoSlipWall { temperature } => {
                     if matches!(self.viscosity, Viscosity::Inviscid) {
@@ -383,5 +443,34 @@ impl Settings {
             return Err("Unassigned exterior face".into());
         }
         Ok((bc, cyclic))
+    }
+}
+
+#[cfg(test)]
+mod total_inlet_tests {
+    use super::*;
+    #[test]
+    fn total_inlet_recovers_isentropic_state_and_stagnation_conditions() {
+        let gas = IdealGas::default();
+        let (pt, tt, mach) = (101325.0, 300.0, 0.3_f64);
+        let t = tt / (1.0 + 0.5 * (gas.gamma - 1.0) * mach * mach);
+        let p = pt * (t / tt).powf(gas.gamma / (gas.gamma - 1.0));
+        let owner = Primitive {
+            density: p / (gas.gas_constant * t),
+            pressure: p,
+            velocity: Vec3::new(mach * (gas.gamma * gas.gas_constant * t).sqrt(), 0., 0.),
+        };
+        let boundary = Boundary::TotalInlet {
+            pressure: pt,
+            temperature: tt,
+            direction: Vec3::new(1., 0., 0.),
+        };
+        let state = boundary.ghost(owner, Vec3::new(-1., 0., 0.), gas).unwrap();
+        assert!((state.velocity.x - owner.velocity.x).abs() < 1e-10);
+        assert!((state.pressure - owner.pressure).abs() < 1e-8);
+        let total_temperature =
+            gas.temperature(state) + state.velocity.norm_squared() / (2. * gas.cp());
+        assert!((total_temperature - tt).abs() < 1e-10);
+        assert!(boundary.ghost(owner, Vec3::new(1., 0., 0.), gas).is_err());
     }
 }
