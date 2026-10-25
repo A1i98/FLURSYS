@@ -102,12 +102,12 @@ impl IncompressibleSolverOptions {
         mesh: &UnstructuredMesh,
     ) -> Result<crate::periodic::CyclicMap, String> {
         if !self.cyclic_pairs.is_empty() {
-            if self.turbulence.model != crate::turbulence::TurbulenceModel::Laminar
+            if !matches!(self.turbulence.model, crate::turbulence::TurbulenceModel::Laminar | crate::turbulence::TurbulenceModel::KOmega | crate::turbulence::TurbulenceModel::KOmegaSst)
                 || self.thermal.enabled
                 || self.convection != crate::momentum::MomentumConvection::Upwind
                 || self.volume_models.rotating_frame.is_some()
             {
-                return Err("Workbench cyclic currently requires laminar, isothermal, first-order upwind flow in an inertial frame".into());
+                return Err("Cyclic flow supports laminar or k-omega/SST, isothermal first-order upwind flow in an inertial frame".into());
             }
             for pair in &self.cyclic_pairs {
                 if self.boundary_profiles.contains_key(&pair.first)

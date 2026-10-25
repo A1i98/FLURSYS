@@ -109,8 +109,22 @@ impl App {
     }
     pub(super) fn advanced_physics_editor(&mut self, ui: &mut egui::Ui) {
         use flursys::volume_models::{CellRegion, PorousResistance, RotatingFrame};
-        egui::CollapsingHeader::new("Rotating frame and porous region").show(ui, |ui| {
+        egui::CollapsingHeader::new("Volume models and periodic forcing").show(ui, |ui| {
             let m = &mut self.editor.solver.volume_models;
+            let mut driven = m.mean_velocity.is_some();
+            if ui
+                .checkbox(&mut driven, "Periodic mean-flow forcing")
+                .changed()
+            {
+                m.mean_velocity = driven.then_some(flursys::volume_models::MeanVelocity {
+                    target: Vec3::new(1., 0., 0.),
+                    relaxation: 0.5,
+                });
+            }
+            if let Some(mean) = &mut m.mean_velocity {
+                vector(ui, "Volume-mean target velocity (m/s)", &mut mean.target);
+                number(ui, "Forcing relaxation", &mut mean.relaxation);
+            }
             let mut rotation = m.rotating_frame.is_some();
             if ui
                 .checkbox(&mut rotation, "Global rotating frame")

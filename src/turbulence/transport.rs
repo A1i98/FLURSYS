@@ -18,7 +18,7 @@ impl Closure {
         let mut wb = kb.clone();
         for (i, f) in mesh.faces().iter().enumerate() {
             if f.neighbour.is_none() {
-                let incoming = state.face_flux[i] < 0.0;
+                let incoming = state.face_flux[i] < 0.0 && self.cyclic.link(i).is_none();
                 let (in_k, in_w, _in_e) = if incoming {
                     self.incoming_values(mesh, state, bc, i)?
                 } else {
@@ -49,8 +49,10 @@ impl Closure {
                 });
             }
         }
-        let kb = ResolvedScalarBoundaryConditions::from_face_conditions(mesh, kb)?;
-        let wb = ResolvedScalarBoundaryConditions::from_face_conditions(mesh, wb)?;
+        let mut kb = ResolvedScalarBoundaryConditions::from_face_conditions(mesh, kb)?;
+        let mut wb = ResolvedScalarBoundaryConditions::from_face_conditions(mesh, wb)?;
+        kb.set_cyclic(self.cyclic.clone());
+        wb.set_cyclic(self.cyclic.clone());
         let gradk = scalar_gradient(mesh, &self.fields.k, &kb)?;
         let gradw = scalar_gradient(mesh, &self.fields.omega, &wb)?;
         let mut dk = CellField::filled(mesh, nu);
@@ -210,6 +212,11 @@ pub(super) fn scalar_solve(
         DiffusivityInterpolation::Harmonic,
     )?;
     for (i, wall) in walls.iter().enumerate() {
+        if let Some((n, _)) = bc.cyclic_neighbour(mesh, i) {
+            let a = d[mesh.faces()[i].owner];
+            let b = d[n];
+            face_diffusion[i] = 2.0 * a * b / (a + b);
+        }
         if *wall {
             face_diffusion[i] = nu;
         }

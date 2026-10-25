@@ -62,12 +62,29 @@ impl RotatingFrame {
 pub struct VolumeModels {
     pub resistance: Option<PorousResistance>,
     pub rotating_frame: Option<RotatingFrame>,
+    pub mean_velocity: Option<MeanVelocity>,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct MeanVelocity {
+    pub target: Vec3,
+    pub relaxation: f64,
 }
 fn finite(v: Vec3) -> bool {
     [v.x, v.y, v.z].iter().all(|x| x.is_finite())
 }
 impl VolumeModels {
     pub fn validate(self) -> Result<(), String> {
+        if let Some(m) = self.mean_velocity {
+            if !finite(m.target)
+                || !m.target.norm().is_finite()
+                || m.target.norm() <= 0.0
+                || !m.relaxation.is_finite()
+                || m.relaxation <= 0.0
+                || m.relaxation > 1.0
+            {
+                return Err("Mean-flow forcing requires a finite nonzero target velocity and relaxation in (0,1]".into());
+            }
+        }
         if let Some(p) = self.resistance {
             p.region.validate()?;
             if !p.darcy.is_finite()
@@ -92,6 +109,9 @@ impl VolumeModels {
     }
     pub fn validate_case(self, case: &IncompressibleCase) -> Result<(), String> {
         self.validate()?;
+        if self.mean_velocity.is_some() && case.solver.cyclic_pairs.is_empty() {
+            return Err("Mean-flow forcing requires a cyclic flow direction".into());
+        }
         if let Some(p) = self.resistance {
             if !case
                 .mesh

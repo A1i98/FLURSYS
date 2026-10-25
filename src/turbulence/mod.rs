@@ -10,7 +10,7 @@ mod realizable;
 mod spalart_allmaras;
 mod wall_distance;
 mod wall_functions;
-pub use wall_functions::{smooth_wall, WallTreatment};
+pub use wall_functions::{WallTreatment, smooth_wall};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -166,6 +166,7 @@ impl TurbulenceFields {
 
 #[derive(Debug)]
 pub(crate) struct Closure {
+    cyclic: std::sync::Arc<crate::periodic::CyclicMap>,
     config: TurbulenceOptions,
     linear: Option<crate::equations::EquationSolvers>,
     molecular_viscosity: f64,
@@ -310,6 +311,11 @@ impl Closure {
             ));
         }
         Ok(Self {
+            cyclic: std::sync::Arc::new(
+                case.solver
+                    .resolve_cyclic(mesh)
+                    .map_err(SimpleError::PhysicalBoundary)?,
+            ),
             linear: case.solver.equations.clone(),
             molecular_viscosity: case.material.kinematic_viscosity,
             last_linear: Default::default(),
@@ -465,11 +471,7 @@ impl Closure {
                     let c = 2.0 * self.config.ck * delta * (s2 - trace * trace / 3.0).max(0.0);
                     let disc = (b * b + 4.0 * a * c).sqrt();
                     let sqrt_k = if b >= 0.0 {
-                        if c == 0.0 {
-                            0.0
-                        } else {
-                            2.0 * c / (b + disc)
-                        }
+                        if c == 0.0 { 0.0 } else { 2.0 * c / (b + disc) }
                     } else {
                         (-b + disc) / (2.0 * a)
                     };
@@ -509,11 +511,16 @@ impl Closure {
         let mut source = CellField::filled(mesh, Vec3::ZERO);
         for (i, f) in mesh.faces().iter().enumerate() {
             let o = f.owner;
-            let n = f.neighbour.unwrap_or(o);
-            let l = if f.neighbour.is_some() {
+            let cyclic = self.cyclic.link(i);
+            let n = f
+                .neighbour
+                .or_else(|| cyclic.map(|link| mesh.faces()[link.peer_face].owner))
+                .unwrap_or(o);
+            let l = if f.neighbour.is_some() || cyclic.is_some() {
+                let center =
+                    mesh.cells()[n].center - cyclic.map_or(Vec3::ZERO, |link| link.translation);
                 (f.center - mesh.cells()[o].center).norm()
-                    / ((f.center - mesh.cells()[o].center).norm()
-                        + (f.center - mesh.cells()[n].center).norm())
+                    / ((f.center - mesh.cells()[o].center).norm() + (f.center - center).norm())
             } else {
                 0.0
             };
@@ -525,6 +532,7 @@ impl Closure {
             let inlet = if self.config.is_rans()
                 && self.config.model != TurbulenceModel::SpalartAllmaras
                 && f.neighbour.is_none()
+                && cyclic.is_none()
                 && !self.walls[i]
                 && state.face_flux[i] < 0.0
             {
@@ -607,6 +615,10 @@ pub(crate) fn scalar_gradient(
         faces[i] = if let Some(n) = f.neighbour {
             let a = (f.center - mesh.cells()[f.owner].center).norm();
             let b = (f.center - mesh.cells()[n].center).norm();
+            (b * field[f.owner] + a * field[n]) / (a + b)
+        } else if let Some((n, center)) = boundary.cyclic_neighbour(mesh, i) {
+            let a = (f.center - mesh.cells()[f.owner].center).norm();
+            let b = (f.center - center).norm();
             (b * field[f.owner] + a * field[n]) / (a + b)
         } else {
             match boundary.condition(i) {

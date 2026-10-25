@@ -284,6 +284,7 @@ pub fn solve_simple_with_observer(
     let mut velocity_history = Vec::new();
     let mut pressure_history = Vec::new();
     let mut momentum_reference = 0.0_f64;
+    let mut mean_acceleration = Vec3::ZERO;
     let mut momentum_relative = f64::INFINITY;
     let mut velocity_relative = f64::INFINITY;
 
@@ -400,6 +401,11 @@ pub fn solve_simple_with_observer(
             options.viscosity = Diffusivity::Faces(viscosity);
         }
         let mut pressure_source = current_pressure_gradient.map(|g| -*g);
+        if options.volume_models.mean_velocity.is_some() {
+            for source in pressure_source.values_mut() {
+                *source += mean_acceleration;
+            }
+        }
         if let Some((_, source)) = &closure_correction {
             for (value, extra) in pressure_source.values_mut().iter_mut().zip(source.values()) {
                 *value += *extra;
@@ -546,6 +552,19 @@ pub fn solve_simple_with_observer(
                 .map(|(a, cell)| a * cell.volume)
                 .collect(),
         )?;
+        if let Some(mean) = options.volume_models.mean_velocity {
+            let direction = mean.target / mean.target.norm();
+            let volume: f64 = mesh.cells().iter().map(|c| c.volume).sum();
+            let average = predictor.values().iter().zip(mesh.cells())
+                .map(|(u,c)| u.dot(direction) * c.volume).sum::<f64>() / volume;
+            let response = r_au.values().iter().zip(mesh.cells())
+                .map(|(r,c)| r * c.volume).sum::<f64>() / volume;
+            let increment = direction * ((mean.target.norm() - average) * mean.relaxation / response);
+            mean_acceleration += increment;
+            for (u,r) in predictor.values_mut().iter_mut().zip(r_au.values()) {
+                *u += increment * *r;
+            }
+        }
         let coefficients = match options.pressure_correction_boundary {
             Some(boundary) => pressure_face_coefficients_with_boundary(mesh, &r_au, boundary)?,
             None => pressure_face_coefficients(mesh, &r_au)?,
