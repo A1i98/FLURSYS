@@ -1,5 +1,6 @@
 //! Canonical project, meshing, solver orchestration and results shared by GUI and headless clients.
 
+pub mod analysis_graph;
 pub mod boundary_reports;
 pub mod budgets;
 pub mod case_format;

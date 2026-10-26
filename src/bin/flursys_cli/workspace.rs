@@ -79,6 +79,8 @@ pub fn help() {
   flursys project inspect <directory> [--json]
   flursys project check <directory> [--json]
   flursys project checkpoint <directory> [--json]
+  flursys project analyses <directory> [--json]
+  flursys project branch <directory> --name NAME [--json]
   flursys project mesh <directory> [--gmsh PATH] [--threads N] [--json]
   flursys project solve <directory> [--threads N] [--iterations N] [--restart FILE] [--backend serial|parallel|gpu] [--adapter NAME] [--gpu-required] [--gpu-min-rows N] [--json]
   flursys project transport-template <directory> --output transport.json [--json]
@@ -194,7 +196,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
     let action = args[1].as_str();
     let folder = Path::new(args.get(2).ok_or("Missing project directory")?);
     let allowed: &[&str] = match action {
-        "inspect" | "check" | "checkpoint" => &["json"],
+        "inspect" | "check" | "checkpoint" | "analyses" => &["json"],
         "transport-template" => &["json", "output"],
         "transport" => &["json", "config", "output", "restart"],
         "benchmark" => &[
@@ -238,7 +240,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
             "adapter",
             "gpu-required",
         ],
-        "rename" => &["json", "name"],
+        "rename" | "branch" => &["json", "name"],
         _ => return Err(format!("Unknown project command '{action}'")),
     };
     let opts = parse(&args[3..], allowed)?;
@@ -247,6 +249,26 @@ pub fn run(args: &[String]) -> Result<(), String> {
         GmshMesher::set_executable_override(Some(PathBuf::from(path)));
     }
     let mut project = load_workspace(folder).map_err(|e| e.to_string())?;
+    if action == "analyses" {
+        let (root, graph) = flursys::workbench::analysis_graph::load(folder)?;
+        emit(
+            json!({"summary":format!("{} linked analyses",graph.analyses.len()),"root":root,"workbench":graph}),
+            json_output,
+        );
+        return Ok(());
+    }
+    if action == "branch" {
+        let path = flursys::workbench::analysis_graph::branch(
+            folder,
+            &project,
+            opts.get("name").ok_or("branch requires --name")?,
+        )?;
+        emit(
+            json!({"summary":format!("Analysis created: {}",path.display()),"workspace":path}),
+            json_output,
+        );
+        return Ok(());
+    }
     if action == "rename" {
         catalogue::rename_project(
             &mut project,
