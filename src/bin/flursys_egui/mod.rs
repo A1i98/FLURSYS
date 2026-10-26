@@ -4,7 +4,10 @@ mod case_library;
 mod compressible_flow;
 mod continuation;
 mod export;
+mod home;
 mod initialization;
+mod mesh_scene;
+mod mesh_sections;
 mod migration;
 mod monitoring;
 mod panels;
@@ -50,7 +53,7 @@ impl Stage {
         }
     }
 }
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(default)]
 struct Preferences {
     gmsh_path: String,
@@ -65,6 +68,7 @@ struct Preferences {
     properties: bool,
     messages: bool,
     live_refresh_seconds: f64,
+    recent_workspaces: Vec<PathBuf>,
 }
 impl Default for Preferences {
     fn default() -> Self {
@@ -81,6 +85,7 @@ impl Default for Preferences {
             properties: true,
             messages: false,
             live_refresh_seconds: 2.0,
+            recent_workspaces: Vec::new(),
         }
     }
 }
@@ -134,7 +139,8 @@ struct App {
     inlet_center: f64,
     inlet_half_width: f64,
     camera: viewport::View,
-    mesh_cache: Option<MeshRenderCache>,
+    mesh_cache: Option<std::sync::Arc<MeshRenderCache>>,
+    mesh_cache_job: Option<Receiver<(MeshId, Result<MeshRenderCache, String>)>>,
     geometry_faces: Vec<flursys::RenderableFace>,
     geometry_edges: Vec<(EdgeId, Vec<Vec3>)>,
     result: Option<ResultDataset>,
@@ -211,6 +217,14 @@ struct App {
     mesh_cut: bool,
     mesh_cut_axis: usize,
     mesh_cut_fraction: f64,
+    mesh_cut_preview: f64,
+    mesh_cut_reverse: bool,
+    mesh_slab: bool,
+    mesh_slab_width: f64,
+    mesh_slab_preview: f64,
+    mesh_section_only: bool,
+    mesh_cut_plane: bool,
+    mesh_ghost_shell: bool,
     examples: Vec<workbench::CaseTemplateManifest>,
     example_search: String,
     example_category: String,
@@ -243,6 +257,14 @@ struct App {
     mesh_wireframe: bool,
     show_geometry: bool,
     geometry_gpu: viewport::GeometryGpu,
+    mesh_gpu: mesh_scene::MeshScene,
+    home_open: bool,
+    analysis_graph: Option<(PathBuf, workbench::analysis_graph::AnalysisGraph)>,
+    analysis_name: String,
+    analysis_job: Option<Receiver<Result<PathBuf, String>>>,
+    boundary_symbols: bool,
+    mesh_detail: usize,
+    mesh_volume_edges: usize,
     transport: transport::Transport,
 }
 enum Pending {
@@ -337,6 +359,7 @@ impl App {
             inlet_half_width: 0.5,
             camera: Default::default(),
             mesh_cache: None,
+            mesh_cache_job: None,
             geometry_faces: vec![],
             geometry_edges: vec![],
             result: None,
@@ -410,6 +433,14 @@ impl App {
             mesh_cut: false,
             mesh_cut_axis: 0,
             mesh_cut_fraction: 0.5,
+            mesh_cut_preview: 0.5,
+            mesh_cut_reverse: false,
+            mesh_slab: false,
+            mesh_slab_width: 0.08,
+            mesh_slab_preview: 0.08,
+            mesh_section_only: false,
+            mesh_cut_plane: true,
+            mesh_ghost_shell: false,
             examples: vec![],
             example_search: String::new(),
             example_category: String::new(),
@@ -443,9 +474,17 @@ impl App {
             published_document: None,
             saving_after_publish: false,
             frame_scan: None,
-            mesh_wireframe: true,
+            mesh_wireframe: false,
             show_geometry: true,
             geometry_gpu: Default::default(),
+            mesh_gpu: Default::default(),
+            home_open: true,
+            analysis_graph: None,
+            analysis_name: "Analysis 2".into(),
+            analysis_job: None,
+            boundary_symbols: true,
+            mesh_detail: 0,
+            mesh_volume_edges: 150_000,
             transport: Default::default(),
         };
         app.apply_preferences(&cc.egui_ctx);
@@ -508,6 +547,7 @@ impl App {
             || self.publishing.is_some()
             || self.loading.is_some()
             || self.workspace_dialog.is_some()
+            || self.analysis_job.is_some()
             || self.transport.receiver.is_some()
     }
     fn sync_project(&mut self) {
@@ -550,6 +590,9 @@ impl App {
             .unwrap_or((Vec3::ZERO, 0.0));
         self.session = s;
         self.workspace = path;
+        self.home_open = false;
+        self.mesh_gpu = Default::default();
+        self.remember_workspace();
         self.dirty = false;
         self.editor = self.project.clone();
         self.jobs = WorkbenchJobExecutor::new();
@@ -613,14 +656,21 @@ impl App {
         self.camera.fit_geometry(self.session.geometry());
     }
     fn refresh_mesh(&mut self) {
-        self.mesh_cache = self
-            .session
-            .mesh()
-            .and_then(|m| MeshRenderCache::build(&m.mesh).ok());
+        self.mesh_cache = None;
+        self.mesh_cache_job = None;
+        self.mesh_gpu = Default::default();
         if let Some(m) = self.session.mesh() {
             self.camera.fit_mesh(&m.mesh);
+            let mesh = m.mesh.clone();
+            let (tx, rx) = mpsc::channel();
+            std::thread::spawn(move || {
+                let result = MeshRenderCache::build(&mesh);
+                let _ = tx.send((mesh.id(), result));
+            });
+            self.mesh_cache_job = Some(rx);
         }
     }
+
     fn request(&mut self, p: Pending) {
         if matches!(p, Pending::Quit) && (self.jobs.is_running() || self.jobs.is_checkpointing()) {
             self.shutdown_after_checkpoint = true;
@@ -781,13 +831,18 @@ impl App {
             self.project.mesh_asset = Some(mesh_storage::save(&path, &self.project, mesh)?);
         }
         workbench::save_workspace(&path, &self.project).map_err(|e| e.to_string())?;
+        if let Err(e) = workbench::analysis_graph::record_save(&path, &self.project) {
+            self.append_log(format!("Analysis links: {e}"));
+        }
         self.workspace = Some(path);
+        self.remember_workspace();
         self.dirty = false;
         self.cad.session.mark_saved();
         self.message("Workspace saved, including mesh and CAD document.");
         Ok(true)
     }
     fn stage(&mut self, next: Stage) {
+        self.home_open = false;
         if next == Stage::Geometry
             && (self.jobs.is_running() || self.transport.receiver.is_some() || self.gas_flow.busy())
         {
@@ -996,6 +1051,28 @@ impl App {
         }
     }
     fn poll(&mut self) {
+        if let Some(result) = self.analysis_job.as_ref().and_then(|rx| rx.try_recv().ok()) {
+            self.analysis_job = None;
+            match result {
+                Ok(path) => self.request(Pending::Open(path)),
+                Err(e) => self.message(e),
+            }
+        }
+
+        if let Some((id, cache)) = self
+            .mesh_cache_job
+            .as_ref()
+            .and_then(|rx| rx.try_recv().ok())
+        {
+            self.mesh_cache_job = None;
+            if self.session.mesh().is_some_and(|m| m.mesh.id() == id) {
+                match cache {
+                    Ok(cache) => self.mesh_cache = Some(std::sync::Arc::new(cache)),
+                    Err(e) => self.message(format!("Mesh display: {e}")),
+                }
+            }
+        }
+
         self.poll_workspace_dialog();
         self.poll_compressible();
         self.poll_mapping();
@@ -1426,6 +1503,7 @@ impl eframe::App for App {
             if self.capture_prepared.is_none()
                 && self.created.elapsed() > Duration::from_secs(2)
                 && !self.busy()
+                && self.mesh_cache_job.is_none()
             {
                 if let Ok(run) = std::env::var("FLURSYS_EGUI_CAPTURE_RUN") {
                     if let Err(e) = self.open_run(&run) {
@@ -1433,9 +1511,29 @@ impl eframe::App for App {
                     }
                 }
                 if let Ok(stage) = std::env::var("FLURSYS_EGUI_CAPTURE_STAGE") {
+                    self.home_open = stage == "home";
                     match stage.as_str() {
                         "mesh" => {
                             self.stage = Stage::Mesh;
+                            self.show_geometry = false;
+                        }
+                        "volume" | "volume-full" => {
+                            self.stage = Stage::Mesh;
+                            self.show_geometry = false;
+                            self.mesh_detail = 3;
+                            self.mesh_volume_edges =
+                                if stage == "volume-full" { 0 } else { 150_000 };
+                        }
+                        "cutaway" | "slab" | "section" => {
+                            self.stage = Stage::Mesh;
+                            self.show_geometry = false;
+                            self.mesh_cut = true;
+                            self.mesh_cut_axis = 0;
+                            self.mesh_cut_fraction = 0.5;
+                            self.mesh_cut_preview = 0.5;
+                            self.mesh_slab = stage == "slab";
+                            self.mesh_section_only = stage == "section";
+                            self.mesh_ghost_shell = stage == "slab";
                         }
                         "quality" => {
                             self.stage = Stage::Mesh;
@@ -1509,6 +1607,8 @@ impl eframe::App for App {
             || self.flow_playing
             || self.export.is_some()
             || self.probe_history_job.is_some()
+            || self.mesh_cache_job.is_some()
+            || self.analysis_job.is_some()
         {
             ctx.request_repaint_after(Duration::from_millis(33));
         }

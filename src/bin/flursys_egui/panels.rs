@@ -93,8 +93,17 @@ impl App {
             });
             ui.add_space(3.);
             ui.horizontal_wrapped(|ui| {
+                if ui
+                    .add_sized(
+                        [90., 30.],
+                        egui::Button::new(RichText::new("Home").strong()).selected(self.home_open),
+                    )
+                    .clicked()
+                {
+                    self.home_open = true;
+                }
                 for stage in Stage::ALL {
-                    let selected = self.stage == stage;
+                    let selected = !self.home_open && self.stage == stage;
                     if ui
                         .add_sized(
                             [100., 30.],
@@ -192,7 +201,9 @@ impl App {
                     );
                 });
         }
-        if self.stage == Stage::Geometry {
+        if self.home_open {
+            self.home(ui);
+        } else if self.stage == Stage::Geometry {
             ui.add_enabled_ui(self.publishing.is_none() && self.loading.is_none(), |ui| {
                 self.cad.ui(ui)
             });
@@ -925,10 +936,18 @@ impl App {
                     if ui
                         .selectable_label(
                             self.boundary_patch == name,
-                            format!(
+                            RichText::new(format!(
                                 "{name} · {}",
                                 if assigned { "assigned" } else { "unassigned" }
-                            ),
+                            ))
+                            .color(mesh_scene::patch_color(
+                                self.editor
+                                    .boundaries
+                                    .iter()
+                                    .find(|b| b.selection == name)
+                                    .map(|b| &b.condition),
+                                0,
+                            )),
                         )
                         .clicked()
                     {
@@ -1089,7 +1108,7 @@ impl App {
             }
         }
     }
-    fn read_boundary(&mut self) {
+    pub(super) fn read_boundary(&mut self) {
         use workbench::PhysicalBoundaryCondition as B;
         if let Some(b) = self
             .editor

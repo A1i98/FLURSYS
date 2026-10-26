@@ -162,9 +162,32 @@ impl App {
             if matches!(self.stage, Stage::Mesh | Stage::Setup)
                 && !(self.stage == Stage::Mesh && self.page == 2)
             {
-                ui.selectable_value(&mut self.show_geometry, true, "CAD geometry");
+                if ui
+                    .selectable_value(&mut self.show_geometry, true, "CAD geometry")
+                    .changed()
+                {
+                    self.mesh_cut = false;
+                }
                 ui.selectable_value(&mut self.show_geometry, false, "Mesh");
                 ui.separator();
+            }
+            if !self.show_geometry && matches!(self.stage, Stage::Mesh | Stage::Setup) {
+                let spatial=self.session.mesh().is_some_and(|m|m.mesh.dimension()==MeshDimension::ThreeD);
+                if self.mesh_detail==3 && !spatial {self.mesh_detail=0;}
+                const MODES:[&str;4]=["Surface + edges","Surface only","Full surface edges","Volume wireframe"];
+                egui::ComboBox::from_id_salt("mesh-detail").selected_text(MODES[self.mesh_detail.min(3)]).width(175.).show_ui(ui,|ui| {
+                    for (i,name) in MODES.iter().enumerate() {
+                        ui.add_enabled_ui(i!=3 || spatial,|ui| {ui.selectable_value(&mut self.mesh_detail,i,*name);});
+                    }
+                });
+                if self.mesh_detail==3 {
+                    egui::ComboBox::from_id_salt("volume-wireframe-detail").selected_text(match self.mesh_volume_edges {0=>"All volume edges",50_000=>"Detail: 50k",500_000=>"Detail: 500k",_=>"Detail: 150k"}).width(150.).show_ui(ui,|ui| {
+                        for (n,name) in [(50_000,"Up to 50k edges"),(150_000,"Up to 150k edges"),(500_000,"Up to 500k edges"),(0,"All volume edges")] {
+                            ui.selectable_value(&mut self.mesh_volume_edges,n,name);
+                        }
+                    }).response.on_hover_text("Interior cell edges are cached on the GPU. Limited detail samples edges across the whole volume; All draws every unique edge and can take more GPU time.");
+                }
+                ui.checkbox(&mut self.boundary_symbols, "Boundaries");
             }
             if self.post_view() {
                 ui.toggle_value(&mut self.probe_enabled, "Probe points");
@@ -179,7 +202,7 @@ impl App {
                 if widgets::icon_button(ui, "clear", "Clear probes", true).clicked() {
                     self.probes.clear();
                 }
-            } else {
+            } else if self.show_geometry || self.mesh_cache.is_none() {
                 for (i, label) in ["Edge", "Face", "Vertex", "Body"].iter().enumerate() {
                     if ui.selectable_label(self.pick == i, *label).clicked() {
                         self.pick = i;
@@ -189,14 +212,28 @@ impl App {
                     self.selected.clear();
                 }
             }
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if self.stage == Stage::Mesh && !self.show_geometry && self.page != 2 {
-                    ui.checkbox(&mut self.mesh_wireframe, "Wireframe");
-                }
-            });
+            if self.stage == Stage::Mesh
+                && !self.show_geometry
+                && self.page != 2
+                && self.mesh_detail != 1 && self.mesh_detail != 3
+            {
+                ui.checkbox(&mut self.mesh_wireframe, "Surface wireframe").on_hover_text("Exterior edges only; choose Volume wireframe to see interior cell edges");
+            }
         });
-        let (rect, response) =
-            ui.allocate_exact_size(ui.available_size(), egui::Sense::click_and_drag());
+        if !self.post_view()
+            && matches!(self.stage, Stage::Mesh | Stage::Setup)
+            && self
+                .session
+                .mesh()
+                .is_some_and(|m| m.mesh.dimension() == MeshDimension::ThreeD)
+        {
+            self.mesh_section_toolbar(ui);
+        }
+        let available = ui.available_rect_before_wrap().intersect(ui.clip_rect());
+        let (rect, response) = ui.allocate_exact_size(
+            available.size().max(egui::vec2(1., 1.)),
+            egui::Sense::click_and_drag(),
+        );
         let rect = if let Some(aspect) = self.export_aspect() {
             let w = rect.width().min(rect.height() * aspect);
             egui::Rect::from_center_size(rect.center(), egui::vec2(w, w / aspect))
@@ -269,8 +306,9 @@ impl App {
             let mut mesh = egui::Mesh::default();
             let mut edges = Vec::new();
             let node_values = plane_nodes(snapshot, &values);
+            let display_stride = snapshot.samples.len().div_ceil(20_000).max(1);
             let mut contour_triangles = Vec::new();
-            for (s, v) in snapshot.samples.iter().zip(values) {
+            for (s, v) in snapshot.samples.iter().zip(values).step_by(display_stride) {
                 let points: Vec<_> = s
                     .geometry
                     .polygon
@@ -320,7 +358,7 @@ impl App {
                 painter.line_segment(edge, Stroke::new(0.6, Color32::from_black_alpha(140)));
             }
             if style.vectors {
-                let stride = (snapshot.samples.len() / style.vector_density.max(1)).max(1);
+                let stride = (snapshot.samples.len() / style.vector_density.clamp(1, 5_000)).max(1);
                 let vmax = snapshot
                     .samples
                     .iter()
@@ -350,7 +388,7 @@ impl App {
                 let stride = snapshot
                     .samples
                     .len()
-                    .div_ceil(style.vector_density.max(1))
+                    .div_ceil(style.vector_density.clamp(1, 5_000))
                     .max(1);
                 for sample in snapshot.samples.iter().step_by(stride) {
                     if let Some((point, _)) = self.camera.screen(sample.geometry.point, rect) {
@@ -394,347 +432,11 @@ impl App {
                 egui::FontId::proportional(12.),
                 Color32::WHITE,
             );
-        } else if let Some(cache) = if self.post_view() {
-            self.result_cache.as_ref().map(|c| c.mesh_cache())
-        } else if self.show_geometry && matches!(self.stage, Stage::Mesh | Stage::Setup) {
-            None
-        } else {
-            self.mesh_cache.as_ref()
-        } {
-            let palette = if self.post_view() {
-                self.result_palette
-            } else {
-                1
-            };
-            let data = self.result.as_ref().filter(|_| self.post_view());
-            let transport = self
-                .transport
-                .latest
-                .as_ref()
-                .filter(|_| self.stage == Stage::Setup && self.page == 5);
-            let quality = if self.stage == Stage::Mesh && self.page == 2 {
-                Some(cache.quality().values(match self.mesh_quality {
-                    1 => MeshQualityMetric::AspectRatio,
-                    2 => MeshQualityMetric::Skewness,
-                    3 => MeshQualityMetric::CellMeasure,
-                    4 => MeshQualityMetric::AdjacentVolumeRatio,
-                    _ => MeshQualityMetric::NonOrthogonality,
-                }))
-            } else {
-                None
-            };
-            let values = data
-                .map(|d| d.scalar_values(self.result_field))
-                .or_else(|| {
-                    transport.map(|s| match self.transport.field {
-                        1 => s.phase_fraction.as_slice(),
-                        2 => s.density.as_slice(),
-                        _ => s.temperature.as_slice(),
-                    })
-                })
-                .or(quality.as_deref());
-            let source_mesh = data
-                .map(|d| d.mesh())
-                .or_else(|| self.session.mesh().map(|m| &m.mesh));
-            let range = values.as_ref().map(|v| {
-                (
-                    v.iter()
-                        .copied()
-                        .filter(|v| v.is_finite())
-                        .fold(f64::INFINITY, f64::min),
-                    v.iter()
-                        .copied()
-                        .filter(|v| v.is_finite())
-                        .fold(f64::NEG_INFINITY, f64::max),
-                )
-            });
-            let visible_cells: Vec<bool> = source_mesh
-                .map(|source| {
-                    let component = |p: Vec3| match self.mesh_cut_axis {
-                        1 => p.y,
-                        2 => p.z,
-                        _ => p.x,
-                    };
-                    let low = source
-                        .points()
-                        .iter()
-                        .map(|p| component(p.position))
-                        .fold(f64::INFINITY, f64::min);
-                    let high = source
-                        .points()
-                        .iter()
-                        .map(|p| component(p.position))
-                        .fold(f64::NEG_INFINITY, f64::max);
-                    source
-                        .cells()
-                        .iter()
-                        .enumerate()
-                        .map(|(i, cell)| {
-                            (self.stage != Stage::Mesh
-                                || !self.mesh_cut
-                                || component(cell.center)
-                                    <= low + (high - low) * self.mesh_cut_fraction)
-                                && (self.stage != Stage::Mesh
-                                    || self.page != 2
-                                    || self.quality_above.is_none_or(|threshold| {
-                                        quality.as_ref().is_some_and(|q| q[i] >= threshold)
-                                    }))
-                        })
-                        .collect()
-                })
-                .unwrap_or_default();
-            let projected_positions: Vec<_> = cache
-                .positions()
-                .iter()
-                .map(|p| self.camera.screen(*p, rect))
-                .collect();
-            let range = if self.post_view() {
-                self.result_range
-                    .filter(|[a, b]| a.is_finite() && b.is_finite() && b > a)
-                    .map(|[a, b]| (a, b))
-                    .or(range)
-            } else if self.stage == Stage::Mesh && self.page == 2 {
-                self.quality_range.map(|[a, b]| (a, b)).or(range)
-            } else {
-                range
-            };
-            if let (Some(source), Some(v), Some((lo, hi))) = (source_mesh, values.as_ref(), range) {
-                if source.dimension() == MeshDimension::TwoD {
-                    let mut fill = egui::Mesh::default();
-                    let mut contour_triangles = Vec::new();
-                    let mut nodes = vec![(0.0, 0usize); source.points().len()];
-                    for (index, cell) in source.cells().iter().enumerate() {
-                        let mut vertices = std::collections::BTreeSet::new();
-                        for &face in &cell.faces {
-                            vertices.extend(source.faces()[face].vertices.iter().copied());
-                        }
-                        for vertex in vertices {
-                            nodes[vertex].0 += v[index];
-                            nodes[vertex].1 += 1;
-                        }
-                    }
-                    for (index, cell) in source.cells().iter().enumerate() {
-                        if !visible_cells[index] {
-                            continue;
-                        }
-                        for &face in &cell.faces {
-                            let ids = &source.faces()[face].vertices;
-                            if ids.len() != 2 {
-                                continue;
-                            }
-                            let a = source.points()[ids[0]].position;
-                            let b = source.points()[ids[1]].position;
-                            if let (Some((c, _)), Some((a_screen, _)), Some((b_screen, _))) = (
-                                self.camera.screen(cell.center, rect),
-                                self.camera.screen(a, rect),
-                                self.camera.screen(b, rect),
-                            ) {
-                                polygon(
-                                    &mut fill,
-                                    &[c, a_screen, b_screen],
-                                    scalar_color(v[index], lo, hi, palette),
-                                );
-                            }
-                            contour_triangles.push([
-                                (cell.center, v[index]),
-                                (a, nodes[ids[0]].0 / nodes[ids[0]].1.max(1) as f64),
-                                (b, nodes[ids[1]].0 / nodes[ids[1]].1.max(1) as f64),
-                            ]);
-                        }
-                    }
-                    if !self.post_view() || !matches!(self.result_plot, 1 | 3) {
-                        painter.add(Shape::mesh(fill));
-                    }
-                    if self.post_view() && matches!(self.result_plot, 1 | 2) {
-                        draw_contours(
-                            &painter,
-                            &self.camera,
-                            rect,
-                            contour_triangles.iter().copied(),
-                            lo,
-                            hi,
-                            self.result_levels,
-                        );
-                    }
-                }
-            }
-            let mut tris = Vec::with_capacity(cache.surface_triangles().len());
-            for (tri, face) in cache.surface_triangles().iter().zip(cache.triangle_faces()) {
-                if source_mesh.is_some_and(|m| !visible_cells[m.faces()[*face].owner]) {
-                    continue;
-                }
-                let projected: Option<Vec<_>> =
-                    tri.iter().map(|i| projected_positions[*i]).collect();
-                let Some(p) = projected else {
-                    continue;
-                };
-                let color =
-                    if let (Some(v), Some((lo, hi)), Some(mesh)) = (&values, range, source_mesh) {
-                        scalar_color(
-                            v.get(mesh.faces()[*face].owner).copied().unwrap_or(lo),
-                            lo,
-                            hi,
-                            palette,
-                        )
-                    } else {
-                        let q = cache.face_patch_indices()[*face].unwrap_or(0);
-                        [
-                            Color32::from_rgb(64, 93, 121),
-                            Color32::from_rgb(70, 115, 130),
-                            Color32::from_rgb(95, 98, 143),
-                        ][q % 3]
-                    };
-                tris.push((
-                    [p[0].0, p[1].0, p[2].0],
-                    p.iter().map(|p| p.1).sum::<f64>() / 3.,
-                    color,
-                ));
-            }
-            if self.stage == Stage::Mesh && (self.mesh_cut || self.quality_above.is_some()) {
-                if let (Some(source), Some(v), Some((lo, hi))) =
-                    (source_mesh, values.as_ref(), range)
-                {
-                    if source.dimension() == MeshDimension::ThreeD {
-                        for face in source.faces() {
-                            let Some(neighbour) = face.neighbour else {
-                                continue;
-                            };
-                            if visible_cells[face.owner] == visible_cells[neighbour] {
-                                continue;
-                            }
-                            let owner = if visible_cells[face.owner] {
-                                face.owner
-                            } else {
-                                neighbour
-                            };
-                            for i in 1..face.vertices.len().saturating_sub(1) {
-                                let ids =
-                                    [face.vertices[0], face.vertices[i], face.vertices[i + 1]];
-                                let points: Option<Vec<_>> =
-                                    ids.iter().map(|i| projected_positions[*i]).collect();
-                                if let Some(p) = points {
-                                    tris.push((
-                                        [p[0].0, p[1].0, p[2].0],
-                                        p.iter().map(|p| p.1).sum::<f64>() / 3.,
-                                        scalar_color(v[owner], lo, hi, palette),
-                                    ));
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            tris.sort_by(|a, b| b.1.total_cmp(&a.1));
-            let mut mesh = egui::Mesh::default();
-            for (p, _, color) in tris {
-                polygon(&mut mesh, &p, color);
-            }
-            if (!self.mesh_wireframe || self.stage != Stage::Mesh || self.page == 2)
-                && !(self.post_view() && matches!(self.result_plot, 1 | 3))
-            {
-                painter.add(Shape::mesh(mesh));
-            }
-            if self.post_view() && matches!(self.result_plot, 1 | 2) {
-                if let (Some(result_cache), Some((lo, hi))) = (&self.result_cache, range) {
-                    let nodes = result_cache.surface_node_values(self.result_field);
-                    draw_contours(
-                        &painter,
-                        &self.camera,
-                        rect,
-                        cache
-                            .surface_triangles()
-                            .iter()
-                            .map(|t| t.map(|i| (cache.positions()[i], nodes[i]))),
-                        lo,
-                        hi,
-                        self.result_levels,
-                    );
-                }
-            }
-
-            if data.is_none() {
-                if let Some((lo, hi)) = range {
-                    legend(&painter, rect, lo, hi, palette);
-                    if self.stage == Stage::Mesh && self.page == 2 {
-                        let names = [
-                            "Non-orthogonality (deg)",
-                            "Aspect ratio",
-                            "Skewness",
-                            "Cell measure",
-                            "Adjacent volume ratio",
-                        ];
-                        painter.text(
-                            rect.left_top() + egui::vec2(12., 12.),
-                            egui::Align2::LEFT_TOP,
-                            names[self.mesh_quality.min(4)],
-                            egui::FontId::proportional(12.),
-                            ui.visuals().text_color(),
-                        );
-                    }
-                }
-            }
-            if (data.is_none() || self.result_edges)
-                && (self.stage != Stage::Mesh || self.page != 2 || self.quality_edges)
-                && !(self.stage == Stage::Mesh && (self.mesh_cut || self.quality_above.is_some()))
-            {
-                for edge in cache.edges() {
-                    if let (Some((a, _)), Some((b, _))) =
-                        (projected_positions[edge[0]], projected_positions[edge[1]])
-                    {
-                        painter.line_segment(
-                            [a, b],
-                            Stroke::new(
-                                0.7,
-                                if data.is_some() {
-                                    Color32::from_black_alpha(110)
-                                } else {
-                                    Color32::from_rgb(168, 203, 225)
-                                },
-                            ),
-                        );
-                    }
-                }
-            }
-            if let (Some(d), Some((lo, hi))) = (data, range) {
-                legend(&painter, rect, lo, hi, palette);
-                painter.text(
-                    rect.left_top() + egui::vec2(12., 12.),
-                    egui::Align2::LEFT_TOP,
-                    self.result_field.label(),
-                    egui::FontId::proportional(12.),
-                    Color32::WHITE,
-                );
-                if self.result_vectors {
-                    let stride = d
-                        .mesh()
-                        .cell_count()
-                        .div_ceil(self.vector_count.max(1))
-                        .max(1);
-                    let max = d
-                        .velocity_magnitude()
-                        .iter()
-                        .copied()
-                        .fold(0., f64::max)
-                        .max(1e-30);
-                    for (i, c) in d.mesh().cells().iter().enumerate().step_by(stride) {
-                        let denominator = if self.vector_normalized {
-                            d.velocity()[i].norm().max(1e-30)
-                        } else {
-                            max
-                        };
-                        let end = c.center
-                            + d.velocity()[i]
-                                * (self.camera.radius * 0.06 * self.vector_scale.max(1e-6)
-                                    / denominator);
-                        if let (Some((a, _)), Some((b, _))) = (
-                            self.camera.screen(c.center, rect),
-                            self.camera.screen(end, rect),
-                        ) {
-                            painter.arrow(a, b - a, Stroke::new(1., Color32::WHITE));
-                        }
-                    }
-                }
-            }
+        } else if (!self.show_geometry || !matches!(self.stage, Stage::Mesh | Stage::Setup))
+            && (self.post_view() && self.result_cache.is_some()
+                || !self.post_view() && self.mesh_cache.is_some())
+        {
+            self.paint_mesh_scene(&painter, rect);
         } else {
             let native_gpu = self.render.is_some();
             if native_gpu {
@@ -844,6 +546,15 @@ impl App {
                 }
             }
         }
+        self.mesh_section_preview(&painter, rect);
+        let boundary_legend = if self.boundary_symbols
+            && !self.post_view()
+            && matches!(self.stage, Stage::Mesh | Stage::Setup)
+        {
+            self.paint_boundary_legend(ui, &painter, rect)
+        } else {
+            None
+        };
         let compact_navigation = rect.width() < 300. || rect.height() < 260.;
         let navigation = if compact_navigation {
             Rect::from_min_size(
@@ -900,10 +611,9 @@ impl App {
             }
         }
         if response.clicked() {
-            if let Some(p) = response
-                .interact_pointer_pos()
-                .filter(|p| !navigation.contains(*p))
-            {
+            if let Some(p) = response.interact_pointer_pos().filter(|p| {
+                !navigation.contains(*p) && !boundary_legend.is_some_and(|r| r.contains(*p))
+            }) {
                 if self.post_view() {
                     if self.plane_index > 0 && self.plane_snapshot.is_some() {
                         self.pick_plane_probe(p, rect);
@@ -1034,14 +744,23 @@ impl App {
             }
         }
         if self.post_view() {
-            for path in &self.streamlines {
-                for segment in path.points.windows(2) {
-                    if let (Some((a, _)), Some((b, _))) = (
-                        self.camera.screen(segment[0], rect),
-                        self.camera.screen(segment[1], rect),
-                    ) {
-                        painter.line_segment([a, b], Stroke::new(1.2, Color32::WHITE));
-                    }
+            let segments = self
+                .streamlines
+                .iter()
+                .map(|p| p.points.len().saturating_sub(1))
+                .sum::<usize>();
+            let stride = segments.div_ceil(50_000).max(1);
+            for segment in self
+                .streamlines
+                .iter()
+                .flat_map(|p| p.points.windows(2))
+                .step_by(stride)
+            {
+                if let (Some((a, _)), Some((b, _))) = (
+                    self.camera.screen(segment[0], rect),
+                    self.camera.screen(segment[1], rect),
+                ) {
+                    painter.line_segment([a, b], Stroke::new(1.2, Color32::WHITE));
                 }
             }
         }
@@ -1052,7 +771,7 @@ impl App {
             egui::FontId::proportional(11.),
             ui.visuals().weak_text_color(),
         );
-        painter.text(rect.left_bottom()+egui::vec2(12.,-12.),egui::Align2::LEFT_BOTTOM,"Drag: orbit / 2D pan    Middle or Shift-drag: pan    Wheel: zoom    Alt-drag: box select",egui::FontId::proportional(11.),Color32::from_rgb(156,174,195));
+        painter.text(rect.left_bottom()+egui::vec2(12.,-12.),egui::Align2::LEFT_BOTTOM,if rect.width()>850. {"Drag: orbit / 2D pan    Middle or Shift-drag: pan    Wheel: zoom    Alt-drag: box select"}else{"Drag: orbit / pan · Shift-drag: pan · Wheel: zoom"},egui::FontId::proportional(11.),Color32::from_rgb(156,174,195));
     }
     fn navigator(&mut self, ui: &mut egui::Ui, painter: &egui::Painter, r: Rect) {
         let center = r.center() + egui::vec2(4., 7.);
@@ -1312,7 +1031,7 @@ impl GeometryGpu {
         pick: usize,
         preferences: &Preferences,
     ) {
-        use cad_workbench::gpu::{Frame, GpuScene};
+        use cad_workbench::gpu::GpuScene;
         use std::hash::{Hash, Hasher};
         let mut fingerprint = std::collections::hash_map::DefaultHasher::new();
         for face in faces {
@@ -1401,6 +1120,21 @@ impl GeometryGpu {
             }
             self.input_key = input_key;
         }
+        self.paint_frame(painter, rect, view, preferences);
+    }
+    pub(super) fn upload(&mut self, scene: cad_workbench::gpu::GpuScene) {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        self.key = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed) | (1 << 63);
+        *self.slot.lock().unwrap_or_else(|e| e.into_inner()) = Some(scene);
+    }
+    pub(super) fn paint_frame(
+        &self,
+        painter: &egui::Painter,
+        rect: Rect,
+        view: &View,
+        preferences: &Preferences,
+    ) {
+        use cad_workbench::gpu::Frame;
         let key = self.key;
         let eye = view.camera.eye().to_f32();
         let ppp = painter.ctx().pixels_per_point();
