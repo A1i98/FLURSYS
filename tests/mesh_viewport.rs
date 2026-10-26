@@ -70,7 +70,7 @@ fn quality_is_backend_derived_safe_and_thresholded() {
     assert_eq!(quality.cell_measure(), &[1.0, 1.0]);
     assert!(quality.aspect_ratio().iter().all(|value| value.is_finite()));
     assert_eq!(
-        quality.bad_cells(flursys::MeshQualityMetric::CellMeasure, 0.5),
+        quality.bad_cells(flursys::MeshQualityMetric::CellMeasure, 1.5),
         vec![0, 1]
     );
     assert!(quality
@@ -107,6 +107,11 @@ fn three_dimensional_cache_contains_exterior_triangles_and_picks_a_mesh_face() {
     .unwrap();
     let cache = MeshRenderCache::build(&mesh).unwrap();
     assert_eq!(cache.surface_triangles().len(), 4);
+    assert!(cache.cell_polygon(0).is_none());
+    assert!(cache
+        .triangle_faces()
+        .iter()
+        .all(|&f| mesh.faces()[f].neighbour.is_none()));
     assert!(cache
         .quality()
         .cell_measure()
@@ -121,4 +126,112 @@ fn three_dimensional_cache_contains_exterior_triangles_and_picks_a_mesh_face() {
             .map(MeshSelection::target),
         Some(MeshSelectionTarget::Face(_))
     ));
+}
+
+#[test]
+fn mesh_sections_support_world_axes_flip_and_thin_slabs() {
+    use flursys::{workbench::mesh_viewport::MeshSection, Vec3};
+    let bounds = (Vec3::new(10., -4., 2.), Vec3::new(30., 6., 10.));
+    let mut section = MeshSection {
+        axis: 0,
+        fraction: 0.25,
+        reverse: false,
+        slab_width: None,
+    };
+    assert!(section.contains(Vec3::new(14., 0., 3.), bounds));
+    assert!(!section.contains(Vec3::new(16., 0., 3.), bounds));
+    section.reverse = true;
+    assert!(!section.contains(Vec3::new(14., 0., 3.), bounds));
+    assert!(section.contains(Vec3::new(16., 0., 3.), bounds));
+    section = MeshSection {
+        axis: 1,
+        fraction: 0.5,
+        reverse: false,
+        slab_width: Some(0.2),
+    };
+    assert!(section.contains(Vec3::new(20., 1., 6.), bounds));
+    assert!(!section.contains(Vec3::new(20., 3., 6.), bounds));
+    section.reverse = true;
+    assert!(section.contains(Vec3::new(20., 3., 6.), bounds));
+    assert!(!section.contains(Vec3::new(20., 1., 6.), bounds));
+    section = MeshSection {
+        axis: 2,
+        fraction: 0.5,
+        reverse: false,
+        slab_width: None,
+    };
+    assert!(section.contains(Vec3::new(20., 1., 5.), bounds));
+    assert!(!section.contains(Vec3::new(20., 1., 7.), bounds));
+    section.fraction = f64::NAN;
+    assert!(!section.contains(Vec3::new(20., 1., 5.), bounds));
+}
+
+#[test]
+fn volume_wireframe_includes_interior_edges_with_bounded_deterministic_detail() {
+    use flursys::workbench::mesh_viewport::{wireframe_edges, WireframeScope};
+    let mut points = Vec::new();
+    for k in 0..3 {
+        for j in 0..3 {
+            for i in 0..3 {
+                points.push(Point::new(i as f64, j as f64, k as f64));
+            }
+        }
+    }
+    let at = |i: usize, j: usize, k: usize| i + 3 * (j + 3 * k);
+    let mut cells = Vec::new();
+    for k in 0..2 {
+        for j in 0..2 {
+            for i in 0..2 {
+                cells.push(CellDefinition::Hexahedron([
+                    at(i, j, k),
+                    at(i + 1, j, k),
+                    at(i + 1, j + 1, k),
+                    at(i, j + 1, k),
+                    at(i, j, k + 1),
+                    at(i + 1, j, k + 1),
+                    at(i + 1, j + 1, k + 1),
+                    at(i, j + 1, k + 1),
+                ]));
+            }
+        }
+    }
+    let mesh = UnstructuredMesh::from_cells(MeshDimension::ThreeD, points, cells).unwrap();
+    let surface = wireframe_edges(&mesh, None, WireframeScope::Surface, 0).unwrap();
+    let volume = wireframe_edges(&mesh, None, WireframeScope::Volume, 0).unwrap();
+    assert_eq!(surface.edges.len(), 48);
+    assert_eq!(volume.edges.len(), 54);
+    assert!(!volume.reduced);
+    assert!(surface.edges.iter().all(|e| !e.vertices.contains(&13)));
+    assert!(volume.edges.iter().any(|e| e.vertices.contains(&13)));
+    let detail = wireframe_edges(&mesh, None, WireframeScope::Volume, 12).unwrap();
+    assert!(!detail.edges.is_empty());
+    assert!(detail.edges.len() <= 12);
+    assert!(detail.reduced);
+    assert_eq!(
+        detail.edges,
+        wireframe_edges(&mesh, None, WireframeScope::Volume, 12)
+            .unwrap()
+            .edges
+    );
+    let visible = mesh
+        .cells()
+        .iter()
+        .map(|c| c.center.x < 1.)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        wireframe_edges(&mesh, Some(&visible), WireframeScope::Volume, 0)
+            .unwrap()
+            .edges
+            .len(),
+        33
+    );
+    assert!(wireframe_edges(&mesh, Some(&[true]), WireframeScope::Volume, 12).is_err());
+    let planar = two_cell_mesh();
+    assert_eq!(
+        wireframe_edges(&planar, Some(&[true, false]), WireframeScope::Section, 0)
+            .unwrap()
+            .edges
+            .len(),
+        1
+    );
 }

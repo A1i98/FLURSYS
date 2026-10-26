@@ -2,6 +2,137 @@
 
 use crate::{MeshDimension, MeshId, UnstructuredMesh, Vec3};
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MeshSection {
+    pub axis: usize,
+    pub fraction: f64,
+    pub reverse: bool,
+    pub slab_width: Option<f64>,
+}
+impl MeshSection {
+    pub fn contains(self, point: Vec3, bounds: (Vec3, Vec3)) -> bool {
+        let component = |p: Vec3| match self.axis {
+            0 => p.x,
+            1 => p.y,
+            _ => p.z,
+        };
+        let lo = component(bounds.0);
+        let hi = component(bounds.1);
+        let p = component(point);
+        if self.axis > 2
+            || !self.fraction.is_finite()
+            || !p.is_finite()
+            || !lo.is_finite()
+            || !hi.is_finite()
+            || hi <= lo
+        {
+            return false;
+        }
+        let cut = lo + (hi - lo) * self.fraction.clamp(0., 1.);
+        if let Some(width) = self.slab_width {
+            if !width.is_finite() || width <= 0. {
+                return false;
+            }
+            let inside = (p - cut).abs() <= (hi - lo) * width.min(1.) * 0.5;
+            if self.reverse {
+                !inside
+            } else {
+                inside
+            }
+        } else if self.reverse {
+            p >= cut
+        } else {
+            p <= cut
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WireframeScope {
+    Surface,
+    Volume,
+    Section,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DisplayEdge {
+    pub vertices: [usize; 2],
+    pub face: usize,
+}
+
+pub struct WireframeEdges {
+    pub edges: Vec<DisplayEdge>,
+    pub reduced: bool,
+}
+
+/// Collects unique display edges; zero limit keeps every edge, including volume interiors.
+pub fn wireframe_edges(
+    mesh: &UnstructuredMesh,
+    visible: Option<&[bool]>,
+    scope: WireframeScope,
+    limit: usize,
+) -> Result<WireframeEdges, String> {
+    if visible.is_some_and(|v| v.len() != mesh.cell_count()) {
+        return Err("Wireframe visibility does not match the mesh".into());
+    }
+    let shown = |i: usize| visible.is_none_or(|v| v[i]);
+    let include = |face: &crate::Face| {
+        if scope == WireframeScope::Volume
+            || mesh.dimension() == MeshDimension::TwoD && scope != WireframeScope::Section
+        {
+            shown(face.owner) || face.neighbour.is_some_and(&shown)
+        } else if let Some(n) = face.neighbour {
+            visible.is_some() && shown(face.owner) != shown(n)
+        } else {
+            scope != WireframeScope::Section && shown(face.owner)
+        }
+    };
+    let candidates = mesh
+        .faces()
+        .iter()
+        .filter(|f| include(f))
+        .map(|f| f.vertices.len())
+        .sum::<usize>();
+    let estimate = if mesh.dimension() == MeshDimension::TwoD {
+        candidates / 2
+    } else if scope == WireframeScope::Volume {
+        candidates.div_ceil(3)
+    } else {
+        candidates.div_ceil(2)
+    };
+    let budget = if limit == 0 { usize::MAX } else { limit };
+    let stride = estimate.div_ceil(budget).max(1) as u64;
+    let mut unique = std::collections::HashSet::new();
+    let mut edges = Vec::with_capacity(estimate.min(budget).min(250_000));
+    let mut reduced = false;
+    for (i, face) in mesh.faces().iter().enumerate().filter(|(_, f)| include(f)) {
+        for (&a, &b) in face
+            .vertices
+            .iter()
+            .zip(face.vertices.iter().cycle().skip(1))
+            .take(face.vertices.len())
+        {
+            let vertices = if a < b { [a, b] } else { [b, a] };
+            let sample = (vertices[0] as u64).wrapping_mul(0x9e3779b97f4a7c15)
+                ^ (vertices[1] as u64).rotate_left(23);
+            if !sample.is_multiple_of(stride) {
+                reduced = true;
+                continue;
+            }
+            if unique.contains(&vertices) {
+                continue;
+            }
+            if edges.len() >= budget {
+                reduced = true;
+                continue;
+            }
+            unique.insert(vertices);
+            edges.push(DisplayEdge { vertices, face: i });
+        }
+    }
+    Ok(WireframeEdges { edges, reduced })
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MeshSelectionTarget {
     Face(usize),
@@ -288,6 +419,7 @@ impl MeshRenderCache {
         let cell_polygons = mesh
             .cells()
             .iter()
+            .filter(|_| mesh.dimension() == MeshDimension::TwoD)
             .map(|cell| {
                 let mut vertices = Vec::new();
                 for &face_index in &cell.faces {
