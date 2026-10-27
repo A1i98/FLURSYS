@@ -1185,14 +1185,21 @@ impl GeometryGpu {
 struct GeometryRenderer(cad_workbench::gpu::Renderer);
 struct GeometryCallback(cad_workbench::gpu::Frame);
 pub fn install_geometry_renderer(rs: &egui_wgpu::RenderState) {
+    let mut renderer = rs.renderer.write();
+    if renderer
+        .callback_resources
+        .get::<GeometryRenderer>()
+        .is_some()
+    {
+        return;
+    }
     let target = cad_workbench::gpu::GpuTarget {
         format: rs.target_format,
         depth: egui_wgpu::depth_format_from_bits(24, 8),
         samples: 1,
         tess: false,
     };
-    rs.renderer
-        .write()
+    renderer
         .callback_resources
         .insert(GeometryRenderer(cad_workbench::gpu::Renderer::new(
             &rs.device, target, None,

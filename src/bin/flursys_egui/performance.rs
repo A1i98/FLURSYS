@@ -53,7 +53,15 @@ struct Request {
     render_mesh: Option<Arc<MeshRenderCache>>,
     run: String,
 }
-type Loaded = Result<(usize, ResultDataset, ResultRenderCache), String>;
+type Loaded = Result<
+    (
+        usize,
+        ResultDataset,
+        ResultRenderCache,
+        Option<flursys::compressible::Snapshot>,
+    ),
+    String,
+>;
 #[derive(Default)]
 pub(super) struct FieldLoader {
     generation: u64,
@@ -115,7 +123,7 @@ impl FieldLoader {
         match result {
             Ok((generation, loaded)) => {
                 self.receiver = None;
-                if let Ok((_, _, cache)) = &loaded {
+                if let Ok((_, _, cache, _)) = &loaded {
                     if self
                         .mesh
                         .as_ref()
@@ -145,6 +153,20 @@ fn load_field(
     run: &str,
     render_mesh: Option<Arc<MeshRenderCache>>,
 ) -> Loaded {
+    if workbench::flow_frame::is_frame(path) {
+        let frame = workbench::flow_frame::FlowFrame::read(path)?;
+        let data = frame.dataset_on(mesh)?;
+        let cache = match render_mesh {
+            Some(cache) => ResultRenderCache::build_with_mesh_cache(&data, cache),
+            None => ResultRenderCache::build(&data),
+        }
+        .map_err(|e| e.to_string())?;
+        let state = match frame.fields {
+            workbench::flow_frame::FlowFields::Compressible { state } => Some(state),
+            _ => None,
+        };
+        return Ok((frame.step, data, cache, state));
+    }
     let (index, initial) = workbench::checkpoint::load(path, mesh)?;
     let data = match initial {
         IncompressibleInitialConditions::Restart {
@@ -177,7 +199,7 @@ fn load_field(
         None => ResultRenderCache::build(&data),
     }
     .map_err(|e| e.to_string())?;
-    Ok((index, data, cache))
+    Ok((index, data, cache, None))
 }
 impl App {
     pub(super) fn request_field_frame(&mut self, ctx: &egui::Context) {
@@ -210,7 +232,7 @@ impl App {
             return;
         }
         match self.field_loader.poll(ctx) {
-            Some(Ok((index, data, cache))) => {
+            Some(Ok((index, data, cache, state))) => {
                 let mesh_id = self
                     .result
                     .as_ref()
@@ -218,6 +240,9 @@ impl App {
                     .or_else(|| self.session.mesh().map(|m| m.mesh.id()));
                 if data.run_id() != self.result_run || mesh_id != Some(data.mesh().id()) {
                     return;
+                }
+                if let Some(state) = state {
+                    self.update_gas_result_report(state);
                 }
                 self.result_iteration = index;
                 self.result_cache = Some(cache);

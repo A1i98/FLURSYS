@@ -39,7 +39,7 @@ fn equation(
                         (P::Jacobi, "Jacobi"),
                         (P::Ic0, "IC(0)"),
                         (P::Gamg, "Aggregation multigrid"),
-                        (P::Auto, "Auto: IC(0) / Jacobi"),
+                        (P::Auto, "Auto: direct / iterative"),
                     ] {
                         ui.add_enabled_ui(pressure || matches!(p, P::None | P::Jacobi), |ui| {
                             ui.selectable_value(&mut c.preconditioner, p, n)
@@ -352,6 +352,11 @@ impl App {
 }
 impl App {
     pub(super) fn script_binding_properties(&mut self, ui: &mut egui::Ui) {
+        let pressure_label = if self.editor.solver.compressible.is_some() {
+            "Absolute pressure (Pa)"
+        } else {
+            "Kinematic pressure (m²/s²)"
+        };
         use flursys::scripting::Quantity as Q;
         let names: Vec<_> = self
             .editor
@@ -378,13 +383,13 @@ impl App {
                             egui::ComboBox::from_id_salt("quantity")
                                 .selected_text(match b.quantity {
                                     Q::Velocity => "Velocity (m/s)",
-                                    Q::Pressure => "Kinematic pressure (m²/s²)",
+                                    Q::Pressure => pressure_label,
                                     Q::Temperature => "Temperature (K)",
                                 })
                                 .show_ui(ui, |ui| {
                                     for (q, n) in [
                                         (Q::Velocity, "Velocity (m/s)"),
-                                        (Q::Pressure, "Kinematic pressure (m²/s²)"),
+                                        (Q::Pressure, pressure_label),
                                         (Q::Temperature, "Temperature (K)"),
                                     ] {
                                         ui.selectable_value(&mut b.quantity, q, n);

@@ -317,7 +317,7 @@ impl App {
                         });
                     });
                 }
-                if self.stage == Stage::Solution && self.project.solver.compressible.is_none() {
+                if self.stage == Stage::Solution {
                     egui::Panel::bottom("solution-controls")
                         .resizable(false)
                         .show(ui, |ui| {
@@ -328,7 +328,7 @@ impl App {
                                     RichText::new(format!("Iteration {}", self.iteration)).strong(),
                                 );
                                 ui.separator();
-                                match &mut self.editor.solver.time {
+                                if let Some(settings)=&mut self.editor.solver.compressible {ui.label("Additional time steps");ui.add_enabled(!self.jobs.is_running(),egui::DragValue::new(&mut settings.max_steps).range(1..=10_000_000));} else {match &mut self.editor.solver.time {
                                     TimeIntegration::Steady => {
                                         ui.label("Additional iterations");
                                         ui.add_enabled(!self.jobs.is_running(),egui::DragValue::new(&mut self.editor.solver.max_outer_iterations).range(1..=1_000_000));
@@ -337,6 +337,7 @@ impl App {
                                         ui.label("Additional time steps");
                                         ui.add_enabled(!self.jobs.is_running(),egui::DragValue::new(steps).range(1..=1_000_000));
                                     }
+                                }
                                 }
                             });
                             let total=self.limit.saturating_sub(self.segment_start);
@@ -359,18 +360,18 @@ impl App {
                             .wrap(),
                         );
                     });
-                if self.project.solver.compressible.is_none() && (self.stage == Stage::Results || (self.stage == Stage::Solution && self.page >= 7)) {
+                if self.stage == Stage::Results || (self.stage == Stage::Solution && self.page >= 7) {
                     egui::Panel::top("post-source").show(ui, |ui| self.post_toolbar(ui));
                 }
-                if matches!(self.stage,Stage::Solution|Stage::Results) && self.project.solver.compressible.is_some() {
+                if self.project.solver.compressible.is_some() && (self.stage == Stage::Results && self.page == 1) {
                     self.compressible_view(ui);
                 } else if self.stage == Stage::Solution && self.page == 6 {
                     self.engineering_chart(ui);
                 } else if (self.stage == Stage::Solution && self.page == 0)
-                    || (self.stage == Stage::Results && self.page == 3)
+                    || (self.stage == Stage::Results && self.page == 2)
                 {
                     if self.stage == Stage::Results && self.monitoring.chart {self.engineering_chart(ui);} else if self.stage == Stage::Results && self.migration.chart { self.profile_chart(ui); } else { self.convergence(ui); }
-                } else if self.stage == Stage::Results && self.page == 4 {
+                } else if self.stage == Stage::Results && self.page == 3 {
                     if !self.force_series.is_empty() {
                         let series=self.force_series.clone();
                         let settings=&self.editor.solver.force_analysis;
@@ -402,12 +403,7 @@ impl App {
             }
         }
     }
-    fn pages(&self) -> Vec<&'static str> {
-        if matches!(self.stage, Stage::Setup | Stage::Solution | Stage::Results)
-            && self.project.solver.compressible.is_some()
-        {
-            return vec!["Compressible flow"];
-        }
+    pub(super) fn pages(&self) -> Vec<&'static str> {
         match self.stage {
             Stage::Geometry => vec![],
             Stage::Mesh => vec!["Boundaries", "Sizing", "Quality", "Method"],
@@ -499,6 +495,16 @@ impl App {
                     self.page = 0;
                 }
             }
+            if self.project.solver.compressible.is_some()
+                && self
+                    .workspace
+                    .as_ref()
+                    .is_some_and(|p| p.join("compressible").is_dir())
+            {
+                egui::CollapsingHeader::new("Older runs")
+                    .default_open(true)
+                    .show(ui, |ui| self.compressible_archives(ui));
+            }
             egui::CollapsingHeader::new(format!("Runs · {}", self.project.runs.len()))
                 .default_open(true)
                 .show(ui, |ui| {
@@ -523,11 +529,21 @@ impl App {
         });
     }
     fn properties(&mut self, ui: &mut egui::Ui) {
-        if matches!(self.stage, Stage::Setup | Stage::Solution | Stage::Results)
-            && self.editor.solver.compressible.is_some()
-        {
-            self.compressible_properties(ui);
-            return;
+        if self.editor.solver.compressible.is_some() {
+            if self.stage == Stage::Setup && self.page == 5 {
+                ui.label("This backend does not yet provide scripted boundaries, transported scalars or viscous wall-load reports. Field inspection and conservation diagnostics are available in Display and Information.");
+                return;
+            }
+            if (self.stage == Stage::Setup && self.page != 3)
+                || (self.stage == Stage::Solution && matches!(self.page, 1 | 2 | 3 | 4))
+                || (self.stage == Stage::Results && self.page == 1)
+            {
+                if self.stage == Stage::Solution && self.page == 1 {
+                    self.recovery_properties(ui);
+                }
+                self.compressible_properties(ui);
+                return;
+            }
         }
         match self.stage {
             Stage::Mesh => self.mesh_properties(ui),
@@ -538,11 +554,6 @@ impl App {
         }
     }
     fn has_property_apply(&self) -> bool {
-        if matches!(self.stage, Stage::Solution | Stage::Results)
-            && self.project.solver.compressible.is_some()
-        {
-            return true;
-        }
         match self.stage {
             Stage::Mesh => self.page == 1 || self.page >= 3,
             Stage::Setup => self.page != 5,
@@ -560,7 +571,11 @@ impl App {
                 .min_size(egui::vec2(ui.available_width(), 34.)),
         );
         if response.clicked() {
-            if self.stage == Stage::Setup && self.page == 0 && !self.boundary_patch.is_empty() {
+            if self.editor.solver.compressible.is_none()
+                && self.stage == Stage::Setup
+                && self.page == 0
+                && !self.boundary_patch.is_empty()
+            {
                 self.stage_boundary_draft();
             }
             if let Err(e) = self.apply_editor() {
@@ -854,6 +869,7 @@ impl App {
                                 first_layer_height: self.editor.mesh.min_size * 0.2,
                                 growth_ratio: 1.2,
                                 layer_count: 5,
+                                triangles: false,
                                 enabled: true,
                             });
                     }
@@ -914,9 +930,28 @@ impl App {
 
                 let mut v =
                     serde_json::to_value(&self.editor.mesh_recipe.tuning).unwrap_or_default();
+                if let Some(fields) = v.as_object_mut() {
+                    fields.remove("mapped_start_sizes");
+                }
                 widgets::fields(ui, "mesh-tuning", &mut v);
-                if let Ok(t) = serde_json::from_value(v) {
+                if let Ok(mut t) = serde_json::from_value::<workbench::MeshTuning>(v) {
+                    t.mapped_start_sizes = self.editor.mesh_recipe.tuning.mapped_start_sizes;
                     self.editor.mesh_recipe.tuning = t;
+                }
+                if self.editor.mesh_recipe.tuning.method == M::MappedQuad {
+                    for (axis, label) in ["X", "Y"].into_iter().enumerate() {
+                        let size = &mut self.editor.mesh_recipe.tuning.mapped_start_sizes[axis];
+                        let mut enabled = size.is_some();
+                        if ui
+                            .checkbox(&mut enabled, format!("{label} mapped first-cell size"))
+                            .changed()
+                        {
+                            *size = enabled.then_some(self.editor.mesh.min_size);
+                        }
+                        if let Some(value) = size {
+                            widgets::number(ui, &format!("{label} first-cell size (m)"), value);
+                        }
+                    }
                 }
             }
         }
@@ -1265,9 +1300,8 @@ impl App {
             let saved = self.page;
             self.page = match saved {
                 7 => 0,
-                8 => 1,
-                9 => 5,
-                _ => 6,
+                8 => 4,
+                _ => 5,
             };
             self.results_properties(ui);
             self.page = saved;
@@ -1570,11 +1604,11 @@ impl App {
     }
     fn results_properties(&mut self, ui: &mut egui::Ui) {
         self.case_reference_properties(ui);
-        if self.page == 5 {
+        if self.page == 4 {
             self.probe_properties(ui);
             return;
         }
-        if self.page == 6 {
+        if self.page == 5 {
             self.history_properties(ui);
             return;
         }
@@ -1657,6 +1691,9 @@ impl App {
                     });
 
                 let fields = [
+                    ResultFieldKind::Density,
+                    ResultFieldKind::AbsolutePressure,
+                    ResultFieldKind::Mach,
                     ResultFieldKind::VelocityMagnitude,
                     ResultFieldKind::Pressure,
                     ResultFieldKind::VelocityX,
@@ -1677,6 +1714,8 @@ impl App {
                             for f in fields {
                                 let available = self.result.as_ref().is_some_and(|d| {
                                     d.scalar_values(f).len() == d.mesh().cell_count()
+                                        && !(self.project.solver.compressible.is_some()
+                                            && f == ResultFieldKind::Pressure)
                                 });
                                 ui.add_enabled_ui(available, |ui| {
                                     ui.selectable_value(&mut self.result_field, f, f.label());
@@ -1819,7 +1858,7 @@ impl App {
                     }
                 }
             }
-            2 => {
+            1 => {
                 heading(ui, "CONSERVATION AND DIAGNOSTICS");
                 self.export_diagnostics(ui);
                 if let Some(report) = &self.archived_report {
@@ -1878,7 +1917,7 @@ impl App {
                     }
                 }
             }
-            3 => {
+            2 => {
                 heading(ui, "HISTORY PLOTS");
                 ui.checkbox(&mut self.monitoring.chart, "Engineering monitor chart");
                 if self.monitoring.chart {
@@ -2072,19 +2111,14 @@ impl App {
         }
     }
     fn convergence_series(&self) -> Vec<workbench::series_plot::Series> {
-        [
-            "Continuity RMS",
-            "Momentum relative",
-            "Velocity change",
-            "Pressure linear",
-        ]
-        .iter()
-        .enumerate()
-        .map(|(i, name)| workbench::series_plot::Series {
-            name: name.to_string(),
-            points: self.plot_histories()[i].clone(),
-        })
-        .collect()
+        self.convergence_labels()
+            .iter()
+            .enumerate()
+            .map(|(i, name)| workbench::series_plot::Series {
+                name: name.to_string(),
+                points: self.plot_histories()[i].clone(),
+            })
+            .collect()
     }
     fn convergence(&mut self, ui: &mut egui::Ui) {
         if self.stage == Stage::Results && self.show_probe_plot {
@@ -2297,6 +2331,19 @@ impl App {
                 }
             }
         }
+        let gas_frame = self
+            .project
+            .runs
+            .iter()
+            .find(|run| run.id == id)
+            .and_then(|run| run.solution_path.as_ref())
+            .map(|file| path.join(file))
+            .filter(|file| workbench::flow_frame::is_frame(file))
+            .map(|file| workbench::flow_frame::FlowFrame::read(&file))
+            .transpose()?;
+        if let Some(frame) = gas_frame {
+            self.open_gas_result_frame(frame)?;
+        }
         self.inspect_engineering();
         self.refresh_field_frames();
         Ok(())
@@ -2305,7 +2352,9 @@ impl App {
         if self.export.is_some() {
             return;
         }
-        if self.show_initialization {
+        if self.show_initialization && self.editor.solver.compressible.is_some() {
+            self.compressible_initialization(ctx);
+        } else if self.show_initialization {
             let mut open = true;
             egui::Window::new("Initialize solution").open(&mut open).default_width(460.).frame(widgets::dialog_frame(ctx)).scroll(true).max_height(ctx.content_rect().height() * 0.85).show(ctx,|ui|{self.mapping_editor(ui);ui.separator();self.analytical_initialization(ui);ui.label("Uniform initialization resets accepted fields, physical time and iteration numbering. Existing run archives are retained.");vector(ui,"Uniform velocity (m/s)",&mut self.initial_velocity);number(ui,"Kinematic gauge pressure p/ρ",&mut self.initial_pressure);if self.editor.solver.thermal.enabled{number(ui,"Initial temperature (K)",&mut self.editor.solver.thermal.initial_temperature);}if ui.add_enabled(!self.busy(),egui::Button::new("Initialize fields")).clicked(){let valid=[self.initial_velocity.x,self.initial_velocity.y,self.initial_velocity.z,self.initial_pressure].iter().all(|v|v.is_finite());if !valid{self.message("Initialization values must be finite.");}else if let Some(mesh)=self.session.mesh().map(|m|m.mesh.id()){self.reset_solve_session();self.jobs.set_initial_fields(mesh,flursys::IncompressibleInitialConditions::Uniform{velocity:self.initial_velocity,pressure:self.initial_pressure});self.session.initialize_solution();self.histories=Default::default();self.iteration=0;self.force_history.clear();self.streamlines.clear();self.probes.clear();self.result=None;self.result_cache=None;self.result_run.clear();self.plane_snapshot=None;self.plane_frames.clear();self.plane_playing=false;self.archived_report=None;self.initialized=true;if let Err(e)=self.persist_continuation(){self.message(e);}self.show_initialization=false;self.message("Fields initialized; time and iteration numbering reset.");}else{self.message("Generate a mesh before initializing fields.");}}});
             self.show_initialization &= open;

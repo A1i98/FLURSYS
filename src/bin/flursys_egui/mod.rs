@@ -306,10 +306,7 @@ impl App {
         let project = WorkbenchProject::default();
         let session = WorkbenchSession::from_project(&project).expect("valid blank project");
         let render = cc.wgpu_render_state.clone();
-        let cad = cad::app(None, render.as_ref()).expect("empty CAD document");
-        if let Some(rs) = &render {
-            viewport::install_geometry_renderer(rs);
-        }
+        let cad = cad::app(None, None).expect("empty CAD document");
         let mut app = Self {
             migration: migration::State::new(),
             monitoring: monitoring::State::default(),
@@ -542,7 +539,6 @@ impl App {
     fn busy(&self) -> bool {
         self.jobs.is_running()
             || self.jobs.is_checkpointing()
-            || self.gas_flow.busy()
             || self.migration.mapping_active()
             || self.publishing.is_some()
             || self.loading.is_some()
@@ -572,7 +568,7 @@ impl App {
             recipe.fluid_face = s.fluid_face();
             p.cad_document = cad::restore_document(&recipe)?;
         }
-        self.cad = cad::app(p.cad_document.as_deref(), self.render.as_ref())?;
+        self.cad = cad::app(p.cad_document.as_deref(), None)?;
         self.transport = Default::default();
         self.transport.options = p.scalar_transport.clone().unwrap_or_default();
         self.published_document = Some(self.cad.session.doc.to_json());
@@ -843,8 +839,7 @@ impl App {
     }
     fn stage(&mut self, next: Stage) {
         self.home_open = false;
-        if next == Stage::Geometry
-            && (self.jobs.is_running() || self.transport.receiver.is_some() || self.gas_flow.busy())
+        if next == Stage::Geometry && (self.jobs.is_running() || self.transport.receiver.is_some())
         {
             self.message("Stop the active job before editing CAD.");
             return;
@@ -903,7 +898,8 @@ impl App {
             || p.solver.thermal.enabled != self.project.solver.thermal.enabled
             || p.solver.thermal.reduced_pressure != self.project.solver.thermal.reduced_pressure
             || p.solver.initial_profile != self.project.solver.initial_profile
-            || p.solver.compressible.is_some() != self.project.solver.compressible.is_some();
+            || p.solver.compressible.as_ref().map(|s| s.gas)
+                != self.project.solver.compressible.as_ref().map(|s| s.gas);
         if !mesh_changed {
             if let Some(m) = mesh {
                 s.install_mesh(m);
@@ -939,10 +935,6 @@ impl App {
         }
     }
     fn start_solve(&mut self) {
-        if self.editor.solver.compressible.is_some() {
-            self.start_compressible();
-            return;
-        }
         if self.jobs.is_running() {
             if self.jobs.is_paused() {
                 self.jobs.set_paused(false);
@@ -960,10 +952,15 @@ impl App {
                 self.editor.mesh_asset = self.project.mesh_asset.clone();
             }
             workbench::save_workspace(&path, &self.project).map_err(|e| e.to_string())?;
-            let case = self.session.prepare_case().map_err(|e| e.to_string())?;
-            let review = workbench::solve_review::review(&case, &self.project.plane_monitors);
-            if review.blocked() {
-                return Err(review.summary());
+            let case = self
+                .session
+                .prepare_flow_case()
+                .map_err(|e| e.to_string())?;
+            if let flursys::flow::FlowCase::Incompressible(case) = &case {
+                let review = workbench::solve_review::review(case, &self.project.plane_monitors);
+                if review.blocked() {
+                    return Err(review.summary());
+                }
             }
             let folder = self.solve_recording.clone().unwrap_or_else(|| {
                 path.join("monitors").join(format!(
@@ -980,21 +977,24 @@ impl App {
                 self.histories = Default::default();
             }
             self.iteration = self.segment_start;
-            self.limit = self.segment_start.saturating_add(
-                self.project
-                    .solver
-                    .time
-                    .parameters()
-                    .map(|(_, steps)| steps)
-                    .unwrap_or(self.project.solver.max_outer_iterations),
-            );
-            self.configure_engineering()?;
+            self.limit = self.segment_start.saturating_add(case.budget());
+            if matches!(case, flursys::flow::FlowCase::Incompressible(_)) {
+                self.configure_engineering()?;
+            }
             self.jobs.set_checkpoint_interval(self.checkpoint_every);
             self.jobs
                 .set_recovery_policy(self.recovery_policy.clone())?;
-            self.jobs
-                .start_solve_with_planes(case, self.project.plane_monitors.clone(), folder.clone())
-                .map_err(str::to_string)?;
+            let run_id = self.continuation_run.clone().unwrap_or_else(|| {
+                self.project
+                    .next_run(workbench::RunStatus::MaxIterations)
+                    .id
+            });
+            self.jobs.start_flow(
+                case,
+                self.project.plane_monitors.clone(),
+                folder.clone(),
+                run_id,
+            )?;
             self.solve_recording = Some(folder.clone());
             self.recording = Some(folder);
             if let Err(e) = self.persist_continuation() {
@@ -1074,7 +1074,6 @@ impl App {
         }
 
         self.poll_workspace_dialog();
-        self.poll_compressible();
         self.poll_mapping();
         self.poll_transport();
         if let Some((id, rx)) = &self.frame_scan {
@@ -1249,7 +1248,10 @@ impl App {
                         self.project.solver.velocity_relaxation, self.project.solver.pressure_relaxation,
                         self.project.solver.continuity_absolute_tolerance, self.project.solver.coupling_relative_tolerance,
                     ));
-                    self.append_log("  Iteration       Continuity RMS     Momentum relative     Velocity change      Pressure linear");
+                    self.append_log(format!(
+                        "Step          {}",
+                        self.convergence_labels().join("          ")
+                    ));
                 }
                 WorkbenchJobEvent::MeshCompleted(result) => match result {
                     Ok(m) => {
@@ -1295,6 +1297,9 @@ impl App {
                     }
                 }
                 WorkbenchJobEvent::SolveProgress(JobProgress::Message(m)) => self.message(m),
+                WorkbenchJobEvent::CompressibleCompleted(result) => {
+                    self.finish_compressible(result)
+                }
                 WorkbenchJobEvent::SolveCompleted(result) => {
                     self.iteration = self.jobs.completed_iterations();
                     match &result {
@@ -1361,7 +1366,12 @@ impl App {
                     let sample = force_analysis::Sample {
                         index: iteration,
                         time: physical_time,
-                        density: self.session.material().density,
+                        density: self
+                            .project
+                            .solver
+                            .compressible
+                            .as_ref()
+                            .map_or(self.session.material().density, |s| s.initial.density),
                         reports: reports.clone(),
                     };
                     if let Some(old) = self
@@ -1598,7 +1608,18 @@ impl eframe::App for App {
             }
             ctx.request_repaint_after(Duration::from_millis(50));
         }
-        if self.stage == Stage::Geometry {
+        if !self.home_open {
+            if let Some(rs) = &self.render {
+                if self.stage == Stage::Geometry {
+                    if self.cad.viewport.gpu.is_none() {
+                        self.cad.set_wgpu(rs, 24, 8, 1);
+                    }
+                } else {
+                    viewport::install_geometry_renderer(rs);
+                }
+            }
+        }
+        if !self.home_open && self.stage == Stage::Geometry {
             self.cad.logic(ctx);
         }
         if self.busy()

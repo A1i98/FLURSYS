@@ -86,6 +86,17 @@ impl App {
                 map.remove("backend");
                 map.remove("adapter");
                 map.remove("cpu_fallback");
+                if self.editor.solver.compressible.is_some() {
+                    for key in [
+                        "gpu_preconditioner",
+                        "gpu_restart",
+                        "gpu_inner_iterations",
+                        "gpu_smoothing_sweeps",
+                        "gpu_host_basis_mb",
+                    ] {
+                        map.remove(key);
+                    }
+                }
                 if self.editor.solver.compute.backend != Backend::Gpu {
                     map.retain(|k, _| !k.starts_with("gpu_"));
                 }
@@ -102,6 +113,23 @@ impl App {
             }
         });
     }
+    pub(super) fn convergence_labels(&self) -> [&'static str; 4] {
+        if self.project.solver.compressible.is_some() {
+            [
+                "Mass RHS RMS",
+                "Momentum RHS RMS",
+                "Energy RHS RMS",
+                "Relative state change",
+            ]
+        } else {
+            [
+                "Continuity RMS",
+                "Momentum relative",
+                "Velocity change",
+                "Pressure linear",
+            ]
+        }
+    }
     pub(super) fn native_convergence(&mut self, ui: &mut egui::Ui) {
         let chart_top = ui.cursor().min;
         ui.horizontal_wrapped(|ui| {
@@ -114,12 +142,7 @@ impl App {
             Color32::from_rgb(101, 212, 156),
             Color32::from_rgb(196, 155, 255),
         ];
-        let names = [
-            "Continuity RMS",
-            "Momentum relative",
-            "Velocity change",
-            "Pressure linear",
-        ];
+        let names = self.convergence_labels();
         ui.horizontal_wrapped(|ui| {
             for i in 0..4 {
                 ui.scope(|ui| {
@@ -612,6 +635,17 @@ impl App {
                         p.center.x, p.center.y, p.center.z
                     ));
                     ui.label(format!("p/ρ: {:.6e} m²/s²", p.pressure));
+                    if let Some(data) = &self.result {
+                        for field in [
+                            ResultFieldKind::Density,
+                            ResultFieldKind::AbsolutePressure,
+                            ResultFieldKind::Mach,
+                        ] {
+                            if let Some(value) = data.scalar_values(field).get(p.cell_index) {
+                                ui.label(format!("{}: {:.6e}", field.label(), value));
+                            }
+                        }
+                    }
                     ui.label(format!(
                         "U: {:.5e}, {:.5e}, {:.5e} m/s",
                         p.velocity.x, p.velocity.y, p.velocity.z
@@ -755,42 +789,51 @@ impl App {
             && self.live_refresh.elapsed().as_secs_f64() >= self.preferences.live_refresh_seconds
         {
             self.live_refresh = Instant::now();
-            if let Some(mesh) = self.session.mesh() {
-                if let Some((
-                    _,
-                    flursys::IncompressibleInitialConditions::Restart {
-                        velocity,
-                        pressure,
-                        temperature,
-                        turbulence,
-                        ..
-                    },
-                )) = self.jobs.retained_fields(mesh.mesh.id())
-                {
-                    if let Ok(data) = ResultDataset::from_values(
-                        "live",
-                        &mesh.mesh,
-                        pressure.values().to_vec(),
-                        velocity.values().to_vec(),
-                    )
-                    .and_then(|d| d.with_temperature(temperature.map(|t| t.values().to_vec())))
-                    {
-                        let data = data.with_turbulence(turbulence.as_ref());
-                        self.live_iteration = self.jobs.completed_iterations();
-                        if self.plane_index == 0 {
-                            for p in &mut self.probes {
-                                if let Some(sample) = data.probe_cell(p.cell_index) {
-                                    *p = sample;
-                                }
-                            }
+            let data = self.session.mesh().and_then(|mesh| {
+                if self.project.solver.compressible.is_some() {
+                    self.jobs
+                        .retained_compressible(mesh.mesh.id())
+                        .and_then(|state| state.dataset("live", &mesh.mesh).ok())
+                } else {
+                    self.jobs
+                        .retained_fields(mesh.mesh.id())
+                        .and_then(|(_, fields)| match fields {
+                            IncompressibleInitialConditions::Restart {
+                                velocity,
+                                pressure,
+                                temperature,
+                                turbulence,
+                                ..
+                            } => ResultDataset::from_values(
+                                "live",
+                                &mesh.mesh,
+                                pressure.values().to_vec(),
+                                velocity.values().to_vec(),
+                            )
+                            .and_then(|d| {
+                                d.with_temperature(temperature.map(|t| t.values().to_vec()))
+                            })
+                            .ok()
+                            .map(|d| d.with_turbulence(turbulence.as_ref())),
+                            _ => None,
+                        })
+                }
+            });
+            if let Some(data) = data {
+                self.live_iteration = self.jobs.completed_iterations();
+                if self.plane_index == 0 {
+                    for p in &mut self.probes {
+                        if let Some(sample) = data.probe_cell(p.cell_index) {
+                            *p = sample;
                         }
-                        self.result_cache = ResultRenderCache::build(&data).ok();
-                        self.result = Some(data);
-                        self.result_run = "live".into();
                     }
                 }
+                self.result_cache = ResultRenderCache::build(&data).ok();
+                self.result = Some(data);
+                self.result_run = "live".into();
             }
         }
+
         if self.field_playing
             && !self.field_loader.busy()
             && !self.field_frames.is_empty()
@@ -973,6 +1016,23 @@ impl App {
 }
 impl App {
     pub(super) fn ensure_result(&mut self) {
+        if self.project.solver.compressible.is_some() && self.project.runs.is_empty() {
+            if self.result.is_none() {
+                if let Some(path) = self
+                    .workspace
+                    .as_ref()
+                    .map(|p| p.join("compressible/latest.json"))
+                    .filter(|p| p.is_file())
+                {
+                    if let Err(e) = self.load_compressible_archive(&path) {
+                        self.message(e);
+                    }
+                } else if let Err(e) = self.activate_compressible_result() {
+                    self.message(e);
+                }
+            }
+            return;
+        }
         let stage = self.stage;
         let page = self.page;
         if self.session.solution().is_some() {
@@ -1137,6 +1197,15 @@ impl App {
 }
 impl App {
     fn preview_checkpoint(&mut self, path: &Path) -> Result<(), String> {
+        if workbench::flow_frame::is_frame(path) {
+            let frame = workbench::flow_frame::FlowFrame::read(path)?;
+            let data = frame.dataset()?;
+            self.result_iteration = frame.step;
+            self.result_run = frame.run_id;
+            self.result_cache = Some(ResultRenderCache::build(&data).map_err(|e| e.to_string())?);
+            self.result = Some(data);
+            return Ok(());
+        }
         let mesh = &self
             .session
             .mesh()

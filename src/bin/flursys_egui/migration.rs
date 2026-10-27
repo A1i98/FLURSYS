@@ -525,7 +525,7 @@ impl App {
                     .show_ui(ui, |ui| {
                         use ResultFieldKind::*;
                         for field in [VelocityMagnitude, Pressure, VelocityX, VelocityY, VelocityZ,
-                            Temperature, VorticityMagnitude, VelocityDivergence, QCriterion,
+                            Temperature, Density, AbsolutePressure, Mach, VorticityMagnitude, VelocityDivergence, QCriterion,
                             StrainRate, TurbulentK, SpecificDissipation, TurbulentViscosity] {
                             let available = self.result.as_ref().is_some_and(|d|
                                 d.scalar_values(field).len() == d.mesh().cell_count());
@@ -608,6 +608,18 @@ impl App {
                 return Err("Maximum eight comparison curves.".into());
             }
             self.migration.curves.push(curve);
+        }
+        if let Some(reference) = self.sod_profile_reference(a, b, count) {
+            if let Some(index) = self
+                .migration
+                .curves
+                .iter()
+                .position(|curve| curve.name == reference.name)
+            {
+                self.migration.curves[index] = reference;
+            } else if self.migration.curves.len() < 8 {
+                self.migration.curves.push(reference);
+            }
         }
         self.migration.context = Some(context);
         self.migration.chart = true;

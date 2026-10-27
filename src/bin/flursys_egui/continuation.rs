@@ -26,7 +26,7 @@ pub(super) fn insert_sample(
 }
 impl App {
     fn equation_family(&self) -> serde_json::Value {
-        serde_json::json!({"transient":self.project.solver.time.is_transient(),"backward":matches!(self.project.solver.time, flursys::unstructured_incompressible::TimeIntegration::Backward{..}|flursys::unstructured_incompressible::TimeIntegration::AdaptiveBackward{..}),"reduced_pressure":self.project.solver.thermal.reduced_pressure,"turbulence":self.project.solver.turbulence.model,"thermal":self.project.solver.thermal.enabled})
+        serde_json::json!({"compressible":self.project.solver.compressible.as_ref().map(|s|s.gas),"transient":self.project.solver.compressible.is_some()||self.project.solver.time.is_transient(),"backward":matches!(self.project.solver.time, flursys::unstructured_incompressible::TimeIntegration::Backward{..}|flursys::unstructured_incompressible::TimeIntegration::AdaptiveBackward{..}),"reduced_pressure":self.project.solver.thermal.reduced_pressure,"turbulence":self.project.solver.turbulence.model,"thermal":self.project.solver.thermal.enabled})
     }
     pub(super) fn reset_solve_session(&mut self) {
         self.jobs = WorkbenchJobExecutor::new();
@@ -158,6 +158,9 @@ impl App {
         }
         self.monitoring.options = state.monitors;
         let Some(folder) = state.folder else {
+            if self.project.solver.compressible.is_some() {
+                return;
+            }
             if let Some((velocity, pressure)) = state.initial {
                 self.initialized = true;
                 self.initial_velocity = velocity;
@@ -178,6 +181,32 @@ impl App {
             return;
         }
         let folder = workspace.join(folder);
+        if self.project.solver.compressible.is_some() {
+            let path = folder.join("checkpoint.json");
+            let recovered = std::iter::once(path.clone())
+                .chain(workbench::checkpoint::backup_paths(&path))
+                .find(|p| workbench::flow_frame::FlowFrame::read(p).is_ok());
+            if let Some(path) = recovered {
+                match self.restore_gas_frame(&path, state.run.clone()) {
+                    Ok(()) => {
+                        self.recording = Some(folder.clone());
+                        self.solve_recording = Some(folder);
+                        if let Some(run) = state
+                            .run
+                            .and_then(|id| self.project.runs.iter().find(|r| r.id == id))
+                        {
+                            if let Ok(report) = flursys::headless::report(&workspace, run) {
+                                self.solve_histories = read_histories(&report, self.iteration);
+                                self.histories = self.solve_histories.clone();
+                            }
+                        }
+                        self.refresh_field_frames();
+                    }
+                    Err(e) => self.message(format!("Continuation recovery failed: {e}")),
+                }
+            }
+            return;
+        }
         let mesh = &self.session.mesh().unwrap().mesh;
         let restored = workbench::checkpoint::recover(&folder, mesh);
         match restored {
@@ -505,6 +534,17 @@ impl App {
 }
 impl App {
     pub(super) fn load_continuation_checkpoint(&mut self, path: &Path) -> Result<(), String> {
+        if workbench::flow_frame::is_frame(path) {
+            self.reset_solve_session();
+            self.restore_gas_frame(path, None)?;
+            self.solve_recording = None;
+            self.recording = None;
+            self.persist_continuation()?;
+            self.message(
+                "Checkpoint loaded; accepted fields and numbering retained for a new run.",
+            );
+            return Ok(());
+        }
         let mesh = &self
             .session
             .mesh()
