@@ -246,6 +246,7 @@ fn build_channel() -> Result<WorkbenchSession, ExampleProjectError> {
             first_layer_height: 0.01,
             growth_ratio: 1.2,
             layer_count: 4,
+            triangles: false,
             enabled: true,
         }],
         ..MeshRecipe::default()

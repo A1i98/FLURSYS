@@ -150,7 +150,7 @@ pub(super) fn project(
             .equations
             .map(|e| e.pressure)
             .unwrap_or(crate::equations::EquationControl {
-                preconditioner: crate::equations::EquationPreconditioner::Ic0,
+                preconditioner: crate::equations::EquationPreconditioner::Auto,
                 ..crate::equations::EquationControl::from_options(options.pressure_solver)
             });
     let mut correction = CellField::filled(mesh, 0.0);
@@ -201,7 +201,7 @@ pub(super) fn project(
             correction.values_mut(),
         )?;
         if !report.converged() {
-            return Err(SimpleError::PressureLinearDidNotConverge);
+            return Err(SimpleError::PressureLinearDidNotConverge { report });
         }
         last = Some(report);
     }

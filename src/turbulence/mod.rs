@@ -568,7 +568,7 @@ impl Closure {
                 )));
             }
             viscosity[i] = nu + nut;
-            // Remaining transpose/deviatoric stress and isotropic SGS/RANS stress.
+            // Constant molecular viscosity is already covered by the incompressible Laplacian.
             let mut traction = [0.0; 3];
             let area = [f.area_vector.x, f.area_vector.y, f.area_vector.z];
             let tr = (0..3)
@@ -583,9 +583,9 @@ impl Closure {
             for a in 0..3 {
                 for b in 0..3 {
                     let gt = (1.0 - l) * gradient[o][b][a] + l * gradient[n][b][a];
-                    traction[a] += (viscosity[i] * gt
+                    traction[a] += (nut * gt
                         - if a == b {
-                            2.0 / 3.0 * (viscosity[i] * tr + k)
+                            2.0 / 3.0 * (nut * tr + k)
                         } else {
                             0.0
                         })
@@ -662,4 +662,77 @@ fn velocity_gradient(
                 .unwrap()
         })
         .collect())
+}
+
+#[cfg(test)]
+mod laminar_limit_tests {
+    use super::*;
+    #[test]
+    fn zero_eddy_viscosity_does_not_add_a_second_molecular_diffusion_source() {
+        let mesh = UnstructuredMesh::from_cells(
+            MeshDimension::TwoD,
+            vec![
+                Point::new(0., 0., 0.),
+                Point::new(1., 0., 0.),
+                Point::new(2., 0., 0.),
+                Point::new(0., 1., 0.),
+                Point::new(1., 1., 0.),
+                Point::new(2., 1., 0.),
+            ],
+            vec![
+                CellDefinition::polygon(vec![0, 1, 4, 3]),
+                CellDefinition::polygon(vec![1, 2, 5, 4]),
+            ],
+        )
+        .unwrap();
+        let exterior = mesh
+            .faces()
+            .iter()
+            .enumerate()
+            .filter(|(_, f)| f.neighbour.is_none())
+            .map(|(i, _)| i)
+            .collect();
+        let mesh = mesh
+            .with_boundary_patches(vec![BoundaryPatch {
+                name: "wall".into(),
+                face_indices: exterior,
+                boundary_type: BoundaryType::Wall,
+            }])
+            .unwrap();
+        let mut options = IncompressibleSolverOptions::default();
+        options.turbulence.model = TurbulenceModel::SpalartAllmaras;
+        let case = IncompressibleCase::steady(
+            mesh.clone(),
+            vec![("wall".into(), IncompressibleBoundaryCondition::NoSlipWall)],
+            IncompressibleMaterial {
+                density: 1.,
+                kinematic_viscosity: 0.01,
+            },
+            options,
+        );
+        let mut fields = TurbulenceFields::new(&mesh, &case.solver.turbulence);
+        fields.nu_tilda.as_mut().unwrap().fill(0.);
+        let mut closure = Closure::new(&mesh, &case, Some(fields)).unwrap();
+        let state = SimpleState::new(
+            &mesh,
+            CellField::from_values(&mesh, vec![Vec3::new(1., 0.2, 0.), Vec3::new(-0.3, 2., 0.)])
+                .unwrap(),
+            CellField::filled(&mesh, 0.),
+            FaceField::filled(&mesh, 0.),
+        )
+        .unwrap();
+        let boundary = case.resolve_boundaries().unwrap();
+        let (viscosity, source) = closure
+            .correct(
+                &mesh,
+                &state,
+                boundary.velocity_boundary(),
+                0.01,
+                Some(0.001),
+                LinearSolverOptions::default(),
+            )
+            .unwrap();
+        assert!(viscosity.values().iter().all(|v| (*v - 0.01).abs() < 1e-15));
+        assert!(source.values().iter().all(|s| s.norm() < 1e-15));
+    }
 }

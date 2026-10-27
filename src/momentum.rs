@@ -1663,6 +1663,42 @@ mod tests {
     }
 
     #[test]
+    fn limited_convection_reused_stencil_matches_fresh_reconstruction() {
+        let mesh = skewed_grid();
+        let assignments: Vec<_> = mesh
+            .boundary_patches()
+            .iter()
+            .map(|p| (p.name.as_str(), ScalarBoundaryCondition::FixedValue(1.0)))
+            .collect();
+        let boundary = ResolvedScalarBoundaryConditions::strict(&mesh, &assignments).unwrap();
+        let flux = FaceField::filled(&mesh, 0.2);
+        let current = CellField::from_cells(&mesh, |_, c| 1.0 + c.center.x - c.center.y);
+        let mut options = MomentumOptions::steady(Diffusivity::Constant(1.0), &boundary, &flux);
+        options.convection = MomentumConvection::LimitedLinear;
+        options.correction_field = Some(&current);
+        let fresh = assemble_momentum_component(&mesh, options).unwrap();
+        let stencil = LeastSquaresGradientStencil::new(&mesh, &boundary).unwrap();
+        options.least_squares_stencil = Some(&stencil);
+        let cached = assemble_momentum_component(&mesh, options).unwrap();
+        assert_eq!(fresh.matrix(), cached.matrix());
+        assert_eq!(fresh.rhs(), cached.rhs());
+
+        let changed_assignments: Vec<_> = mesh
+            .boundary_patches()
+            .iter()
+            .map(|p| (p.name.as_str(), ScalarBoundaryCondition::FixedValue(2.0)))
+            .collect();
+        let changed =
+            ResolvedScalarBoundaryConditions::strict(&mesh, &changed_assignments).unwrap();
+        options.boundary = &changed;
+        let stale = assemble_momentum_component(&mesh, options).unwrap();
+        options.least_squares_stencil = None;
+        let rebuilt = assemble_momentum_component(&mesh, options).unwrap();
+        assert_eq!(stale.matrix(), rebuilt.matrix());
+        assert_eq!(stale.rhs(), rebuilt.rhs());
+    }
+
+    #[test]
     fn skewed_lsq_momentum_correction_is_finite_and_changes_only_the_rhs() {
         let mesh = skewed_grid();
         let analytic = |point: Vec3| 2.0 * point.x - 3.0 * point.y + 5.0;

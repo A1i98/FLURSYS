@@ -15,8 +15,12 @@ pub struct WallFaceSample {
     pub pressure_force: Vec3,
     pub shear_force: Vec3,
 }
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct WallPatchReport {
+    #[serde(default)]
+    pub heat_flux_outward_mean: Option<f64>,
+    #[serde(default)]
+    pub heat_transfer_outward: Option<f64>,
     pub patch: String,
     pub force_unit: String,
     pub faces: usize,
@@ -84,6 +88,8 @@ pub fn reports_with_turbulence(
             continue;
         };
         let mut r = WallPatchReport {
+            heat_flux_outward_mean: None,
+            heat_transfer_outward: None,
             patch: name.clone(),
             force_unit: if mesh.dimension() == crate::MeshDimension::TwoD {
                 "N/m".into()

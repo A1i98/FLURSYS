@@ -122,6 +122,7 @@ impl Closure {
         }
         let old = self.old.as_ref();
         let report = scalar_solve(
+            "omega",
             mesh,
             &state.face_flux,
             &wb,
@@ -132,10 +133,11 @@ impl Closure {
             old.map(|o| &o.omega),
             dt,
             self.config.relaxation,
-            self.linear.as_ref().map_or(
-                crate::equations::EquationControl::from_options(linear),
-                |e| e.omega,
-            ),
+            self.linear
+                .as_ref()
+                .map_or(crate::equations::EquationControl::transport(linear), |e| {
+                    e.omega
+                }),
             &self.walls,
             nu,
             if omega_walls { Some(&wall.omega) } else { None },
@@ -161,6 +163,7 @@ impl Closure {
             }
         }
         let report = scalar_solve(
+            "k",
             mesh,
             &state.face_flux,
             &kb,
@@ -171,10 +174,11 @@ impl Closure {
             old.map(|o| &o.k),
             dt,
             self.config.relaxation,
-            self.linear.as_ref().map_or(
-                crate::equations::EquationControl::from_options(linear),
-                |e| e.k,
-            ),
+            self.linear
+                .as_ref()
+                .map_or(crate::equations::EquationControl::transport(linear), |e| {
+                    e.k
+                }),
             &self.walls,
             nu,
             None,
@@ -191,6 +195,7 @@ impl Closure {
 }
 #[allow(clippy::too_many_arguments)]
 pub(super) fn scalar_solve(
+    equation: &str,
     mesh: &UnstructuredMesh,
     phi: &FaceField<f64>,
     bc: &ResolvedScalarBoundaryConditions,
@@ -259,7 +264,7 @@ pub(super) fn scalar_solve(
     let report = linear.solve(&matrix, &rhs, field.values_mut(), false)?;
     if report.status != LinearSolverStatus::Converged {
         return Err(SimpleError::PhysicalBoundary(
-            "Turbulence scalar linear solve did not converge".into(),
+            format!("Turbulence {equation} linear solve did not converge: iterations={}, initial={:.6e}, final={:.6e}, relative={:.6e}, preconditioner={:?}", report.iterations, report.initial_residual, report.final_residual, report.relative_residual, linear.preconditioner),
         ));
     }
     if field.values().iter().any(|x| !x.is_finite()) {

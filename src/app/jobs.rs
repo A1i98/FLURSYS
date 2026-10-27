@@ -1,3 +1,5 @@
+#[path = "flow.rs"]
+mod flow;
 use crate::{
     solve_incompressible_with_control, GeneratedMesh, GeometryGmshExport, GmshMeshOptions,
     GmshMesher, IncompressibleCase, IncompressibleSolution, IncompressibleSolveError, MeshingError,
@@ -71,6 +73,7 @@ pub enum WorkbenchJobEvent {
     MeshCompleted(Result<GeneratedMesh, MeshingError>),
     SolveProgress(JobProgress),
     SolveCompleted(Result<IncompressibleSolution, IncompressibleSolveError>),
+    CompressibleCompleted(Result<crate::compressible::Solution, String>),
     PlaneSample(crate::workbench::plane_monitor::PlaneSnapshot),
     Health(crate::workbench::solve_review::SolveHealth),
     Performance(crate::compute::PerformanceReport),
@@ -93,6 +96,7 @@ pub enum WorkbenchJobEvent {
 /// Only one mesh or solve job may run at a time because both mutate the same
 /// session lifecycle once their completion event is applied.
 pub struct WorkbenchJobExecutor {
+    flow: flow::FlowRuntime,
     receiver: Option<Receiver<WorkbenchJobEvent>>,
     cancellation: Option<CancellationToken>,
     lifecycle: JobLifecycle,
@@ -126,6 +130,7 @@ impl Default for WorkbenchJobExecutor {
 impl WorkbenchJobExecutor {
     pub fn new() -> Self {
         Self {
+            flow: flow::FlowRuntime::default(),
             receiver: None,
             cancellation: None,
             lifecycle: JobLifecycle::Idle,
@@ -175,6 +180,9 @@ impl WorkbenchJobExecutor {
         self.checkpoint_pending.load(Ordering::Acquire)
     }
     pub fn checkpoint_now(&self) -> Result<(), String> {
+        if self.flow.writer.is_some() {
+            return self.checkpoint_flow_now();
+        }
         let writer = self
             .recovery_writer
             .clone()
@@ -201,6 +209,7 @@ impl WorkbenchJobExecutor {
         Ok(())
     }
     pub fn set_restart(&mut self, path: Option<std::path::PathBuf>) {
+        self.flow.reset();
         self.completed.store(0, Ordering::Release);
         self.restart = path;
         *self.retained.lock().unwrap() = None;
@@ -210,6 +219,7 @@ impl WorkbenchJobExecutor {
         mesh: crate::MeshId,
         fields: crate::IncompressibleInitialConditions,
     ) {
+        self.flow.reset();
         self.completed.store(0, Ordering::Release);
         self.restart = None;
         *self.retained.lock().unwrap() = Some((mesh, 0, fields));
@@ -275,6 +285,22 @@ impl WorkbenchJobExecutor {
         })
     }
 
+    pub fn start_flow(
+        &mut self,
+        case: crate::flow::FlowCase,
+        planes: Vec<crate::workbench::plane_monitor::FlowPlaneMonitor>,
+        folder: std::path::PathBuf,
+        run_id: String,
+    ) -> Result<(), String> {
+        match case {
+            crate::flow::FlowCase::Incompressible(case) => self
+                .start_solve_with_planes(case, planes, folder)
+                .map_err(str::to_string),
+            crate::flow::FlowCase::Compressible { mesh, settings } => {
+                self.start_compressible(mesh, settings, folder, run_id)
+            }
+        }
+    }
     pub fn start_solve(&mut self, case: IncompressibleCase) -> Result<(), &'static str> {
         self.start_solve_with_planes(case, Vec::new(), std::path::PathBuf::new())
     }
@@ -287,6 +313,7 @@ impl WorkbenchJobExecutor {
         if self.is_running() || self.is_checkpointing() {
             return Err("a solve or checkpoint write is already running");
         }
+        self.flow.reset();
         {
             let mut retained = self.retained.lock().unwrap();
             if let Some((mesh, 0, fields)) = retained.as_ref() {
@@ -665,7 +692,8 @@ impl WorkbenchJobExecutor {
                 Ok(event) => {
                     match &event {
                         WorkbenchJobEvent::MeshCompleted(Ok(_))
-                        | WorkbenchJobEvent::SolveCompleted(Ok(_)) => {
+                        | WorkbenchJobEvent::SolveCompleted(Ok(_))
+                        | WorkbenchJobEvent::CompressibleCompleted(Ok(_)) => {
                             self.lifecycle = JobLifecycle::Completed;
                         }
                         WorkbenchJobEvent::MeshCompleted(Err(MeshingError::Cancelled))
@@ -675,7 +703,8 @@ impl WorkbenchJobExecutor {
                             self.lifecycle = JobLifecycle::Cancelled;
                         }
                         WorkbenchJobEvent::MeshCompleted(Err(_))
-                        | WorkbenchJobEvent::SolveCompleted(Err(_)) => {
+                        | WorkbenchJobEvent::SolveCompleted(Err(_))
+                        | WorkbenchJobEvent::CompressibleCompleted(Err(_)) => {
                             self.lifecycle = JobLifecycle::Failed
                         }
                         _ => {}

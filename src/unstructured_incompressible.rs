@@ -997,10 +997,10 @@ impl std::fmt::Display for IncompressibleSolveError {
             )) => {
                 "Pressure IC(0) factorization failed. The failing row, pivot and diagonal are included below. Inspect pressure-system scaling and definiteness, plus preceding velocity/momentum growth; a small continuity residual alone does not establish a stable solution."
             }
-            Self::Simple(SimpleError::MomentumLinearDidNotConverge) => {
+            Self::Simple(SimpleError::MomentumLinearDidNotConverge { .. }) => {
                 "Momentum linear solver did not reach tolerance. Check mesh non-orthogonality and size transitions, inlet speed and viscosity; try lower velocity relaxation and first-order upwind. This does not identify a unique cause."
             }
-            Self::Simple(SimpleError::PressureLinearDidNotConverge) => {
+            Self::Simple(SimpleError::PressureLinearDidNotConverge { .. }) => {
                 "Pressure linear solver did not reach tolerance. Check domain connectivity, pressure reference, mesh quality and incompatible flow boundary conditions."
             }
             Self::Simple(SimpleError::InvalidMomentumDiagonal { .. }) => {
@@ -1068,27 +1068,19 @@ fn solve_incompressible_impl(
         control.and_then(|c| c.linear_control.clone()),
     )
     .map_err(IncompressibleSolveError::Compute)?;
-    let threads = if case.solver.compute.backend == crate::compute::Backend::Serial {
-        1
-    } else if case.solver.threads == 0 {
-        std::thread::available_parallelism()
-            .map(|n| n.get())
-            .unwrap_or(1)
-    } else {
-        case.solver.threads
-    };
+    let threads = crate::compute::worker_count_for(
+        &case.solver.compute,
+        case.solver.threads,
+        case.mesh.cell_count(),
+    );
     if let Some(message) = control.and_then(|c| c.on_message.as_ref()) {
         message(format!(
             "Compute: {:?} · {} CPU workers · GPU corrections use f64 residual acceptance",
             case.solver.compute.backend, threads
         ));
     }
-    let worker_execution = execution.clone();
-    let pool = rayon::ThreadPoolBuilder::new()
-        .start_handler(move |_| crate::compute::install(Some(worker_execution.clone())))
-        .num_threads(threads)
-        .build()
-        .map_err(|e| IncompressibleSolveError::ThreadPool(e.to_string()))?;
+    let pool = crate::compute::worker_pool(execution.clone(), threads)
+        .map_err(IncompressibleSolveError::ThreadPool)?;
     let result = pool.install(|| {
         let _scope = crate::compute::Scope::enter(execution.clone());
         time::solve_time_loop(case, control)

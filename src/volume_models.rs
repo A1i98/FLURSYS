@@ -147,6 +147,26 @@ impl VolumeModels {
         }
         Ok(())
     }
+    pub(crate) fn cell_coefficients(
+        self,
+        position: Vec3,
+        velocity: Vec3,
+        nu: f64,
+    ) -> Result<(f64, Vec3), String> {
+        let sink = self
+            .resistance
+            .filter(|p| p.region.contains(position))
+            .map_or(0., |p| nu * p.darcy + 0.5 * p.forchheimer * velocity.norm());
+        let force = self.rotating_frame.map_or(Vec3::ZERO, |r| {
+            -r.angular_velocity.cross(velocity) * 2.
+                - r.angular_velocity
+                    .cross(r.angular_velocity.cross(position - r.origin))
+        });
+        if !sink.is_finite() || !finite(force) {
+            return Err("Non-finite momentum model coefficient".into());
+        }
+        Ok((sink, force))
+    }
     pub(crate) fn coefficients(
         self,
         mesh: &UnstructuredMesh,
@@ -158,13 +178,9 @@ impl VolumeModels {
         let mut sink = CellField::filled(mesh, 0.0);
         let mut force = CellField::filled(mesh, Vec3::ZERO);
         for (i, c) in mesh.cells().iter().enumerate() {
-            if let Some(p) = self.resistance.filter(|p| p.region.contains(c.center)) {
-                sink[i] = nu * p.darcy + 0.5 * p.forchheimer * velocity[i].norm();
-            }
-            if let Some(r) = self.rotating_frame {
-                let w = r.angular_velocity;
-                force[i] = -w.cross(velocity[i]) * 2.0 - w.cross(w.cross(c.center - r.origin));
-            }
+            (sink[i], force[i]) = self
+                .cell_coefficients(c.center, velocity[i], nu)
+                .map_err(SimpleError::PhysicalBoundary)?;
             if !sink[i].is_finite() || !finite(force[i]) {
                 return Err(SimpleError::PhysicalBoundary(format!(
                     "Non-finite momentum model coefficient in cell {i}"

@@ -10,7 +10,7 @@ pub enum EquationPreconditioner {
     Ic0,
     /// Standalone aggregation multigrid with flexible GCR acceleration.
     Gamg,
-    /// IC0 when factorization succeeds; Jacobi if a positive IC pivot is unavailable.
+    /// Bounded sparse LDLT for difficult pressure systems, then IC0 or Jacobi.
     Auto,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -27,6 +27,12 @@ impl Default for EquationControl {
     }
 }
 impl EquationControl {
+    pub fn transport(options: LinearSolverOptions) -> Self {
+        Self {
+            preconditioner: EquationPreconditioner::Jacobi,
+            ..Self::from_options(options)
+        }
+    }
     pub fn from_options(o: LinearSolverOptions) -> Self {
         Self {
             absolute_tolerance: o.absolute_tolerance,
@@ -162,15 +168,15 @@ impl Default for EquationSolvers {
     fn default() -> Self {
         Self {
             pressure: EquationControl {
-                preconditioner: EquationPreconditioner::Ic0,
+                preconditioner: EquationPreconditioner::Auto,
                 ..Default::default()
             },
-            velocity: Default::default(),
-            temperature: Default::default(),
-            k: Default::default(),
-            omega: Default::default(),
-            epsilon: Default::default(),
-            nu_tilda: Default::default(),
+            velocity: EquationControl::transport(LinearSolverOptions::default()),
+            temperature: EquationControl::transport(LinearSolverOptions::default()),
+            k: EquationControl::transport(LinearSolverOptions::default()),
+            omega: EquationControl::transport(LinearSolverOptions::default()),
+            epsilon: EquationControl::transport(LinearSolverOptions::default()),
+            nu_tilda: EquationControl::transport(LinearSolverOptions::default()),
         }
     }
 }
@@ -195,6 +201,8 @@ impl EquationSolvers {
 // refreshing coefficients; far-field switching may change the pressure graph.
 #[derive(Default)]
 pub(crate) struct PressureWorkspace {
+    direct: Option<crate::linear::direct::PressureDirect>,
+    direct_unavailable: bool,
     multigrid: Option<AlgebraicMultigrid>,
     ic0: Option<(
         CsrMatrix,
@@ -223,6 +231,30 @@ impl PressureWorkspace {
             return result;
         }
         let _cpu = crate::compute::CpuLinearScope::enter();
+        if control.preconditioner == EquationPreconditioner::Auto
+            && a.nrows() >= 4096
+            && !self.direct_unavailable
+        {
+            if self
+                .direct
+                .as_ref()
+                .is_none_or(|solver| !solver.matches_pattern(a))
+            {
+                match crate::linear::direct::PressureDirect::new(a) {
+                    Ok(Some(solver)) => self.direct = Some(solver),
+                    Ok(None) => self.direct_unavailable = true,
+                    Err(error) => {
+                        eprintln!("Pressure Auto: sparse LDLT unavailable ({error}); using IC0.");
+                        self.direct_unavailable = true;
+                    }
+                }
+            }
+            if !self.direct_unavailable {
+                if let Some(solver) = &mut self.direct {
+                    return solver.solve(a, b, x, options);
+                }
+            }
+        }
         match control.preconditioner {
             EquationPreconditioner::Gamg => {
                 let same = self.topology.as_ref().is_some_and(|(rows, cols)| {

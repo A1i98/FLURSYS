@@ -743,7 +743,7 @@ fn high_level_solver_propagates_a_configured_momentum_linear_failure() {
         matches!(
             result,
             Err(flursys::IncompressibleSolveError::Simple(
-                flursys::SimpleError::MomentumLinearDidNotConverge
+                flursys::SimpleError::MomentumLinearDidNotConverge { .. }
             ))
         ),
         "unexpected result: {:?}",
@@ -995,6 +995,10 @@ fn slip_and_symmetry_channel_preserve_uniform_flow_with_serial_and_parallel_work
                 IncompressibleSolverOptions {
                     threads,
                     max_outer_iterations: 500,
+                    compute: flursys::compute::ComputeOptions {
+                        parallel_min_rows: 1,
+                        ..Default::default()
+                    },
                     ..Default::default()
                 },
             );

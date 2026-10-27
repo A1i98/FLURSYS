@@ -5,6 +5,7 @@
 //! entries deterministically at finalization, and omits only exact zero sums.
 
 mod csr;
+pub(crate) mod direct;
 #[cfg(any(feature = "gpu-compute", test))]
 mod flexible;
 #[cfg(feature = "gpu-compute")]

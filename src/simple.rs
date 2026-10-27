@@ -27,9 +27,9 @@ pub enum SimpleError {
     InvalidContinuityTolerance { value: f64 },
     InvalidCouplingTolerance { value: f64 },
     InvalidOuterIterations { value: usize },
-    MomentumLinearDidNotConverge,
+    MomentumLinearDidNotConverge { reports: [LinearSolveReport; 3] },
     Monitor(String),
-    PressureLinearDidNotConverge,
+    PressureLinearDidNotConverge { report: LinearSolveReport },
 }
 
 impl std::fmt::Display for SimpleError {
@@ -176,6 +176,8 @@ pub struct SimpleReport {
     pub pressure_linear_history: Vec<f64>,
     pub final_momentum_relative_residual: f64,
     pub final_velocity_relative_change: f64,
+    pub final_turbulence_relative_change: Option<f64>,
+    pub final_thermal_relative_change: Option<f64>,
     pub momentum_reports: Option<[LinearSolveReport; 3]>,
     pub pressure_report: Option<LinearSolveReport>,
     pub equation_linear_reports: std::collections::BTreeMap<String, LinearSolveReport>,
@@ -293,6 +295,10 @@ pub fn solve_simple_with_observer(
     let mut last_pressure = None;
     let mut pressure_workspace = crate::equations::PressureWorkspace::default();
     let mut momentum_workspace = crate::momentum::MomentumWorkspace::default();
+    let mut velocity_stencils: [Option<(
+        ResolvedScalarBoundaryConditions,
+        LeastSquaresGradientStencil,
+    )>; 3] = [None, None, None];
     let static_correction_stencil = options
         .pressure_correction_boundary
         .map(|b| LeastSquaresGradientStencil::new(mesh, b))
@@ -465,7 +471,28 @@ pub fn solve_simple_with_observer(
         let current_y = momentum_component_field(mesh, &state.velocity, MomentumComponent::Y)?;
         let current_z = momentum_component_field(mesh, &state.velocity, MomentumComponent::Z)?;
         let relaxed = options.velocity_relaxation < 1.0;
-        let assemble = |component, source, current| {
+        if options.convection != crate::momentum::MomentumConvection::Upwind {
+            for (index, component) in [
+                MomentumComponent::X,
+                MomentumComponent::Y,
+                MomentumComponent::Z,
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let boundary = options.velocity_boundary.component(component);
+                if velocity_stencils[index]
+                    .as_ref()
+                    .is_none_or(|(cached, _)| cached != boundary)
+                {
+                    velocity_stencils[index] = Some((
+                        boundary.clone(),
+                        LeastSquaresGradientStencil::new(mesh, boundary)?,
+                    ));
+                }
+            }
+        }
+        let assemble = |component, source, current, stencil| {
             crate::momentum::assemble_momentum_component_with_sink(
                 mesh,
                 MomentumOptions {
@@ -484,7 +511,7 @@ pub fn solve_simple_with_observer(
                     source: Some(source),
                     relaxation_field: relaxed.then_some(current),
                     correction_field: Some(current),
-                    least_squares_stencil: None,
+                    least_squares_stencil: stencil,
                     under_relaxation: options.velocity_relaxation,
                     diffusion: options.momentum_diffusion,
                     allow_iterative_outlet_backflow: options.pressure_correction_boundary.is_some(),
@@ -492,21 +519,38 @@ pub fn solve_simple_with_observer(
                 model_terms.as_ref().map(|(sink, _)| sink),
             )
         };
-        let x_system = assemble(MomentumComponent::X, &source_x, &current_x)?;
-        let y_system = assemble(MomentumComponent::Y, &source_y, &current_y)?;
-        let z_system = assemble(MomentumComponent::Z, &source_z, &current_z)?;
+        let x_system = assemble(
+            MomentumComponent::X,
+            &source_x,
+            &current_x,
+            velocity_stencils[0].as_ref().map(|v| &v.1),
+        )?;
+        let y_system = assemble(
+            MomentumComponent::Y,
+            &source_y,
+            &current_y,
+            velocity_stencils[1].as_ref().map(|v| &v.1),
+        )?;
+        let z_system = assemble(
+            MomentumComponent::Z,
+            &source_z,
+            &current_z,
+            velocity_stencils[2].as_ref().map(|v| &v.1),
+        )?;
         let mut predictor = state.velocity.clone();
         let momentum_reports = crate::momentum::solve_momentum_velocity_with_workspace(
             [&x_system, &y_system, &z_system],
             &mut predictor,
             options.equations.map_or(
-                crate::equations::EquationControl::from_options(options.momentum_solver),
+                crate::equations::EquationControl::transport(options.momentum_solver),
                 |e| e.velocity,
             ),
             &mut momentum_workspace,
         )?;
         if !momentum_reports.iter().all(LinearSolveReport::converged) {
-            return Err(SimpleError::MomentumLinearDidNotConverge);
+            return Err(SimpleError::MomentumLinearDidNotConverge {
+                reports: momentum_reports,
+            });
         }
         let momentum_initial = momentum_reports
             .iter()
@@ -812,6 +856,12 @@ pub fn solve_simple_with_observer(
                 pressure_linear_history: pressure_history,
                 final_momentum_relative_residual: momentum_relative,
                 final_velocity_relative_change: velocity_relative,
+                final_turbulence_relative_change: options
+                    .closure
+                    .map(|c| c.lock().unwrap().relative_change),
+                final_thermal_relative_change: options
+                    .thermal
+                    .map(|t| t.lock().unwrap().relative_change),
                 momentum_reports: last_momentum,
                 equation_linear_reports,
                 pressure_report: last_pressure,
@@ -829,6 +879,10 @@ pub fn solve_simple_with_observer(
         pressure_linear_history: pressure_history,
         final_momentum_relative_residual: momentum_relative,
         final_velocity_relative_change: velocity_relative,
+        final_turbulence_relative_change: options
+            .closure
+            .map(|c| c.lock().unwrap().relative_change),
+        final_thermal_relative_change: options.thermal.map(|t| t.lock().unwrap().relative_change),
         momentum_reports: last_momentum,
         equation_linear_reports,
         pressure_report: last_pressure,
@@ -1250,7 +1304,7 @@ pub fn solve_pressure_correction(
         system,
         correction,
         crate::equations::EquationControl {
-            preconditioner: crate::equations::EquationPreconditioner::Ic0,
+            preconditioner: crate::equations::EquationPreconditioner::Auto,
             ..crate::equations::EquationControl::from_options(options)
         },
     )
@@ -1364,7 +1418,7 @@ pub(crate) fn initialize_far_field_flux(
     let mut potential = CellField::filled(mesh, 0.0);
     let report = solve_pressure_correction_controlled(&system, &mut potential, control)?;
     if !report.converged() {
-        return Err(SimpleError::PressureLinearDidNotConverge);
+        return Err(SimpleError::PressureLinearDidNotConverge { report });
     }
     let stencil = LeastSquaresGradientStencil::new(mesh, boundary)?;
     let gradient = pressure_coupling_gradient(mesh, &potential, &stencil, Some(boundary))?;

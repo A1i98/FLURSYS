@@ -1,7 +1,7 @@
 //! Portable topology snapshots, validated through the normal mesh constructor.
 use super::*;
-#[derive(Serialize, Deserialize)]
-pub(crate) struct MeshSnapshot {
+#[derive(Clone, Serialize, Deserialize)]
+pub struct MeshSnapshot {
     dimension: MeshDimension,
     points: Vec<Vec3>,
     faces: Vec<(Vec<usize>, usize, Option<usize>)>,
@@ -9,6 +9,9 @@ pub(crate) struct MeshSnapshot {
     patches: Vec<BoundaryPatch>,
 }
 impl MeshSnapshot {
+    pub fn cell_count(&self) -> usize {
+        self.cells.len()
+    }
     pub fn capture(mesh: &UnstructuredMesh) -> Self {
         Self {
             dimension: mesh.dimension,

@@ -11,6 +11,9 @@ pub mod streamlines;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ResultFieldKind {
+    Density,
+    AbsolutePressure,
+    Mach,
     Pressure,
     Temperature,
     VelocityMagnitude,
@@ -30,6 +33,9 @@ pub enum ResultFieldKind {
 impl ResultFieldKind {
     pub const fn label(self) -> &'static str {
         match self {
+            Self::Density => "Density (kg/m³)",
+            Self::AbsolutePressure => "Absolute pressure (Pa)",
+            Self::Mach => "Mach number",
             Self::Temperature => "Temperature (K)",
             Self::Pressure => "Kinematic gauge pressure p/rho",
             Self::VelocityMagnitude => "Velocity Magnitude",
@@ -73,6 +79,7 @@ pub struct ResultDataset {
     strain_rate: Vec<f64>,
     turbulence: Option<[Vec<f64>; 3]>,
     temperature: Option<Vec<f64>>,
+    compressible: Option<[Vec<f64>; 3]>,
 }
 
 impl ResultDataset {
@@ -118,6 +125,7 @@ impl ResultDataset {
         Ok(Self {
             turbulence: None,
             temperature: None,
+            compressible: None,
             vorticity,
             divergence,
             q_criterion,
@@ -134,6 +142,43 @@ impl ResultDataset {
             ],
             velocity_magnitude,
         })
+    }
+
+    pub fn from_compressible(
+        run_id: impl Into<String>,
+        mesh: &UnstructuredMesh,
+        fields: &[crate::compressible::Primitive],
+        gas: crate::compressible::IdealGas,
+    ) -> Result<Self, ResultDataError> {
+        gas.validate().map_err(ResultDataError::Invalid)?;
+        if fields.len() != mesh.cell_count()
+            || fields.iter().any(|p| {
+                !p.density.is_finite()
+                    || p.density <= 0.
+                    || !p.pressure.is_finite()
+                    || p.pressure <= 0.
+            })
+        {
+            return Err(ResultDataError::Invalid(
+                "Invalid compressible result fields".into(),
+            ));
+        }
+        let mut result = Self::from_values(
+            run_id,
+            mesh,
+            fields.iter().map(|p| p.pressure / p.density).collect(),
+            fields.iter().map(|p| p.velocity).collect(),
+        )?
+        .with_temperature(Some(fields.iter().map(|p| gas.temperature(*p)).collect()))?;
+        result.compressible = Some([
+            fields.iter().map(|p| p.density).collect(),
+            fields.iter().map(|p| p.pressure).collect(),
+            fields
+                .iter()
+                .map(|p| p.velocity.norm() / gas.sound_speed(*p))
+                .collect(),
+        ]);
+        Ok(result)
     }
 
     pub fn with_turbulence(mut self, fields: Option<&crate::turbulence::TurbulenceFields>) -> Self {
@@ -187,6 +232,21 @@ impl ResultDataset {
     }
     pub fn scalar_values(&self, field: ResultFieldKind) -> &[f64] {
         match field {
+            ResultFieldKind::Density => self
+                .compressible
+                .as_ref()
+                .map(|v| v[0].as_slice())
+                .unwrap_or(&[]),
+            ResultFieldKind::AbsolutePressure => self
+                .compressible
+                .as_ref()
+                .map(|v| v[1].as_slice())
+                .unwrap_or(&[]),
+            ResultFieldKind::Mach => self
+                .compressible
+                .as_ref()
+                .map(|v| v[2].as_slice())
+                .unwrap_or(&[]),
             ResultFieldKind::Temperature => self.temperature.as_deref().unwrap_or(&[]),
             ResultFieldKind::Pressure => &self.pressure,
             ResultFieldKind::VelocityMagnitude => &self.velocity_magnitude,
@@ -306,8 +366,9 @@ pub struct ResultRenderCache {
     strain_rate: Vec<f64>,
     turbulence: Option<[Vec<f64>; 3]>,
     temperature: Option<Vec<f64>>,
+    compressible: Option<[Vec<f64>; 3]>,
     face_owners: Vec<usize>,
-    surface_nodes: [std::sync::OnceLock<Vec<f64>>; 14],
+    surface_nodes: [std::sync::OnceLock<Vec<f64>>; 17],
 }
 
 impl ResultRenderCache {
@@ -342,6 +403,7 @@ impl ResultRenderCache {
             strain_rate: dataset.strain_rate.clone(),
             turbulence: dataset.turbulence.clone(),
             temperature: dataset.temperature.clone(),
+            compressible: dataset.compressible.clone(),
             face_owners: dataset.mesh.faces().iter().map(|face| face.owner).collect(),
             surface_nodes: std::array::from_fn(|_| std::sync::OnceLock::new()),
         })
@@ -398,6 +460,18 @@ impl ResultRenderCache {
 
     pub fn scalar_for_cell(&self, field: ResultFieldKind, cell: usize) -> Option<f64> {
         match field {
+            ResultFieldKind::Density => self
+                .compressible
+                .as_ref()
+                .and_then(|v| v[0].get(cell).copied()),
+            ResultFieldKind::AbsolutePressure => self
+                .compressible
+                .as_ref()
+                .and_then(|v| v[1].get(cell).copied()),
+            ResultFieldKind::Mach => self
+                .compressible
+                .as_ref()
+                .and_then(|v| v[2].get(cell).copied()),
             ResultFieldKind::Temperature => {
                 self.temperature.as_ref().and_then(|v| v.get(cell).copied())
             }
@@ -476,6 +550,14 @@ fn result_artifact_fingerprint(dataset: &ResultDataset) -> u64 {
     if let Some(t) = &dataset.turbulence {
         for values in t {
             for v in values {
+                hash = mix_fingerprint(hash, v.to_bits());
+            }
+        }
+    }
+    if let Some(fields) = &dataset.compressible {
+        hash = mix_fingerprint(hash, 0x474153);
+        for field in fields {
+            for v in field {
                 hash = mix_fingerprint(hash, v.to_bits());
             }
         }
@@ -797,6 +879,49 @@ mod tests {
         )
         .unwrap()
     }
+    #[test]
+    fn compressible_fields_use_shared_scalar_vector_and_surface_caches() {
+        let mesh = UnstructuredMesh::from_cells(
+            MeshDimension::ThreeD,
+            vec![
+                Point::new(0., 0., 0.),
+                Point::new(1., 0., 0.),
+                Point::new(0., 1., 0.),
+                Point::new(0., 0., 1.),
+            ],
+            vec![CellDefinition::tetrahedron([0, 1, 2, 3])],
+        )
+        .unwrap();
+        let gas = crate::compressible::IdealGas::default();
+        let state = crate::compressible::Primitive {
+            density: 1.2,
+            pressure: 101325.,
+            velocity: Vec3::new(30., 4., 0.),
+        };
+        let data =
+            ResultDataset::from_compressible("gas", &mesh, &vec![state; mesh.cell_count()], gas)
+                .unwrap();
+        let cache = ResultRenderCache::build(&data).unwrap();
+        for (field, value) in [
+            (ResultFieldKind::Density, state.density),
+            (ResultFieldKind::AbsolutePressure, state.pressure),
+            (
+                ResultFieldKind::Mach,
+                state.velocity.norm() / gas.sound_speed(state),
+            ),
+            (ResultFieldKind::Temperature, gas.temperature(state)),
+        ] {
+            assert_eq!(data.scalar_values(field), vec![value; mesh.cell_count()]);
+            assert_eq!(cache.scalar_for_cell(field, 0), Some(value));
+            assert!(cache
+                .surface_node_values(field)
+                .iter()
+                .all(|v| (*v - value).abs() < 1e-8));
+        }
+        assert_eq!(data.probe_cell(0).unwrap().velocity, state.velocity);
+        assert!(ResultDataset::from_compressible("bad", &mesh, &[], gas).is_err());
+    }
+
     #[test]
     fn dataset_from_live_solution_preserves_cell_values_and_derived_speed() {
         let mesh = mesh();

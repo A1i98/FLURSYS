@@ -99,6 +99,7 @@ impl Closure {
         }
         let old = self.old.as_ref();
         let report = transport::scalar_solve(
+            "epsilon",
             mesh,
             &state.face_flux,
             &eb,
@@ -109,10 +110,11 @@ impl Closure {
             old.and_then(|o| o.epsilon.as_ref()),
             dt,
             self.config.relaxation,
-            self.linear.as_ref().map_or(
-                crate::equations::EquationControl::from_options(linear),
-                |e| e.epsilon,
-            ),
+            self.linear
+                .as_ref()
+                .map_or(crate::equations::EquationControl::transport(linear), |e| {
+                    e.epsilon
+                }),
             &self.walls,
             nu,
             Some(&wall.epsilon),
@@ -130,6 +132,7 @@ impl Closure {
             sinkk[i] = e[i] / self.fields.k[i].max(1e-14) + (2.0 / 3.0 * tr).max(0.0);
         }
         let report = transport::scalar_solve(
+            "k",
             mesh,
             &state.face_flux,
             &kb,
@@ -140,10 +143,11 @@ impl Closure {
             old.map(|o| &o.k),
             dt,
             self.config.relaxation,
-            self.linear.as_ref().map_or(
-                crate::equations::EquationControl::from_options(linear),
-                |e| e.k,
-            ),
+            self.linear
+                .as_ref()
+                .map_or(crate::equations::EquationControl::transport(linear), |e| {
+                    e.k
+                }),
             &self.walls,
             nu,
             None,

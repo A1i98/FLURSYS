@@ -11,6 +11,15 @@ fn boundary_face(
     gas: IdealGas,
 ) -> [f64; 4] {
     match bc {
+        Boundary::MovingWall {
+            velocity,
+            temperature,
+        } => [
+            velocity.x,
+            velocity.y,
+            velocity.z,
+            temperature.unwrap_or(gas.temperature(owner)),
+        ],
         Boundary::NoSlipWall { temperature } => {
             [0.0, 0.0, 0.0, temperature.unwrap_or(gas.temperature(owner))]
         }
@@ -18,7 +27,9 @@ fn boundary_face(
             let v = owner.velocity - n * owner.velocity.dot(n);
             [v.x, v.y, v.z, gas.temperature(owner)]
         }
-        Boundary::Transmissive | Boundary::PressureOutlet { .. } => values(owner, gas),
+        Boundary::Transmissive
+        | Boundary::PressureOutlet { .. }
+        | Boundary::PressureOutletBackflow { .. } => values(owner, gas),
         _ => {
             let a = values(owner, gas);
             let b = values(other, gas);
@@ -118,6 +129,10 @@ pub(super) fn evaluate(
         Some(
             Boundary::SlipWall
                 | Boundary::NoSlipWall { temperature: None }
+                | Boundary::MovingWall {
+                    temperature: None,
+                    ..
+                }
                 | Boundary::Transmissive
                 | Boundary::PressureOutlet { .. }
         )

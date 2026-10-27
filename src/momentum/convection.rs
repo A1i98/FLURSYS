@@ -25,8 +25,17 @@ pub(super) fn correct(
     let value = options
         .correction_field
         .ok_or(MomentumError::MissingCorrectionField)?;
-    let stencil = LeastSquaresGradientStencil::new(mesh, options.boundary)?;
-    let gradient = least_squares_gradient(mesh, &stencil, value)?;
+    let owned_stencil;
+    let stencil = if let Some(stencil) = options
+        .least_squares_stencil
+        .filter(|s| s.matches_boundary(options.boundary))
+    {
+        stencil
+    } else {
+        owned_stencil = LeastSquaresGradientStencil::new(mesh, options.boundary)?;
+        &owned_stencil
+    };
+    let gradient = least_squares_gradient(mesh, stencil, value)?;
     let mut bounds = value.values().iter().map(|v| (*v, *v)).collect::<Vec<_>>();
     for (i, f) in mesh.faces().iter().enumerate() {
         if let Some(n) = f.neighbour {

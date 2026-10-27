@@ -83,11 +83,12 @@ pub enum NumericsError {
 /// Construct this once per immutable mesh and resolved scalar boundary-condition set,
 /// then reuse it for cell fields with those same fixed boundary values. Internal
 /// cell-centre equations and `FixedValue` face-centre equations are cached with
-/// inverse-distance-squared weights; `ZeroGradient` faces deliberately contribute
-/// no equation.
+/// inverse-distance-squared weights. Homogeneous normal derivatives close
+/// stencils whose cell-centre directions remain rank-deficient.
 #[derive(Clone, Debug)]
 pub struct LeastSquaresGradientStencil {
     mesh_id: MeshId,
+    boundary: ResolvedScalarBoundaryConditions,
     equations: Vec<Vec<LeastSquaresEquation>>,
     inverse_normal_matrices: Vec<[f64; 9]>,
 }
@@ -210,7 +211,24 @@ impl LeastSquaresGradientStencil {
                             source: LeastSquaresSource::Neighbour(neighbour),
                         });
                     }
-                    inverse_normal_matrix(mesh, normal, cell_index)?
+                    match inverse_normal_matrix(mesh, normal, cell_index) {
+                        Ok(inverse) => inverse,
+                        Err(NumericsError::SingularLeastSquaresStencil { .. }) => {
+                            for normal_direction in zero_gradient_normals {
+                                let length = normal_direction.norm();
+                                if !length.is_finite() || length <= f64::EPSILON {
+                                    continue;
+                                }
+                                add_normal_outer_product(&mut normal, normal_direction / length);
+                                cell_equations.push(LeastSquaresEquation {
+                                    rhs_coefficient: Vec3::ZERO,
+                                    source: LeastSquaresSource::ZeroNormalDerivative,
+                                });
+                            }
+                            inverse_normal_matrix(mesh, normal, cell_index)?
+                        }
+                        Err(error) => return Err(error),
+                    }
                 }
                 Err(NumericsError::SingularLeastSquaresStencil { .. })
                     if mesh.dimension() == crate::MeshDimension::ThreeD =>
@@ -236,9 +254,14 @@ impl LeastSquaresGradientStencil {
         }
         Ok(Self {
             mesh_id: mesh.id(),
+            boundary: boundary.clone(),
             equations,
             inverse_normal_matrices,
         })
+    }
+
+    pub(crate) fn matches_boundary(&self, boundary: &ResolvedScalarBoundaryConditions) -> bool {
+        self.boundary == *boundary
     }
 
     /// Rejects use of this cache with a different mesh identity.
@@ -1958,7 +1981,7 @@ mod tests {
     }
 
     #[test]
-    fn least_squares_omits_zero_gradient_boundaries_and_rejects_singular_stencils() {
+    fn least_squares_closes_collinear_cell_centres_with_zero_normal_derivatives() {
         let mesh = line_mesh_with_patches();
         let zero_gradient = ResolvedScalarBoundaryConditions::strict(
             &mesh,
@@ -1969,10 +1992,10 @@ mod tests {
             ],
         )
         .unwrap();
-        assert!(matches!(
-            LeastSquaresGradientStencil::new(&mesh, &zero_gradient),
-            Err(NumericsError::SingularLeastSquaresStencil { .. })
-        ));
+        let stencil = LeastSquaresGradientStencil::new(&mesh, &zero_gradient).unwrap();
+        let values = CellField::filled(&mesh, 7.0);
+        let gradient = least_squares_gradient(&mesh, &stencil, &values).unwrap();
+        assert!(gradient.values().iter().all(|value| value.norm() < TOL));
 
         let mesh = individually_patched(three_cells());
         let fixed = analytic_fixed_boundaries(&mesh, |point| 2.0 * point.x - 3.0 * point.y + 1.0);
@@ -2219,6 +2242,48 @@ mod tests {
             least_squares_gradient_into(&mesh, &stencil, &values, &mut foreign_output),
             Err(NumericsError::Field(FieldError::MeshMismatch { .. }))
         ));
+    }
+
+    #[test]
+    fn wall_triangle_fan_reconstructs_tangential_gradient_with_collinear_centres() {
+        let mut points: Vec<_> = (0..=9)
+            .map(|i| Point::new(0., 0.005 + i as f64 * 2.54e-5, 0.))
+            .collect();
+        points.push(Point::new(2.1997e-5, 0.0053975, 0.));
+        let mesh = UnstructuredMesh::from_cells(
+            MeshDimension::TwoD,
+            points,
+            (0..9)
+                .map(|i| CellDefinition::polygon(vec![i, 10, i + 1]))
+                .collect(),
+        )
+        .unwrap();
+        let conditions = mesh
+            .faces()
+            .iter()
+            .map(|face| {
+                face.neighbour.is_none().then(|| {
+                    if face
+                        .vertices
+                        .iter()
+                        .all(|&v| mesh.points()[v].position.x == 0.)
+                    {
+                        ScalarBoundaryCondition::ZeroGradient
+                    } else {
+                        ScalarBoundaryCondition::FixedValue(3. * face.center.y + 2.)
+                    }
+                })
+            })
+            .collect();
+        let boundary =
+            ResolvedScalarBoundaryConditions::from_face_conditions(&mesh, conditions).unwrap();
+        let stencil = LeastSquaresGradientStencil::new(&mesh, &boundary).unwrap();
+        let values = CellField::from_cells(&mesh, |_, cell| 3. * cell.center.y + 2.);
+        let gradients = least_squares_gradient(&mesh, &stencil, &values).unwrap();
+        assert!(gradients
+            .values()
+            .iter()
+            .all(|g| (*g - Vec3::new(0., 3., 0.)).norm() < 1e-7));
     }
 
     #[test]

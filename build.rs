@@ -1,6 +1,10 @@
 fn main() {
     embed_cases().expect("cannot embed FLURSYS case files");
-    for path in ["src/compute/linear.wgsl", "src/compute/amg.wgsl"] {
+    for path in [
+        "src/compute/linear.wgsl",
+        "src/compute/amg.wgsl",
+        "src/compute/flux.wgsl",
+    ] {
         println!("cargo:rerun-if-changed={path}");
         let source = std::fs::read_to_string(path).expect("compute shader source");
         let module = naga::front::wgsl::parse_str(&source)

@@ -69,44 +69,59 @@ pub struct GpuSolver {
     params: wgpu::Buffer,
     storage: Option<Storage>,
 }
+pub(super) fn request_device(
+    selector: &str,
+    label: &str,
+) -> Result<
+    (
+        wgpu::Device,
+        wgpu::Queue,
+        DeviceInfo,
+        Arc<Mutex<Option<String>>>,
+    ),
+    String,
+> {
+    let adapters = pollster::block_on(instance().enumerate_adapters(wgpu::Backends::all()));
+    let selector = selector.to_lowercase();
+    let adapter = adapters
+        .into_iter()
+        .filter(|a| {
+            let i = a.get_info();
+            if selector.is_empty() {
+                matches!(
+                    i.device_type,
+                    wgpu::DeviceType::DiscreteGpu | wgpu::DeviceType::IntegratedGpu
+                )
+            } else {
+                i.name.to_lowercase().contains(&selector)
+            }
+        })
+        .min_by_key(|a| match a.get_info().device_type {
+            wgpu::DeviceType::DiscreteGpu => 0,
+            wgpu::DeviceType::IntegratedGpu => 1,
+            _ => 2,
+        })
+        .ok_or("No matching hardware GPU adapter")?;
+    let info = info(&adapter);
+    let limits = adapter.limits();
+    let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+        label: Some(label),
+        required_limits: limits,
+        ..Default::default()
+    }))
+    .map_err(|e| e.to_string())?;
+    let driver_error = Arc::new(Mutex::new(None));
+    let lost = driver_error.clone();
+    device.set_device_lost_callback(move |reason, message| {
+        if let Ok(mut error) = lost.lock() {
+            *error = Some(format!("GPU device lost ({reason:?}): {message}"));
+        }
+    });
+    Ok((device, queue, info, driver_error))
+}
 impl GpuSolver {
     pub fn new(selector: &str) -> Result<Self, String> {
-        let adapters = pollster::block_on(instance().enumerate_adapters(wgpu::Backends::all()));
-        let selector = selector.to_lowercase();
-        let adapter = adapters
-            .into_iter()
-            .filter(|a| {
-                let i = a.get_info();
-                if selector.is_empty() {
-                    matches!(
-                        i.device_type,
-                        wgpu::DeviceType::DiscreteGpu | wgpu::DeviceType::IntegratedGpu
-                    )
-                } else {
-                    i.name.to_lowercase().contains(&selector)
-                }
-            })
-            .min_by_key(|a| match a.get_info().device_type {
-                wgpu::DeviceType::DiscreteGpu => 0,
-                wgpu::DeviceType::IntegratedGpu => 1,
-                _ => 2,
-            })
-            .ok_or("No matching hardware GPU adapter")?;
-        let info = info(&adapter);
-        let limits = adapter.limits();
-        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-            label: Some("FLURSYS linear compute"),
-            required_limits: limits,
-            ..Default::default()
-        }))
-        .map_err(|e| e.to_string())?;
-        let driver_error = Arc::new(Mutex::new(None));
-        let lost = driver_error.clone();
-        device.set_device_lost_callback(move |reason, message| {
-            if let Ok(mut error) = lost.lock() {
-                *error = Some(format!("GPU device lost ({reason:?}): {message}"));
-            }
-        });
+        let (device, queue, info, driver_error) = request_device(selector, "FLURSYS compute")?;
         let scopes = [
             wgpu::ErrorFilter::OutOfMemory,
             wgpu::ErrorFilter::Internal,

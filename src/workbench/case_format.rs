@@ -534,7 +534,7 @@ mod tests {
                     project.case_context.as_ref().map(|c| c.id.as_str()),
                     Some(case.id.as_str())
                 );
-                if preset.id.starts_with("time-") {
+                if preset.id.starts_with("time-") || preset.time.is_some() {
                     assert_eq!(project.mesh, case.project_template.mesh);
                     assert_eq!(project.mesh_recipe, case.project_template.mesh_recipe);
                 } else {

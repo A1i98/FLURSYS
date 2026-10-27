@@ -419,7 +419,13 @@ pub(super) fn solve_time_loop(
             profiles::apply(&mut step_case, next)?;
             let inner = SolveControl::new(
                 || control.is_some_and(SolveControl::cancelled),
-                |_, _, _| {},
+                |iteration, max, residual| {
+                    if iteration == 1 || iteration % 25 == 0 || iteration == max {
+                        if let Some(callback) = control.and_then(|c| c.on_message.as_ref()) {
+                            callback(format!("Time step {step} at t={next:.6e}: corrector {iteration}/{max}, continuity={:.6e}", residual));
+                        }
+                    }
+                },
             );
             // Variable-step BDF2: a0 U[n+1] = a1 U[n] + a2 U[n-1] + dt RHS.
             // A restart has only one historical level and therefore starts with Euler.
@@ -514,7 +520,8 @@ pub(super) fn solve_time_loop(
                     dt = smaller;
                     continue;
                 }
-                return Err(SimpleError::PhysicalBoundary(format!("Time step {step} at t={next:e} failed nonlinear convergence after {} correctors; physical time was not advanced",result.report.outer_iterations)).into());
+                let report = &result.report.simple;
+                return Err(SimpleError::PhysicalBoundary(format!("Time step {step} at t={next:e} failed nonlinear convergence after {} correctors: continuity={:.3e}, momentum={:.3e}, velocity change={:.3e}, turbulence change={:?}, thermal change={:?}, Courant={co:.3e}; physical time was not advanced", result.report.outer_iterations, report.final_continuity_rms, report.final_momentum_relative_residual, report.final_velocity_relative_change, report.final_turbulence_relative_change, report.final_thermal_relative_change)).into());
             }
             result.physical_time = Some(next);
             result.last_time_step = Some(dt);
