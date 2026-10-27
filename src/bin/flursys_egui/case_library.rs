@@ -212,7 +212,14 @@ impl App {
                 let folder = workspace
                     .join("design-points")
                     .join(format!("alpha-{angle:+07.2}"));
-                let result = std::process::Command::new(&cli)
+                let mut command = std::process::Command::new(&cli);
+                #[cfg(windows)]
+                {
+                    use std::os::windows::process::CommandExt;
+                    const CREATE_NO_WINDOW: u32 = 0x08000000;
+                    command.creation_flags(CREATE_NO_WINDOW);
+                }
+                let result = command
                     .args(["project", "solve"])
                     .arg(&folder)
                     .arg("--iterations")

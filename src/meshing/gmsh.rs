@@ -510,10 +510,18 @@ impl GmshMesher {
     }
 
     fn command(&self) -> Command {
-        match &self.executable {
+        let mut command = match &self.executable {
             GmshExecutable::Auto => Command::new(Self::auto_executable()),
             GmshExecutable::Path(path) => Command::new(path),
+        };
+        command.stdin(std::process::Stdio::null());
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            const CREATE_NO_WINDOW: u32 = 0x08000000;
+            command.creation_flags(CREATE_NO_WINDOW);
         }
+        command
     }
 
     fn executable_label(&self) -> PathBuf {
