@@ -1,0 +1,172 @@
+{
+  "solver_version": "0.20.0",
+  "run": {
+    "continuity_residual": 2.546048940161644e-12,
+    "created_unix_ms": 1793288838562,
+    "failure_diagnostic": null,
+    "id": "run-0002",
+    "iterations": 3000,
+    "mesh_identity": 1,
+    "net_boundary_flux": 0.0,
+    "ordinal": 2,
+    "physical_time": null,
+    "report_path": "runs/run-0002/report.json",
+    "solution_path": "runs/run-0002/solution.vtk",
+    "status": "max-iterations",
+    "time_steps": 0,
+    "total_inflow": -0.49999999999999994,
+    "total_outflow": 0.49999999999999994
+  },
+  "material": {
+    "catalog": null,
+    "density": 1.0,
+    "kinematic_viscosity": 0.1
+  },
+  "solver_settings": {
+    "boundary_profiles": {},
+    "compressible": null,
+    "compute": {
+      "adapter": "",
+      "backend": "parallel",
+      "cpu_fallback": true,
+      "gpu_host_basis_mb": 256,
+      "gpu_inner_iterations": 8,
+      "gpu_memory_fraction": 0.8,
+      "gpu_min_rows": 16384,
+      "gpu_preconditioner": "auto",
+      "gpu_restart": 24,
+      "gpu_smoothing_sweeps": 2,
+      "gpu_timeout_ms": 10000,
+      "parallel_min_rows": 4096
+    },
+    "continuity_absolute_tolerance": 1e-08,
+    "convection": "upwind",
+    "coupling_relative_tolerance": 1e-06,
+    "cyclic_pairs": [],
+    "equations": null,
+    "force_analysis": {
+      "center": {
+        "x": 0.0,
+        "y": 0.0,
+        "z": 0.0
+      },
+      "drag_direction": {
+        "x": 1.0,
+        "y": 0.0,
+        "z": 0.0
+      },
+      "frequency_start_time": 0.0,
+      "length": 1.0,
+      "lift_direction": {
+        "x": 0.0,
+        "y": 1.0,
+        "z": 0.0
+      },
+      "measure": 1.0,
+      "patches": [],
+      "reattachment": false,
+      "speed": 1.0,
+      "wall_direction": {
+        "x": 1.0,
+        "y": 0.0,
+        "z": 0.0
+      },
+      "wall_start": {
+        "x": 0.0,
+        "y": 0.0,
+        "z": 0.0
+      },
+      "wall_tolerance": 1e-06
+    },
+    "initial_profile": null,
+    "max_outer_iterations": 2000,
+    "momentum_diffusion_correction": "limited",
+    "physical_end_time": null,
+    "pressure_coupling": {
+      "algorithm": "simple",
+      "allow_outlet_backflow": false,
+      "non_orthogonal_correctors": 0,
+      "non_orthogonal_limiter": 0.5,
+      "pressure_correctors": 1
+    },
+    "pressure_relaxation": 0.2,
+    "scripting": {
+      "bindings": {
+        "inlet": [
+          {
+            "function": "profile",
+            "parameters": {},
+            "quantity": "velocity",
+            "script": "couette-profile"
+          }
+        ],
+        "outlet": [
+          {
+            "function": "profile",
+            "parameters": {},
+            "quantity": "velocity",
+            "script": "couette-profile"
+          }
+        ]
+      },
+      "contract_version": 1,
+      "scripts": {
+        "couette-profile": {
+          "source": "fn profile(x, y, z) {\n    vec3(y, 0.0, 0.0)\n}\n",
+          "time_dependent": false
+        }
+      }
+    },
+    "thermal": {
+      "boundaries": {},
+      "buoyancy": false,
+      "conductivity": 0.025,
+      "enabled": false,
+      "expansion": 0.0,
+      "gravity": {
+        "x": 0.0,
+        "y": -9.81,
+        "z": 0.0
+      },
+      "initial_temperature": 293.15,
+      "max_boussinesq_fraction": 0.1,
+      "reduced_pressure": false,
+      "reference_temperature": 293.15,
+      "relative_tolerance": 1e-08,
+      "relaxation": 0.7,
+      "source_w_m3": 0.0,
+      "specific_heat": 1005.0,
+      "turbulent_prandtl": 0.85,
+      "wall_treatment": "molecular"
+    },
+    "threads": 1,
+    "time": {
+      "mode": "steady"
+    },
+    "turbulence": {
+      "ce": 1.048,
+      "ck": 0.094,
+      "convection": "upwind",
+      "cw": 0.325,
+      "diffusion_correction": "limited",
+      "diffusivity_interpolation": "harmonic",
+      "epsilon": 1e-05,
+      "full_viscous_stress": false,
+      "include_isotropic_stress": true,
+      "inlets": {},
+      "k": 0.0001,
+      "model": "laminar",
+      "nu_tilda": 1e-05,
+      "omega": 1.0,
+      "relative_tolerance": 1e-06,
+      "relaxation": 0.5,
+      "wall_treatment": "resolved"
+    },
+    "velocity_relaxation": 0.4,
+    "volume_models": {
+      "mean_velocity": null,
+      "resistance": null,
+      "rotating_frame": null
+    }
+  }
+}

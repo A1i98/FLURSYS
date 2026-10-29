@@ -1,0 +1,12 @@
+{
+  "cells": 3746,
+  "iterations": 3000,
+  "status": "max-iterations",
+  "domain_height_m": 1.0,
+  "wall_speed_m_s": 1.0,
+  "cell_mae_m_s": 0.0003609200934345573,
+  "cell_rmse_m_s": 0.0005532046695421837,
+  "cell_max_error_m_s": 0.003778294329666587,
+  "velocity_change": 2.0934802804737634e-10,
+  "note": "Reference Ux=y m/s for H=1 m and wall speed=1 m/s; sampling at arithmetic vertex means for triangular cells; linear-system criteria did not reach outer stopping criterion."
+}
