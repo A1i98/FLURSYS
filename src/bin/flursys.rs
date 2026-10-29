@@ -1,4 +1,8 @@
 //! Headless frontend for canonical FLURSYS workspaces.
+#[path = "flursys_cli/mcp.rs"]
+mod mcp;
+#[path = "flursys_cli/mcp_results.rs"]
+mod mcp_results;
 #[path = "flursys_cli/workspace.rs"]
 mod workspace;
 fn main() {
@@ -7,7 +11,12 @@ fn main() {
         println!("FLURSYS {}", env!("CARGO_PKG_VERSION"));
         return;
     }
-    if let Err(error) = workspace::run(&args) {
+    let result = if args.first().is_some_and(|a| a == "mcp") {
+        mcp::run(&args[1..])
+    } else {
+        workspace::run(&args)
+    };
+    if let Err(error) = result {
         if args.iter().any(|a| a == "--json") {
             eprintln!("{}", serde_json::json!({"error":error}));
         } else {

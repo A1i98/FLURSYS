@@ -62,6 +62,7 @@ fn number(opts: &BTreeMap<String, String>, key: &str) -> Result<Option<usize>, S
 pub fn help() {
     println!(
         "Workbench commands:
+  flursys mcp [--root DIRECTORY]
   flursys catalog status|materials [--db FILE] [--json]
   flursys catalog import PACK.json [--db FILE] [--json]
   flursys catalog inspect TABLE [--db FILE] [--json]
