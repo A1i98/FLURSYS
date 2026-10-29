@@ -58,6 +58,26 @@ fn embed_cases() -> Result<(), Box<dyn std::error::Error>> {
         source.push_str(&format!("include_str!({:?}),\n", file));
     }
     source.push_str("];\n");
+    source.push_str("pub(super) const REFERENCE_MESHES: &[(&str, &str)] = &[\n");
+    for entry in fs::read_dir(&root)? {
+        let entry = entry?;
+        let folder = entry.path().join("reference");
+        if !folder.is_dir() {
+            continue;
+        }
+        for file in fs::read_dir(folder)? {
+            let file = file?.path();
+            if file.extension().is_some_and(|ext| ext == "msh") {
+                println!("cargo:rerun-if-changed={}", file.display());
+                let key = file
+                    .strip_prefix(&root)?
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                source.push_str(&format!("({key:?}, include_str!({file:?})),\n"));
+            }
+        }
+    }
+    source.push_str("];\n");
     fs::write(
         PathBuf::from(env::var("OUT_DIR")?).join("builtin_cases.rs"),
         source,

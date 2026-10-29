@@ -88,6 +88,21 @@ pub fn builtin_templates() -> Result<Vec<CaseTemplateManifest>, String> {
         }
     }
     for entry in &mut templates {
+        for asset in &mut entry.metadata.assets {
+            if asset.role == "reference-mesh" && asset.content.is_none() {
+                let key = format!(
+                    "{}/{}",
+                    entry.id,
+                    asset.path.to_string_lossy().replace('\\', "/")
+                );
+                if let Some((_, content)) = builtin_cases::REFERENCE_MESHES
+                    .iter()
+                    .find(|(path, _)| *path == key)
+                {
+                    asset.content = Some((*content).into());
+                }
+            }
+        }
         if entry.project_template.cad_document.is_none()
             && entry
                 .project_template

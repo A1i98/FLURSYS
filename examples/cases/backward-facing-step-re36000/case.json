@@ -17,7 +17,7 @@
     "positive_streamwise_flow": false,
     "curved_boundary": false,
     "non_ideal_mesh_quality": false,
-    "notes": "Experimental comparison case; check the developed inlet boundary layer and mesh/time independence before reporting validation."
+    "notes": "The default example loads a shared structured reference mesh; choose a mesh preset or generate a new mesh to study refinement. Velocity-blended wall viscosity, bounded convection and conservative non-orthogonal correction are enabled. Results require numerical validation."
   },
   "project_template": {
     "format_version": 2,
@@ -366,13 +366,8 @@
       {
         "selection": "outlet",
         "condition": {
-          "pressure-outlet-backflow": {
-            "pressure": 0,
-            "velocity": {
-              "x": 44.2,
-              "y": 0,
-              "z": 0
-            }
+          "pressure-outlet": {
+            "pressure": 0.0
           }
         }
       },
@@ -400,7 +395,7 @@
     "material": {
       "catalog": null,
       "density": 1.225,
-      "kinematic_viscosity": 1.559277777777778e-05
+      "kinematic_viscosity": 1.56e-05
     },
     "solver": {
       "compute": {
@@ -418,10 +413,11 @@
         "gpu_host_basis_mb": 256
       },
       "pressure_coupling": {
-        "algorithm": "pimple",
-        "pressure_correctors": 2,
+        "algorithm": "simple",
+        "pressure_correctors": 1,
         "non_orthogonal_correctors": 0,
-        "non_orthogonal_limiter": 0.5
+        "non_orthogonal_limiter": 1.0,
+        "allow_outlet_backflow": true
       },
       "volume_models": {
         "resistance": null,
@@ -431,7 +427,7 @@
       "initial_profile": {
         "type": "uniform",
         "velocity": {
-          "x": 44.2,
+          "x": 1e-08,
           "y": 0.0,
           "z": 0.0
         },
@@ -440,15 +436,15 @@
       "compressible": null,
       "equations": {
         "velocity": {
-          "preconditioner": "jacobi",
+          "preconditioner": "smooth-solver",
           "absolute_tolerance": 1e-10,
-          "relative_tolerance": 1e-08,
+          "relative_tolerance": 1e-07,
           "max_iterations": 1000
         },
         "pressure": {
           "preconditioner": "auto",
           "absolute_tolerance": 1e-10,
-          "relative_tolerance": 1e-08,
+          "relative_tolerance": 1e-07,
           "max_iterations": 1000
         },
         "temperature": {
@@ -458,15 +454,15 @@
           "max_iterations": 1000
         },
         "k": {
-          "preconditioner": "jacobi",
+          "preconditioner": "smooth-solver",
           "absolute_tolerance": 1e-10,
-          "relative_tolerance": 1e-08,
+          "relative_tolerance": 1e-07,
           "max_iterations": 1000
         },
         "omega": {
-          "preconditioner": "jacobi",
+          "preconditioner": "smooth-solver",
           "absolute_tolerance": 1e-10,
-          "relative_tolerance": 1e-08,
+          "relative_tolerance": 1e-07,
           "max_iterations": 1000
         },
         "epsilon": {
@@ -510,18 +506,9 @@
         "boundaries": {}
       },
       "time": {
-        "mode": "adaptive-backward",
-        "dt": 5e-08,
-        "steps": 10000,
-        "controls": {
-          "target_courant": 0.5,
-          "max_diffusion": null,
-          "min_dt": 1e-11,
-          "max_dt": 1e-05,
-          "max_growth": 1.2
-        }
+        "mode": "steady"
       },
-      "physical_end_time": 1.0,
+      "physical_end_time": null,
       "force_analysis": {
         "patches": [
           "lower-wall"
@@ -560,36 +547,44 @@
       },
       "turbulence": {
         "model": "k-omega-sst",
-        "wall_treatment": "resolved",
+        "wall_treatment": "velocity-blended-k-omega",
         "inlets": {
           "inlet": {
-            "type": "intensity-viscosity-ratio",
-            "intensity": 0.00061,
-            "viscosity_ratio": 0.009
+            "type": "direct",
+            "k": 0.00109,
+            "omega": 181728.0,
+            "epsilon": 1e-05
           },
           "outlet": {
-            "type": "intensity-viscosity-ratio",
-            "intensity": 0.00061,
-            "viscosity_ratio": 0.009
+            "type": "direct",
+            "k": 0.00109,
+            "omega": 181728.0,
+            "epsilon": 1e-05
           }
         },
-        "k": 0.001090424166,
-        "omega": 7770.151181102361,
+        "k": 0.00109,
+        "omega": 181728.0,
         "epsilon": 1e-05,
         "nu_tilda": 1e-05,
         "relaxation": 0.8,
         "relative_tolerance": 1e-06,
         "ck": 0.094,
         "ce": 1.048,
-        "cw": 0.325
+        "cw": 0.325,
+        "convection": "bounded-limited-linear-tvd",
+        "diffusivity_interpolation": "linear",
+        "diffusion_correction": "over-relaxed-limited",
+        "include_isotropic_stress": false,
+        "full_viscous_stress": true
       },
-      "convection": "limited-linear",
+      "convection": "bounded-lust",
       "threads": 0,
-      "max_outer_iterations": 300,
+      "max_outer_iterations": 2000,
       "continuity_absolute_tolerance": 1e-08,
       "coupling_relative_tolerance": 1e-06,
       "velocity_relaxation": 0.4,
-      "pressure_relaxation": 0.2
+      "pressure_relaxation": 0.2,
+      "momentum_diffusion_correction": "over-relaxed-limited"
     },
     "runs": []
   },
@@ -984,24 +979,6 @@
           "refinements": [],
           "boundary_layers": []
         }
-      },
-      {
-        "id": "half-time-step",
-        "name": "Half time step",
-        "description": "Temporal refinement at unchanged end time and mesh.",
-        "time": {
-          "mode": "adaptive-backward",
-          "dt": 2.5e-08,
-          "steps": 20000,
-          "controls": {
-            "target_courant": 0.25,
-            "max_diffusion": null,
-            "min_dt": 1e-11,
-            "max_dt": 5e-06,
-            "max_growth": 1.2
-          }
-        },
-        "physical_end_time": 1.0
       }
     ],
     "assets": [
@@ -1095,6 +1072,12 @@
         "media_type": "text/plain",
         "sha256": "0d2a190917b3e1bd9ce980c8215f226e41549c4e94fd17a6d344bd2d8a68ea79",
         "content": "@article{DriverSeegmiller1985,\n  author={Driver, D. M. and Seegmiller, H. L.},\n  title={Features of Reattaching Turbulent Shear Layer in Divergent Channel Flow},\n  journal={AIAA Journal}, year={1985}, volume={23}, number={2}, pages={163--171},\n  doi={10.2514/3.8890}\n}\n"
+      },
+      {
+        "path": "reference/reference-grid.msh",
+        "role": "reference-mesh",
+        "media_type": "application/vnd.gmsh",
+        "sha256": "5142387b57f160944cf472a84750c7330e5588afdfc98015835083f496ec4a18"
       }
     ]
   }

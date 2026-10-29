@@ -82,6 +82,7 @@ pub fn help() {
   flursys project analyses <directory> [--json]
   flursys project branch <directory> --name NAME [--json]
   flursys project mesh <directory> [--gmsh PATH] [--threads N] [--json]
+  flursys project import-mesh <directory> --input mesh.msh [--json]
   flursys project solve <directory> [--threads N] [--iterations N] [--restart FILE] [--backend serial|parallel|gpu] [--adapter NAME] [--gpu-required] [--gpu-min-rows N] [--json]
   flursys project transport-template <directory> --output transport.json [--json]
   flursys project transport <directory> --config transport.json --output NEW_DIRECTORY [--json]
@@ -214,6 +215,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
             "gpu-basis-mb",
         ],
         "mesh" => &["json", "gmsh", "threads"],
+        "import-mesh" => &["json", "input"],
         "solve" => &[
             "dt",
             "steps",
@@ -329,7 +331,8 @@ pub fn run(args: &[String]) -> Result<(), String> {
         project.solver.compute.cpu_fallback = false;
     }
     let mut session = WorkbenchSession::from_project(&project).map_err(|e| e.to_string())?;
-    let restored = mesh_storage::restore(folder, &project, &mut session)?;
+    let restored =
+        mesh_storage::restore(folder, &project, &mut session)? || session.mesh().is_some();
     if action == "transport-template" || action == "transport" {
         let mesh = &session
             .mesh()
@@ -374,6 +377,15 @@ pub fn run(args: &[String]) -> Result<(), String> {
         emit(
             json!({"summary":format!("{}\n{}\nDimension {:?} · mesh restored: {} · {} saved runs",project.name,folder.display(),session.mesh_dimension(),restored,project.runs.len()),
             "name":project.name,"dimension":format!("{:?}",session.mesh_dimension()),"mesh_restored":restored,"runs":project.runs.len(),"ready":session.readiness().is_ok(),"compute":session.solver_options().compute}),
+            json_output,
+        );
+        return Ok(());
+    }
+    if action == "import-mesh" {
+        let path = opts.get("input").ok_or("Missing --input mesh.msh")?;
+        flursys::headless::import_mesh(folder, &mut project, &mut session, Path::new(path))?;
+        emit(
+            json!({"summary":format!("Imported {} cells", session.mesh().unwrap().mesh.cell_count())}),
             json_output,
         );
         return Ok(());

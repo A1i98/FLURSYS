@@ -219,6 +219,7 @@ impl WorkbenchSession {
             .map_err(|message| WorkbenchError::InvalidGrouping { message })?;
         session.solver.compute = project.solver.compute.clone();
         session.set_convection(project.solver.convection);
+        session.solver.momentum_diffusion_correction = project.solver.momentum_diffusion_correction;
         session.set_coupling_tolerance(project.solver.coupling_relative_tolerance)?;
         session.set_material(
             project.material.density,
@@ -259,6 +260,33 @@ impl WorkbenchSession {
                 }
                 _ => None,
             });
+        if project.mesh_asset.is_none() {
+            if let Some(context) = &project.case_context {
+                if context
+                    .reference_mesh_intent
+                    .as_ref()
+                    .is_some_and(|expected| {
+                        super::mesh_storage::intent(project).ok().as_ref() == Some(expected)
+                    })
+                {
+                    if let Some(asset) = context
+                        .metadata
+                        .assets
+                        .iter()
+                        .find(|asset| asset.role == "reference-mesh")
+                    {
+                        let text = asset.content.as_ref().ok_or_else(|| {
+                            WorkbenchError::InvalidGrouping {
+                                message: "Reference mesh content is missing".into(),
+                            }
+                        })?;
+                        let mesh = crate::headless::parse_import_mesh(project, text)
+                            .map_err(|message| WorkbenchError::InvalidGrouping { message })?;
+                        session.install_mesh(mesh);
+                    }
+                }
+            }
+        }
         Ok(session)
     }
 
@@ -302,6 +330,7 @@ impl WorkbenchSession {
         project.solver.threads = self.solver.threads;
         project.solver.compute = self.solver.compute.clone();
         project.solver.convection = self.solver.convection;
+        project.solver.momentum_diffusion_correction = self.solver.momentum_diffusion_correction;
         project.boundaries = self
             .boundaries
             .iter()

@@ -53,6 +53,69 @@ pub fn mesh(
     save_workspace(directory, project).map_err(|e| e.to_string())
 }
 
+pub fn import_mesh(
+    directory: &Path,
+    project: &mut WorkbenchProject,
+    session: &mut WorkbenchSession,
+    path: &Path,
+) -> Result<(), String> {
+    let generated = read_import_mesh(project, path)?;
+    let asset = mesh_storage::save(directory, project, &generated)?;
+    session.install_mesh(generated);
+    project.mesh_asset = Some(asset);
+    save_workspace(directory, project).map_err(|e| e.to_string())
+}
+
+pub fn read_import_mesh(
+    project: &WorkbenchProject,
+    path: &Path,
+) -> Result<crate::GeneratedMesh, String> {
+    let text = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
+    parse_import_mesh(project, &text)
+}
+
+pub fn parse_import_mesh(
+    project: &WorkbenchProject,
+    text: &str,
+) -> Result<crate::GeneratedMesh, String> {
+    let mesh = crate::parse_gmsh(text).map_err(|e| e.to_string())?;
+    if mesh.dimension() != project.mesh.dimension {
+        return Err("Imported mesh dimension does not match the project".into());
+    }
+    let expected: std::collections::BTreeSet<_> = project
+        .named_selections
+        .iter()
+        .map(|s| s.name.as_str())
+        .collect();
+    let actual: std::collections::BTreeSet<_> = mesh
+        .boundary_patches()
+        .iter()
+        .map(|p| p.name.as_str())
+        .collect();
+    if expected != actual {
+        return Err(format!("Imported physical patches must match named selections; expected {expected:?}, found {actual:?}"));
+    }
+    let review = crate::workbench::diagnostics::mesh_preflight(&mesh);
+    if review.blocked() {
+        return Err(review.summary());
+    }
+    Ok(crate::GeneratedMesh {
+        report: crate::GmshMeshingReport {
+            version: crate::GmshVersion {
+                value: "imported".into(),
+            },
+            dimension: mesh.dimension(),
+            mesh_format: "Gmsh ASCII imported".into(),
+            node_count: mesh.points().len(),
+            cell_count: mesh.cell_count(),
+            patch_count: mesh.boundary_patches().len(),
+            stdout: String::new(),
+            stderr: String::new(),
+        },
+        mesh,
+    })
+}
+
 #[derive(Clone, Debug)]
 pub struct RunOptions {
     pub restart: Option<PathBuf>,
@@ -322,6 +385,13 @@ pub fn run_with_control(
     options.recovery.validate()?;
     if options.checkpoint_every > 1_000_000 {
         return Err("Checkpoint interval must be in 0..1000000".into());
+    }
+    if project.mesh_asset.is_none() {
+        if let Some(mesh) = session.mesh() {
+            sync_intent(project, session);
+            project.mesh_asset = Some(mesh_storage::save(directory, project, mesh)?);
+            save_workspace(directory, project).map_err(|e| e.to_string())?;
+        }
     }
     if project.solver.compressible.is_some() {
         return run_compressible(directory, project, session, options, control, observe);
