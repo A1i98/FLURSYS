@@ -12,6 +12,7 @@ flursys project solve ./channel
 | Folder | Contents |
 | --- | --- |
 | [cases](cases) | Editable case files, geometry, scripts and reference data |
+| [validation](validation) | Results and reference comparisons |
 | [scripting](scripting) | Rhai boundary functions |
 | [catalog](catalog) | A sample material-data pack |
 | [compressible](compressible) | Standalone ideal-gas solver input |
