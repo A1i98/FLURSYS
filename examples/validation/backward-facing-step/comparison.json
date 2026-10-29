@@ -1,0 +1,295 @@
+{
+  "OpenFOAM SST": {
+    "uref_m_s": 46.5369987487793,
+    "cells": 20540,
+    "iteration": 10000,
+    "status": "max-iterations",
+    "reattachment": [
+      6.385967001021131
+    ],
+    "cf_mae": 0.0002522672306431056,
+    "cp_mae": 0.009875008569910663,
+    "profile_mae": {
+      "1": 0.025741884375922394,
+      "4": 0.028268521739968227,
+      "6": 0.04373654767817684,
+      "10": 0.035997956105640945
+    }
+  },
+  "FLURSYS SST coarse": {
+    "uref_m_s": 46.5005115363,
+    "cells": 8610,
+    "iteration": 5000,
+    "status": "max-iterations",
+    "momentum": 0.0020963988306973874,
+    "velocity_change": 0.0017124228361548007,
+    "pressure_linear": {
+      "final_residual": 1.5876841607708078e-16,
+      "initial_residual": 0.0012061396849055127,
+      "iterations": 1,
+      "relative_residual": 1.316335231018607e-13,
+      "status": "Converged"
+    },
+    "momentum_linear": {
+      "Ux": {
+        "final_residual": 0.00590366647048077,
+        "initial_residual": 0.1275726260053175,
+        "iterations": 1,
+        "relative_residual": 0.04627690638142616,
+        "status": "Converged"
+      },
+      "Uy": {
+        "final_residual": 0.006240795145116254,
+        "initial_residual": 0.12402539544205073,
+        "iterations": 1,
+        "relative_residual": 0.05031868774030384,
+        "status": "Converged"
+      }
+    },
+    "yplus": [
+      0.07488661447017633,
+      4.301777161146359
+    ],
+    "reattachment": [
+      6.312541443272886
+    ],
+    "cf_mae": 0.00023443139571878376,
+    "cp_mae": 0.0172576863792169,
+    "profile_mae": {
+      "1": 0.02400175619769498,
+      "4": 0.026649469353322967,
+      "6": 0.03970591085189845,
+      "10": 0.03465084483829425
+    }
+  },
+  "FLURSYS SST medium 5000": {
+    "uref_m_s": 46.54282568367,
+    "cells": 20540,
+    "iteration": 5000,
+    "status": "max-iterations",
+    "momentum": 0.0738300966335881,
+    "velocity_change": 0.0007789717539919717,
+    "pressure_linear": {
+      "final_residual": 3.791906660221571e-17,
+      "initial_residual": 0.0003036669735621681,
+      "iterations": 1,
+      "relative_residual": 1.248705651372152e-13,
+      "status": "Converged"
+    },
+    "momentum_linear": {
+      "Ux": {
+        "final_residual": 0.00262698751366939,
+        "initial_residual": 0.05157768880128448,
+        "iterations": 1,
+        "relative_residual": 0.05093263336770468,
+        "status": "Converged"
+      },
+      "Uy": {
+        "final_residual": 0.002976884709162992,
+        "initial_residual": 0.05547070374201488,
+        "iterations": 1,
+        "relative_residual": 0.05366589043124445,
+        "status": "Converged"
+      }
+    },
+    "yplus": [
+      0.012094215585588132,
+      2.7853315217270214
+    ],
+    "reattachment": [
+      6.374893432577907
+    ],
+    "cf_mae": 0.00024753662788645574,
+    "cp_mae": 0.015752642925822284,
+    "profile_mae": {
+      "1": 0.025120781112061865,
+      "4": 0.028895646108569983,
+      "6": 0.04466092416334217,
+      "10": 0.03693234156033536
+    }
+  },
+  "FLURSYS SST medium 10000": {
+    "uref_m_s": 46.54241286628,
+    "cells": 20540,
+    "iteration": 10000,
+    "status": "max-iterations",
+    "momentum": 0.9649962743036432,
+    "velocity_change": 0.0010082102224588743,
+    "pressure_linear": {
+      "final_residual": 2.3569944551411856e-16,
+      "initial_residual": 0.0005700543079852358,
+      "iterations": 1,
+      "relative_residual": 4.134684050492661e-13,
+      "status": "Converged"
+    },
+    "momentum_linear": {
+      "Ux": {
+        "final_residual": 0.0024074478200200597,
+        "initial_residual": 0.050649635353062335,
+        "iterations": 1,
+        "relative_residual": 0.04753139491012155,
+        "status": "Converged"
+      },
+      "Uy": {
+        "final_residual": 0.0029189521291162874,
+        "initial_residual": 0.05457924274294296,
+        "iterations": 1,
+        "relative_residual": 0.05348099355031277,
+        "status": "Converged"
+      }
+    },
+    "yplus": [
+      0.010539034391636289,
+      2.785677807726183
+    ],
+    "reattachment": [
+      6.375407008761759
+    ],
+    "cf_mae": 0.00024664568900185403,
+    "cp_mae": 0.016169085599571646,
+    "profile_mae": {
+      "1": 0.02464352745291781,
+      "4": 0.028904168149494334,
+      "6": 0.04467607264862165,
+      "10": 0.0369475828784999
+    }
+  },
+  "FLURSYS SST medium 15000": {
+    "uref_m_s": 46.54315548718,
+    "cells": 20540,
+    "iteration": 15000,
+    "status": "max-iterations",
+    "momentum": 0.9902005410639368,
+    "velocity_change": 0.0008100942810056285,
+    "pressure_linear": {
+      "final_residual": 7.99551980341555e-17,
+      "initial_residual": 0.0005001989525709737,
+      "iterations": 1,
+      "relative_residual": 1.5984679220776775e-13,
+      "status": "Converged"
+    },
+    "momentum_linear": {
+      "Ux": {
+        "final_residual": 0.0027242498102156535,
+        "initial_residual": 0.056004586575139244,
+        "iterations": 1,
+        "relative_residual": 0.048643333998379404,
+        "status": "Converged"
+      },
+      "Uy": {
+        "final_residual": 0.002536069233190824,
+        "initial_residual": 0.04882517999814403,
+        "iterations": 1,
+        "relative_residual": 0.0519418306965223,
+        "status": "Converged"
+      }
+    },
+    "yplus": [
+      0.013928165464551218,
+      2.7856501755750305
+    ],
+    "reattachment": [
+      6.375974659837699
+    ],
+    "cf_mae": 0.0002481298034686978,
+    "cp_mae": 0.01670518336432241,
+    "profile_mae": {
+      "1": 0.024841439809929228,
+      "4": 0.028840007890216894,
+      "6": 0.044674059753205216,
+      "10": 0.0369545611809472
+    }
+  },
+  "FLURSYS SST fine": {
+    "uref_m_s": 47.82540157555,
+    "cells": 40222,
+    "iteration": 5000,
+    "status": "max-iterations",
+    "momentum": 0.015450991963100203,
+    "velocity_change": 0.0004638484920792306,
+    "pressure_linear": {
+      "final_residual": 4.77481214428032e-17,
+      "initial_residual": 0.00011915081482966099,
+      "iterations": 1,
+      "relative_residual": 4.0073684356304503e-13,
+      "status": "Converged"
+    },
+    "momentum_linear": {
+      "Ux": {
+        "final_residual": 0.05658257011156203,
+        "initial_residual": 0.7581838472436492,
+        "iterations": 1,
+        "relative_residual": 0.0746290893920597,
+        "status": "Converged"
+      },
+      "Uy": {
+        "final_residual": 0.0018278674744532067,
+        "initial_residual": 0.033111197903553144,
+        "iterations": 1,
+        "relative_residual": 0.055203906538732,
+        "status": "Converged"
+      }
+    },
+    "yplus": [
+      0.008077222070329137,
+      1.9634725897478988
+    ],
+    "reattachment": [
+      6.341481754063921
+    ],
+    "cf_mae": 0.00021989218430611533,
+    "cp_mae": 0.006779418249351487,
+    "profile_mae": {
+      "1": 0.030820051118310293,
+      "4": 0.04255672982397728,
+      "6": 0.05722250130123306,
+      "10": 0.05610625705029141
+    }
+  },
+  "FLURSYS SA medium": {
+    "uref_m_s": 47.13056456258,
+    "cells": 20540,
+    "iteration": 5000,
+    "status": "max-iterations",
+    "momentum": 0.006106387055808113,
+    "velocity_change": 0.0004703124107980387,
+    "pressure_linear": {
+      "final_residual": 1.916479634741584e-17,
+      "initial_residual": 0.00011050919186160132,
+      "iterations": 1,
+      "relative_residual": 1.734226449815804e-13,
+      "status": "Converged"
+    },
+    "momentum_linear": {
+      "Ux": {
+        "final_residual": 0.019583094343998464,
+        "initial_residual": 0.3064632873351579,
+        "iterations": 1,
+        "relative_residual": 0.06390029459738118,
+        "status": "Converged"
+      },
+      "Uy": {
+        "final_residual": 2.971604683080227e-05,
+        "initial_residual": 0.0009264240836889097,
+        "iterations": 1,
+        "relative_residual": 0.03207607331674338,
+        "status": "Converged"
+      }
+    },
+    "yplus": [
+      0.05109576159001494,
+      3.005420485479712
+    ],
+    "reattachment": [
+      6.019447941839155
+    ],
+    "cf_mae": 0.00046992293943537715,
+    "cp_mae": 0.021873703763452868,
+    "profile_mae": {
+      "1": 0.03944057288443031,
+      "4": 0.03399043524708321,
+      "6": 0.02864063395217407,
+      "10": 0.03143081133655988
+    }
+  }
+}
