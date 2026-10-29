@@ -323,7 +323,13 @@ pub(crate) fn assemble_momentum_component_with_sink(
                     NumericsError::DegenerateOwnerNeighbourDistance { face: face_index }.into(),
                 );
             }
-            let diffusion = viscosity[face_index] * face.area_vector.dot(d) / d2;
+            let (factor, _) = crate::numerics::diffusion_geometry(
+                face.area_vector,
+                d,
+                options.diffusion.non_orthogonal_correction,
+                face_index,
+            )?;
+            let diffusion = viscosity[face_index] * factor;
             if !diffusion.is_finite() || diffusion < 0.0 {
                 return Err(
                     NumericsError::InvalidNonOrthogonalGeometry { face: face_index }.into(),
@@ -350,8 +356,13 @@ pub(crate) fn assemble_momentum_component_with_sink(
                 .cyclic_neighbour(mesh, canonical)
                 .ok_or(NumericsError::InvalidNonOrthogonalGeometry { face: canonical })?;
             let d = image - mesh.cells()[canonical_face.owner].center;
-            let diffusion =
-                viscosity[canonical] * canonical_face.area_vector.dot(d) / d.norm_squared();
+            let (factor, _) = crate::numerics::diffusion_geometry(
+                canonical_face.area_vector,
+                d,
+                options.diffusion.non_orthogonal_correction,
+                canonical,
+            )?;
+            let diffusion = viscosity[canonical] * factor;
             if !diffusion.is_finite() || diffusion < 0.0 {
                 return Err(
                     NumericsError::InvalidNonOrthogonalGeometry { face: face_index }.into(),
@@ -369,7 +380,13 @@ pub(crate) fn assemble_momentum_component_with_sink(
             if !d2.is_finite() || d2 <= f64::EPSILON {
                 return Err(NumericsError::DegenerateOwnerFaceDistance { face: face_index }.into());
             }
-            let diffusion = viscosity[face_index] * face.area_vector.dot(d) / d2;
+            let (factor, _) = crate::numerics::diffusion_geometry(
+                face.area_vector,
+                d,
+                options.diffusion.non_orthogonal_correction,
+                face_index,
+            )?;
+            let diffusion = viscosity[face_index] * factor;
             match condition {
                 ScalarBoundaryCondition::FixedValue(value) => {
                     if !value.is_finite() {
@@ -402,6 +419,17 @@ pub(crate) fn assemble_momentum_component_with_sink(
     add_explicit_nonorthogonal_rhs(mesh, options, &viscosity, &mut rhs)?;
     convection::correct(mesh, options, &mut rhs)?;
     let mut builder = CsrBuilder::new(mesh.cell_count(), mesh.cell_count());
+    if matches!(
+        options.convection,
+        MomentumConvection::BoundedLust | MomentumConvection::BoundedLimitedLinearTvd
+    ) {
+        for (i, face) in mesh.faces().iter().enumerate() {
+            builder.add(face.owner, face.owner, -options.flux[i])?;
+            if let Some(neighbour) = face.neighbour {
+                builder.add(neighbour, neighbour, options.flux[i])?;
+            }
+        }
+    }
     for (row, column, value) in entries {
         builder.add(row, column, value)?;
     }
@@ -1696,6 +1724,56 @@ mod tests {
         let rebuilt = assemble_momentum_component(&mesh, options).unwrap();
         assert_eq!(stale.matrix(), rebuilt.matrix());
         assert_eq!(stale.rhs(), rebuilt.rhs());
+    }
+
+    #[test]
+    fn lust_correction_is_conservative_and_preserves_constant_fields() {
+        let mesh = skewed_grid();
+        let assignments: Vec<_> = mesh
+            .boundary_patches()
+            .iter()
+            .map(|p| (p.name.as_str(), ScalarBoundaryCondition::FixedValue(1.0)))
+            .collect();
+        let boundary = ResolvedScalarBoundaryConditions::strict(&mesh, &assignments).unwrap();
+        let flux = FaceField::filled(&mesh, 0.2);
+        let field = CellField::from_cells(&mesh, |_, c| 1.0 + c.center.x - c.center.y);
+        let mut options = MomentumOptions::steady(Diffusivity::Constant(1.0), &boundary, &flux);
+        let baseline = assemble_momentum_component(&mesh, options).unwrap();
+        options.convection = MomentumConvection::Lust;
+        options.correction_field = Some(&field);
+        let corrected = assemble_momentum_component(&mesh, options).unwrap();
+        assert!(
+            (corrected.rhs().iter().sum::<f64>() - baseline.rhs().iter().sum::<f64>()).abs()
+                < 1e-12
+        );
+        let constant = CellField::filled(&mesh, 1.0);
+        options.correction_field = Some(&constant);
+        let unchanged = assemble_momentum_component(&mesh, options).unwrap();
+        for (a, b) in unchanged.rhs().iter().zip(baseline.rhs()) {
+            assert!((a - b).abs() < 1e-12);
+        }
+    }
+
+    #[test]
+    fn bounded_lust_preserves_uniform_transport_with_unbalanced_flux() {
+        let mesh = skewed_grid();
+        let assignments: Vec<_> = mesh
+            .boundary_patches()
+            .iter()
+            .map(|p| (p.name.as_str(), ScalarBoundaryCondition::FixedValue(1.0)))
+            .collect();
+        let boundary = ResolvedScalarBoundaryConditions::strict(&mesh, &assignments).unwrap();
+        let flux = FaceField::filled(&mesh, 0.2);
+        let field = CellField::filled(&mesh, 1.0);
+        let mut options = MomentumOptions::steady(Diffusivity::Constant(1.0), &boundary, &flux);
+        options.convection = MomentumConvection::BoundedLust;
+        options.correction_field = Some(&field);
+        let system = assemble_momentum_component(&mesh, options).unwrap();
+        assert!(system
+            .true_residual(field.values())
+            .unwrap()
+            .iter()
+            .all(|r| r.abs() < 1e-10));
     }
 
     #[test]

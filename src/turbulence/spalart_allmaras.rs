@@ -114,6 +114,7 @@ impl Closure {
             self.old.as_ref().and_then(|o| o.nu_tilda.as_ref()),
             dt,
             self.config.relaxation,
+            &self.config,
             control,
             &self.walls,
             nu / SIGMA,

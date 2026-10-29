@@ -10,7 +10,9 @@ mod realizable;
 mod spalart_allmaras;
 mod wall_distance;
 mod wall_functions;
-pub use wall_functions::{smooth_wall, WallTreatment};
+pub use wall_functions::{
+    smooth_wall, velocity_blended_wall, velocity_blended_wall_gradient, WallTreatment,
+};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -45,7 +47,12 @@ impl TurbulenceModel {
 #[serde(default)]
 pub struct TurbulenceOptions {
     pub model: TurbulenceModel,
+    pub convection: crate::momentum::MomentumConvection,
+    pub diffusivity_interpolation: DiffusivityInterpolation,
+    pub diffusion_correction: NonOrthogonalCorrection,
     pub wall_treatment: WallTreatment,
+    pub include_isotropic_stress: bool,
+    pub full_viscous_stress: bool,
     pub inlets: std::collections::BTreeMap<String, TurbulenceInlet>,
     /// Uniform initial and incoming k (m²/s²) and omega (1/s).
     pub k: f64,
@@ -63,7 +70,12 @@ impl Default for TurbulenceOptions {
     fn default() -> Self {
         Self {
             model: TurbulenceModel::Laminar,
+            convection: Default::default(),
+            diffusivity_interpolation: DiffusivityInterpolation::Harmonic,
+            diffusion_correction: NonOrthogonalCorrection::Limited,
             wall_treatment: WallTreatment::Resolved,
+            include_isotropic_stress: true,
+            full_viscous_stress: false,
             inlets: Default::default(),
             k: 1e-4,
             omega: 1.0,
@@ -82,12 +94,13 @@ impl TurbulenceOptions {
         if self.wall_treatment == WallTreatment::EquilibriumKEpsilon && !self.model.uses_epsilon() {
             return Err("Equilibrium wall treatment requires k-epsilon".into());
         }
-        if self.wall_treatment == WallTreatment::EquilibriumKOmega
-            && !matches!(
-                self.model,
-                TurbulenceModel::KOmega | TurbulenceModel::KOmegaSst
-            )
-        {
+        if matches!(
+            self.wall_treatment,
+            WallTreatment::EquilibriumKOmega | WallTreatment::VelocityBlendedKOmega
+        ) && !matches!(
+            self.model,
+            TurbulenceModel::KOmega | TurbulenceModel::KOmegaSst
+        ) {
             return Err("Omega wall functions require k-omega or SST".into());
         }
         for b in self.inlets.values() {
@@ -173,7 +186,9 @@ pub(crate) struct Closure {
     pub last_linear: std::collections::BTreeMap<String, LinearSolveReport>,
     fields: TurbulenceFields,
     walls: Vec<bool>,
+    wall_viscosity: Vec<f64>,
     incoming: Vec<Option<TurbulenceInlet>>,
+    extrapolate_outlet: bool,
     distance: Vec<f64>,
     old: Option<TurbulenceFields>,
     pub relative_change: f64,
@@ -323,7 +338,9 @@ impl Closure {
             old: Some(fields.clone()),
             fields,
             walls,
+            wall_viscosity: vec![0.; mesh.face_count()],
             incoming,
+            extrapolate_outlet: case.solver.pressure_coupling.allow_outlet_backflow,
             distance,
             relative_change: 0.0,
         })
@@ -409,6 +426,31 @@ impl Closure {
         dt: Option<f64>,
         linear: LinearSolverOptions,
     ) -> Result<(FaceField<f64>, CellField<Vec3>), SimpleError> {
+        if self.config.wall_treatment == WallTreatment::VelocityBlendedKOmega {
+            for (i, f) in mesh.faces().iter().enumerate() {
+                if !self.walls[i] {
+                    continue;
+                }
+                let value = |c| match bc.component(c).condition(i) {
+                    Some(ScalarBoundaryCondition::FixedValue(x)) => x,
+                    _ => 0.,
+                };
+                let wall = Vec3::new(
+                    value(MomentumComponent::X),
+                    value(MomentumComponent::Y),
+                    value(MomentumComponent::Z),
+                );
+                let relative = state.velocity[f.owner] - wall;
+                let tangent = relative - f.normal * relative.dot(f.normal);
+                let y = (f.center - mesh.cells()[f.owner].center)
+                    .dot(f.normal)
+                    .abs();
+                self.wall_viscosity[i] =
+                    velocity_blended_wall_gradient(tangent.norm(), relative.norm() / y, y, nu)
+                        .map_err(SimpleError::PhysicalBoundary)?
+                        .1;
+            }
+        }
         let gradient = velocity_gradient(mesh, &state.velocity, bc)?;
         let previous = self.fields.clone();
         if self.config.model == TurbulenceModel::SpalartAllmaras {
@@ -523,8 +565,13 @@ impl Closure {
             let l = if f.neighbour.is_some() || cyclic.is_some() {
                 let center =
                     mesh.cells()[n].center - cyclic.map_or(Vec3::ZERO, |link| link.translation);
-                (f.center - mesh.cells()[o].center).norm()
-                    / ((f.center - mesh.cells()[o].center).norm() + (f.center - center).norm())
+                let a = (f.center - mesh.cells()[o].center).dot(f.normal).abs();
+                let b = (f.center - center).dot(f.normal).abs();
+                if a + b > 0.0 {
+                    a / (a + b)
+                } else {
+                    0.5
+                }
             } else {
                 0.0
             };
@@ -568,7 +615,12 @@ impl Closure {
                 )));
             }
             viscosity[i] = nu + nut;
-            // Constant molecular viscosity is already covered by the incompressible Laplacian.
+            let stress_viscosity = nut
+                + if self.config.full_viscous_stress {
+                    nu
+                } else {
+                    0.
+                };
             let mut traction = [0.0; 3];
             let area = [f.area_vector.x, f.area_vector.y, f.area_vector.z];
             let tr = (0..3)
@@ -583,9 +635,15 @@ impl Closure {
             for a in 0..3 {
                 for b in 0..3 {
                     let gt = (1.0 - l) * gradient[o][b][a] + l * gradient[n][b][a];
-                    traction[a] += (nut * gt
+                    traction[a] += (stress_viscosity * gt
                         - if a == b {
-                            2.0 / 3.0 * (nut * tr + k)
+                            2.0 / 3.0
+                                * (stress_viscosity * tr
+                                    + if self.config.include_isotropic_stress {
+                                        k
+                                    } else {
+                                        0.
+                                    })
                         } else {
                             0.0
                         })

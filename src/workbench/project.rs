@@ -444,6 +444,8 @@ pub struct WorkbenchSolverSettings {
     pub turbulence: crate::turbulence::TurbulenceOptions,
     #[serde(default)]
     pub convection: crate::momentum::MomentumConvection,
+    #[serde(default = "default_momentum_diffusion")]
+    pub momentum_diffusion_correction: crate::NonOrthogonalCorrection,
     #[serde(default = "default_cpu_threads")]
     pub threads: usize,
     pub max_outer_iterations: usize,
@@ -472,6 +474,7 @@ impl Default for WorkbenchSolverSettings {
             force_analysis: Default::default(),
             turbulence: Default::default(),
             convection: crate::momentum::MomentumConvection::Upwind,
+            momentum_diffusion_correction: crate::NonOrthogonalCorrection::Limited,
             threads: 0,
             max_outer_iterations: 1000,
             continuity_absolute_tolerance: 1.0e-10,
@@ -480,6 +483,10 @@ impl Default for WorkbenchSolverSettings {
             pressure_relaxation: 0.3,
         }
     }
+}
+
+fn default_momentum_diffusion() -> crate::NonOrthogonalCorrection {
+    crate::NonOrthogonalCorrection::Limited
 }
 
 fn default_cpu_threads() -> usize {

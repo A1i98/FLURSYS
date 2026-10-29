@@ -110,6 +110,7 @@ impl Closure {
             old.and_then(|o| o.epsilon.as_ref()),
             dt,
             self.config.relaxation,
+            &self.config,
             self.linear
                 .as_ref()
                 .map_or(crate::equations::EquationControl::transport(linear), |e| {
@@ -143,6 +144,7 @@ impl Closure {
             old.map(|o| &o.k),
             dt,
             self.config.relaxation,
+            &self.config,
             self.linear
                 .as_ref()
                 .map_or(crate::equations::EquationControl::transport(linear), |e| {

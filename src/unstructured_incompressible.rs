@@ -83,6 +83,7 @@ pub struct IncompressibleSolverOptions {
     pub turbulence: crate::turbulence::TurbulenceOptions,
     pub thermal: crate::thermal::Options,
     pub convection: crate::momentum::MomentumConvection,
+    pub momentum_diffusion_correction: crate::NonOrthogonalCorrection,
     /// Private worker-pool size; zero uses the CPUs available to this process.
     /// Momentum components can run concurrently; pressure is currently serial.
     pub threads: usize,
@@ -141,6 +142,7 @@ impl Default for IncompressibleSolverOptions {
             turbulence: crate::turbulence::TurbulenceOptions::default(),
             thermal: crate::thermal::Options::default(),
             convection: crate::momentum::MomentumConvection::Upwind,
+            momentum_diffusion_correction: crate::NonOrthogonalCorrection::Limited,
             threads: 1,
             max_outer_iterations: 1000,
             continuity_absolute_tolerance: 1.0e-10,
@@ -1140,7 +1142,7 @@ fn solve_incompressible_on_pool(
         .filter(|(_, face)| face.neighbour.is_none())
         .map(|(index, _)| resolved.boundary_flux()[index])
         .sum::<f64>();
-    if prescribed_flux > 1.0e-12 {
+    if prescribed_flux > 1.0e-12 && !case.solver.pressure_coupling.allow_outlet_backflow {
         if let Some((name, _)) = case.boundaries.iter().find(|(_, condition)| {
             matches!(
                 condition,
@@ -1293,7 +1295,8 @@ fn solve_incompressible_on_pool(
     }) {
         options.boundary_case = Some(case);
     }
-    options.momentum_diffusion.non_orthogonal_correction = crate::NonOrthogonalCorrection::Limited;
+    options.momentum_diffusion.non_orthogonal_correction =
+        case.solver.momentum_diffusion_correction;
     options.convection = case.solver.convection;
     options.max_outer_iterations = case.solver.max_outer_iterations;
     options.continuity_absolute_tolerance = case.solver.continuity_absolute_tolerance;
@@ -1506,6 +1509,9 @@ fn solve_incompressible_on_pool(
         IncompressibleSolveStatus::MaxIterations
     };
     for (patch_name, condition) in &case.boundaries {
+        if case.solver.pressure_coupling.allow_outlet_backflow {
+            continue;
+        }
         if !matches!(
             condition,
             IncompressibleBoundaryCondition::PressureOutlet { .. }

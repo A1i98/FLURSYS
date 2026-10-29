@@ -13,12 +13,29 @@ impl Closure {
     ) -> Result<(), SimpleError> {
         let n = mesh.cell_count();
         let wall = self.wall_values(mesh, state, bc, nu)?;
-        let omega_walls = self.config.wall_treatment == WallTreatment::EquilibriumKOmega;
+        let omega_walls = matches!(
+            self.config.wall_treatment,
+            WallTreatment::EquilibriumKOmega | WallTreatment::VelocityBlendedKOmega
+        );
         let mut kb = vec![None; mesh.face_count()];
         let mut wb = kb.clone();
         for (i, f) in mesh.faces().iter().enumerate() {
             if f.neighbour.is_none() {
-                let incoming = state.face_flux[i] < 0.0 && self.cyclic.link(i).is_none();
+                let extrapolated = self.extrapolate_outlet
+                    && [
+                        MomentumComponent::X,
+                        MomentumComponent::Y,
+                        MomentumComponent::Z,
+                    ]
+                    .iter()
+                    .all(|c| {
+                        matches!(
+                            bc.component(*c).condition(i),
+                            Some(ScalarBoundaryCondition::ZeroGradient)
+                        )
+                    });
+                let incoming =
+                    state.face_flux[i] < 0.0 && self.cyclic.link(i).is_none() && !extrapolated;
                 let (in_k, in_w, _in_e) = if incoming {
                     self.incoming_values(mesh, state, bc, i)?
                 } else {
@@ -133,6 +150,7 @@ impl Closure {
             old.map(|o| &o.omega),
             dt,
             self.config.relaxation,
+            &self.config,
             self.linear
                 .as_ref()
                 .map_or(crate::equations::EquationControl::transport(linear), |e| {
@@ -174,6 +192,7 @@ impl Closure {
             old.map(|o| &o.k),
             dt,
             self.config.relaxation,
+            &self.config,
             self.linear
                 .as_ref()
                 .map_or(crate::equations::EquationControl::transport(linear), |e| {
@@ -206,6 +225,7 @@ pub(super) fn scalar_solve(
     old: Option<&CellField<f64>>,
     dt: Option<f64>,
     alpha: f64,
+    numerics: &TurbulenceOptions,
     linear: crate::equations::EquationControl,
     walls: &[bool],
     nu: f64,
@@ -214,24 +234,28 @@ pub(super) fn scalar_solve(
     let mut face_diffusion = interpolate_diffusivity(
         mesh,
         Diffusivity::CellField(d),
-        DiffusivityInterpolation::Harmonic,
+        numerics.diffusivity_interpolation,
     )?;
     for (i, wall) in walls.iter().enumerate() {
         if let Some((n, _)) = bc.cyclic_neighbour(mesh, i) {
             let a = d[mesh.faces()[i].owner];
             let b = d[n];
-            face_diffusion[i] = 2.0 * a * b / (a + b);
+            face_diffusion[i] = match numerics.diffusivity_interpolation {
+                DiffusivityInterpolation::Harmonic => 2.0 * a * b / (a + b),
+                DiffusivityInterpolation::Linear => 0.5 * (a + b),
+            };
         }
         if *wall {
             face_diffusion[i] = nu;
         }
     }
     let mut options = MomentumOptions::steady(Diffusivity::Faces(&face_diffusion), bc, phi);
+    options.convection = numerics.convection;
     options.old = old;
     options.time_step = dt;
     options.source = Some(source);
     // Relax the complete matrix, including the implicit destruction term.
-    options.diffusion.non_orthogonal_correction = NonOrthogonalCorrection::Limited;
+    options.diffusion.non_orthogonal_correction = numerics.diffusion_correction;
     options.correction_field = Some(field);
     options.allow_iterative_outlet_backflow = true;
     let system = assemble_momentum_component(mesh, options)?;
