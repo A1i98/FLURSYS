@@ -46,6 +46,17 @@ impl App {
                         self.show_examples = true;
                         ui.close();
                     }
+                    if ui
+                        .add_enabled(!self.busy(), egui::Button::new("Import Gmsh mesh…"))
+                        .clicked()
+                    {
+                        if let Err(error) = self.apply_editor() {
+                            self.message(error);
+                        } else {
+                            self.choose_workspace_folder(WorkspaceDialogAction::ImportMesh);
+                        }
+                        ui.close();
+                    }
                     if ui.button("Quit").clicked() {
                         self.request(Pending::Quit);
                         ui.close();
@@ -529,6 +540,27 @@ impl App {
         });
     }
     fn properties(&mut self, ui: &mut egui::Ui) {
+        if self.stage == Stage::Setup && self.page == 4 {
+            heading(ui, "FLOW REGIME");
+            let mut compressible = self.editor.solver.compressible.is_some();
+            ui.add_enabled_ui(!self.busy(), |ui| {
+                egui::ComboBox::from_id_salt("flow-regime")
+                    .selected_text(if compressible {
+                        "Compressible"
+                    } else {
+                        "Incompressible"
+                    })
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(&mut compressible, false, "Incompressible");
+                        ui.selectable_value(&mut compressible, true, "Compressible");
+                    });
+            });
+            if compressible != self.editor.solver.compressible.is_some() {
+                self.editor.solver.compressible = compressible.then(Default::default);
+            }
+            ui.weak("Apply settings to switch models. Initialize new fields and configure boundaries before solving.");
+            ui.separator();
+        }
         if self.editor.solver.compressible.is_some() {
             if self.stage == Stage::Setup && self.page == 5 {
                 ui.label("This backend does not yet provide scripted boundaries, transported scalars or viscous wall-load reports. Field inspection and conservation diagnostics are available in Display and Information.");
@@ -1394,6 +1426,11 @@ impl App {
                         for (c, n) in [
                             (C::Upwind, "First-order upwind"),
                             (C::LimitedLinear, "Limited linear"),
+                            (C::LinearUpwind, "Linear upwind (unbounded)"),
+                            (C::Lust, "LUST · linear / linear upwind"),
+                            (C::BoundedLust, "Bounded LUST"),
+                            (C::LimitedLinearTvd, "Limited linear TVD"),
+                            (C::BoundedLimitedLinearTvd, "Bounded limited linear TVD"),
                             (C::Central, "Central (unbounded)"),
                             (C::VanLeer, "Van Leer"),
                         ] {
@@ -1416,6 +1453,35 @@ impl App {
                                 &mut self.editor.solver.pressure_coupling.algorithm,
                                 a,
                                 n,
+                            );
+                        }
+                    });
+                egui::ComboBox::from_id_salt("momentum-diffusion-correction")
+                    .selected_text(format!(
+                        "Diffusion: {:?}",
+                        self.editor.solver.momentum_diffusion_correction
+                    ))
+                    .show_ui(ui, |ui| {
+                        for (value, name) in [
+                            (flursys::NonOrthogonalCorrection::None, "Orthogonal"),
+                            (
+                                flursys::NonOrthogonalCorrection::Limited,
+                                "Limited corrected",
+                            ),
+                            (flursys::NonOrthogonalCorrection::Explicit, "Corrected"),
+                            (
+                                flursys::NonOrthogonalCorrection::OverRelaxed,
+                                "Over-relaxed corrected",
+                            ),
+                            (
+                                flursys::NonOrthogonalCorrection::OverRelaxedLimited,
+                                "Over-relaxed limited",
+                            ),
+                        ] {
+                            ui.selectable_value(
+                                &mut self.editor.solver.momentum_diffusion_correction,
+                                value,
+                                name,
                             );
                         }
                     });

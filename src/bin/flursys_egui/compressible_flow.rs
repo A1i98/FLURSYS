@@ -374,6 +374,49 @@ impl App {
         let Some(settings) = self.editor.solver.compressible.as_mut() else {
             return;
         };
+        if self.stage == Stage::Setup && self.page == 4 {
+            use flursys::multiphysics::metrics::Coordinates;
+            ui.label("Coordinates");
+            egui::ComboBox::from_id_salt("compressible-coordinates")
+                .selected_text(match settings.coordinates {
+                    Coordinates::Cartesian => "Cartesian",
+                    Coordinates::AxisymmetricX { .. } => "Axisymmetric · X axis",
+                    Coordinates::AxisymmetricY { .. } => "Axisymmetric · Y axis",
+                })
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(
+                        &mut settings.coordinates,
+                        Coordinates::Cartesian,
+                        "Cartesian",
+                    );
+                    if ui
+                        .selectable_label(
+                            matches!(settings.coordinates, Coordinates::AxisymmetricX { .. }),
+                            "Axisymmetric · X axis",
+                        )
+                        .clicked()
+                    {
+                        settings.coordinates = Coordinates::AxisymmetricX { radial_origin: 0.0 };
+                    }
+                    if ui
+                        .selectable_label(
+                            matches!(settings.coordinates, Coordinates::AxisymmetricY { .. }),
+                            "Axisymmetric · Y axis",
+                        )
+                        .clicked()
+                    {
+                        settings.coordinates = Coordinates::AxisymmetricY { radial_origin: 0.0 };
+                    }
+                });
+            match &mut settings.coordinates {
+                Coordinates::AxisymmetricX { radial_origin }
+                | Coordinates::AxisymmetricY { radial_origin } => {
+                    number(ui, "Radial origin (m)", radial_origin);
+                    ui.weak("2D XY meridian, inviscid, no swirl. Radius must be nonnegative.");
+                }
+                Coordinates::Cartesian => {}
+            }
+        }
         if self.stage == Stage::Solution && self.page == 2 {
             number(ui, "End time", &mut settings.end_time);
             number(ui, "Maximum Δt", &mut settings.max_time_step);
@@ -873,6 +916,7 @@ mod tests {
             velocity: Vec3::new(1., 0., 0.),
         };
         let report = gas::Report {
+            coordinates: Default::default(),
             source_integrals: [0.; 5],
             performance: Default::default(),
             stopped: false,

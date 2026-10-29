@@ -98,6 +98,7 @@ struct App {
     session: WorkbenchSession,
     workspace: Option<PathBuf>,
     workspace_dialog: Option<(WorkspaceDialogAction, Receiver<Option<PathBuf>>)>,
+    mesh_import: Option<Receiver<Result<GeneratedMesh, String>>>,
     dirty: bool,
     stage: Stage,
     page: usize,
@@ -277,6 +278,7 @@ enum Pending {
 enum WorkspaceDialogAction {
     Open,
     Save,
+    ImportMesh,
 }
 pub fn run() -> eframe::Result {
     eframe::run_native(
@@ -317,6 +319,7 @@ impl App {
             session,
             workspace: None,
             workspace_dialog: None,
+            mesh_import: None,
             dirty: false,
             stage: Stage::Geometry,
             page: 0,
@@ -543,6 +546,7 @@ impl App {
             || self.publishing.is_some()
             || self.loading.is_some()
             || self.workspace_dialog.is_some()
+            || self.mesh_import.is_some()
             || self.analysis_job.is_some()
             || self.transport.receiver.is_some()
     }
@@ -691,18 +695,24 @@ impl App {
         let title = match action {
             WorkspaceDialogAction::Open => "Open FLURSYS workspace",
             WorkspaceDialogAction::Save => "Save FLURSYS workspace",
+            WorkspaceDialogAction::ImportMesh => "Import Gmsh mesh",
         };
         let (tx, rx) = mpsc::channel();
         std::thread::spawn(move || {
-            let folder =
-                pollster::block_on(rfd::AsyncFileDialog::new().set_title(title).pick_folder())
-                    .map(|handle| handle.path().to_path_buf());
+            let dialog = rfd::AsyncFileDialog::new().set_title(title);
+            let folder = if matches!(action, WorkspaceDialogAction::ImportMesh) {
+                pollster::block_on(dialog.add_filter("Gmsh mesh", &["msh"]).pick_file())
+            } else {
+                pollster::block_on(dialog.pick_folder())
+            }
+            .map(|handle| handle.path().to_path_buf());
             let _ = tx.send(folder);
         });
         self.workspace_dialog = Some((action, rx));
         self.message(match action {
             WorkspaceDialogAction::Open => "Choose a workspace folder…",
             WorkspaceDialogAction::Save => "Choose where to save the workspace…",
+            WorkspaceDialogAction::ImportMesh => "Choose a Gmsh mesh…",
         });
     }
     fn poll_workspace_dialog(&mut self) {
@@ -731,6 +741,15 @@ impl App {
                         Ok(false) => {}
                         Err(error) => self.message(error),
                     },
+                    WorkspaceDialogAction::ImportMesh => {
+                        let project = self.project.clone();
+                        let (tx, rx) = mpsc::channel();
+                        std::thread::spawn(move || {
+                            let _ = tx.send(flursys::headless::read_import_mesh(&project, &path));
+                        });
+                        self.mesh_import = Some(rx);
+                        self.message("Importing mesh…");
+                    }
                 },
                 Ok(None) => self.message("Workspace selection cancelled."),
                 Err(error) => self.message(error),
@@ -899,7 +918,14 @@ impl App {
             || p.solver.thermal.reduced_pressure != self.project.solver.thermal.reduced_pressure
             || p.solver.initial_profile != self.project.solver.initial_profile
             || p.solver.compressible.as_ref().map(|s| s.gas)
-                != self.project.solver.compressible.as_ref().map(|s| s.gas);
+                != self.project.solver.compressible.as_ref().map(|s| s.gas)
+            || p.solver.compressible.as_ref().map(|s| s.coordinates)
+                != self
+                    .project
+                    .solver
+                    .compressible
+                    .as_ref()
+                    .map(|s| s.coordinates);
         if !mesh_changed {
             if let Some(m) = mesh {
                 s.install_mesh(m);
@@ -1074,6 +1100,34 @@ impl App {
         }
 
         self.poll_workspace_dialog();
+        let mesh_result = self
+            .mesh_import
+            .as_ref()
+            .and_then(|rx| match rx.try_recv() {
+                Ok(result) => Some(result),
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    Some(Err("Mesh import worker stopped unexpectedly.".into()))
+                }
+                Err(mpsc::TryRecvError::Empty) => None,
+            });
+        if let Some(result) = mesh_result {
+            self.mesh_import = None;
+            match result {
+                Ok(mesh) => {
+                    let count = mesh.mesh.cell_count();
+                    self.reset_solve_session();
+                    self.session.install_mesh(mesh);
+                    self.project.mesh_asset = None;
+                    self.editor.mesh_asset = None;
+                    self.dirty = true;
+                    self.refresh_mesh();
+                    self.message(format!(
+                        "Imported mesh: {count} cells. Save the workspace to retain it."
+                    ));
+                }
+                Err(error) => self.message(error),
+            }
+        }
         self.poll_mapping();
         self.poll_transport();
         if let Some((id, rx)) = &self.frame_scan {

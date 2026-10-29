@@ -37,13 +37,23 @@ fn equation(
                     for (p, n) in [
                         (P::None, "None"),
                         (P::Jacobi, "Jacobi"),
+                        (P::SymmetricGaussSeidel, "Symmetric Gauss–Seidel"),
+                        (P::SmoothSolver, "Smooth solver · symmetric Gauss–Seidel"),
                         (P::Ic0, "IC(0)"),
                         (P::Gamg, "Aggregation multigrid"),
                         (P::Auto, "Auto: direct / iterative"),
                     ] {
-                        ui.add_enabled_ui(pressure || matches!(p, P::None | P::Jacobi), |ui| {
-                            ui.selectable_value(&mut c.preconditioner, p, n)
-                        });
+                        ui.add_enabled_ui(
+                            if pressure {
+                                !matches!(p, P::SymmetricGaussSeidel | P::SmoothSolver)
+                            } else {
+                                matches!(
+                                    p,
+                                    P::None | P::Jacobi | P::SymmetricGaussSeidel | P::SmoothSolver
+                                )
+                            },
+                            |ui| ui.selectable_value(&mut c.preconditioner, p, n),
+                        );
                     }
                 });
             if let Err(e) = c.validate(pressure) {
@@ -65,6 +75,10 @@ impl App {
         if coupling.algorithm != flursys::simple::CouplingAlgorithm::Pimple {
             coupling.pressure_correctors = 1;
         }
+        ui.checkbox(
+            &mut coupling.allow_outlet_backflow,
+            "Extrapolate reverse flow at pressure outlets",
+        );
         ui.label("Extra non-orthogonal corrections");
         ui.add(egui::DragValue::new(&mut coupling.non_orthogonal_correctors).range(0..=8));
         bounded(
@@ -128,6 +142,60 @@ impl App {
         let omega = matches!(t.model, T::KOmega | T::KOmegaSst);
         let sa = t.model == T::SpalartAllmaras;
         if t.is_rans() {
+            ui.checkbox(
+                &mut t.include_isotropic_stress,
+                "Include isotropic 2k/3 stress in momentum",
+            );
+            ui.checkbox(&mut t.full_viscous_stress, "Full deviatoric viscous stress");
+            use flursys::momentum::MomentumConvection as C;
+            egui::ComboBox::from_id_salt("turbulence-convection")
+                .selected_text(format!("Turbulence convection: {:?}", t.convection))
+                .show_ui(ui, |ui| {
+                    for (scheme, label) in [
+                        (C::Upwind, "Upwind"),
+                        (C::LimitedLinear, "Limited linear"),
+                        (C::BoundedLimitedLinearTvd, "Bounded limited linear TVD"),
+                        (C::VanLeer, "Van Leer"),
+                    ] {
+                        ui.selectable_value(&mut t.convection, scheme, label);
+                    }
+                });
+            egui::ComboBox::from_id_salt("turbulence-diffusion-interpolation")
+                .selected_text(format!("Diffusivity: {:?}", t.diffusivity_interpolation))
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(
+                        &mut t.diffusivity_interpolation,
+                        flursys::DiffusivityInterpolation::Linear,
+                        "Linear",
+                    );
+                    ui.selectable_value(
+                        &mut t.diffusivity_interpolation,
+                        flursys::DiffusivityInterpolation::Harmonic,
+                        "Harmonic",
+                    );
+                });
+            egui::ComboBox::from_id_salt("turbulence-diffusion-correction")
+                .selected_text(format!("Diffusion: {:?}", t.diffusion_correction))
+                .show_ui(ui, |ui| {
+                    for (value, name) in [
+                        (flursys::NonOrthogonalCorrection::None, "Orthogonal"),
+                        (
+                            flursys::NonOrthogonalCorrection::Limited,
+                            "Limited corrected",
+                        ),
+                        (flursys::NonOrthogonalCorrection::Explicit, "Corrected"),
+                        (
+                            flursys::NonOrthogonalCorrection::OverRelaxed,
+                            "Over-relaxed corrected",
+                        ),
+                        (
+                            flursys::NonOrthogonalCorrection::OverRelaxedLimited,
+                            "Over-relaxed limited",
+                        ),
+                    ] {
+                        ui.selectable_value(&mut t.diffusion_correction, value, name);
+                    }
+                });
             heading(ui, "INITIAL / DEFAULT INCOMING TURBULENCE");
             if sa {
                 number(ui, "Modified viscosity ν̃ (m²/s)", &mut t.nu_tilda);
@@ -144,6 +212,10 @@ impl App {
                 (W::Resolved, "Wall resolved"),
                 (W::EquilibriumKEpsilon, "Equilibrium k–ε wall function"),
                 (W::EquilibriumKOmega, "Equilibrium k–ω wall function"),
+                (
+                    W::VelocityBlendedKOmega,
+                    "Velocity blended k–ω wall function",
+                ),
             ];
             egui::ComboBox::from_id_salt("wall-treatment")
                 .selected_text(
@@ -158,7 +230,11 @@ impl App {
                         ui.add_enabled_ui(
                             w == W::Resolved
                                 || (epsilon && w == W::EquilibriumKEpsilon)
-                                || (omega && w == W::EquilibriumKOmega),
+                                || (omega
+                                    && matches!(
+                                        w,
+                                        W::EquilibriumKOmega | W::VelocityBlendedKOmega
+                                    )),
                             |ui| ui.selectable_value(&mut t.wall_treatment, w, name),
                         );
                     }

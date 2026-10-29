@@ -26,7 +26,13 @@ pub(super) fn insert_sample(
 }
 impl App {
     fn equation_family(&self) -> serde_json::Value {
-        serde_json::json!({"compressible":self.project.solver.compressible.as_ref().map(|s|s.gas),"transient":self.project.solver.compressible.is_some()||self.project.solver.time.is_transient(),"backward":matches!(self.project.solver.time, flursys::unstructured_incompressible::TimeIntegration::Backward{..}|flursys::unstructured_incompressible::TimeIntegration::AdaptiveBackward{..}),"reduced_pressure":self.project.solver.thermal.reduced_pressure,"turbulence":self.project.solver.turbulence.model,"thermal":self.project.solver.thermal.enabled})
+        let mut family = serde_json::json!({"compressible":self.project.solver.compressible.as_ref().map(|s|s.gas),"transient":self.project.solver.compressible.is_some()||self.project.solver.time.is_transient(),"backward":matches!(self.project.solver.time, flursys::unstructured_incompressible::TimeIntegration::Backward{..}|flursys::unstructured_incompressible::TimeIntegration::AdaptiveBackward{..}),"reduced_pressure":self.project.solver.thermal.reduced_pressure,"turbulence":self.project.solver.turbulence.model,"thermal":self.project.solver.thermal.enabled});
+        if let Some(settings) = &self.project.solver.compressible {
+            if settings.coordinates != flursys::multiphysics::metrics::Coordinates::Cartesian {
+                family["coordinates"] = serde_json::json!(settings.coordinates);
+            }
+        }
+        family
     }
     pub(super) fn reset_solve_session(&mut self) {
         self.jobs = WorkbenchJobExecutor::new();
