@@ -1,0 +1,12 @@
+{
+  "title": "10 Degree Cone at Mach 2.35",
+  "source": "NASA Glenn Research Center, Wind-US validation archive",
+  "url": "https://www.grc.nasa.gov/www/wind/valid/cone10/cone10.html",
+  "model": "steady inviscid adiabatic conical flow, Taylor-Maccoll theory",
+  "cone_half_angle_degrees": 10.0,
+  "freestream_mach": 2.35,
+  "freestream_pressure_psia": 11.79,
+  "freestream_temperature_rankine": 550.0,
+  "cone_length_m": 0.3048,
+  "angle_of_attack_degrees": 0.0
+}
