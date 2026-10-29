@@ -345,6 +345,7 @@ pub struct InitialRegion {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct Settings {
+    pub coordinates: crate::multiphysics::metrics::Coordinates,
     pub scripting: crate::scripting::Settings,
     pub acceleration: Vec3,
     pub heat_source: f64,
@@ -367,6 +368,7 @@ pub struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
+            coordinates: Default::default(),
             scripting: Default::default(),
             acceleration: Vec3::ZERO,
             heat_source: 0.,
@@ -397,6 +399,26 @@ impl Settings {
         &self,
         mesh: &UnstructuredMesh,
     ) -> Result<(Vec<Option<Boundary>>, crate::periodic::CyclicMap), String> {
+        if self.coordinates != crate::multiphysics::metrics::Coordinates::Cartesian {
+            self.coordinates.measures(mesh)?;
+            if !matches!(self.viscosity, Viscosity::Inviscid) {
+                return Err(
+                    "Axisymmetric compressible flow currently supports inviscid flow only".into(),
+                );
+            }
+            if self.acceleration.z != 0.0 || self.volume_models.rotating_frame.is_some() {
+                return Err(
+                    "Axisymmetric flow does not support azimuthal acceleration or rotation".into(),
+                );
+            }
+            if mesh
+                .faces()
+                .iter()
+                .any(|f| f.area_vector.z.abs() > 1e-10 * f.area)
+            {
+                return Err("Axisymmetric flow requires a meridian mesh in the XY plane".into());
+            }
+        }
         self.compute.validate()?;
         self.volume_models.validate()?;
         if self.volume_models.mean_velocity.is_some() {
@@ -461,6 +483,20 @@ impl Settings {
             }
         }
         let cyclic = crate::periodic::resolve(mesh, &self.cyclic_pairs)?;
+        if self.coordinates != crate::multiphysics::metrics::Coordinates::Cartesian {
+            let measures = self.coordinates.measures(mesh)?;
+            for (i, _) in mesh.faces().iter().enumerate() {
+                if let Some(link) = cyclic.link(i) {
+                    let a = measures.areas[i];
+                    let b = measures.areas[link.peer_face];
+                    if (a - b).abs() > 1e-9 * a.max(b).max(1e-30) {
+                        return Err(
+                            "Axisymmetric cyclic faces must have equal revolved areas".into()
+                        );
+                    }
+                }
+            }
+        }
         let mut bc = vec![None; mesh.face_count()];
         for patch in mesh.boundary_patches() {
             if patch

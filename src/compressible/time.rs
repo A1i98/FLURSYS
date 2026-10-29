@@ -3,6 +3,8 @@ use super::*;
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Report {
     #[serde(default)]
+    pub coordinates: crate::multiphysics::metrics::Coordinates,
+    #[serde(default)]
     pub source_integrals: [f64; 5],
     #[serde(default)]
     pub performance: crate::compute::PerformanceReport,
@@ -90,12 +92,14 @@ pub enum StepAction {
     Stop,
 }
 
-fn integral(mesh: &UnstructuredMesh, q: &[Conservative]) -> Conservative {
+fn integral(mesh: &UnstructuredMesh, q: &[Conservative], s: &Settings) -> Conservative {
+    let measures = s.coordinates.measures(mesh).expect("validated coordinates");
     mesh.cells()
         .iter()
         .zip(q)
-        .fold(Conservative([0.0; 5]), |sum, (c, q)| {
-            sum.add(q.scale(c.volume))
+        .zip(measures.volumes)
+        .fold(Conservative([0.0; 5]), |sum, ((_, q), volume)| {
+            sum.add(q.scale(volume))
         })
 }
 struct Evaluation {
@@ -114,11 +118,17 @@ fn evaluate(
     programs: &boundaries::Programs,
     time: f64,
 ) -> Result<Evaluation, String> {
+    let measures = s.coordinates.measures(mesh)?;
     let p = q
         .iter()
         .map(|q| q.primitive(s.gas))
         .collect::<Result<Vec<_>, _>>()?;
     for state in &p {
+        if s.coordinates != crate::multiphysics::metrics::Coordinates::Cartesian
+            && state.velocity.z.abs() > 1e-12
+        {
+            return Err("Axisymmetric compressible flow requires zero swirl velocity".into());
+        }
         let a = s.gas.sound_speed(*state);
         let t = s.gas.temperature(*state);
         if !a.is_finite() || a <= 0.0 || !t.is_finite() || t <= 0.0 {
@@ -149,6 +159,11 @@ fn evaluate(
                 )?
             };
             g.validate()?;
+            if s.coordinates != crate::multiphysics::metrics::Coordinates::Cartesian
+                && g.velocity.z.abs() > 1e-12
+            {
+                return Err("Axisymmetric boundaries must have zero swirl velocity".into());
+            }
             ghost[i] = Some(g);
         }
     }
@@ -208,7 +223,7 @@ fn evaluate(
 
         let speed = (l.velocity.dot(n).abs() + s.gas.sound_speed(l))
             .max(r.velocity.dot(n).abs() + s.gas.sound_speed(r));
-        let mut rate = f.area * speed;
+        let mut rate = measures.areas[i] * speed;
         if let Some(g) = &gradients {
             value = value.sub(viscous::evaluate(
                 mesh,
@@ -237,16 +252,16 @@ fn evaluate(
                 (4.0 / 3.0 * mu_l.max(mu_r) / rho).max(k_l.max(k_r) / (rho * s.gas.cv()));
             rate += 2.0 * f.area * diffusion / distance;
         }
-        let integrated = value.scale(f.area);
+        let integrated = value.scale(measures.areas[i]);
         *output = Some((o, neighbour, integrated, rate, fallback));
         Ok::<_, String>(())
     })?;
     for (o, neighbour, integrated, rate, fallback) in contributions.into_iter().flatten() {
         fallbacks += usize::from(fallback);
-        rhs[o] = rhs[o].sub(integrated.scale(1.0 / mesh.cells()[o].volume));
+        rhs[o] = rhs[o].sub(integrated.scale(1.0 / measures.volumes[o]));
         rates[o] += rate;
         if let Some(j) = neighbour {
-            rhs[j] = rhs[j].add(integrated.scale(1.0 / mesh.cells()[j].volume));
+            rhs[j] = rhs[j].add(integrated.scale(1.0 / measures.volumes[j]));
             rates[j] += rate;
         } else {
             boundary = boundary.add(integrated);
@@ -261,6 +276,11 @@ fn evaluate(
                 .cell_coefficients(cell.center, state.velocity, mu / state.density)?;
         let acceleration = s.acceleration + model_force - state.velocity * sink;
         let force = acceleration * state.density;
+        if s.coordinates != crate::multiphysics::metrics::Coordinates::Cartesian
+            && force.z.abs() > 1e-12
+        {
+            return Err("Axisymmetric flow does not support azimuthal body forces".into());
+        }
         let local = Conservative([
             0.,
             force.x,
@@ -268,9 +288,22 @@ fn evaluate(
             force.z,
             force.dot(state.velocity) + s.heat_source,
         ]);
-        rhs[i] = rhs[i].add(local);
-        source = source.add(local.scale(cell.volume));
-        rates[i] += cell.volume
+        let mut geometric = Conservative([0.; 5]);
+        let pressure_force = std::f64::consts::TAU * state.pressure * cell.volume;
+        match s.coordinates {
+            crate::multiphysics::metrics::Coordinates::Cartesian => {}
+            crate::multiphysics::metrics::Coordinates::AxisymmetricX { .. } => {
+                geometric.0[2] = pressure_force
+            }
+            crate::multiphysics::metrics::Coordinates::AxisymmetricY { .. } => {
+                geometric.0[1] = pressure_force
+            }
+        }
+        rhs[i] = rhs[i]
+            .add(local)
+            .add(geometric.scale(1.0 / measures.volumes[i]));
+        source = source.add(local.scale(measures.volumes[i])).add(geometric);
+        rates[i] += measures.volumes[i]
             * (sink
                 + 2. * s
                     .volume_models
@@ -278,11 +311,11 @@ fn evaluate(
                     .map_or(0., |r| r.angular_velocity.norm()));
     }
     let mut dt = s.max_time_step;
-    for (c, rate) in mesh.cells().iter().zip(rates) {
+    for (volume, rate) in measures.volumes.iter().zip(rates) {
         if !rate.is_finite() || rate <= 0.0 {
             return Err("Non-finite acoustic/diffusive spectral rate".into());
         }
-        dt = dt.min(s.courant * c.volume / rate);
+        dt = dt.min(s.courant * volume / rate);
     }
     if rhs.iter().any(|q| q.0.iter().any(|v| !v.is_finite())) {
         return Err("Non-finite conservative residual".into());
@@ -330,7 +363,7 @@ fn initial_fields(mesh: &UnstructuredMesh, s: &Settings) -> Vec<Conservative> {
 pub fn initialize(mesh: &UnstructuredMesh, s: &Settings) -> Result<Snapshot, String> {
     let (_, cyclic) = s.validate(mesh)?;
     let q = initial_fields(mesh, s);
-    let initial = integral(mesh, &q);
+    let initial = integral(mesh, &q, s);
     Ok(solution(
         mesh,
         s,
@@ -383,11 +416,14 @@ fn solve_time_loop(
     let mut q = initial_fields(mesh, s);
     if let Some(state) = restart {
         state.validate(mesh, s.gas)?;
+        if state.report.coordinates != s.coordinates {
+            return Err("Restart coordinate system does not match the current flow model".into());
+        }
         q = state.fields.iter().map(|p| p.conservative(s.gas)).collect();
     }
     let initial = restart
         .map(|p| Conservative(p.report.initial_integrals))
-        .unwrap_or_else(|| integral(mesh, &q));
+        .unwrap_or_else(|| integral(mesh, &q, s));
     let mut time = restart.map_or(0., |p| p.report.time);
     let mut steps = restart.map_or(0, |p| p.report.accepted_steps);
     let target = steps.saturating_add(s.max_steps);
@@ -554,13 +590,14 @@ fn solution(
     stopped: bool,
     cyclic_face_pairs: usize,
 ) -> Result<Solution, String> {
-    let final_q = integral(mesh, &q);
+    let final_q = integral(mesh, &q, s);
     let defect = final_q.sub(initial).add(boundary).sub(sources);
     let fields = q
         .iter()
         .map(|q| q.primitive(s.gas))
         .collect::<Result<Vec<_>, _>>()?;
     let report = Report {
+        coordinates: s.coordinates,
         source_integrals: sources.0,
         performance: Default::default(),
         stopped,
@@ -604,4 +641,108 @@ fn solution(
         fields,
         report,
     })
+}
+
+#[cfg(test)]
+mod axisymmetric_tests {
+    use super::*;
+    use crate::multiphysics::metrics::Coordinates;
+    use crate::{BoundaryPatch, BoundaryType, CellDefinition, MeshDimension, Point};
+
+    fn mesh() -> UnstructuredMesh {
+        let mesh = UnstructuredMesh::from_cells(
+            MeshDimension::TwoD,
+            vec![
+                Point::new(0., 0., 0.),
+                Point::new(1., 0., 0.),
+                Point::new(2., 0., 0.),
+                Point::new(0., 1., 0.),
+                Point::new(1., 1., 0.),
+                Point::new(2., 1., 0.),
+            ],
+            vec![
+                CellDefinition::polygon(vec![0, 1, 4, 3]),
+                CellDefinition::polygon(vec![1, 2, 5, 4]),
+            ],
+        )
+        .unwrap();
+        let faces = mesh
+            .faces()
+            .iter()
+            .enumerate()
+            .filter_map(|(i, f)| f.neighbour.is_none().then_some(i))
+            .collect();
+        mesh.with_boundary_patches(vec![BoundaryPatch {
+            name: "wall".into(),
+            face_indices: faces,
+            boundary_type: BoundaryType::Wall,
+        }])
+        .unwrap()
+    }
+
+    #[test]
+    fn uniform_static_pressure_is_balanced_on_both_axes() {
+        let mesh = mesh();
+        for coordinates in [
+            Coordinates::AxisymmetricX { radial_origin: 0. },
+            Coordinates::AxisymmetricY { radial_origin: 0. },
+        ] {
+            let mut s = Settings::default();
+            s.coordinates = coordinates;
+            s.initial.pressure = 1.;
+            s.boundaries.insert("wall".into(), Boundary::SlipWall);
+            let bc = mesh
+                .faces()
+                .iter()
+                .map(|f| f.neighbour.is_none().then_some(Boundary::SlipWall))
+                .collect::<Vec<_>>();
+            let cyclic = crate::periodic::resolve(&mesh, &[]).unwrap();
+            let programs = boundaries::compile(&mesh, &s).unwrap();
+            let q = initial_fields(&mesh, &s);
+            let evaluation = evaluate(&mesh, &q, &bc, &cyclic, &s, &programs, 0.).unwrap();
+            for residual in evaluation.rhs {
+                assert!(
+                    residual.0.iter().all(|v| v.abs() < 1e-10),
+                    "{coordinates:?}: {residual:?}"
+                );
+            }
+            let mass = integral(&mesh, &q, &s).0[0];
+            let expected_volume = match coordinates {
+                Coordinates::AxisymmetricX { .. } => 2. * std::f64::consts::PI,
+                _ => 4. * std::f64::consts::PI,
+            };
+            assert!((mass - s.initial.density * expected_volume).abs() < 1e-10);
+        }
+    }
+
+    #[test]
+    fn axisymmetric_restart_preserves_weighted_conservation_and_checks_coordinates() {
+        let mesh = mesh();
+        let mut s = Settings::default();
+        s.coordinates = Coordinates::AxisymmetricX { radial_origin: 0. };
+        s.initial.pressure = 1.;
+        s.end_time = 0.01;
+        s.max_time_step = 0.001;
+        s.max_steps = 2;
+        s.boundaries.insert("wall".into(), Boundary::SlipWall);
+        let first = solve(&mesh, &s).unwrap();
+        let snapshot = first.snapshot(s.gas);
+        let continued =
+            solve_resuming(&mesh, &s, Some(&snapshot), |_| Ok(StepAction::Continue)).unwrap();
+        assert_eq!(
+            continued.report.accepted_steps,
+            first.report.accepted_steps + 2
+        );
+        assert!(continued
+            .report
+            .conservation_defect
+            .iter()
+            .all(|v| v.abs() < 1e-10));
+        s.coordinates = Coordinates::Cartesian;
+        assert!(
+            solve_resuming(&mesh, &s, Some(&snapshot), |_| Ok(StepAction::Continue))
+                .unwrap_err()
+                .contains("coordinate")
+        );
+    }
 }
