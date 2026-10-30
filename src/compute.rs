@@ -8,6 +8,8 @@ use std::time::Instant;
 #[cfg(feature = "gpu-compute")]
 mod amg;
 #[cfg(feature = "gpu-compute")]
+mod flux_gpu;
+#[cfg(feature = "gpu-compute")]
 mod gpu;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -86,7 +88,7 @@ impl ComputeOptions {
         Ok(())
     }
 }
-#[derive(Clone, Debug, Default, Serialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct DeviceInfo {
     pub name: String,
     pub backend: String,
@@ -95,7 +97,7 @@ pub struct DeviceInfo {
     pub max_storage_binding_bytes: u64,
     pub shader_f64: bool,
 }
-#[derive(Clone, Debug, Default, Serialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct PerformanceReport {
     pub requested_backend: String,
     pub actual_backend: String,
@@ -122,7 +124,7 @@ pub struct PerformanceReport {
 }
 #[derive(Default)]
 struct Counters {
-    stages: [AtomicU64; 5],
+    stages: [AtomicU64; 10],
     spmv: AtomicU64,
     spmv_ns: AtomicU64,
     linear: AtomicU64,
@@ -134,6 +136,9 @@ struct Counters {
     reasons: Mutex<Vec<String>>,
 }
 pub struct Execution {
+    #[cfg(feature = "gpu-compute")]
+    flux: std::sync::OnceLock<Result<Mutex<flux_gpu::Solver>, String>>,
+    flux_fallback_reported: std::sync::atomic::AtomicBool,
     pub options: ComputeOptions,
     counters: Counters,
     started: Instant,
@@ -173,6 +178,30 @@ impl Drop for Scope {
         install(self.0.take());
     }
 }
+pub fn worker_count(options: &ComputeOptions, requested: usize) -> usize {
+    if options.backend == Backend::Serial {
+        1
+    } else if requested == 0 {
+        std::thread::available_parallelism().map_or(1, |n| n.get())
+    } else {
+        requested
+    }
+}
+pub fn worker_count_for(options: &ComputeOptions, requested: usize, rows: usize) -> usize {
+    if rows < options.parallel_min_rows {
+        1
+    } else {
+        worker_count(options, requested)
+    }
+}
+pub fn worker_pool(execution: Arc<Execution>, threads: usize) -> Result<rayon::ThreadPool, String> {
+    rayon::ThreadPoolBuilder::new()
+        .start_handler(move |_| install(Some(execution.clone())))
+        .exit_handler(|_| install(None))
+        .num_threads(threads.max(1))
+        .build()
+        .map_err(|e| e.to_string())
+}
 pub fn parallel_rows(rows: usize) -> bool {
     rows >= current().map_or(4096, |r| r.options.parallel_min_rows)
         && rayon::current_num_threads() > 1
@@ -185,6 +214,11 @@ pub enum Stage {
     PreconditionerSetup = 2,
     PreconditionerApply = 3,
     MonitorOutput = 4,
+    BoundaryResolution = 5,
+    Turbulence = 6,
+    MomentumWall = 7,
+    MomentumSolve = 8,
+    PressureCorrection = 9,
 }
 pub struct StageTimer {
     runtime: Option<Arc<Execution>>,
@@ -268,9 +302,17 @@ impl Execution {
         options: ComputeOptions,
         control: Option<LinearControl>,
     ) -> Result<Arc<Self>, String> {
+        Self::controlled_kernel(options, control, false)
+    }
+    pub(crate) fn controlled_kernel(
+        options: ComputeOptions,
+        control: Option<LinearControl>,
+        conservative: bool,
+    ) -> Result<Arc<Self>, String> {
         options.validate()?;
+        let _ = conservative;
         #[cfg(feature = "gpu-compute")]
-        let (gpu, error) = if options.backend == Backend::Gpu {
+        let (gpu, error) = if options.backend == Backend::Gpu && !conservative {
             match gpu::GpuSolver::new(&options.adapter) {
                 Ok(g) => (Some(Mutex::new(g)), None),
                 Err(e) => (None, Some(e)),
@@ -287,6 +329,9 @@ impl Execution {
             }
         }
         let runtime = Arc::new(Self {
+            #[cfg(feature = "gpu-compute")]
+            flux: std::sync::OnceLock::new(),
+            flux_fallback_reported: std::sync::atomic::AtomicBool::new(false),
             options,
             counters: Default::default(),
             started: Instant::now(),
@@ -309,6 +354,85 @@ impl Execution {
             .unwrap_or_else(|p| p.into_inner());
         if !reasons.iter().any(|s| s == reason) && reasons.len() < 16 {
             reasons.push(reason.into());
+        }
+    }
+    pub(crate) fn conservative_fluxes(
+        &self,
+        count: usize,
+        inputs: impl Iterator<Item = crate::compressible::flux::Input>,
+        gas: crate::compressible::IdealGas,
+        scheme: crate::compressible::FluxScheme,
+    ) -> Result<Option<Vec<(crate::compressible::Conservative, bool)>>, String> {
+        if self.options.backend != Backend::Gpu {
+            return Ok(None);
+        }
+        #[cfg(feature = "gpu-compute")]
+        {
+            if self.flux_fallback_reported.load(Ordering::Acquire) && self.options.cpu_fallback {
+                return Ok(None);
+            }
+            let kernel = self.flux.get_or_init(|| {
+                if count < self.options.gpu_min_rows {
+                    return Err("Mesh below GPU face threshold".into());
+                }
+                flux_gpu::Solver::new(&self.options).map(Mutex::new)
+            });
+            let start = Instant::now();
+            let result = match kernel {
+                Ok(kernel) => kernel
+                    .lock()
+                    .map_err(|e| e.to_string())
+                    .and_then(|mut k| k.solve(inputs, gas, scheme)),
+                Err(e) => Err(e.clone()),
+            };
+            match result {
+                Ok(values) => {
+                    self.counters.gpu.fetch_add(1, Ordering::Relaxed);
+                    self.counters.gpu_ns.fetch_add(
+                        start.elapsed().as_nanos().min(u64::MAX as u128) as u64,
+                        Ordering::Relaxed,
+                    );
+                    Ok(Some(values))
+                }
+                Err(e) => {
+                    if !self.options.cpu_fallback {
+                        return Err(e);
+                    }
+                    if !self.flux_fallback_reported.swap(true, Ordering::AcqRel) {
+                        self.fallback(&e);
+                    }
+                    Ok(None)
+                }
+            }
+        }
+        #[cfg(not(feature = "gpu-compute"))]
+        {
+            let _ = (count, inputs, gas, scheme);
+            if !self.flux_fallback_reported.swap(true, Ordering::AcqRel)
+                && self.counters.fallbacks.load(Ordering::Acquire) == 0
+            {
+                self.fallback("GPU compute was not compiled");
+            }
+            Ok(None)
+        }
+    }
+    fn annotate_flux_report(&self, report: &mut PerformanceReport) {
+        let _ = report;
+        #[cfg(feature = "gpu-compute")]
+        if let Some(Ok(kernel)) = self.flux.get() {
+            if let Ok(kernel) = kernel.lock() {
+                report.device = Some(kernel.info.clone());
+                report.gpu_peak_working_bytes =
+                    report.gpu_peak_working_bytes.max(kernel.peak_bytes);
+                if report.gpu_solves > 0 {
+                    report.actual_backend =
+                        "GPU conservative flux / CPU f64 integration and diffusion".into();
+                    report.precision="f32 face fluxes checked against f64 samples; f64 fields, accumulation and diagnostics".into();
+                    report
+                        .gpu_methods
+                        .insert("conservative-face-flux".into(), report.gpu_solves);
+                }
+            }
         }
     }
     pub fn gpu_enabled(&self) -> bool {
@@ -360,7 +484,7 @@ impl Execution {
         ) = (Default::default(), 0, 0, 0, Vec::new());
         let used = load(&self.counters.gpu) > 0;
         let attempted = !methods.is_empty();
-        PerformanceReport {
+        let mut report = PerformanceReport {
             gpu_methods: methods,
             gpu_preconditioner_iterations: inner_iterations,
             gpu_amg_v_cycles: cycles,
@@ -405,6 +529,11 @@ impl Execution {
                 "preconditioner_setup",
                 "preconditioner_apply",
                 "monitor_output",
+                "boundary_resolution",
+                "turbulence",
+                "momentum_wall",
+                "momentum_solve",
+                "pressure_correction",
             ]
             .into_iter()
             .enumerate()
@@ -417,7 +546,9 @@ impl Execution {
                 .lock()
                 .unwrap_or_else(|p| p.into_inner())
                 .clone(),
-        }
+        };
+        self.annotate_flux_report(&mut report);
+        report
     }
 }
 pub fn devices() -> Result<Vec<DeviceInfo>, String> {

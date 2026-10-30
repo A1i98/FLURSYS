@@ -12,6 +12,16 @@ try {
     foreach ($name in 'flursys.exe', 'flursys-gui.exe', 'gmsh/gmsh.exe') {
         if (-not (Test-Path (Join-Path $installed $name))) { throw "Installed file missing: $name" }
     }
+    foreach ($binary in @(@{ Name = 'flursys-gui.exe'; Subsystem = 2 }, @{ Name = 'flursys.exe'; Subsystem = 3 })) {
+        $bytes = [IO.File]::ReadAllBytes((Join-Path $installed $binary.Name))
+        if ($bytes.Length -lt 64) { throw "Invalid executable: $($binary.Name)" }
+        $pe = [BitConverter]::ToInt32($bytes, 60)
+        if ($pe -lt 0 -or $pe -gt ($bytes.Length - 94) -or [BitConverter]::ToUInt32($bytes, $pe) -ne 0x4550) {
+            throw "Invalid PE header: $($binary.Name)"
+        }
+        $subsystem = [BitConverter]::ToUInt16($bytes, $pe + 92)
+        if ($subsystem -ne $binary.Subsystem) { throw "Wrong Windows subsystem for $($binary.Name): $subsystem" }
+    }
     & (Join-Path $installed 'flursys.exe') --version
     if ($LASTEXITCODE -ne 0) { throw 'Installed CLI cannot start.' }
     & (Join-Path $installed 'gmsh/gmsh.exe') --version

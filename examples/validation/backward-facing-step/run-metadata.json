@@ -1,0 +1,1366 @@
+{
+  "solver_version": "0.20.0",
+  "release_binary_sha256": "96c14aef4f3c2fb221efaf47c504b75f17a257338509b3f8a424d9b34938a26f",
+  "reference": "https://tmbwg.github.io/turbmodels/backstep_val.html",
+  "runs": [
+    {
+      "label": "coarse",
+      "run": {
+        "continuity_residual": 1.4042263359386492e-17,
+        "created_unix_ms": 1793265394009,
+        "failure_diagnostic": null,
+        "id": "run-0001",
+        "iterations": 5000,
+        "mesh_identity": 1,
+        "net_boundary_flux": 0.0,
+        "ordinal": 1,
+        "physical_time": null,
+        "report_path": "runs/run-0001/report.json",
+        "solution_path": "runs/run-0001/solution.vtk",
+        "status": "max-iterations",
+        "time_steps": 0,
+        "total_inflow": -4.49072,
+        "total_outflow": 4.49072
+      },
+      "material": {
+        "catalog": null,
+        "density": 1.225,
+        "kinematic_viscosity": 1.56e-05
+      },
+      "solver_settings": {
+        "boundary_profiles": {},
+        "compressible": null,
+        "compute": {
+          "adapter": "",
+          "backend": "parallel",
+          "cpu_fallback": true,
+          "gpu_host_basis_mb": 256,
+          "gpu_inner_iterations": 8,
+          "gpu_memory_fraction": 0.8,
+          "gpu_min_rows": 16384,
+          "gpu_preconditioner": "auto",
+          "gpu_restart": 24,
+          "gpu_smoothing_sweeps": 2,
+          "gpu_timeout_ms": 10000,
+          "parallel_min_rows": 4096
+        },
+        "continuity_absolute_tolerance": 1e-08,
+        "convection": "bounded-lust",
+        "coupling_relative_tolerance": 1e-06,
+        "cyclic_pairs": [],
+        "equations": {
+          "epsilon": {
+            "absolute_tolerance": 1e-10,
+            "max_iterations": 1000,
+            "preconditioner": "jacobi",
+            "relative_tolerance": 1e-08
+          },
+          "k": {
+            "absolute_tolerance": 1e-10,
+            "max_iterations": 1000,
+            "preconditioner": "smooth-solver",
+            "relative_tolerance": 0.1
+          },
+          "nu_tilda": {
+            "absolute_tolerance": 1e-10,
+            "max_iterations": 1000,
+            "preconditioner": "jacobi",
+            "relative_tolerance": 1e-08
+          },
+          "omega": {
+            "absolute_tolerance": 1e-10,
+            "max_iterations": 1000,
+            "preconditioner": "smooth-solver",
+            "relative_tolerance": 0.1
+          },
+          "pressure": {
+            "absolute_tolerance": 1e-10,
+            "max_iterations": 1000,
+            "preconditioner": "auto",
+            "relative_tolerance": 1e-07
+          },
+          "temperature": {
+            "absolute_tolerance": 1e-10,
+            "max_iterations": 1000,
+            "preconditioner": "jacobi",
+            "relative_tolerance": 1e-08
+          },
+          "velocity": {
+            "absolute_tolerance": 1e-10,
+            "max_iterations": 1000,
+            "preconditioner": "smooth-solver",
+            "relative_tolerance": 0.1
+          }
+        },
+        "force_analysis": {
+          "center": {
+            "x": 0.0,
+            "y": 0.0,
+            "z": 0.0
+          },
+          "drag_direction": {
+            "x": 1.0,
+            "y": 0.0,
+            "z": 0.0
+          },
+          "frequency_start_time": 0.5,
+          "length": 0.0127,
+          "lift_direction": {
+            "x": 0.0,
+            "y": 1.0,
+            "z": 0.0
+          },
+          "measure": 0.0127,
+          "patches": [
+            "lower-wall"
+          ],
+          "reattachment": true,
+          "speed": 44.2,
+          "wall_direction": {
+            "x": 1.0,
+            "y": 0.0,
+            "z": 0.0
+          },
+          "wall_start": {
+            "x": 0.0,
+            "y": 0.0,
+            "z": 0.0
+          },
+          "wall_tolerance": 1.27e-07
+        },
+        "initial_profile": {
+          "pressure": 0.0,
+          "type": "uniform",
+          "velocity": {
+            "x": 1e-08,
+            "y": 0.0,
+            "z": 0.0
+          }
+        },
+        "max_outer_iterations": 5000,
+        "momentum_diffusion_correction": "over-relaxed-limited",
+        "physical_end_time": null,
+        "pressure_coupling": {
+          "algorithm": "simple",
+          "allow_outlet_backflow": true,
+          "non_orthogonal_correctors": 0,
+          "non_orthogonal_limiter": 1.0,
+          "pressure_correctors": 1
+        },
+        "pressure_relaxation": 0.2,
+        "scripting": {
+          "bindings": {},
+          "contract_version": 1,
+          "scripts": {}
+        },
+        "thermal": {
+          "boundaries": {},
+          "buoyancy": false,
+          "conductivity": 0.025,
+          "enabled": false,
+          "expansion": 0.0,
+          "gravity": {
+            "x": 0.0,
+            "y": -9.81,
+            "z": 0.0
+          },
+          "initial_temperature": 293.15,
+          "max_boussinesq_fraction": 0.1,
+          "reduced_pressure": false,
+          "reference_temperature": 293.15,
+          "relative_tolerance": 1e-08,
+          "relaxation": 0.7,
+          "source_w_m3": 0.0,
+          "specific_heat": 1005.0,
+          "turbulent_prandtl": 0.85,
+          "wall_treatment": "molecular"
+        },
+        "threads": 6,
+        "time": {
+          "mode": "steady"
+        },
+        "turbulence": {
+          "ce": 1.048,
+          "ck": 0.094,
+          "convection": "bounded-limited-linear-tvd",
+          "cw": 0.325,
+          "diffusion_correction": "over-relaxed-limited",
+          "diffusivity_interpolation": "linear",
+          "epsilon": 1e-05,
+          "full_viscous_stress": true,
+          "include_isotropic_stress": false,
+          "inlets": {
+            "inlet": {
+              "epsilon": 1e-05,
+              "k": 0.00109,
+              "omega": 181728.0,
+              "type": "direct"
+            },
+            "outlet": {
+              "epsilon": 1e-05,
+              "k": 0.00109,
+              "omega": 181728.0,
+              "type": "direct"
+            }
+          },
+          "k": 0.00109,
+          "model": "k-omega-sst",
+          "nu_tilda": 1e-05,
+          "omega": 181728.0,
+          "relative_tolerance": 1e-06,
+          "relaxation": 0.8,
+          "wall_treatment": "velocity-blended-k-omega"
+        },
+        "velocity_relaxation": 0.4,
+        "volume_models": {
+          "mean_velocity": null,
+          "resistance": null,
+          "rotating_frame": null
+        }
+      },
+      "mesh_preflight": {
+        "invalid_cells": [],
+        "invalid_faces": [],
+        "max_adjacent_volume_ratio": 3.333333304899391,
+        "severe_nonorthogonal_faces": [
+          17015,
+          17057,
+          17099,
+          17141,
+          17183,
+          17225,
+          17265,
+          17267,
+          17307,
+          17309,
+          17349,
+          17351,
+          17389,
+          17391,
+          17393
+        ],
+        "warnings": [
+          "High non-orthogonality: inspect mesh quality and improve alignment.",
+          "High centre-line displacement / centre distance. This skewness metric is not interchangeable with other tools' definitions."
+        ]
+      },
+      "performance": {
+        "actual_backend": "CPU parallel",
+        "cell_iterations_per_second": 231642.98052223175,
+        "cpu_fallbacks": 0,
+        "cpu_threads": 6,
+        "device": null,
+        "elapsed_seconds": 185.846339496,
+        "fallback_reasons": [],
+        "gpu_amg_v_cycles": 0,
+        "gpu_host_basis_peak_bytes": 0,
+        "gpu_methods": {},
+        "gpu_notes": [],
+        "gpu_peak_working_bytes": 0,
+        "gpu_preconditioner_iterations": 0,
+        "gpu_seconds": 0.0,
+        "gpu_solves": 0,
+        "linear_seconds": 21.714412290000002,
+        "linear_solves": 5000,
+        "precision": "f64",
+        "requested_backend": "Parallel",
+        "spmv_calls": 65722,
+        "spmv_seconds": 4.5924376460000005,
+        "stages": {
+          "momentum_assembly": 95.69027455800001,
+          "monitor_output": 0.0,
+          "preconditioner_apply": 3.023983533,
+          "preconditioner_setup": 21.114094675,
+          "pressure_assembly": 4.634637839000001
+        }
+      }
+    },
+    {
+      "label": "fine",
+      "run": {
+        "continuity_residual": 6.512568082108459e-18,
+        "created_unix_ms": 1793266514955,
+        "failure_diagnostic": null,
+        "id": "run-0001",
+        "iterations": 5000,
+        "mesh_identity": 1,
+        "net_boundary_flux": 8.881784197001252e-16,
+        "ordinal": 1,
+        "physical_time": null,
+        "report_path": "runs/run-0001/report.json",
+        "solution_path": "runs/run-0001/solution.vtk",
+        "status": "max-iterations",
+        "time_steps": 0,
+        "total_inflow": -4.490720000000003,
+        "total_outflow": 4.490720000000004
+      },
+      "material": {
+        "catalog": null,
+        "density": 1.225,
+        "kinematic_viscosity": 1.56e-05
+      },
+      "solver_settings": {
+        "boundary_profiles": {},
+        "compressible": null,
+        "compute": {
+          "adapter": "",
+          "backend": "parallel",
+          "cpu_fallback": true,
+          "gpu_host_basis_mb": 256,
+          "gpu_inner_iterations": 8,
+          "gpu_memory_fraction": 0.8,
+          "gpu_min_rows": 16384,
+          "gpu_preconditioner": "auto",
+          "gpu_restart": 24,
+          "gpu_smoothing_sweeps": 2,
+          "gpu_timeout_ms": 10000,
+          "parallel_min_rows": 4096
+        },
+        "continuity_absolute_tolerance": 1e-08,
+        "convection": "bounded-lust",
+        "coupling_relative_tolerance": 1e-06,
+        "cyclic_pairs": [],
+        "equations": {
+          "epsilon": {
+            "absolute_tolerance": 1e-10,
+            "max_iterations": 1000,
+            "preconditioner": "jacobi",
+            "relative_tolerance": 1e-08
+          },
+          "k": {
+            "absolute_tolerance": 1e-10,
+            "max_iterations": 1000,
+            "preconditioner": "smooth-solver",
+            "relative_tolerance": 0.1
+          },
+          "nu_tilda": {
+            "absolute_tolerance": 1e-10,
+            "max_iterations": 1000,
+            "preconditioner": "jacobi",
+            "relative_tolerance": 1e-08
+          },
+          "omega": {
+            "absolute_tolerance": 1e-10,
+            "max_iterations": 1000,
+            "preconditioner": "smooth-solver",
+            "relative_tolerance": 0.1
+          },
+          "pressure": {
+            "absolute_tolerance": 1e-10,
+            "max_iterations": 1000,
+            "preconditioner": "auto",
+            "relative_tolerance": 1e-07
+          },
+          "temperature": {
+            "absolute_tolerance": 1e-10,
+            "max_iterations": 1000,
+            "preconditioner": "jacobi",
+            "relative_tolerance": 1e-08
+          },
+          "velocity": {
+            "absolute_tolerance": 1e-10,
+            "max_iterations": 1000,
+            "preconditioner": "smooth-solver",
+            "relative_tolerance": 0.1
+          }
+        },
+        "force_analysis": {
+          "center": {
+            "x": 0.0,
+            "y": 0.0,
+            "z": 0.0
+          },
+          "drag_direction": {
+            "x": 1.0,
+            "y": 0.0,
+            "z": 0.0
+          },
+          "frequency_start_time": 0.5,
+          "length": 0.0127,
+          "lift_direction": {
+            "x": 0.0,
+            "y": 1.0,
+            "z": 0.0
+          },
+          "measure": 0.0127,
+          "patches": [
+            "lower-wall"
+          ],
+          "reattachment": true,
+          "speed": 44.2,
+          "wall_direction": {
+            "x": 1.0,
+            "y": 0.0,
+            "z": 0.0
+          },
+          "wall_start": {
+            "x": 0.0,
+            "y": 0.0,
+            "z": 0.0
+          },
+          "wall_tolerance": 1.27e-07
+        },
+        "initial_profile": {
+          "pressure": 0.0,
+          "type": "uniform",
+          "velocity": {
+            "x": 1e-08,
+            "y": 0.0,
+            "z": 0.0
+          }
+        },
+        "max_outer_iterations": 5000,
+        "momentum_diffusion_correction": "over-relaxed-limited",
+        "physical_end_time": null,
+        "pressure_coupling": {
+          "algorithm": "simple",
+          "allow_outlet_backflow": true,
+          "non_orthogonal_correctors": 0,
+          "non_orthogonal_limiter": 1.0,
+          "pressure_correctors": 1
+        },
+        "pressure_relaxation": 0.2,
+        "scripting": {
+          "bindings": {},
+          "contract_version": 1,
+          "scripts": {}
+        },
+        "thermal": {
+          "boundaries": {},
+          "buoyancy": false,
+          "conductivity": 0.025,
+          "enabled": false,
+          "expansion": 0.0,
+          "gravity": {
+            "x": 0.0,
+            "y": -9.81,
+            "z": 0.0
+          },
+          "initial_temperature": 293.15,
+          "max_boussinesq_fraction": 0.1,
+          "reduced_pressure": false,
+          "reference_temperature": 293.15,
+          "relative_tolerance": 1e-08,
+          "relaxation": 0.7,
+          "source_w_m3": 0.0,
+          "specific_heat": 1005.0,
+          "turbulent_prandtl": 0.85,
+          "wall_treatment": "molecular"
+        },
+        "threads": 6,
+        "time": {
+          "mode": "steady"
+        },
+        "turbulence": {
+          "ce": 1.048,
+          "ck": 0.094,
+          "convection": "bounded-limited-linear-tvd",
+          "cw": 0.325,
+          "diffusion_correction": "over-relaxed-limited",
+          "diffusivity_interpolation": "linear",
+          "epsilon": 1e-05,
+          "full_viscous_stress": true,
+          "include_isotropic_stress": false,
+          "inlets": {
+            "inlet": {
+              "epsilon": 1e-05,
+              "k": 0.00109,
+              "omega": 181728.0,
+              "type": "direct"
+            },
+            "outlet": {
+              "epsilon": 1e-05,
+              "k": 0.00109,
+              "omega": 181728.0,
+              "type": "direct"
+            }
+          },
+          "k": 0.00109,
+          "model": "k-omega-sst",
+          "nu_tilda": 1e-05,
+          "omega": 181728.0,
+          "relative_tolerance": 1e-06,
+          "relaxation": 0.8,
+          "wall_treatment": "velocity-blended-k-omega"
+        },
+        "velocity_relaxation": 0.4,
+        "volume_models": {
+          "mean_velocity": null,
+          "resistance": null,
+          "rotating_frame": null
+        }
+      },
+      "mesh_preflight": {
+        "invalid_cells": [],
+        "invalid_faces": [],
+        "max_adjacent_volume_ratio": 1.8257418497265852,
+        "severe_nonorthogonal_faces": [
+          79989,
+          80081,
+          80173,
+          80265,
+          80357,
+          80449,
+          80541,
+          80633,
+          80723,
+          80725,
+          80815,
+          80817
+        ],
+        "warnings": [
+          "High non-orthogonality: inspect mesh quality and improve alignment.",
+          "High centre-line displacement / centre distance. This skewness metric is not interchangeable with other tools' definitions."
+        ]
+      },
+      "performance": {
+        "actual_backend": "CPU parallel",
+        "cell_iterations_per_second": 179542.5471531538,
+        "cpu_fallbacks": 0,
+        "cpu_threads": 6,
+        "device": null,
+        "elapsed_seconds": 1120.124467369,
+        "fallback_reasons": [],
+        "gpu_amg_v_cycles": 0,
+        "gpu_host_basis_peak_bytes": 0,
+        "gpu_methods": {},
+        "gpu_notes": [],
+        "gpu_peak_working_bytes": 0,
+        "gpu_preconditioner_iterations": 0,
+        "gpu_seconds": 0.0,
+        "gpu_solves": 0,
+        "linear_seconds": 199.207502312,
+        "linear_solves": 5000,
+        "precision": "f64",
+        "requested_backend": "Parallel",
+        "spmv_calls": 71100,
+        "spmv_seconds": 16.762098178000002,
+        "stages": {
+          "momentum_assembly": 570.669976107,
+          "monitor_output": 0.0,
+          "preconditioner_apply": 18.098287858000003,
+          "preconditioner_setup": 193.32163570400002,
+          "pressure_assembly": 28.356675078000002
+        }
+      }
+    },
+    {
+      "label": "sa",
+      "run": {
+        "continuity_residual": 1.0611920256304785e-17,
+        "created_unix_ms": 1793266907109,
+        "failure_diagnostic": null,
+        "id": "run-0001",
+        "iterations": 5000,
+        "mesh_identity": 1,
+        "net_boundary_flux": 1.7763568394002505e-15,
+        "ordinal": 1,
+        "physical_time": null,
+        "report_path": "runs/run-0001/report.json",
+        "solution_path": "runs/run-0001/solution.vtk",
+        "status": "max-iterations",
+        "time_steps": 0,
+        "total_inflow": -4.49072,
+        "total_outflow": 4.490720000000001
+      },
+      "material": {
+        "catalog": null,
+        "density": 1.225,
+        "kinematic_viscosity": 1.56e-05
+      },
+      "solver_settings": {
+        "boundary_profiles": {},
+        "compressible": null,
+        "compute": {
+          "adapter": "",
+          "backend": "parallel",
+          "cpu_fallback": true,
+          "gpu_host_basis_mb": 256,
+          "gpu_inner_iterations": 8,
+          "gpu_memory_fraction": 0.8,
+          "gpu_min_rows": 16384,
+          "gpu_preconditioner": "auto",
+          "gpu_restart": 24,
+          "gpu_smoothing_sweeps": 2,
+          "gpu_timeout_ms": 10000,
+          "parallel_min_rows": 4096
+        },
+        "continuity_absolute_tolerance": 1e-08,
+        "convection": "bounded-lust",
+        "coupling_relative_tolerance": 1e-06,
+        "cyclic_pairs": [],
+        "equations": {
+          "epsilon": {
+            "absolute_tolerance": 1e-10,
+            "max_iterations": 1000,
+            "preconditioner": "jacobi",
+            "relative_tolerance": 1e-08
+          },
+          "k": {
+            "absolute_tolerance": 1e-10,
+            "max_iterations": 1000,
+            "preconditioner": "smooth-solver",
+            "relative_tolerance": 0.1
+          },
+          "nu_tilda": {
+            "absolute_tolerance": 1e-10,
+            "max_iterations": 1000,
+            "preconditioner": "smooth-solver",
+            "relative_tolerance": 0.1
+          },
+          "omega": {
+            "absolute_tolerance": 1e-10,
+            "max_iterations": 1000,
+            "preconditioner": "smooth-solver",
+            "relative_tolerance": 0.1
+          },
+          "pressure": {
+            "absolute_tolerance": 1e-10,
+            "max_iterations": 1000,
+            "preconditioner": "auto",
+            "relative_tolerance": 1e-07
+          },
+          "temperature": {
+            "absolute_tolerance": 1e-10,
+            "max_iterations": 1000,
+            "preconditioner": "jacobi",
+            "relative_tolerance": 1e-08
+          },
+          "velocity": {
+            "absolute_tolerance": 1e-10,
+            "max_iterations": 1000,
+            "preconditioner": "smooth-solver",
+            "relative_tolerance": 0.1
+          }
+        },
+        "force_analysis": {
+          "center": {
+            "x": 0.0,
+            "y": 0.0,
+            "z": 0.0
+          },
+          "drag_direction": {
+            "x": 1.0,
+            "y": 0.0,
+            "z": 0.0
+          },
+          "frequency_start_time": 0.5,
+          "length": 0.0127,
+          "lift_direction": {
+            "x": 0.0,
+            "y": 1.0,
+            "z": 0.0
+          },
+          "measure": 0.0127,
+          "patches": [
+            "lower-wall"
+          ],
+          "reattachment": true,
+          "speed": 44.2,
+          "wall_direction": {
+            "x": 1.0,
+            "y": 0.0,
+            "z": 0.0
+          },
+          "wall_start": {
+            "x": 0.0,
+            "y": 0.0,
+            "z": 0.0
+          },
+          "wall_tolerance": 1.27e-07
+        },
+        "initial_profile": {
+          "pressure": 0.0,
+          "type": "uniform",
+          "velocity": {
+            "x": 1e-08,
+            "y": 0.0,
+            "z": 0.0
+          }
+        },
+        "max_outer_iterations": 5000,
+        "momentum_diffusion_correction": "over-relaxed-limited",
+        "physical_end_time": null,
+        "pressure_coupling": {
+          "algorithm": "simple",
+          "allow_outlet_backflow": true,
+          "non_orthogonal_correctors": 0,
+          "non_orthogonal_limiter": 1.0,
+          "pressure_correctors": 1
+        },
+        "pressure_relaxation": 0.2,
+        "scripting": {
+          "bindings": {},
+          "contract_version": 1,
+          "scripts": {}
+        },
+        "thermal": {
+          "boundaries": {},
+          "buoyancy": false,
+          "conductivity": 0.025,
+          "enabled": false,
+          "expansion": 0.0,
+          "gravity": {
+            "x": 0.0,
+            "y": -9.81,
+            "z": 0.0
+          },
+          "initial_temperature": 293.15,
+          "max_boussinesq_fraction": 0.1,
+          "reduced_pressure": false,
+          "reference_temperature": 293.15,
+          "relative_tolerance": 1e-08,
+          "relaxation": 0.7,
+          "source_w_m3": 0.0,
+          "specific_heat": 1005.0,
+          "turbulent_prandtl": 0.85,
+          "wall_treatment": "molecular"
+        },
+        "threads": 6,
+        "time": {
+          "mode": "steady"
+        },
+        "turbulence": {
+          "ce": 1.048,
+          "ck": 0.094,
+          "convection": "bounded-limited-linear-tvd",
+          "cw": 0.325,
+          "diffusion_correction": "over-relaxed-limited",
+          "diffusivity_interpolation": "linear",
+          "epsilon": 1e-05,
+          "full_viscous_stress": true,
+          "include_isotropic_stress": false,
+          "inlets": {
+            "inlet": {
+              "nu_tilda": 2.1e-05,
+              "type": "modified-viscosity"
+            },
+            "outlet": {
+              "nu_tilda": 2.1e-05,
+              "type": "modified-viscosity"
+            }
+          },
+          "k": 0.00109,
+          "model": "spalart-allmaras",
+          "nu_tilda": 2.1e-05,
+          "omega": 181728.0,
+          "relative_tolerance": 1e-06,
+          "relaxation": 0.8,
+          "wall_treatment": "resolved"
+        },
+        "velocity_relaxation": 0.4,
+        "volume_models": {
+          "mean_velocity": null,
+          "resistance": null,
+          "rotating_frame": null
+        }
+      },
+      "mesh_preflight": {
+        "invalid_cells": [],
+        "invalid_faces": [],
+        "max_adjacent_volume_ratio": 3.333333304899391,
+        "severe_nonorthogonal_faces": [
+          40620,
+          40686,
+          40752,
+          40818,
+          40884,
+          40950,
+          41016,
+          41082,
+          41146,
+          41148,
+          41212,
+          41214,
+          41278,
+          41280,
+          41344,
+          41346
+        ],
+        "warnings": [
+          "High non-orthogonality: inspect mesh quality and improve alignment.",
+          "High centre-line displacement / centre distance. This skewness metric is not interchangeable with other tools' definitions."
+        ]
+      },
+      "performance": {
+        "actual_backend": "CPU parallel",
+        "cell_iterations_per_second": 262523.31153140555,
+        "cpu_fallbacks": 0,
+        "cpu_threads": 6,
+        "device": null,
+        "elapsed_seconds": 391.203354098,
+        "fallback_reasons": [],
+        "gpu_amg_v_cycles": 0,
+        "gpu_host_basis_peak_bytes": 0,
+        "gpu_methods": {},
+        "gpu_notes": [],
+        "gpu_peak_working_bytes": 0,
+        "gpu_preconditioner_iterations": 0,
+        "gpu_seconds": 0.0,
+        "gpu_solves": 0,
+        "linear_seconds": 79.246542973,
+        "linear_solves": 5000,
+        "precision": "f64",
+        "requested_backend": "Parallel",
+        "spmv_calls": 58699,
+        "spmv_seconds": 8.536336202000001,
+        "stages": {
+          "momentum_assembly": 187.927320919,
+          "monitor_output": 0.0,
+          "preconditioner_apply": 6.841929353,
+          "preconditioner_setup": 76.825199084,
+          "pressure_assembly": 11.81028886
+        }
+      }
+    },
+    {
+      "label": "medium-sst-10000",
+      "run": {
+        "continuity_residual": 1.0625077997872859e-17,
+        "created_unix_ms": 1793258328887,
+        "failure_diagnostic": null,
+        "id": "run-0005",
+        "iterations": 10000,
+        "mesh_identity": 1,
+        "net_boundary_flux": 0.0,
+        "ordinal": 5,
+        "physical_time": null,
+        "report_path": "runs/run-0005/report.json",
+        "solution_path": "runs/run-0005/solution.vtk",
+        "status": "max-iterations",
+        "time_steps": 0,
+        "total_inflow": -4.49072,
+        "total_outflow": 4.49072
+      },
+      "material": {
+        "catalog": null,
+        "density": 1.225,
+        "kinematic_viscosity": 1.56e-05
+      },
+      "solver_settings": {
+        "boundary_profiles": {},
+        "compressible": null,
+        "compute": {
+          "adapter": "",
+          "backend": "parallel",
+          "cpu_fallback": true,
+          "gpu_host_basis_mb": 256,
+          "gpu_inner_iterations": 8,
+          "gpu_memory_fraction": 0.8,
+          "gpu_min_rows": 16384,
+          "gpu_preconditioner": "auto",
+          "gpu_restart": 24,
+          "gpu_smoothing_sweeps": 2,
+          "gpu_timeout_ms": 10000,
+          "parallel_min_rows": 4096
+        },
+        "continuity_absolute_tolerance": 1e-08,
+        "convection": "bounded-lust",
+        "coupling_relative_tolerance": 1e-06,
+        "cyclic_pairs": [],
+        "equations": {
+          "epsilon": {
+            "absolute_tolerance": 1e-10,
+            "max_iterations": 1000,
+            "preconditioner": "jacobi",
+            "relative_tolerance": 1e-08
+          },
+          "k": {
+            "absolute_tolerance": 1e-10,
+            "max_iterations": 1000,
+            "preconditioner": "smooth-solver",
+            "relative_tolerance": 0.1
+          },
+          "nu_tilda": {
+            "absolute_tolerance": 1e-10,
+            "max_iterations": 1000,
+            "preconditioner": "jacobi",
+            "relative_tolerance": 1e-08
+          },
+          "omega": {
+            "absolute_tolerance": 1e-10,
+            "max_iterations": 1000,
+            "preconditioner": "smooth-solver",
+            "relative_tolerance": 0.1
+          },
+          "pressure": {
+            "absolute_tolerance": 1e-10,
+            "max_iterations": 1000,
+            "preconditioner": "auto",
+            "relative_tolerance": 1e-07
+          },
+          "temperature": {
+            "absolute_tolerance": 1e-10,
+            "max_iterations": 1000,
+            "preconditioner": "jacobi",
+            "relative_tolerance": 1e-08
+          },
+          "velocity": {
+            "absolute_tolerance": 1e-10,
+            "max_iterations": 1000,
+            "preconditioner": "smooth-solver",
+            "relative_tolerance": 0.1
+          }
+        },
+        "force_analysis": {
+          "center": {
+            "x": 0.0,
+            "y": 0.0,
+            "z": 0.0
+          },
+          "drag_direction": {
+            "x": 1.0,
+            "y": 0.0,
+            "z": 0.0
+          },
+          "frequency_start_time": 0.5,
+          "length": 0.0127,
+          "lift_direction": {
+            "x": 0.0,
+            "y": 1.0,
+            "z": 0.0
+          },
+          "measure": 0.0127,
+          "patches": [
+            "lower-wall"
+          ],
+          "reattachment": true,
+          "speed": 44.2,
+          "wall_direction": {
+            "x": 1.0,
+            "y": 0.0,
+            "z": 0.0
+          },
+          "wall_start": {
+            "x": 0.0,
+            "y": 0.0,
+            "z": 0.0
+          },
+          "wall_tolerance": 1.27e-07
+        },
+        "initial_profile": {
+          "pressure": 0.0,
+          "type": "uniform",
+          "velocity": {
+            "x": 1e-08,
+            "y": 0.0,
+            "z": 0.0
+          }
+        },
+        "max_outer_iterations": 5000,
+        "momentum_diffusion_correction": "over-relaxed-limited",
+        "physical_end_time": null,
+        "pressure_coupling": {
+          "algorithm": "simple",
+          "allow_outlet_backflow": true,
+          "non_orthogonal_correctors": 0,
+          "non_orthogonal_limiter": 1.0,
+          "pressure_correctors": 1
+        },
+        "pressure_relaxation": 0.2,
+        "scripting": {
+          "bindings": {},
+          "contract_version": 1,
+          "scripts": {}
+        },
+        "thermal": {
+          "boundaries": {},
+          "buoyancy": false,
+          "conductivity": 0.025,
+          "enabled": false,
+          "expansion": 0.0,
+          "gravity": {
+            "x": 0.0,
+            "y": -9.81,
+            "z": 0.0
+          },
+          "initial_temperature": 293.15,
+          "max_boussinesq_fraction": 0.1,
+          "reduced_pressure": false,
+          "reference_temperature": 293.15,
+          "relative_tolerance": 1e-08,
+          "relaxation": 0.7,
+          "source_w_m3": 0.0,
+          "specific_heat": 1005.0,
+          "turbulent_prandtl": 0.85,
+          "wall_treatment": "molecular"
+        },
+        "threads": 6,
+        "time": {
+          "mode": "steady"
+        },
+        "turbulence": {
+          "ce": 1.048,
+          "ck": 0.094,
+          "convection": "bounded-limited-linear-tvd",
+          "cw": 0.325,
+          "diffusion_correction": "over-relaxed-limited",
+          "diffusivity_interpolation": "linear",
+          "epsilon": 1e-05,
+          "full_viscous_stress": true,
+          "include_isotropic_stress": false,
+          "inlets": {
+            "inlet": {
+              "epsilon": 1e-05,
+              "k": 0.00109,
+              "omega": 181728.0,
+              "type": "direct"
+            },
+            "outlet": {
+              "epsilon": 1e-05,
+              "k": 0.00109,
+              "omega": 181728.0,
+              "type": "direct"
+            }
+          },
+          "k": 0.00109,
+          "model": "k-omega-sst",
+          "nu_tilda": 1e-05,
+          "omega": 181728.0,
+          "relative_tolerance": 1e-06,
+          "relaxation": 0.8,
+          "wall_treatment": "velocity-blended-k-omega"
+        },
+        "velocity_relaxation": 0.4,
+        "volume_models": {
+          "mean_velocity": null,
+          "resistance": null,
+          "rotating_frame": null
+        }
+      },
+      "mesh_preflight": {
+        "invalid_cells": [],
+        "invalid_faces": [],
+        "max_adjacent_volume_ratio": 3.333333304899391,
+        "severe_nonorthogonal_faces": [
+          40620,
+          40686,
+          40752,
+          40818,
+          40884,
+          40950,
+          41016,
+          41082,
+          41146,
+          41148,
+          41212,
+          41214,
+          41278,
+          41280,
+          41344,
+          41346
+        ],
+        "warnings": [
+          "High non-orthogonality: inspect mesh quality and improve alignment.",
+          "High centre-line displacement / centre distance. This skewness metric is not interchangeable with other tools' definitions."
+        ]
+      },
+      "performance": {
+        "actual_backend": "CPU parallel",
+        "cell_iterations_per_second": 205886.2528743924,
+        "cpu_fallbacks": 0,
+        "cpu_threads": 6,
+        "device": null,
+        "elapsed_seconds": 498.819122531,
+        "fallback_reasons": [],
+        "gpu_amg_v_cycles": 0,
+        "gpu_host_basis_peak_bytes": 0,
+        "gpu_methods": {},
+        "gpu_notes": [],
+        "gpu_peak_working_bytes": 0,
+        "gpu_preconditioner_iterations": 0,
+        "gpu_seconds": 0.0,
+        "gpu_solves": 0,
+        "linear_seconds": 81.18815455900001,
+        "linear_solves": 5000,
+        "precision": "f64",
+        "requested_backend": "Parallel",
+        "spmv_calls": 65000,
+        "spmv_seconds": 8.832278587000001,
+        "stages": {
+          "momentum_assembly": 254.63567686500002,
+          "monitor_output": 0.0,
+          "preconditioner_apply": 7.099054130000001,
+          "preconditioner_setup": 78.844664518,
+          "pressure_assembly": 12.535672328
+        }
+      }
+    },
+    {
+      "label": "medium-sst-15000",
+      "run": {
+        "continuity_residual": 1.0519483347261238e-17,
+        "created_unix_ms": 1793289070147,
+        "failure_diagnostic": null,
+        "id": "run-0006",
+        "iterations": 15000,
+        "mesh_identity": 1,
+        "net_boundary_flux": 8.881784197001252e-16,
+        "ordinal": 6,
+        "physical_time": null,
+        "report_path": "runs/run-0006/report.json",
+        "solution_path": "runs/run-0006/solution.vtk",
+        "status": "max-iterations",
+        "time_steps": 0,
+        "total_inflow": -4.49072,
+        "total_outflow": 4.4907200000000005
+      },
+      "material": {
+        "catalog": null,
+        "density": 1.225,
+        "kinematic_viscosity": 1.56e-05
+      },
+      "solver_settings": {
+        "boundary_profiles": {},
+        "compressible": null,
+        "compute": {
+          "adapter": "",
+          "backend": "parallel",
+          "cpu_fallback": true,
+          "gpu_host_basis_mb": 256,
+          "gpu_inner_iterations": 8,
+          "gpu_memory_fraction": 0.8,
+          "gpu_min_rows": 16384,
+          "gpu_preconditioner": "auto",
+          "gpu_restart": 24,
+          "gpu_smoothing_sweeps": 2,
+          "gpu_timeout_ms": 10000,
+          "parallel_min_rows": 4096
+        },
+        "continuity_absolute_tolerance": 1e-08,
+        "convection": "bounded-lust",
+        "coupling_relative_tolerance": 1e-06,
+        "cyclic_pairs": [],
+        "equations": {
+          "epsilon": {
+            "absolute_tolerance": 1e-10,
+            "max_iterations": 1000,
+            "preconditioner": "jacobi",
+            "relative_tolerance": 1e-08
+          },
+          "k": {
+            "absolute_tolerance": 1e-10,
+            "max_iterations": 1000,
+            "preconditioner": "smooth-solver",
+            "relative_tolerance": 0.1
+          },
+          "nu_tilda": {
+            "absolute_tolerance": 1e-10,
+            "max_iterations": 1000,
+            "preconditioner": "jacobi",
+            "relative_tolerance": 1e-08
+          },
+          "omega": {
+            "absolute_tolerance": 1e-10,
+            "max_iterations": 1000,
+            "preconditioner": "smooth-solver",
+            "relative_tolerance": 0.1
+          },
+          "pressure": {
+            "absolute_tolerance": 1e-10,
+            "max_iterations": 1000,
+            "preconditioner": "auto",
+            "relative_tolerance": 1e-07
+          },
+          "temperature": {
+            "absolute_tolerance": 1e-10,
+            "max_iterations": 1000,
+            "preconditioner": "jacobi",
+            "relative_tolerance": 1e-08
+          },
+          "velocity": {
+            "absolute_tolerance": 1e-10,
+            "max_iterations": 1000,
+            "preconditioner": "smooth-solver",
+            "relative_tolerance": 0.1
+          }
+        },
+        "force_analysis": {
+          "center": {
+            "x": 0.0,
+            "y": 0.0,
+            "z": 0.0
+          },
+          "drag_direction": {
+            "x": 1.0,
+            "y": 0.0,
+            "z": 0.0
+          },
+          "frequency_start_time": 0.5,
+          "length": 0.0127,
+          "lift_direction": {
+            "x": 0.0,
+            "y": 1.0,
+            "z": 0.0
+          },
+          "measure": 0.0127,
+          "patches": [
+            "lower-wall"
+          ],
+          "reattachment": true,
+          "speed": 44.2,
+          "wall_direction": {
+            "x": 1.0,
+            "y": 0.0,
+            "z": 0.0
+          },
+          "wall_start": {
+            "x": 0.0,
+            "y": 0.0,
+            "z": 0.0
+          },
+          "wall_tolerance": 1.27e-07
+        },
+        "initial_profile": {
+          "pressure": 0.0,
+          "type": "uniform",
+          "velocity": {
+            "x": 1e-08,
+            "y": 0.0,
+            "z": 0.0
+          }
+        },
+        "max_outer_iterations": 5000,
+        "momentum_diffusion_correction": "over-relaxed-limited",
+        "physical_end_time": null,
+        "pressure_coupling": {
+          "algorithm": "simple",
+          "allow_outlet_backflow": true,
+          "non_orthogonal_correctors": 0,
+          "non_orthogonal_limiter": 1.0,
+          "pressure_correctors": 1
+        },
+        "pressure_relaxation": 0.2,
+        "scripting": {
+          "bindings": {},
+          "contract_version": 1,
+          "scripts": {}
+        },
+        "thermal": {
+          "boundaries": {},
+          "buoyancy": false,
+          "conductivity": 0.025,
+          "enabled": false,
+          "expansion": 0.0,
+          "gravity": {
+            "x": 0.0,
+            "y": -9.81,
+            "z": 0.0
+          },
+          "initial_temperature": 293.15,
+          "max_boussinesq_fraction": 0.1,
+          "reduced_pressure": false,
+          "reference_temperature": 293.15,
+          "relative_tolerance": 1e-08,
+          "relaxation": 0.7,
+          "source_w_m3": 0.0,
+          "specific_heat": 1005.0,
+          "turbulent_prandtl": 0.85,
+          "wall_treatment": "molecular"
+        },
+        "threads": 6,
+        "time": {
+          "mode": "steady"
+        },
+        "turbulence": {
+          "ce": 1.048,
+          "ck": 0.094,
+          "convection": "bounded-limited-linear-tvd",
+          "cw": 0.325,
+          "diffusion_correction": "over-relaxed-limited",
+          "diffusivity_interpolation": "linear",
+          "epsilon": 1e-05,
+          "full_viscous_stress": true,
+          "include_isotropic_stress": false,
+          "inlets": {
+            "inlet": {
+              "epsilon": 1e-05,
+              "k": 0.00109,
+              "omega": 181728.0,
+              "type": "direct"
+            },
+            "outlet": {
+              "epsilon": 1e-05,
+              "k": 0.00109,
+              "omega": 181728.0,
+              "type": "direct"
+            }
+          },
+          "k": 0.00109,
+          "model": "k-omega-sst",
+          "nu_tilda": 1e-05,
+          "omega": 181728.0,
+          "relative_tolerance": 1e-06,
+          "relaxation": 0.8,
+          "wall_treatment": "velocity-blended-k-omega"
+        },
+        "velocity_relaxation": 0.4,
+        "volume_models": {
+          "mean_velocity": null,
+          "resistance": null,
+          "rotating_frame": null
+        }
+      },
+      "mesh_preflight": {
+        "invalid_cells": [],
+        "invalid_faces": [],
+        "max_adjacent_volume_ratio": 3.333333304899391,
+        "severe_nonorthogonal_faces": [
+          40620,
+          40686,
+          40752,
+          40818,
+          40884,
+          40950,
+          41016,
+          41082,
+          41146,
+          41148,
+          41212,
+          41214,
+          41278,
+          41280,
+          41344,
+          41346
+        ],
+        "warnings": [
+          "High non-orthogonality: inspect mesh quality and improve alignment.",
+          "High centre-line displacement / centre distance. This skewness metric is not interchangeable with other tools' definitions."
+        ]
+      },
+      "performance": {
+        "actual_backend": "CPU parallel",
+        "cell_iterations_per_second": 211700.7613604852,
+        "cpu_fallbacks": 0,
+        "cpu_threads": 6,
+        "device": null,
+        "elapsed_seconds": 485.118708785,
+        "fallback_reasons": [],
+        "gpu_amg_v_cycles": 0,
+        "gpu_host_basis_peak_bytes": 0,
+        "gpu_methods": {},
+        "gpu_notes": [],
+        "gpu_peak_working_bytes": 0,
+        "gpu_preconditioner_iterations": 0,
+        "gpu_seconds": 0.0,
+        "gpu_solves": 0,
+        "linear_seconds": 79.695256975,
+        "linear_solves": 5000,
+        "precision": "f64",
+        "requested_backend": "Parallel",
+        "spmv_calls": 65000,
+        "spmv_seconds": 9.114134210000001,
+        "stages": {
+          "momentum_assembly": 245.82866650500003,
+          "monitor_output": 0.0,
+          "preconditioner_apply": 7.152756661000001,
+          "preconditioner_setup": 77.845700264,
+          "pressure_assembly": 11.818262324
+        }
+      }
+    }
+  ],
+  "status": "preliminary; not converged",
+  "repository_head_when_packaged": "e9dabf9bd4369697fa8b1a9c8c6c5865d7d0bb0d",
+  "binary_build_source_revision": "not recorded"
+}

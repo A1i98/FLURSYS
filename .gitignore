@@ -24,6 +24,7 @@ Thumbs.db
 *.md
 !README.md
 !NUMERICAL_METHODS.md
+!MCP.md
 
 *.sqlite3
 *.sqlite3-wal

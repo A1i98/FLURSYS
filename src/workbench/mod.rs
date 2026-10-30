@@ -64,3 +64,5 @@ pub use selection::{
     GeometrySelectionTarget, NamedSelection, NamedSelectionError, NamedSelectionStore,
 };
 pub use session::{SolveStatus, WorkbenchError, WorkbenchSession};
+
+pub mod flow_frame;

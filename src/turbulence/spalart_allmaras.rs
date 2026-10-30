@@ -91,16 +91,19 @@ impl Closure {
                 )));
             }
         }
-        let control = self.linear.as_ref().map_or(
-            crate::equations::EquationControl::from_options(linear),
-            |e| e.nu_tilda,
-        );
+        let control = self
+            .linear
+            .as_ref()
+            .map_or(crate::equations::EquationControl::transport(linear), |e| {
+                e.nu_tilda
+            });
         let field = self
             .fields
             .nu_tilda
             .as_mut()
             .ok_or_else(|| SimpleError::PhysicalBoundary("Missing SA state".into()))?;
         let report = transport::scalar_solve(
+            "nu_tilda",
             mesh,
             &state.face_flux,
             &bc,
@@ -111,6 +114,7 @@ impl Closure {
             self.old.as_ref().and_then(|o| o.nu_tilda.as_ref()),
             dt,
             self.config.relaxation,
+            &self.config,
             control,
             &self.walls,
             nu / SIGMA,

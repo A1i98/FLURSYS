@@ -5,6 +5,7 @@
 //! entries deterministically at finalization, and omits only exact zero sums.
 
 mod csr;
+pub(crate) mod direct;
 #[cfg(any(feature = "gpu-compute", test))]
 mod flexible;
 #[cfg(feature = "gpu-compute")]
@@ -23,6 +24,7 @@ pub use profile::{cg_profile_snapshot, CgProfileSnapshot};
 pub(crate) use solver::validate_solve_inputs;
 mod vector;
 
+pub(crate) use csr::CsrPatternCache;
 pub use csr::{CsrBuilder, CsrMatrix};
 pub use preconditioner::{
     IncompleteCholeskyPreconditioner, JacobiPreconditioner, Preconditioner,

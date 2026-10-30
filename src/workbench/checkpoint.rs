@@ -1,10 +1,6 @@
 use crate::{CellField, IncompressibleInitialConditions as Initial, UnstructuredMesh, Vec3};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
-use std::{
-    io::Write,
-    path::{Path, PathBuf},
-};
+use std::path::{Path, PathBuf};
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct MeshSignature {
@@ -114,20 +110,8 @@ struct FieldCheckpoint {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     checksum: Option<String>,
 }
-struct HashWriter(Sha256);
-impl Write for HashWriter {
-    fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
-        self.0.update(b);
-        Ok(b.len())
-    }
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
-}
 fn digest(record: &FieldCheckpoint) -> Result<String, String> {
-    let mut writer = HashWriter(Sha256::new());
-    serde_json::to_writer(&mut writer, record).map_err(|e| e.to_string())?;
-    Ok(format!("{:x}", writer.0.finalize()))
+    crate::storage::digest(record)
 }
 fn validate_state(s: &StoredState, cells: usize, faces: usize) -> Result<(), String> {
     if s.velocity.len() != cells
@@ -235,6 +219,13 @@ fn info(path: &Path, record: &FieldCheckpoint) -> Result<CheckpointInfo, String>
     })
 }
 pub fn inspect(path: &Path) -> Result<CheckpointInfo, String> {
+    if super::flow_frame::is_frame(path) {
+        let frame = super::flow_frame::FlowFrame::read(path)?;
+        return Ok(frame.info(
+            path,
+            std::fs::metadata(path).map_err(|e| e.to_string())?.len(),
+        ));
+    }
     let record = read(path)?;
     info(path, &record)
 }
@@ -245,7 +236,7 @@ pub fn backup_paths(path: &Path) -> [PathBuf; 2] {
         PathBuf::from(name)
     })
 }
-fn durable_copy(from: &Path, to: &Path) -> Result<(), String> {
+pub(crate) fn durable_copy(from: &Path, to: &Path) -> Result<(), String> {
     let parent = to.parent().unwrap_or(Path::new("."));
     let mut temp = tempfile::NamedTempFile::new_in(parent).map_err(|e| e.to_string())?;
     std::io::copy(
@@ -264,39 +255,21 @@ fn persist(
 ) -> Result<CheckpointInfo, String> {
     validate(&record)?;
     record.checksum = Some(digest(&record)?);
-    let parent = path.parent().unwrap_or(Path::new("."));
-    std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-    let mut temp = tempfile::NamedTempFile::new_in(parent).map_err(|e| e.to_string())?;
-    {
-        let mut writer = std::io::BufWriter::new(temp.as_file_mut());
-        serde_json::to_writer(&mut writer, &record).map_err(|e| e.to_string())?;
-        writer.flush().map_err(|e| e.to_string())?;
-    }
-    if limit.is_some_and(|max| max > 0 && temp.as_file().metadata().map_or(true, |m| m.len() > max))
-    {
-        return Err(
-            "A field-history frame exceeds the storage budget; recovery checkpoints remain enabled"
-                .into(),
-        );
-    }
-    temp.as_file().sync_all().map_err(|e| e.to_string())?;
-    if path
-        .file_name()
-        .is_some_and(|n| n.to_string_lossy().ends_with("checkpoint.json"))
-        && path.exists()
-        && read(path).is_ok()
-    {
-        let [first, second] = backup_paths(path);
-        if first.exists() && read(&first).is_ok() {
-            durable_copy(&first, &second)?;
+    crate::storage::write_json(path, &record, limit, || {
+        if path
+            .file_name()
+            .is_some_and(|n| n.to_string_lossy().ends_with("checkpoint.json"))
+            && path.exists()
+            && read(path).is_ok()
+        {
+            let [first, second] = backup_paths(path);
+            if first.exists() && read(&first).is_ok() {
+                durable_copy(&first, &second)?;
+            }
+            durable_copy(path, &first)?;
         }
-        durable_copy(path, &first)?;
-    }
-    temp.persist(path).map_err(|e| e.to_string())?;
-    #[cfg(unix)]
-    std::fs::File::open(parent)
-        .and_then(|f| f.sync_all())
-        .map_err(|e| e.to_string())?;
+        Ok(())
+    })?;
     info(path, &record)
 }
 fn store(initial: &Initial, physical: bool) -> Result<StoredState, String> {
@@ -555,7 +528,7 @@ pub fn recover(folder: &Path, mesh: &UnstructuredMesh) -> Result<RecoveredCheckp
     result.warnings.extend(errors);
     Ok(result)
 }
-pub fn discover(workspace: &Path, mesh: &UnstructuredMesh) -> Result<RecoveredCheckpoint, String> {
+pub(crate) fn recovery_folders(workspace: &Path) -> Result<Vec<PathBuf>, String> {
     let mut folders = std::fs::read_dir(workspace.join("monitors"))
         .map_err(|e| e.to_string())?
         .filter_map(Result::ok)
@@ -564,6 +537,10 @@ pub fn discover(workspace: &Path, mesh: &UnstructuredMesh) -> Result<RecoveredCh
         .collect::<Vec<_>>();
     folders
         .sort_by_key(|p| std::cmp::Reverse(std::fs::metadata(p).and_then(|m| m.modified()).ok()));
+    Ok(folders)
+}
+pub fn discover(workspace: &Path, mesh: &UnstructuredMesh) -> Result<RecoveredCheckpoint, String> {
+    let folders = recovery_folders(workspace)?;
     let mut errors = Vec::new();
     for folder in folders {
         match recover(&folder, mesh) {

@@ -91,6 +91,9 @@ fn convection_schemes_return_finite_coupled_solutions() {
     for scheme in [
         flursys::momentum::MomentumConvection::LimitedLinear,
         flursys::momentum::MomentumConvection::Central,
+        flursys::momentum::MomentumConvection::BoundedLust,
+        flursys::momentum::MomentumConvection::BoundedLimitedLinearTvd,
+        flursys::momentum::MomentumConvection::LinearUpwind,
         flursys::momentum::MomentumConvection::VanLeer,
     ] {
         let mut c = case();
@@ -485,4 +488,41 @@ fn backward_checkpoint_resume_matches_uninterrupted_time_levels() {
     {
         assert!((a - b).abs() < 1e-11);
     }
+}
+
+#[test]
+fn blended_wall_transport_matches_serial_and_parallel_execution() {
+    let mut c = case();
+    c.solver.max_outer_iterations = 300;
+    c.solver.convection = flursys::momentum::MomentumConvection::BoundedLust;
+    c.solver.momentum_diffusion_correction = flursys::NonOrthogonalCorrection::Explicit;
+    c.solver.turbulence.model = flursys::turbulence::TurbulenceModel::KOmegaSst;
+    c.solver.turbulence.wall_treatment = flursys::turbulence::WallTreatment::VelocityBlendedKOmega;
+    c.solver.turbulence.convection = flursys::momentum::MomentumConvection::BoundedLimitedLinearTvd;
+    c.solver.turbulence.full_viscous_stress = true;
+    c.solver.turbulence.include_isotropic_stress = false;
+    c.solver.equations = Some(flursys::equations::EquationSolvers::default());
+    let equations = c.solver.equations.as_mut().unwrap();
+    for equation in [&mut equations.velocity, &mut equations.k] {
+        equation.preconditioner = flursys::equations::EquationPreconditioner::SmoothSolver;
+    }
+    c.solver.compute.backend = flursys::compute::Backend::Serial;
+    let serial = solve_incompressible(&c).unwrap();
+    c.solver.compute.backend = flursys::compute::Backend::Parallel;
+    c.solver.compute.parallel_min_rows = 1;
+    c.solver.threads = 2;
+    let parallel = solve_incompressible(&c).unwrap();
+    for (a, b) in serial
+        .velocity
+        .values()
+        .iter()
+        .zip(parallel.velocity.values())
+    {
+        assert!((*a - *b).norm() < 1e-10);
+    }
+    assert!(serial
+        .velocity
+        .values()
+        .iter()
+        .all(|v| v.norm().is_finite()));
 }

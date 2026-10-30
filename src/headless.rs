@@ -53,6 +53,69 @@ pub fn mesh(
     save_workspace(directory, project).map_err(|e| e.to_string())
 }
 
+pub fn import_mesh(
+    directory: &Path,
+    project: &mut WorkbenchProject,
+    session: &mut WorkbenchSession,
+    path: &Path,
+) -> Result<(), String> {
+    let generated = read_import_mesh(project, path)?;
+    let asset = mesh_storage::save(directory, project, &generated)?;
+    session.install_mesh(generated);
+    project.mesh_asset = Some(asset);
+    save_workspace(directory, project).map_err(|e| e.to_string())
+}
+
+pub fn read_import_mesh(
+    project: &WorkbenchProject,
+    path: &Path,
+) -> Result<crate::GeneratedMesh, String> {
+    let text = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
+    parse_import_mesh(project, &text)
+}
+
+pub fn parse_import_mesh(
+    project: &WorkbenchProject,
+    text: &str,
+) -> Result<crate::GeneratedMesh, String> {
+    let mesh = crate::parse_gmsh(text).map_err(|e| e.to_string())?;
+    if mesh.dimension() != project.mesh.dimension {
+        return Err("Imported mesh dimension does not match the project".into());
+    }
+    let expected: std::collections::BTreeSet<_> = project
+        .named_selections
+        .iter()
+        .map(|s| s.name.as_str())
+        .collect();
+    let actual: std::collections::BTreeSet<_> = mesh
+        .boundary_patches()
+        .iter()
+        .map(|p| p.name.as_str())
+        .collect();
+    if expected != actual {
+        return Err(format!("Imported physical patches must match named selections; expected {expected:?}, found {actual:?}"));
+    }
+    let review = crate::workbench::diagnostics::mesh_preflight(&mesh);
+    if review.blocked() {
+        return Err(review.summary());
+    }
+    Ok(crate::GeneratedMesh {
+        report: crate::GmshMeshingReport {
+            version: crate::GmshVersion {
+                value: "imported".into(),
+            },
+            dimension: mesh.dimension(),
+            mesh_format: "Gmsh ASCII imported".into(),
+            node_count: mesh.points().len(),
+            cell_count: mesh.cell_count(),
+            patch_count: mesh.boundary_patches().len(),
+            stdout: String::new(),
+            stderr: String::new(),
+        },
+        mesh,
+    })
+}
+
 #[derive(Clone, Debug)]
 pub struct RunOptions {
     pub restart: Option<PathBuf>,
@@ -111,6 +174,185 @@ impl ExecutionControl {
     }
 }
 
+enum FlowOutcome {
+    Incompressible(Result<crate::IncompressibleSolution, crate::IncompressibleSolveError>),
+    Compressible(Result<crate::compressible::Solution, String>),
+}
+fn drive(
+    jobs: &mut WorkbenchJobExecutor,
+    control: &ExecutionControl,
+    mut observe: impl FnMut(&WorkbenchJobEvent),
+) -> Result<FlowOutcome, String> {
+    loop {
+        if control.1.swap(false, std::sync::atomic::Ordering::AcqRel) {
+            if let Err(e) = jobs.checkpoint_now() {
+                observe(&WorkbenchJobEvent::Checkpoint(Err(e)));
+            }
+        }
+        match control.0.load(std::sync::atomic::Ordering::Acquire) {
+            2 => {
+                jobs.cancel();
+            }
+            1 => jobs.set_paused(true),
+            _ => jobs.set_paused(false),
+        }
+        for event in jobs.drain() {
+            observe(&event);
+            match event {
+                WorkbenchJobEvent::SolveCompleted(result) => {
+                    return Ok(FlowOutcome::Incompressible(result))
+                }
+                WorkbenchJobEvent::CompressibleCompleted(result) => {
+                    return Ok(FlowOutcome::Compressible(result))
+                }
+                _ => {}
+            }
+        }
+        if jobs.lifecycle() != JobLifecycle::Running {
+            return Err("Solve worker disconnected before returning accepted state".into());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+pub fn execute(
+    case: crate::flow::FlowCase,
+    folder: &Path,
+    control: &ExecutionControl,
+    observe: impl FnMut(&WorkbenchJobEvent),
+) -> Result<crate::flow::FlowSolution, String> {
+    let mut jobs = WorkbenchJobExecutor::new();
+    jobs.start_flow(case, Vec::new(), folder.into(), "standalone".into())?;
+    match drive(&mut jobs, control, observe)? {
+        FlowOutcome::Incompressible(r) => r
+            .map(crate::flow::FlowSolution::Incompressible)
+            .map_err(|e| e.to_string()),
+        FlowOutcome::Compressible(r) => r.map(crate::flow::FlowSolution::Compressible),
+    }
+}
+fn run_compressible(
+    directory: &Path,
+    project: &mut WorkbenchProject,
+    session: &mut WorkbenchSession,
+    options: &RunOptions,
+    control: &ExecutionControl,
+    mut observe: impl FnMut(&WorkbenchJobEvent),
+) -> Result<RunOutcome, String> {
+    let crate::flow::FlowCase::Compressible { mesh, settings } =
+        session.prepare_flow_case().map_err(|e| e.to_string())?
+    else {
+        return Err("Missing compressible configuration".into());
+    };
+    let mut jobs = WorkbenchJobExecutor::new();
+    jobs.set_checkpoint_interval(options.checkpoint_every);
+    jobs.set_recovery_policy(options.recovery.clone())?;
+    let mut continuation = None;
+    let mut folder = None;
+    let mut histories: [Vec<(f64, Option<f64>)>; 4] = Default::default();
+    if let Some(path) = &options.restart {
+        jobs.set_restart(Some(path.clone()));
+    } else if let Some(run) = project.runs.last() {
+        if let Some(path) = &run.solution_path {
+            let path = directory.join(path);
+            if crate::workbench::flow_frame::is_frame(&path) {
+                let frame = crate::workbench::flow_frame::FlowFrame::read(&path)?;
+                let state = frame.gas_restart(&mesh, settings.gas)?;
+                jobs.set_compressible_state(&mesh, state)?;
+                let report = report(directory, run)?;
+                histories = report
+                    .get("indexed_convergence_history")
+                    .and_then(|v| serde_json::from_value(v.clone()).ok())
+                    .unwrap_or_default();
+                folder = report
+                    .get("plane_recording_folder")
+                    .and_then(|v| v.as_str())
+                    .map(|p| {
+                        let path = Path::new(p);
+                        if path.is_absolute()
+                            || path
+                                .components()
+                                .any(|c| !matches!(c, std::path::Component::Normal(_)))
+                        {
+                            Err(String::from(
+                                "Recording folder must stay inside the workspace",
+                            ))
+                        } else {
+                            Ok(directory.join(path))
+                        }
+                    })
+                    .transpose()?;
+                continuation = Some(run.id.clone());
+            }
+        }
+    }
+    let folder = folder.unwrap_or_else(|| {
+        directory.join("monitors").join(format!(
+            "solve-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ))
+    });
+    let run_id = continuation.clone().unwrap_or_else(|| {
+        project
+            .next_run(crate::workbench::RunStatus::MaxIterations)
+            .id
+    });
+    save_workspace(directory, project).map_err(|e| e.to_string())?;
+    jobs.start_compressible(mesh.clone(), settings.clone(), folder.clone(), run_id)?;
+    let outcome = drive(&mut jobs, control, |event| {
+        observe(event);
+        if let WorkbenchJobEvent::SolveProgress(crate::app::JobProgress::Metrics {
+            iteration,
+            values,
+        }) = event
+        {
+            for (series, value) in histories.iter_mut().zip(values) {
+                let x = *iteration as f64;
+                match series.binary_search_by(|p| p.0.total_cmp(&x)) {
+                    Ok(i) => series[i].1 = Some(*value),
+                    Err(i) => series.insert(i, (x, Some(*value))),
+                }
+            }
+        }
+    });
+    let result = match outcome {
+        Ok(FlowOutcome::Compressible(result)) => result,
+        Ok(_) => return Err("Unexpected flow model result".into()),
+        Err(e) => Err(e),
+    };
+    let failure = result.as_ref().err().cloned();
+    let state = result
+        .as_ref()
+        .ok()
+        .map(|s| std::sync::Arc::new(s.snapshot(settings.gas)))
+        .or_else(|| jobs.retained_compressible(mesh.id()));
+    let run = state
+        .as_ref()
+        .map(|state| {
+            crate::workbench::flow_frame::finalize_compressible(
+                directory,
+                project,
+                &mesh,
+                state,
+                &folder,
+                continuation.as_deref(),
+                &histories,
+                failure.clone(),
+            )
+        })
+        .transpose()?;
+    session.complete_compressible(result);
+    Ok(RunOutcome {
+        run,
+        failure,
+        restart_checkpoint: folder
+            .join("checkpoint.json")
+            .exists()
+            .then(|| folder.join("checkpoint.json")),
+    })
+}
+
 /// Run synchronously while reporting typed worker events to the caller.
 /// A numerical failure is returned in `RunOutcome` after its report is saved;
 /// setup, storage and orchestration errors return `Err`.
@@ -140,6 +382,20 @@ pub fn run_with_control(
     control: &ExecutionControl,
     mut observe: impl FnMut(&WorkbenchJobEvent),
 ) -> Result<RunOutcome, String> {
+    options.recovery.validate()?;
+    if options.checkpoint_every > 1_000_000 {
+        return Err("Checkpoint interval must be in 0..1000000".into());
+    }
+    if project.mesh_asset.is_none() {
+        if let Some(mesh) = session.mesh() {
+            sync_intent(project, session);
+            project.mesh_asset = Some(mesh_storage::save(directory, project, mesh)?);
+            save_workspace(directory, project).map_err(|e| e.to_string())?;
+        }
+    }
+    if project.solver.compressible.is_some() {
+        return run_compressible(directory, project, session, options, control, observe);
+    }
     session
         .readiness()
         .map_err(|e| format!("Project is not ready: {e}"))?;
@@ -178,42 +434,22 @@ pub fn run_with_control(
     )
     .map_err(str::to_string)?;
     session.mark_solving();
-    let mut outcome = None;
     let mut health = None;
-    while outcome.is_none() {
-        if control.1.swap(false, std::sync::atomic::Ordering::AcqRel) {
-            if let Err(e) = jobs.checkpoint_now() {
-                observe(&WorkbenchJobEvent::Checkpoint(Err(e)));
-            }
+    let outcome = drive(&mut jobs, control, |event| {
+        observe(event);
+        match event {
+            WorkbenchJobEvent::Health(report) => health = Some(report.clone()),
+            WorkbenchJobEvent::Performance(report) => session.set_performance(report.clone()),
+            _ => {}
         }
-        match control.0.load(std::sync::atomic::Ordering::Acquire) {
-            2 => {
-                jobs.cancel();
-            }
-            1 => jobs.set_paused(true),
-            _ => jobs.set_paused(false),
-        }
-        for event in jobs.drain() {
-            observe(&event);
-            match event {
-                WorkbenchJobEvent::Health(report) => health = Some(report),
-                WorkbenchJobEvent::Performance(report) => session.set_performance(report),
-                WorkbenchJobEvent::SolveCompleted(result) => outcome = Some(result),
-                _ => {}
-            }
-        }
-        if outcome.is_none() && jobs.lifecycle() != JobLifecycle::Running {
-            outcome = Some(Err(crate::IncompressibleSolveError::Simple(
-                crate::SimpleError::Monitor(
-                    "Solve worker disconnected before returning a result".into(),
-                ),
-            )));
-        }
-        if outcome.is_none() {
-            std::thread::sleep(std::time::Duration::from_millis(20));
-        }
-    }
-    let result = outcome.ok_or("Solve worker returned no outcome")?;
+    });
+    let result = match outcome {
+        Ok(FlowOutcome::Incompressible(result)) => result,
+        Ok(_) => return Err("Unexpected flow model result".into()),
+        Err(e) => Err(crate::IncompressibleSolveError::Simple(
+            crate::SimpleError::Monitor(e),
+        )),
+    };
     let failure = result.as_ref().err().map(ToString::to_string);
     let retained_checkpoint = if let Some((index, fields)) =
         jobs.retained_fields(mesh.id()).filter(|_| {

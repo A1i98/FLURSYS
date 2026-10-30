@@ -13,12 +13,29 @@ impl Closure {
     ) -> Result<(), SimpleError> {
         let n = mesh.cell_count();
         let wall = self.wall_values(mesh, state, bc, nu)?;
-        let omega_walls = self.config.wall_treatment == WallTreatment::EquilibriumKOmega;
+        let omega_walls = matches!(
+            self.config.wall_treatment,
+            WallTreatment::EquilibriumKOmega | WallTreatment::VelocityBlendedKOmega
+        );
         let mut kb = vec![None; mesh.face_count()];
         let mut wb = kb.clone();
         for (i, f) in mesh.faces().iter().enumerate() {
             if f.neighbour.is_none() {
-                let incoming = state.face_flux[i] < 0.0 && self.cyclic.link(i).is_none();
+                let extrapolated = self.extrapolate_outlet
+                    && [
+                        MomentumComponent::X,
+                        MomentumComponent::Y,
+                        MomentumComponent::Z,
+                    ]
+                    .iter()
+                    .all(|c| {
+                        matches!(
+                            bc.component(*c).condition(i),
+                            Some(ScalarBoundaryCondition::ZeroGradient)
+                        )
+                    });
+                let incoming =
+                    state.face_flux[i] < 0.0 && self.cyclic.link(i).is_none() && !extrapolated;
                 let (in_k, in_w, _in_e) = if incoming {
                     self.incoming_values(mesh, state, bc, i)?
                 } else {
@@ -122,6 +139,7 @@ impl Closure {
         }
         let old = self.old.as_ref();
         let report = scalar_solve(
+            "omega",
             mesh,
             &state.face_flux,
             &wb,
@@ -132,10 +150,12 @@ impl Closure {
             old.map(|o| &o.omega),
             dt,
             self.config.relaxation,
-            self.linear.as_ref().map_or(
-                crate::equations::EquationControl::from_options(linear),
-                |e| e.omega,
-            ),
+            &self.config,
+            self.linear
+                .as_ref()
+                .map_or(crate::equations::EquationControl::transport(linear), |e| {
+                    e.omega
+                }),
             &self.walls,
             nu,
             if omega_walls { Some(&wall.omega) } else { None },
@@ -161,6 +181,7 @@ impl Closure {
             }
         }
         let report = scalar_solve(
+            "k",
             mesh,
             &state.face_flux,
             &kb,
@@ -171,10 +192,12 @@ impl Closure {
             old.map(|o| &o.k),
             dt,
             self.config.relaxation,
-            self.linear.as_ref().map_or(
-                crate::equations::EquationControl::from_options(linear),
-                |e| e.k,
-            ),
+            &self.config,
+            self.linear
+                .as_ref()
+                .map_or(crate::equations::EquationControl::transport(linear), |e| {
+                    e.k
+                }),
             &self.walls,
             nu,
             None,
@@ -191,6 +214,7 @@ impl Closure {
 }
 #[allow(clippy::too_many_arguments)]
 pub(super) fn scalar_solve(
+    equation: &str,
     mesh: &UnstructuredMesh,
     phi: &FaceField<f64>,
     bc: &ResolvedScalarBoundaryConditions,
@@ -201,6 +225,7 @@ pub(super) fn scalar_solve(
     old: Option<&CellField<f64>>,
     dt: Option<f64>,
     alpha: f64,
+    numerics: &TurbulenceOptions,
     linear: crate::equations::EquationControl,
     walls: &[bool],
     nu: f64,
@@ -209,34 +234,82 @@ pub(super) fn scalar_solve(
     let mut face_diffusion = interpolate_diffusivity(
         mesh,
         Diffusivity::CellField(d),
-        DiffusivityInterpolation::Harmonic,
+        numerics.diffusivity_interpolation,
     )?;
     for (i, wall) in walls.iter().enumerate() {
         if let Some((n, _)) = bc.cyclic_neighbour(mesh, i) {
             let a = d[mesh.faces()[i].owner];
             let b = d[n];
-            face_diffusion[i] = 2.0 * a * b / (a + b);
+            face_diffusion[i] = match numerics.diffusivity_interpolation {
+                DiffusivityInterpolation::Harmonic => 2.0 * a * b / (a + b),
+                DiffusivityInterpolation::Linear => 0.5 * (a + b),
+            };
         }
         if *wall {
             face_diffusion[i] = nu;
         }
     }
     let mut options = MomentumOptions::steady(Diffusivity::Faces(&face_diffusion), bc, phi);
+    options.convection = numerics.convection;
     options.old = old;
     options.time_step = dt;
     options.source = Some(source);
     // Relax the complete matrix, including the implicit destruction term.
-    options.diffusion.non_orthogonal_correction = NonOrthogonalCorrection::Limited;
+    options.diffusion.non_orthogonal_correction = numerics.diffusion_correction;
     options.correction_field = Some(field);
     options.allow_iterative_outlet_backflow = true;
     let system = assemble_momentum_component(mesh, options)?;
-    let matrix = system.matrix();
+    let (mut matrix, mut rhs) = system.into_matrix_and_rhs();
+    let diagonal_positions: Option<Vec<_>> = (0..mesh.cell_count())
+        .map(|i| {
+            let start = matrix.row_offsets()[i];
+            let end = matrix.row_offsets()[i + 1];
+            matrix.column_indices()[start..end]
+                .binary_search(&i)
+                .ok()
+                .map(|offset| start + offset)
+        })
+        .collect();
+    if let Some(diagonal_positions) = diagonal_positions {
+        for (i, cell) in mesh.cells().iter().enumerate() {
+            let start = matrix.row_offsets()[i];
+            let end = matrix.row_offsets()[i + 1];
+            if let Some(v) = prescribed.and_then(|p| p[i]) {
+                matrix.values_mut()[start..end].fill(0.0);
+                matrix.values_mut()[diagonal_positions[i]] = 1.0;
+                rhs[i] = v;
+                continue;
+            }
+            let diag = matrix.values()[diagonal_positions[i]] + sink[i] * cell.volume;
+            for j in start..end {
+                let col = matrix.column_indices()[j];
+                if let Some(v) = prescribed.and_then(|p| p[col]) {
+                    rhs[i] -= matrix.values()[j] * v;
+                    matrix.values_mut()[j] = 0.0;
+                }
+            }
+            matrix.values_mut()[diagonal_positions[i]] +=
+                sink[i] * cell.volume + (1.0 / alpha - 1.0) * diag;
+            rhs[i] += (1.0 / alpha - 1.0) * diag * field[i];
+        }
+        let report = linear.solve(&matrix, &rhs, field.values_mut(), false)?;
+        if report.status != LinearSolverStatus::Converged {
+            return Err(SimpleError::PhysicalBoundary(
+                format!("Turbulence {equation} linear solve did not converge: iterations={}, initial={:.6e}, final={:.6e}, relative={:.6e}, preconditioner={:?}", report.iterations, report.initial_residual, report.final_residual, report.relative_residual, linear.preconditioner),
+            ));
+        }
+        if field.values().iter().any(|x| !x.is_finite()) {
+            return Err(SimpleError::PhysicalBoundary(
+                "Non-finite turbulence transport solution".into(),
+            ));
+        }
+        return Ok(report);
+    }
     let mut builder = CsrBuilder::with_capacity(
         mesh.cell_count(),
         mesh.cell_count(),
         matrix.nnz() + mesh.cell_count(),
     );
-    let mut rhs = system.rhs().to_vec();
     for (i, cell) in mesh.cells().iter().enumerate() {
         if let Some(v) = prescribed.and_then(|p| p[i]) {
             builder.add(i, i, 1.0)?;
@@ -259,7 +332,7 @@ pub(super) fn scalar_solve(
     let report = linear.solve(&matrix, &rhs, field.values_mut(), false)?;
     if report.status != LinearSolverStatus::Converged {
         return Err(SimpleError::PhysicalBoundary(
-            "Turbulence scalar linear solve did not converge".into(),
+            format!("Turbulence {equation} linear solve did not converge: iterations={}, initial={:.6e}, final={:.6e}, relative={:.6e}, preconditioner={:?}", report.iterations, report.initial_residual, report.final_residual, report.relative_residual, linear.preconditioner),
         ));
     }
     if field.values().iter().any(|x| !x.is_finite()) {

@@ -13,6 +13,7 @@ pub enum CouplingAlgorithm {
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct PressureCoupling {
+    pub allow_outlet_backflow: bool,
     pub algorithm: CouplingAlgorithm,
     pub pressure_correctors: usize,
     /// Extra deferred correction passes: zero preserves the two-point operator.
@@ -24,6 +25,7 @@ pub struct PressureCoupling {
 impl Default for PressureCoupling {
     fn default() -> Self {
         Self {
+            allow_outlet_backflow: false,
             algorithm: CouplingAlgorithm::Simple,
             pressure_correctors: 1,
             non_orthogonal_correctors: 0,
@@ -150,7 +152,7 @@ pub(super) fn project(
             .equations
             .map(|e| e.pressure)
             .unwrap_or(crate::equations::EquationControl {
-                preconditioner: crate::equations::EquationPreconditioner::Ic0,
+                preconditioner: crate::equations::EquationPreconditioner::Auto,
                 ..crate::equations::EquationControl::from_options(options.pressure_solver)
             });
     let mut correction = CellField::filled(mesh, 0.0);
@@ -201,7 +203,7 @@ pub(super) fn project(
             correction.values_mut(),
         )?;
         if !report.converged() {
-            return Err(SimpleError::PressureLinearDidNotConverge);
+            return Err(SimpleError::PressureLinearDidNotConverge { report });
         }
         last = Some(report);
     }

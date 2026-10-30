@@ -1,6 +1,10 @@
 fn main() {
     embed_cases().expect("cannot embed FLURSYS case files");
-    for path in ["src/compute/linear.wgsl", "src/compute/amg.wgsl"] {
+    for path in [
+        "src/compute/linear.wgsl",
+        "src/compute/amg.wgsl",
+        "src/compute/flux.wgsl",
+    ] {
         println!("cargo:rerun-if-changed={path}");
         let source = std::fs::read_to_string(path).expect("compute shader source");
         let module = naga::front::wgsl::parse_str(&source)
@@ -52,6 +56,26 @@ fn embed_cases() -> Result<(), Box<dyn std::error::Error>> {
     let mut source = String::from("pub(super) const CASES: &[&str] = &[\n");
     for file in files {
         source.push_str(&format!("include_str!({:?}),\n", file));
+    }
+    source.push_str("];\n");
+    source.push_str("pub(super) const REFERENCE_MESHES: &[(&str, &str)] = &[\n");
+    for entry in fs::read_dir(&root)? {
+        let entry = entry?;
+        let folder = entry.path().join("reference");
+        if !folder.is_dir() {
+            continue;
+        }
+        for file in fs::read_dir(folder)? {
+            let file = file?.path();
+            if file.extension().is_some_and(|ext| ext == "msh") {
+                println!("cargo:rerun-if-changed={}", file.display());
+                let key = file
+                    .strip_prefix(&root)?
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                source.push_str(&format!("({key:?}, include_str!({file:?})),\n"));
+            }
+        }
     }
     source.push_str("];\n");
     fs::write(

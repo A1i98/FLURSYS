@@ -62,6 +62,7 @@ fn number(opts: &BTreeMap<String, String>, key: &str) -> Result<Option<usize>, S
 pub fn help() {
     println!(
         "Workbench commands:
+  flursys mcp [--root DIRECTORY]
   flursys catalog status|materials [--db FILE] [--json]
   flursys catalog import PACK.json [--db FILE] [--json]
   flursys catalog inspect TABLE [--db FILE] [--json]
@@ -82,6 +83,7 @@ pub fn help() {
   flursys project analyses <directory> [--json]
   flursys project branch <directory> --name NAME [--json]
   flursys project mesh <directory> [--gmsh PATH] [--threads N] [--json]
+  flursys project import-mesh <directory> --input mesh.msh [--json]
   flursys project solve <directory> [--threads N] [--iterations N] [--restart FILE] [--backend serial|parallel|gpu] [--adapter NAME] [--gpu-required] [--gpu-min-rows N] [--json]
   flursys project transport-template <directory> --output transport.json [--json]
   flursys project transport <directory> --config transport.json --output NEW_DIRECTORY [--json]
@@ -214,6 +216,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
             "gpu-basis-mb",
         ],
         "mesh" => &["json", "gmsh", "threads"],
+        "import-mesh" => &["json", "input"],
         "solve" => &[
             "dt",
             "steps",
@@ -329,7 +332,8 @@ pub fn run(args: &[String]) -> Result<(), String> {
         project.solver.compute.cpu_fallback = false;
     }
     let mut session = WorkbenchSession::from_project(&project).map_err(|e| e.to_string())?;
-    let restored = mesh_storage::restore(folder, &project, &mut session)?;
+    let restored =
+        mesh_storage::restore(folder, &project, &mut session)? || session.mesh().is_some();
     if action == "transport-template" || action == "transport" {
         let mesh = &session
             .mesh()
@@ -354,6 +358,15 @@ pub fn run(args: &[String]) -> Result<(), String> {
             .mesh()
             .ok_or("Restore the project mesh before inspecting recovery")?
             .mesh;
+        if let Some(settings) = &project.solver.compressible {
+            let path = flursys::workbench::flow_frame::discover(folder, mesh, settings.gas)?;
+            let info = flursys::workbench::checkpoint::inspect(&path)?;
+            emit(
+                json!({"summary":format!("Recovery checkpoint at iteration/step {}",info.iteration),"checkpoint":info}),
+                json_output,
+            );
+            return Ok(());
+        }
         let recovered = flursys::workbench::checkpoint::discover(folder, mesh)?;
         emit(
             json!({"summary":format!("Recovery checkpoint at iteration/step {}",recovered.info.iteration),"checkpoint":recovered.info,"warnings":recovered.warnings}),
@@ -369,6 +382,15 @@ pub fn run(args: &[String]) -> Result<(), String> {
         );
         return Ok(());
     }
+    if action == "import-mesh" {
+        let path = opts.get("input").ok_or("Missing --input mesh.msh")?;
+        flursys::headless::import_mesh(folder, &mut project, &mut session, Path::new(path))?;
+        emit(
+            json!({"summary":format!("Imported {} cells", session.mesh().unwrap().mesh.cell_count())}),
+            json_output,
+        );
+        return Ok(());
+    }
     if action == "mesh" {
         if let Some(n) = number(&opts, "threads")? {
             session.set_mesh_cpu_threads(n);
@@ -379,6 +401,16 @@ pub fn run(args: &[String]) -> Result<(), String> {
             json_output,
         );
         return Ok(());
+    }
+    if project.solver.compressible.is_some() {
+        return compressible_workspace(
+            action,
+            folder,
+            &mut project,
+            &mut session,
+            &opts,
+            json_output,
+        );
     }
     if action == "solve" {
         use flursys::unstructured_incompressible::TimeIntegration as Time;
@@ -476,24 +508,9 @@ pub fn run(args: &[String]) -> Result<(), String> {
     } else {
         opts.get("restart").map(PathBuf::from)
     };
-    let mut recovery = flursys::workbench::checkpoint::RecoveryPolicy::default();
-    recovery.every_iterations = number(&opts, "recovery-every")?.unwrap_or(100);
-    recovery.every_seconds = number(&opts, "recovery-seconds")?.unwrap_or(60) as u64;
-    recovery.max_history_frames = number(&opts, "history-max-frames")?.unwrap_or(500);
-    let mib = number(&opts, "history-max-mib")?.unwrap_or(1024) as u64;
-    recovery.max_history_bytes = mib
-        .checked_mul(1024 * 1024)
-        .ok_or("History size is too large")?;
-    let outcome = flursys::headless::run(
-        folder,
-        &mut project,
-        &mut session,
-        &flursys::headless::RunOptions {
-            restart,
-            recovery,
-            checkpoint_every: number(&opts, "checkpoint-every")?.unwrap_or(100),
-        },
-        |event| {
+    let run_options = execution_options(&opts, restart)?;
+    let outcome =
+        flursys::headless::run(folder, &mut project, &mut session, &run_options, |event| {
             use flursys::app::{JobProgress as P, WorkbenchJobEvent as E};
             match event {
                 E::SolveProgress(P::Iteration {
@@ -513,8 +530,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
                 E::SolveProgress(P::Message(message)) => eprintln!("{message}"),
                 _ => {}
             }
-        },
-    )?;
+        })?;
     emit(
         json!({"summary":outcome.failure.clone().unwrap_or_else(||format!("Run saved: {:?}",session.status())),"run":outcome.run,"restart_checkpoint":outcome.restart_checkpoint,"failed":outcome.failure.is_some()}),
         json_output,
@@ -523,6 +539,117 @@ pub fn run(args: &[String]) -> Result<(), String> {
         return Err(e);
     }
     Ok(())
+}
+
+fn execution_options(
+    opts: &BTreeMap<String, String>,
+    restart: Option<PathBuf>,
+) -> Result<flursys::headless::RunOptions, String> {
+    let mut recovery = flursys::workbench::checkpoint::RecoveryPolicy::default();
+    recovery.every_iterations = number(opts, "recovery-every")?.unwrap_or(100);
+    recovery.every_seconds = number(opts, "recovery-seconds")?.unwrap_or(60) as u64;
+    recovery.max_history_frames = number(opts, "history-max-frames")?.unwrap_or(500);
+    let mib = number(opts, "history-max-mib")?.unwrap_or(1024) as u64;
+    recovery.max_history_bytes = mib
+        .checked_mul(1024 * 1024)
+        .ok_or("History size is too large")?;
+    Ok(flursys::headless::RunOptions {
+        restart,
+        recovery,
+        checkpoint_every: number(opts, "checkpoint-every")?.unwrap_or(100),
+    })
+}
+fn compressible_workspace(
+    action: &str,
+    folder: &Path,
+    project: &mut WorkbenchProject,
+    session: &mut WorkbenchSession,
+    opts: &BTreeMap<String, String>,
+    json_output: bool,
+) -> Result<(), String> {
+    if action == "benchmark" {
+        return Err(
+            "Use project solve with explicit backend and thread settings to measure this model"
+                .into(),
+        );
+    }
+    let settings = project
+        .solver
+        .compressible
+        .as_mut()
+        .ok_or("Missing model configuration")?;
+    if let Some(n) = number(opts, "steps")?.or(number(opts, "iterations")?) {
+        if n == 0 || n > 10_000_000 {
+            return Err("Steps must be in 1..10000000".into());
+        }
+        settings.max_steps = n;
+    }
+    for (name, target) in [
+        ("dt", &mut settings.max_time_step),
+        ("end-time", &mut settings.end_time),
+    ] {
+        if let Some(text) = opts.get(name) {
+            *target = text
+                .parse::<f64>()
+                .map_err(|_| format!("Invalid --{name}"))?;
+        }
+    }
+    if opts.contains_key("max-diffusion") {
+        return Err("The explicit acoustic/diffusive stability bound is computed from the flow state; use --dt as its upper bound".into());
+    }
+    session
+        .set_compressible_settings(Some(settings.clone()))
+        .map_err(|e| e.to_string())?;
+    if let Some(threads) = number(opts, "threads")? {
+        session.set_cpu_threads(threads);
+        project.solver.threads = threads;
+    }
+    session.readiness()?;
+    if action == "check" {
+        emit(
+            json!({"summary":"Flow case is ready","ready":true,"model":"compressible"}),
+            json_output,
+        );
+        return Ok(());
+    }
+    if opts.contains_key("resume-latest") && opts.contains_key("restart") {
+        return Err("Use either --resume-latest or --restart".into());
+    }
+    let restart = if opts.contains_key("resume-latest") {
+        Some(flursys::workbench::flow_frame::discover(
+            folder,
+            &session.mesh().ok_or("No mesh")?.mesh,
+            settings.gas,
+        )?)
+    } else {
+        opts.get("restart").map(PathBuf::from)
+    };
+    let outcome = flursys::headless::run(
+        folder,
+        project,
+        session,
+        &execution_options(opts, restart)?,
+        |event| {
+            use flursys::app::{JobProgress as P, WorkbenchJobEvent as E};
+            match event {
+                E::SolveProgress(P::Iteration {
+                    current,
+                    max,
+                    residual,
+                }) if current % 10 == 0 || current == max => eprintln!(
+                    "step {current}/{max} · mass RHS {:.6e}",
+                    residual.unwrap_or(f64::NAN)
+                ),
+                E::Checkpoint(Err(e)) => eprintln!("Checkpoint failed: {e}"),
+                _ => {}
+            }
+        },
+    )?;
+    emit(
+        json!({"summary":format!("Run saved: {:?}",session.status()),"run":outcome.run,"restart_checkpoint":outcome.restart_checkpoint,"failed":outcome.failure.is_some()}),
+        json_output,
+    );
+    outcome.failure.map_or(Ok(()), Err)
 }
 
 /// Explicit user-invoked scaling measurement. No RunRecords, mesh assets,

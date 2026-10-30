@@ -1,7 +1,7 @@
 //! Mesh topology and geometry for planar and three-dimensional finite-volume solvers.
 
 mod snapshot;
-pub(crate) use snapshot::MeshSnapshot;
+pub use snapshot::MeshSnapshot;
 
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
@@ -608,15 +608,15 @@ fn cell_geometry(
                 .zip(vertices.iter().cycle().skip(1))
                 .take(vertices.len())
             {
-                let a = points[first].position;
-                let b = points[second].position;
+                let a = points[first].position - reference;
+                let b = points[second].position - reference;
                 let cross = a.x * b.y - b.x * a.y;
                 twice_area += cross;
                 center += (a + b) * cross;
             }
             let signed_area = twice_area * 0.5;
             (signed_area.abs() > GEOMETRY_EPSILON).then_some(CellGeometry {
-                center: center / (3.0 * twice_area),
+                center: reference + center / (3.0 * twice_area),
                 volume: signed_area.abs(),
             })
         }
@@ -733,6 +733,33 @@ fn cell_aspect_ratio(points: &[Point], cell: &Cell, faces: &[Face]) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn translated_thin_cells_preserve_area_centres_and_shared_face_orientation() {
+        let h = 1e-5;
+        let build = |offset: f64| {
+            UnstructuredMesh::from_cells(
+                MeshDimension::TwoD,
+                vec![
+                    Point::new(offset, offset, 0.),
+                    Point::new(offset + h, offset, 0.),
+                    Point::new(offset + h, offset + h, 0.),
+                    Point::new(offset, offset + h, 0.),
+                ],
+                vec![
+                    CellDefinition::polygon(vec![0, 1, 2]),
+                    CellDefinition::polygon(vec![0, 2, 3]),
+                ],
+            )
+            .unwrap()
+        };
+        let origin = build(0.);
+        let translated = build(1000.);
+        for (a, b) in origin.cells().iter().zip(translated.cells()) {
+            assert!((a.volume - b.volume).abs() < a.volume * 1e-7);
+            assert!((b.center - a.center - Vec3::new(1000., 1000., 0.)).norm() < 1e-12);
+        }
+    }
 
     #[test]
     fn triangular_cell_has_outward_faces_and_conservative_area_vectors() {

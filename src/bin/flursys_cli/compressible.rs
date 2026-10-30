@@ -17,29 +17,43 @@ pub fn run(args: &[String]) -> Result<(), String> {
         return Err("Expected CASE.json and OUTPUT_DIRECTORY".into());
     }
     let source = Path::new(&args[0]);
-    let (mesh, settings, mesh_path) = if source.is_dir() {
-        let (project, session) = flursys::headless::load(source)?;
-        let settings = project
-            .solver
-            .compressible
-            .ok_or("Workspace has no compressible solver configuration")?;
-        let mesh = session
-            .mesh()
-            .ok_or("Workspace has no saved mesh; generate and save it first")?
-            .mesh
-            .clone();
-        (mesh, settings, source.to_path_buf())
+    if source.is_dir() {
+        let (mut project, mut session) = flursys::headless::load(source)?;
+        if project.solver.compressible.is_none() {
+            return Err("Workspace has no compressible solver configuration".into());
+        }
+        let outcome = flursys::headless::run(
+            source,
+            &mut project,
+            &mut session,
+            &flursys::headless::RunOptions::default(),
+            |_| {},
+        )?;
+        let directory = Path::new(&args[1]);
+        std::fs::create_dir_all(directory).map_err(|e| e.to_string())?;
+        if session.flow_solution().is_some() {
+            session.export_vtk(&directory.join("solution.vtu"))?;
+        }
+        if let Some(run) = &outcome.run {
+            let report = flursys::headless::report(source, run)?;
+            std::fs::write(
+                directory.join("report.json"),
+                serde_json::to_vec_pretty(&report).map_err(|e| e.to_string())?,
+            )
+            .map_err(|e| e.to_string())?;
+            println!("Run {}: {:?}", run.id, run.status);
+        }
+        return outcome.failure.map_or(Ok(()), Err);
+    }
+    let data = std::fs::read(source).map_err(|e| e.to_string())?;
+    let input: Input = serde_json::from_slice(&data).map_err(|e| e.to_string())?;
+    let mesh_path = if input.mesh.is_absolute() {
+        input.mesh.clone()
     } else {
-        let data = std::fs::read(source).map_err(|e| e.to_string())?;
-        let input: Input = serde_json::from_slice(&data).map_err(|e| e.to_string())?;
-        let mesh_path = if input.mesh.is_absolute() {
-            input.mesh.clone()
-        } else {
-            source.parent().unwrap_or(Path::new(".")).join(&input.mesh)
-        };
-        let mesh = flursys::load_gmsh(&mesh_path).map_err(|e| format!("{e:?}"))?;
-        (mesh, input.settings, mesh_path)
+        source.parent().unwrap_or(Path::new(".")).join(&input.mesh)
     };
+    let mesh = flursys::load_gmsh(&mesh_path).map_err(|e| format!("{e:?}"))?;
+    let settings = input.settings;
     eprintln!(
         "Compressible {:?}, {} cells, {:?}; experimental, not benchmark validated",
         settings.flux,
@@ -47,7 +61,18 @@ pub fn run(args: &[String]) -> Result<(), String> {
         settings.viscosity
     );
     let start = std::time::Instant::now();
-    let solution = compressible::solve(&mesh, &settings)?;
+    let solution = match flursys::headless::execute(
+        flursys::flow::FlowCase::Compressible {
+            mesh: mesh.clone(),
+            settings: settings.clone(),
+        },
+        Path::new(&args[1]),
+        &flursys::headless::ExecutionControl::default(),
+        |_| {},
+    )? {
+        flursys::flow::FlowSolution::Compressible(solution) => solution,
+        _ => return Err("Unexpected solver model".into()),
+    };
     let elapsed = start.elapsed().as_secs_f64();
     if solution.report.cyclic_face_pairs > 0 {
         eprintln!("Cyclic interfaces: {} matched face pairs; single conservative flux per pair; excluded from external boundary outflow.",solution.report.cyclic_face_pairs);

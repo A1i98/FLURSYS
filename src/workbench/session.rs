@@ -22,6 +22,8 @@ pub enum SolveStatus {
     Idle,
     Solving,
     Converged,
+    Completed,
+    Stopped,
     MaxIterations,
     Failed(String),
 }
@@ -112,7 +114,7 @@ pub struct WorkbenchSession {
     case_context: Option<super::case_format::CaseContext>,
     compressible: Option<crate::compressible::Settings>,
     solver: IncompressibleSolverOptions,
-    solution: Option<IncompressibleSolution>,
+    solution: Option<crate::flow::FlowSolution>,
     performance: Option<crate::compute::PerformanceReport>,
     status: SolveStatus,
 }
@@ -180,7 +182,16 @@ impl WorkbenchSession {
         session.solver.equations = project.solver.equations.clone();
         session.solver.pressure_coupling = project.solver.pressure_coupling;
         session.solver.volume_models = project.solver.volume_models;
-        session.solver.cyclic_pairs = project.solver.cyclic_pairs.clone();
+        session.solver.cyclic_pairs = if project.solver.cyclic_pairs.is_empty() {
+            project
+                .solver
+                .compressible
+                .as_ref()
+                .map(|settings| settings.cyclic_pairs.clone())
+                .unwrap_or_default()
+        } else {
+            project.solver.cyclic_pairs.clone()
+        };
         session.solver.boundary_profiles = project.solver.boundary_profiles.clone();
         session.solver.scripting = project.solver.scripting.clone();
         session.solver.thermal = project.solver.thermal.clone();
@@ -208,6 +219,7 @@ impl WorkbenchSession {
             .map_err(|message| WorkbenchError::InvalidGrouping { message })?;
         session.solver.compute = project.solver.compute.clone();
         session.set_convection(project.solver.convection);
+        session.solver.momentum_diffusion_correction = project.solver.momentum_diffusion_correction;
         session.set_coupling_tolerance(project.solver.coupling_relative_tolerance)?;
         session.set_material(
             project.material.density,
@@ -248,6 +260,33 @@ impl WorkbenchSession {
                 }
                 _ => None,
             });
+        if project.mesh_asset.is_none() {
+            if let Some(context) = &project.case_context {
+                if context
+                    .reference_mesh_intent
+                    .as_ref()
+                    .is_some_and(|expected| {
+                        super::mesh_storage::intent(project).ok().as_ref() == Some(expected)
+                    })
+                {
+                    if let Some(asset) = context
+                        .metadata
+                        .assets
+                        .iter()
+                        .find(|asset| asset.role == "reference-mesh")
+                    {
+                        let text = asset.content.as_ref().ok_or_else(|| {
+                            WorkbenchError::InvalidGrouping {
+                                message: "Reference mesh content is missing".into(),
+                            }
+                        })?;
+                        let mesh = crate::headless::parse_import_mesh(project, text)
+                            .map_err(|message| WorkbenchError::InvalidGrouping { message })?;
+                        session.install_mesh(mesh);
+                    }
+                }
+            }
+        }
         Ok(session)
     }
 
@@ -291,6 +330,7 @@ impl WorkbenchSession {
         project.solver.threads = self.solver.threads;
         project.solver.compute = self.solver.compute.clone();
         project.solver.convection = self.solver.convection;
+        project.solver.momentum_diffusion_correction = self.solver.momentum_diffusion_correction;
         project.boundaries = self
             .boundaries
             .iter()
@@ -825,6 +865,7 @@ impl WorkbenchSession {
                 if !equal(control.first_layer_height, first.first_layer_height)
                     || !equal(control.growth_ratio, first.growth_ratio)
                     || control.layer_count != first.layer_count
+                    || control.triangles != first.triangles
                 {
                     return Err(WorkbenchError::InvalidGrouping {message:
                         "Enabled 2D inflation controls must share first height, growth and target layers; combine compatible walls in one scope or disable conflicting controls".into()});
@@ -840,9 +881,9 @@ impl WorkbenchSession {
                 .layer_dimensions()
                 .map_err(|message| WorkbenchError::InvalidGrouping { message })?;
             source.push_str(&format!(
-                "Field[{field_id}] = BoundaryLayer;\nField[{field_id}].CurvesList = {{{}}};\nField[{field_id}].Size = {};\nField[{field_id}].Ratio = {};\nField[{field_id}].Thickness = {thickness};\nField[{field_id}].SizeFar = {};\nField[{field_id}].Quads = 1;\nField[{field_id}].IntersectMetrics = 1;\nBoundaryLayer Field = {field_id};\n",
+                "Field[{field_id}] = BoundaryLayer;\nField[{field_id}].CurvesList = {{{}}};\nField[{field_id}].Size = {};\nField[{field_id}].Ratio = {};\nField[{field_id}].Thickness = {thickness};\nField[{field_id}].SizeFar = {};\nField[{field_id}].Quads = {};\nField[{field_id}].IntersectMetrics = 1;\nBoundaryLayer Field = {field_id};\n",
                 join_tags(&tags.into_iter().collect::<Vec<_>>()), first.first_layer_height,
-                first.growth_ratio, self.global_size));
+                first.growth_ratio, self.global_size, u8::from(!first.triangles)));
             field_id += 1;
         }
 
@@ -939,11 +980,13 @@ impl WorkbenchSession {
         for target in stable_targets {
             match (self.mesh_dimension, target) {
                 (MeshDimension::TwoD, GeometrySelectionTarget::Edge(edge)) => {
-                    tags.push(export.map.edge_tag(edge).ok_or_else(|| {
-                        WorkbenchError::InvalidGrouping {
+                    let edge_tags = export.map.edge_tags(edge);
+                    if edge_tags.is_empty() {
+                        return Err(WorkbenchError::InvalidGrouping {
                             message: format!("mesh recipe edge {} is not exported", edge.get()),
-                        }
-                    })?)
+                        });
+                    }
+                    tags.extend(edge_tags);
                 }
                 (MeshDimension::ThreeD, GeometrySelectionTarget::Face(face)) => {
                     let face_tags = export.map.face_tags(face);
@@ -1720,6 +1763,12 @@ impl WorkbenchSession {
 
     /// Run/Solve enable rule. The backend remains the final validation authority.
     pub fn readiness(&self) -> Result<(), String> {
+        if self.compressible.is_some() {
+            return self
+                .prepare_flow_case()
+                .map(|_| ())
+                .map_err(|e| e.to_string());
+        }
         let Some(generated) = &self.mesh else {
             return Err("generate a mesh first (Mesh stage)".to_string());
         };
@@ -1946,7 +1995,7 @@ impl WorkbenchSession {
                 } else {
                     SolveStatus::MaxIterations
                 };
-                self.solution = Some(solution);
+                self.solution = Some(crate::flow::FlowSolution::Incompressible(solution));
             }
             Err(error) => {
                 self.solution = None;
@@ -1967,7 +2016,76 @@ impl WorkbenchSession {
     }
 
     pub fn solution(&self) -> Option<&IncompressibleSolution> {
+        match &self.solution {
+            Some(crate::flow::FlowSolution::Incompressible(s)) => Some(s),
+            _ => None,
+        }
+    }
+    pub fn flow_solution(&self) -> Option<&crate::flow::FlowSolution> {
         self.solution.as_ref()
+    }
+    pub fn complete_compressible(&mut self, result: Result<crate::compressible::Solution, String>) {
+        match result {
+            Ok(solution) => {
+                self.status = if solution.report.stopped {
+                    SolveStatus::Stopped
+                } else if solution.report.reached_end_time {
+                    SolveStatus::Completed
+                } else {
+                    SolveStatus::MaxIterations
+                };
+                self.solution = Some(crate::flow::FlowSolution::Compressible(solution));
+            }
+            Err(e) => {
+                self.status = SolveStatus::Failed(e);
+            }
+        }
+    }
+    pub fn set_compressible_settings(
+        &mut self,
+        settings: Option<crate::compressible::Settings>,
+    ) -> Result<(), WorkbenchError> {
+        if let Some(settings) = &settings {
+            settings
+                .gas
+                .validate()
+                .map_err(|message| WorkbenchError::InvalidGrouping { message })?;
+        }
+        self.compressible = settings;
+        self.solution = None;
+        self.status = SolveStatus::Idle;
+        Ok(())
+    }
+    pub fn prepare_flow_case(&self) -> Result<crate::flow::FlowCase, WorkbenchError> {
+        if let Some(settings) = &self.compressible {
+            let mesh = self
+                .mesh
+                .as_ref()
+                .ok_or_else(|| WorkbenchError::InvalidGrouping {
+                    message: "Generate a mesh first".into(),
+                })?
+                .mesh
+                .clone();
+            let mut settings = settings.clone();
+            settings.compute = self.solver.compute.clone();
+            settings.scripting = self.solver.scripting.clone();
+            settings.volume_models = self.solver.volume_models;
+            settings.cyclic_pairs = self.solver.cyclic_pairs.clone();
+            settings.acceleration = if self.solver.thermal.buoyancy {
+                self.solver.thermal.gravity
+            } else {
+                Vec3::ZERO
+            };
+            settings.heat_source = self.solver.thermal.source_w_m3;
+            settings.threads = self.solver.threads;
+            settings
+                .validate(&mesh)
+                .map_err(|message| WorkbenchError::InvalidGrouping { message })?;
+            Ok(crate::flow::FlowCase::Compressible { mesh, settings })
+        } else {
+            self.prepare_case()
+                .map(crate::flow::FlowCase::Incompressible)
+        }
     }
 
     /// Exports the current solution through the existing legacy VTK path.
@@ -1982,7 +2100,20 @@ impl WorkbenchSession {
             std::fs::create_dir_all(parent)
                 .map_err(|error| format!("cannot create {}: {error}", parent.display()))?;
         }
-        write_unstructured_legacy_vtk(path, "FLURSYS workbench run", &generated.mesh, solution)
+        match solution {
+            crate::flow::FlowSolution::Incompressible(solution) => write_unstructured_legacy_vtk(
+                path,
+                "FLURSYS workbench run",
+                &generated.mesh,
+                solution,
+            ),
+            crate::flow::FlowSolution::Compressible(solution) => crate::compressible::write_vtu(
+                path,
+                &generated.mesh,
+                solution,
+                self.compressible.as_ref().ok_or("No gas model")?.gas,
+            ),
+        }
     }
 }
 

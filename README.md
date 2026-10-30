@@ -7,7 +7,7 @@
 <p align="center">
   <strong>A CFD workbench built in Rust.</strong><br>
   Create geometry, generate a mesh, solve fluid flow and explore the results.<br>
-  Use the desktop interface or automate runs with the command line and Rust API.
+  Use the desktop interface, automate runs with the CLI and Rust API, or connect AI agents through MCP.
 </p>
 
 <p align="center">
@@ -33,6 +33,20 @@
 ---
 
 FLURSYS combines SolidCraft CAD, Gmsh meshing and finite-volume solvers in one workspace. It includes steady and transient flow, turbulence models, heat transfer, buoyancy, compressible flow, boundary scripts and result playback.
+
+## Screenshots
+
+| Geometry | Mesh |
+| --- | --- |
+| ![Geometry workspace](docs/assets/screenshots/geometry.png) | ![Mesh and boundaries](docs/assets/screenshots/mesh.png) |
+| **Mesh quality** | **Convergence** |
+| ![Mesh quality](docs/assets/screenshots/quality.png) | ![Live convergence monitors](docs/assets/screenshots/convergence.png) |
+| **Live flow display** | |
+| ![Live velocity contours and vectors](docs/assets/screenshots/flow-display.png) | |
+
+## Results
+
+Explore the [example results](examples/validation/).
 
 ## Build and run
 
@@ -61,7 +75,7 @@ Cases are editable JSON files in [examples/cases](examples/cases). The library i
 
 ## Documentation
 
-[Workbench](docs/WORKBENCH.md) · [Meshing](docs/MESHING.md) · [CLI](docs/CLI.md) · [Numerical methods](docs/NUMERICAL_METHODS.md) · [Development](docs/DEVELOPMENT.md)
+[Workbench](docs/WORKBENCH.md) · [Meshing](docs/MESHING.md) · [CLI](docs/CLI.md) · [MCP](docs/MCP.md) · [Numerical methods](docs/NUMERICAL_METHODS.md) · [Development](docs/DEVELOPMENT.md)
 
 ## License
 

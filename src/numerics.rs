@@ -7,12 +7,40 @@ pub enum ScalarBoundaryValue {
     OwnerValue,
     FixedValue(f64),
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum NonOrthogonalCorrection {
     None,
     Explicit,
     /// Conservative deferred correction bounded by the two-point flux magnitude.
     Limited,
+    OverRelaxed,
+    OverRelaxedLimited,
+}
+
+pub(crate) fn diffusion_geometry(
+    area: Vec3,
+    d: Vec3,
+    scheme: NonOrthogonalCorrection,
+    face: usize,
+) -> Result<(f64, Vec3), NumericsError> {
+    let projection = area.dot(d);
+    let d2 = d.norm_squared();
+    if !projection.is_finite() || projection <= 0.0 || !d2.is_finite() || d2 <= f64::EPSILON {
+        return Err(NumericsError::InvalidNonOrthogonalGeometry { face });
+    }
+    let factor = if matches!(
+        scheme,
+        NonOrthogonalCorrection::OverRelaxed | NonOrthogonalCorrection::OverRelaxedLimited
+    ) {
+        area.norm_squared() / projection
+    } else {
+        projection / d2
+    };
+    if !factor.is_finite() {
+        return Err(NumericsError::InvalidNonOrthogonalGeometry { face });
+    }
+    Ok((factor, area - d * factor))
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GradientScheme {
@@ -30,7 +58,8 @@ pub struct ResolvedScalarBoundaryConditions {
     conditions: Vec<Option<ScalarBoundaryCondition>>,
     cyclic: Option<std::sync::Arc<crate::periodic::CyclicMap>>,
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum DiffusivityInterpolation {
     Linear,
     Harmonic,
@@ -83,11 +112,12 @@ pub enum NumericsError {
 /// Construct this once per immutable mesh and resolved scalar boundary-condition set,
 /// then reuse it for cell fields with those same fixed boundary values. Internal
 /// cell-centre equations and `FixedValue` face-centre equations are cached with
-/// inverse-distance-squared weights; `ZeroGradient` faces deliberately contribute
-/// no equation.
+/// inverse-distance-squared weights. Homogeneous normal derivatives close
+/// stencils whose cell-centre directions remain rank-deficient.
 #[derive(Clone, Debug)]
 pub struct LeastSquaresGradientStencil {
     mesh_id: MeshId,
+    boundary: ResolvedScalarBoundaryConditions,
     equations: Vec<Vec<LeastSquaresEquation>>,
     inverse_normal_matrices: Vec<[f64; 9]>,
 }
@@ -210,7 +240,24 @@ impl LeastSquaresGradientStencil {
                             source: LeastSquaresSource::Neighbour(neighbour),
                         });
                     }
-                    inverse_normal_matrix(mesh, normal, cell_index)?
+                    match inverse_normal_matrix(mesh, normal, cell_index) {
+                        Ok(inverse) => inverse,
+                        Err(NumericsError::SingularLeastSquaresStencil { .. }) => {
+                            for normal_direction in zero_gradient_normals {
+                                let length = normal_direction.norm();
+                                if !length.is_finite() || length <= f64::EPSILON {
+                                    continue;
+                                }
+                                add_normal_outer_product(&mut normal, normal_direction / length);
+                                cell_equations.push(LeastSquaresEquation {
+                                    rhs_coefficient: Vec3::ZERO,
+                                    source: LeastSquaresSource::ZeroNormalDerivative,
+                                });
+                            }
+                            inverse_normal_matrix(mesh, normal, cell_index)?
+                        }
+                        Err(error) => return Err(error),
+                    }
                 }
                 Err(NumericsError::SingularLeastSquaresStencil { .. })
                     if mesh.dimension() == crate::MeshDimension::ThreeD =>
@@ -236,9 +283,14 @@ impl LeastSquaresGradientStencil {
         }
         Ok(Self {
             mesh_id: mesh.id(),
+            boundary: boundary.clone(),
             equations,
             inverse_normal_matrices,
         })
+    }
+
+    pub(crate) fn matches_boundary(&self, boundary: &ResolvedScalarBoundaryConditions) -> bool {
+        self.boundary == *boundary
     }
 
     /// Rejects use of this cache with a different mesh identity.
@@ -525,7 +577,17 @@ pub fn interpolate_diffusivity_into(
         let owner = cell_diffusivity(mesh, diffusivity, face.owner)?;
         output[index] = if let Some(neighbour) = face.neighbour {
             let adjacent = cell_diffusivity(mesh, diffusivity, neighbour)?;
-            let lambda = weight(mesh, index)?;
+            let a = (face.center - mesh.cells()[face.owner].center)
+                .dot(face.normal)
+                .abs();
+            let b = (mesh.cells()[neighbour].center - face.center)
+                .dot(face.normal)
+                .abs();
+            let lambda = if a + b > 0.0 {
+                a / (a + b)
+            } else {
+                weight(mesh, index)?.clamp(0.0, 1.0)
+            };
             match scheme {
                 DiffusivityInterpolation::Linear => (1.0 - lambda) * owner + lambda * adjacent,
                 DiffusivityInterpolation::Harmonic if owner == 0.0 || adjacent == 0.0 => 0.0,
@@ -1007,32 +1069,51 @@ fn accumulate_diffusion(
             if d2 <= f64::EPSILON {
                 return Err(NumericsError::DegenerateOwnerNeighbourDistance { face: index });
             }
-            let mut contribution = gamma[index] * face.area_vector.dot(d) / d2
-                * (values[neighbour] - values[face.owner]);
+            let (factor, correction) = diffusion_geometry(
+                face.area_vector,
+                d,
+                options.non_orthogonal_correction,
+                index,
+            )?;
+            let mut contribution = gamma[index] * factor * (values[neighbour] - values[face.owner]);
             if let Some(gradients) = gradients {
-                let lambda = weight(mesh, index)?;
+                let a = (face.center - mesh.cells()[face.owner].center)
+                    .dot(face.normal)
+                    .abs();
+                let b = (mesh.cells()[neighbour].center - face.center)
+                    .dot(face.normal)
+                    .abs();
+                let lambda = if a + b > 0.0 {
+                    a / (a + b)
+                } else {
+                    weight(mesh, index)?.clamp(0., 1.)
+                };
                 let gradient =
                     gradients[face.owner] * (1.0 - lambda) + gradients[neighbour] * lambda;
-                let extra = gamma[index]
-                    * gradient
-                        .dot(projection_non_orthogonal_decomposition(mesh, index)?.non_orthogonal);
+                let extra = gamma[index] * gradient.dot(correction);
                 if correction_only {
-                    contribution =
-                        if options.non_orthogonal_correction == NonOrthogonalCorrection::Limited {
-                            extra.clamp(-contribution.abs(), contribution.abs())
-                        } else {
-                            extra
-                        };
+                    contribution = if matches!(
+                        options.non_orthogonal_correction,
+                        NonOrthogonalCorrection::Limited
+                            | NonOrthogonalCorrection::OverRelaxedLimited
+                    ) {
+                        extra.clamp(-contribution.abs(), contribution.abs())
+                    } else {
+                        extra
+                    };
                 } else {
                     let corrected = contribution + extra;
-                    contribution =
-                        if options.non_orthogonal_correction == NonOrthogonalCorrection::Limited {
-                            contribution
-                                + (corrected - contribution)
-                                    .clamp(-contribution.abs(), contribution.abs())
-                        } else {
-                            corrected
-                        };
+                    contribution = if matches!(
+                        options.non_orthogonal_correction,
+                        NonOrthogonalCorrection::Limited
+                            | NonOrthogonalCorrection::OverRelaxedLimited
+                    ) {
+                        contribution
+                            + (corrected - contribution)
+                                .clamp(-contribution.abs(), contribution.abs())
+                    } else {
+                        corrected
+                    };
                 }
             } else if correction_only {
                 contribution = 0.0;
@@ -1051,21 +1132,27 @@ fn accumulate_diffusion(
             if d2 <= f64::EPSILON {
                 return Err(NumericsError::DegenerateOwnerNeighbourDistance { face: index });
             }
-            let orth =
-                gamma[index] * face.area_vector.dot(d) / d2 * (values[n] - values[face.owner]);
+            let (factor, correction) = diffusion_geometry(
+                face.area_vector,
+                d,
+                options.non_orthogonal_correction,
+                index,
+            )?;
+            let orth = gamma[index] * factor * (values[n] - values[face.owner]);
             let mut contribution = if correction_only { 0.0 } else { orth };
             if let Some(g) = gradients {
                 let a = (face.center - mesh.cells()[face.owner].center).norm();
                 let b = (face.center - center).norm();
                 let gradient = (g[face.owner] * b + g[n] * a) / (a + b);
-                let extra = gamma[index]
-                    * gradient.dot(face.area_vector - d * (face.area_vector.dot(d) / d2));
-                contribution +=
-                    if options.non_orthogonal_correction == NonOrthogonalCorrection::Limited {
-                        extra.clamp(-orth.abs(), orth.abs())
-                    } else {
-                        extra
-                    };
+                let extra = gamma[index] * gradient.dot(correction);
+                contribution += if matches!(
+                    options.non_orthogonal_correction,
+                    NonOrthogonalCorrection::Limited | NonOrthogonalCorrection::OverRelaxedLimited
+                ) {
+                    extra.clamp(-orth.abs(), orth.abs())
+                } else {
+                    extra
+                };
             }
             output[face.owner] += contribution;
             output[n] -= contribution;
@@ -1078,9 +1165,30 @@ fn accumulate_diffusion(
             if d2 <= f64::EPSILON {
                 return Err(NumericsError::DegenerateOwnerFaceDistance { face: index });
             }
+            let (factor, correction) = diffusion_geometry(
+                face.area_vector,
+                d,
+                options.non_orthogonal_correction,
+                index,
+            )?;
+            let orth = gamma[index] * factor * (value - values[face.owner]);
             if !correction_only {
-                output[face.owner] +=
-                    gamma[index] * face.area_vector.dot(d) / d2 * (value - values[face.owner]);
+                output[face.owner] += orth;
+            }
+            if matches!(
+                options.non_orthogonal_correction,
+                NonOrthogonalCorrection::OverRelaxed | NonOrthogonalCorrection::OverRelaxedLimited
+            ) {
+                if let Some(g) = gradients {
+                    let extra = gamma[index] * g[face.owner].dot(correction);
+                    output[face.owner] += if options.non_orthogonal_correction
+                        == NonOrthogonalCorrection::OverRelaxedLimited
+                    {
+                        extra.clamp(-orth.abs(), orth.abs())
+                    } else {
+                        extra
+                    };
+                }
             }
         }
     }
@@ -1958,7 +2066,7 @@ mod tests {
     }
 
     #[test]
-    fn least_squares_omits_zero_gradient_boundaries_and_rejects_singular_stencils() {
+    fn least_squares_closes_collinear_cell_centres_with_zero_normal_derivatives() {
         let mesh = line_mesh_with_patches();
         let zero_gradient = ResolvedScalarBoundaryConditions::strict(
             &mesh,
@@ -1969,10 +2077,10 @@ mod tests {
             ],
         )
         .unwrap();
-        assert!(matches!(
-            LeastSquaresGradientStencil::new(&mesh, &zero_gradient),
-            Err(NumericsError::SingularLeastSquaresStencil { .. })
-        ));
+        let stencil = LeastSquaresGradientStencil::new(&mesh, &zero_gradient).unwrap();
+        let values = CellField::filled(&mesh, 7.0);
+        let gradient = least_squares_gradient(&mesh, &stencil, &values).unwrap();
+        assert!(gradient.values().iter().all(|value| value.norm() < TOL));
 
         let mesh = individually_patched(three_cells());
         let fixed = analytic_fixed_boundaries(&mesh, |point| 2.0 * point.x - 3.0 * point.y + 1.0);
@@ -2006,6 +2114,41 @@ mod tests {
             )
             .unwrap(),
         )
+    }
+
+    #[test]
+    fn skewed_face_diffusivity_remains_positive_and_bounded() {
+        let mesh = UnstructuredMesh::from_cells(
+            MeshDimension::TwoD,
+            vec![
+                Point::new(0., 0., 0.),
+                Point::new(1000., 0.0476, 0.),
+                Point::new(0., 0.5112, 0.),
+                Point::new(1000., 0.5323, 0.),
+                Point::new(0., 0.9412, 0.),
+                Point::new(1000., 0.9412, 0.),
+            ],
+            vec![
+                CellDefinition::polygon(vec![0, 1, 3, 2]),
+                CellDefinition::polygon(vec![2, 3, 5, 4]),
+            ],
+        )
+        .unwrap();
+        let face = mesh
+            .faces()
+            .iter()
+            .position(|f| f.neighbour.is_some())
+            .unwrap();
+        assert!(weight(&mesh, face).unwrap() > 1.0);
+        let values = CellField::from_values(&mesh, vec![10., 1.]).unwrap();
+        for scheme in [
+            DiffusivityInterpolation::Linear,
+            DiffusivityInterpolation::Harmonic,
+        ] {
+            let result =
+                interpolate_diffusivity(&mesh, Diffusivity::CellField(&values), scheme).unwrap();
+            assert!((1.0..=10.0).contains(&result[face]));
+        }
     }
 
     fn skewed_multi_cell_mesh_2d() -> UnstructuredMesh {
@@ -2222,6 +2365,48 @@ mod tests {
     }
 
     #[test]
+    fn wall_triangle_fan_reconstructs_tangential_gradient_with_collinear_centres() {
+        let mut points: Vec<_> = (0..=9)
+            .map(|i| Point::new(0., 0.005 + i as f64 * 2.54e-5, 0.))
+            .collect();
+        points.push(Point::new(2.1997e-5, 0.0053975, 0.));
+        let mesh = UnstructuredMesh::from_cells(
+            MeshDimension::TwoD,
+            points,
+            (0..9)
+                .map(|i| CellDefinition::polygon(vec![i, 10, i + 1]))
+                .collect(),
+        )
+        .unwrap();
+        let conditions = mesh
+            .faces()
+            .iter()
+            .map(|face| {
+                face.neighbour.is_none().then(|| {
+                    if face
+                        .vertices
+                        .iter()
+                        .all(|&v| mesh.points()[v].position.x == 0.)
+                    {
+                        ScalarBoundaryCondition::ZeroGradient
+                    } else {
+                        ScalarBoundaryCondition::FixedValue(3. * face.center.y + 2.)
+                    }
+                })
+            })
+            .collect();
+        let boundary =
+            ResolvedScalarBoundaryConditions::from_face_conditions(&mesh, conditions).unwrap();
+        let stencil = LeastSquaresGradientStencil::new(&mesh, &boundary).unwrap();
+        let values = CellField::from_cells(&mesh, |_, cell| 3. * cell.center.y + 2.);
+        let gradients = least_squares_gradient(&mesh, &stencil, &values).unwrap();
+        assert!(gradients
+            .values()
+            .iter()
+            .all(|g| (*g - Vec3::new(0., 3., 0.)).norm() < 1e-7));
+    }
+
+    #[test]
     fn least_squares_uses_three_dimensional_zero_gradient_normals_as_constraints() {
         let mesh = skewed_tetrahedron_mesh_3d();
         let assignments: Vec<_> = mesh
@@ -2275,6 +2460,39 @@ mod tests {
             corrected_internal_diffusion_flux(&mesh, face_index, gamma, &values, gradient).unwrap(),
             expected_total,
         );
+    }
+
+    #[test]
+    fn over_relaxed_diffusion_recovers_linear_face_flux_and_conserves_it() {
+        let mesh = skewed_two_cell_mesh();
+        let exact = |p: Vec3| 2.0 * p.x - 3.0 * p.y + 5.0;
+        let boundary = analytic_fixed_boundaries(&mesh, exact);
+        let values = CellField::from_cells(&mesh, |_, c| exact(c.center));
+        let face_index = mesh
+            .faces()
+            .iter()
+            .position(|f| f.neighbour.is_some())
+            .unwrap();
+        let gamma = FaceField::from_faces(&mesh, |i, _| if i == face_index { 1.7 } else { 0.0 });
+        let options = DiffusionOptions {
+            non_orthogonal_correction: NonOrthogonalCorrection::OverRelaxed,
+            gradient_scheme: GradientScheme::LeastSquares,
+            ..Default::default()
+        };
+        let stencil = LeastSquaresGradientStencil::new(&mesh, &boundary).unwrap();
+        let actual = integrated_diffusion_with_stencil(
+            &mesh,
+            &values,
+            Diffusivity::Faces(&gamma),
+            &boundary,
+            options,
+            Some(&stencil),
+        )
+        .unwrap();
+        let f = &mesh.faces()[face_index];
+        let expected = 1.7 * Vec3::new(2., -3., 0.).dot(f.area_vector);
+        assert!((actual[f.owner] - expected).abs() < 1e-10);
+        assert!((actual[f.neighbour.unwrap()] + expected).abs() < 1e-10);
     }
 
     #[test]

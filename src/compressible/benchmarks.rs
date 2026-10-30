@@ -20,7 +20,8 @@ pub fn is_standard_sod(mesh: &UnstructuredMesh, settings: &Settings) -> bool {
         .iter()
         .map(|p| p.position.x)
         .fold(f64::NEG_INFINITY, f64::max);
-    settings.initial == right
+    settings.coordinates == crate::multiphysics::metrics::Coordinates::Cartesian
+        && settings.initial == right
         && (settings.gas.gamma - 1.4).abs() < 1e-12
         && settings.viscosity == Viscosity::Inviscid
         && settings.regions.len() == 1

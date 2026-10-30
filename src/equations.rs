@@ -7,10 +7,12 @@ pub enum EquationPreconditioner {
     #[default]
     None,
     Jacobi,
+    SymmetricGaussSeidel,
+    SmoothSolver,
     Ic0,
     /// Standalone aggregation multigrid with flexible GCR acceleration.
     Gamg,
-    /// IC0 when factorization succeeds; Jacobi if a positive IC pivot is unavailable.
+    /// Bounded sparse LDLT for difficult pressure systems, then IC0 or Jacobi.
     Auto,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -27,6 +29,12 @@ impl Default for EquationControl {
     }
 }
 impl EquationControl {
+    pub fn transport(options: LinearSolverOptions) -> Self {
+        Self {
+            preconditioner: EquationPreconditioner::Jacobi,
+            ..Self::from_options(options)
+        }
+    }
     pub fn from_options(o: LinearSolverOptions) -> Self {
         Self {
             absolute_tolerance: o.absolute_tolerance,
@@ -55,13 +63,21 @@ impl EquationControl {
         if !pressure
             && !matches!(
                 self.preconditioner,
-                EquationPreconditioner::None | EquationPreconditioner::Jacobi
+                EquationPreconditioner::None
+                    | EquationPreconditioner::Jacobi
+                    | EquationPreconditioner::SymmetricGaussSeidel
+                    | EquationPreconditioner::SmoothSolver
             )
         {
-            return Err(
-                "IC0, GAMG and Auto are restricted to pressure; transport supports None or Jacobi"
-                    .into(),
-            );
+            return Err("IC0, GAMG and Auto are restricted to pressure".into());
+        }
+        if pressure
+            && matches!(
+                self.preconditioner,
+                EquationPreconditioner::SymmetricGaussSeidel | EquationPreconditioner::SmoothSolver
+            )
+        {
+            return Err("Symmetric Gauss-Seidel is available for transport equations".into());
         }
         Ok(())
     }
@@ -87,6 +103,9 @@ impl EquationControl {
                 reason: "invalid equation solver controls",
             })?;
         crate::linear::validate_solve_inputs(a, b, x, self.options())?;
+        if self.preconditioner == EquationPreconditioner::SmoothSolver {
+            return smooth_transport(a, b, x, self.options());
+        }
         if !(pressure
             && matches!(
                 self.preconditioner,
@@ -141,6 +160,20 @@ impl EquationControl {
                     None => bicgstab_with_preconditioner(a, b, x, &preconditioner, o),
                 }
             }
+            (false, EquationPreconditioner::SymmetricGaussSeidel) => {
+                let preconditioner = SymmetricGaussSeidelPreconditioner::new(a)?;
+                match workspace {
+                    Some(workspace) => bicgstab_with_preconditioner_and_workspace(
+                        a,
+                        b,
+                        x,
+                        &preconditioner,
+                        o,
+                        workspace,
+                    ),
+                    None => bicgstab_with_preconditioner(a, b, x, &preconditioner, o),
+                }
+            }
             _ => Err(LinearAlgebraError::Breakdown {
                 reason: "IC0 requires symmetric pressure matrix",
             }),
@@ -162,15 +195,15 @@ impl Default for EquationSolvers {
     fn default() -> Self {
         Self {
             pressure: EquationControl {
-                preconditioner: EquationPreconditioner::Ic0,
+                preconditioner: EquationPreconditioner::Auto,
                 ..Default::default()
             },
-            velocity: Default::default(),
-            temperature: Default::default(),
-            k: Default::default(),
-            omega: Default::default(),
-            epsilon: Default::default(),
-            nu_tilda: Default::default(),
+            velocity: EquationControl::transport(LinearSolverOptions::default()),
+            temperature: EquationControl::transport(LinearSolverOptions::default()),
+            k: EquationControl::transport(LinearSolverOptions::default()),
+            omega: EquationControl::transport(LinearSolverOptions::default()),
+            epsilon: EquationControl::transport(LinearSolverOptions::default()),
+            nu_tilda: EquationControl::transport(LinearSolverOptions::default()),
         }
     }
 }
@@ -195,6 +228,8 @@ impl EquationSolvers {
 // refreshing coefficients; far-field switching may change the pressure graph.
 #[derive(Default)]
 pub(crate) struct PressureWorkspace {
+    direct: Option<crate::linear::direct::PressureDirect>,
+    direct_unavailable: bool,
     multigrid: Option<AlgebraicMultigrid>,
     ic0: Option<(
         CsrMatrix,
@@ -223,6 +258,30 @@ impl PressureWorkspace {
             return result;
         }
         let _cpu = crate::compute::CpuLinearScope::enter();
+        if control.preconditioner == EquationPreconditioner::Auto
+            && a.nrows() >= 4096
+            && !self.direct_unavailable
+        {
+            if self
+                .direct
+                .as_ref()
+                .is_none_or(|solver| !solver.matches_pattern(a))
+            {
+                match crate::linear::direct::PressureDirect::new(a) {
+                    Ok(Some(solver)) => self.direct = Some(solver),
+                    Ok(None) => self.direct_unavailable = true,
+                    Err(error) => {
+                        eprintln!("Pressure Auto: sparse LDLT unavailable ({error}); using IC0.");
+                        self.direct_unavailable = true;
+                    }
+                }
+            }
+            if !self.direct_unavailable {
+                if let Some(solver) = &mut self.direct {
+                    return solver.solve(a, b, x, options);
+                }
+            }
+        }
         match control.preconditioner {
             EquationPreconditioner::Gamg => {
                 let same = self.topology.as_ref().is_some_and(|(rows, cols)| {
@@ -239,9 +298,9 @@ impl PressureWorkspace {
                         a,
                         MultigridOptions {
                             residual_norm: MultigridResidualNorm::AbsoluteL2,
-                            smoother: MultigridSmoother::SymmetricGaussSeidel,
+                            smoother: MultigridSmoother::DicGaussSeidel,
                             coarse_solver: MultigridCoarseSolver::Cholesky,
-                            coarsest_cells: 32,
+                            coarsest_cells: 10,
                             ..Default::default()
                         },
                     )?;
@@ -300,6 +359,85 @@ impl PressureWorkspace {
                 &mut self.cg,
             ),
             EquationPreconditioner::None => cg_with_workspace(a, b, x, options, &mut self.cg),
+            EquationPreconditioner::SymmetricGaussSeidel | EquationPreconditioner::SmoothSolver => {
+                Err(LinearAlgebraError::Breakdown {
+                    reason: "invalid pressure preconditioner",
+                })
+            }
         }
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn symmetric_gauss_seidel_transport_solves_nonsymmetric_system() {
+        let mut builder = CsrBuilder::new(2, 2);
+        for (i, j, v) in [(0, 0, 4.), (0, 1, -1.), (1, 0, -2.), (1, 1, 5.)] {
+            builder.add(i, j, v).unwrap();
+        }
+        let a = builder.finalize().unwrap();
+        for preconditioner in [
+            EquationPreconditioner::SymmetricGaussSeidel,
+            EquationPreconditioner::SmoothSolver,
+        ] {
+            let control = EquationControl {
+                preconditioner,
+                ..Default::default()
+            };
+            let mut x = [0., 0.];
+            let report = control.solve(&a, &[2., 8.], &mut x, false).unwrap();
+            assert_eq!(report.status, LinearSolverStatus::Converged);
+            assert!((x[0] - 1.).abs() < 1e-8 && (x[1] - 2.).abs() < 1e-8);
+            assert!(control.validate(true).is_err());
+        }
+    }
+}
+
+fn smooth_transport(
+    a: &CsrMatrix,
+    b: &[f64],
+    x: &mut [f64],
+    options: LinearSolverOptions,
+) -> Result<LinearSolveReport, LinearAlgebraError> {
+    let smoother = SymmetricGaussSeidelPreconditioner::new(a)?;
+    let mut r = residual(a, x, b)?;
+    let initial = norm_l2(&r)?;
+    let target = options
+        .absolute_tolerance
+        .max(options.relative_tolerance * initial);
+    let mut delta = vec![0.; x.len()];
+    let mut final_residual = initial;
+    let mut iterations = 0;
+    while final_residual > target && iterations < options.max_iterations {
+        smoother.apply_into(&r, &mut delta)?;
+        for (value, correction) in x.iter_mut().zip(&delta) {
+            *value += correction;
+        }
+        r = residual(a, x, b)?;
+        final_residual = norm_l2(&r)?;
+        if !final_residual.is_finite() {
+            return Err(LinearAlgebraError::Breakdown {
+                reason: "nonfinite smoothSolver residual",
+            });
+        }
+        iterations += 1;
+    }
+    Ok(LinearSolveReport {
+        status: if final_residual <= target {
+            LinearSolverStatus::Converged
+        } else {
+            LinearSolverStatus::MaxIterations
+        },
+        iterations,
+        initial_residual: initial,
+        final_residual,
+        relative_residual: if initial > 0. {
+            final_residual / initial
+        } else {
+            0.
+        },
+    })
 }

@@ -15,8 +15,12 @@ pub struct WallFaceSample {
     pub pressure_force: Vec3,
     pub shear_force: Vec3,
 }
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct WallPatchReport {
+    #[serde(default)]
+    pub heat_flux_outward_mean: Option<f64>,
+    #[serde(default)]
+    pub heat_transfer_outward: Option<f64>,
     pub patch: String,
     pub force_unit: String,
     pub faces: usize,
@@ -58,6 +62,7 @@ pub fn reports_with_turbulence(
         case.solver.turbulence.wall_treatment,
         crate::turbulence::WallTreatment::EquilibriumKEpsilon
             | crate::turbulence::WallTreatment::EquilibriumKOmega
+            | crate::turbulence::WallTreatment::VelocityBlendedKOmega
     );
     if equilibrium && turbulence.is_none() {
         return Err("Wall-function reports require the matching turbulence fields".into());
@@ -84,6 +89,8 @@ pub fn reports_with_turbulence(
             continue;
         };
         let mut r = WallPatchReport {
+            heat_flux_outward_mean: None,
+            heat_transfer_outward: None,
             patch: name.clone(),
             force_unit: if mesh.dimension() == crate::MeshDimension::TwoD {
                 "N/m".into()
@@ -114,7 +121,17 @@ pub fn reports_with_turbulence(
             let y = (f.center - mesh.cells()[f.owner].center).dot(normal).abs();
             let relative = u[f.owner] - velocity;
             let tangent = relative - normal * relative.dot(normal);
-            let nut = if equilibrium {
+            let nut = if case.solver.turbulence.wall_treatment
+                == crate::turbulence::WallTreatment::VelocityBlendedKOmega
+            {
+                crate::turbulence::velocity_blended_wall_gradient(
+                    tangent.norm(),
+                    relative.norm() / y,
+                    y,
+                    nu,
+                )?
+                .1
+            } else if equilibrium {
                 crate::turbulence::smooth_wall(turbulence.unwrap().k[f.owner], y, nu)?.1
             } else {
                 0.0

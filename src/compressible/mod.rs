@@ -3,12 +3,17 @@ use crate::{UnstructuredMesh, Vec3};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 pub mod benchmarks;
-mod flux;
+mod boundaries;
+mod reports;
+pub use reports::wall_reports;
+pub(crate) mod flux;
 mod output;
 mod time;
 mod viscous;
 pub use output::write_vtu;
-pub use time::{solve, solve_controlled, Report, Solution};
+pub use time::{
+    initialize, solve, solve_controlled, solve_resuming, Report, Snapshot, Solution, StepAction,
+};
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct IdealGas {
@@ -76,7 +81,7 @@ impl Primitive {
             Ok(())
         }
     }
-    fn conservative(self, gas: IdealGas) -> Conservative {
+    pub(crate) fn conservative(self, gas: IdealGas) -> Conservative {
         Conservative([
             self.density,
             self.density * self.velocity.x,
@@ -128,6 +133,17 @@ pub enum FluxScheme {
 #[serde(tag = "type", rename_all = "kebab-case")]
 pub enum Boundary {
     SlipWall,
+    MovingWall {
+        velocity: Vec3,
+        temperature: Option<f64>,
+    },
+    CharacteristicFarField {
+        state: Primitive,
+    },
+    PressureOutletBackflow {
+        pressure: f64,
+        state: Primitive,
+    },
     NoSlipWall {
         #[serde(default)]
         temperature: Option<f64>,
@@ -157,6 +173,54 @@ impl Boundary {
                 velocity: owner.velocity - normal * (2.0 * owner.velocity.dot(normal)),
                 ..owner
             },
+            Self::MovingWall { velocity, .. } => {
+                if velocity.dot(normal).abs() > 1e-10 * velocity.norm().max(1.) {
+                    return Err("A moving wall must be tangential on a fixed mesh".into());
+                }
+                Primitive {
+                    velocity: owner.velocity - normal * (2. * owner.velocity.dot(normal)),
+                    ..owner
+                }
+            }
+            Self::CharacteristicFarField { state } => {
+                let un = owner.velocity.dot(normal);
+                let c = gas.sound_speed(owner);
+                if un >= c {
+                    owner
+                } else if un <= -c {
+                    state
+                } else {
+                    let plus = un + 2. * c / (gas.gamma - 1.);
+                    let minus =
+                        state.velocity.dot(normal) - 2. * gas.sound_speed(state) / (gas.gamma - 1.);
+                    let normal_velocity = 0.5 * (plus + minus);
+                    let sound = 0.25 * (gas.gamma - 1.) * (plus - minus);
+                    if !sound.is_finite() || sound <= 0. {
+                        return Err("Unphysical far-field characteristic state".into());
+                    }
+                    let reference = if normal_velocity < 0. { state } else { owner };
+                    let entropy = reference.pressure / reference.density.powf(gas.gamma);
+                    let density =
+                        (sound * sound / (gas.gamma * entropy)).powf(1. / (gas.gamma - 1.));
+                    Primitive {
+                        density,
+                        pressure: entropy * density.powf(gas.gamma),
+                        velocity: reference.velocity - normal * reference.velocity.dot(normal)
+                            + normal * normal_velocity,
+                    }
+                }
+            }
+            Self::PressureOutletBackflow { pressure, state } => {
+                if owner.velocity.dot(normal) < 0. {
+                    Primitive {
+                        density: pressure / (gas.gas_constant * gas.temperature(state)),
+                        pressure,
+                        ..state
+                    }
+                } else {
+                    Self::PressureOutlet { pressure }.ghost(owner, normal, gas)?
+                }
+            }
             Self::FarField { state } => state,
             Self::TotalInlet {
                 pressure,
@@ -281,6 +345,13 @@ pub struct InitialRegion {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct Settings {
+    pub coordinates: crate::multiphysics::metrics::Coordinates,
+    pub scripting: crate::scripting::Settings,
+    pub acceleration: Vec3,
+    pub heat_source: f64,
+    pub volume_models: crate::volume_models::VolumeModels,
+    pub compute: crate::compute::ComputeOptions,
+    pub threads: usize,
     pub gas: IdealGas,
     pub viscosity: Viscosity,
     pub flux: FluxScheme,
@@ -297,6 +368,13 @@ pub struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
+            coordinates: Default::default(),
+            scripting: Default::default(),
+            acceleration: Vec3::ZERO,
+            heat_source: 0.,
+            volume_models: Default::default(),
+            compute: Default::default(),
+            threads: 0,
             gas: IdealGas::default(),
             viscosity: Viscosity::Inviscid,
             flux: FluxScheme::default(),
@@ -321,6 +399,52 @@ impl Settings {
         &self,
         mesh: &UnstructuredMesh,
     ) -> Result<(Vec<Option<Boundary>>, crate::periodic::CyclicMap), String> {
+        if self.coordinates != crate::multiphysics::metrics::Coordinates::Cartesian {
+            self.coordinates.measures(mesh)?;
+            if !matches!(self.viscosity, Viscosity::Inviscid) {
+                return Err(
+                    "Axisymmetric compressible flow currently supports inviscid flow only".into(),
+                );
+            }
+            if self.acceleration.z != 0.0 || self.volume_models.rotating_frame.is_some() {
+                return Err(
+                    "Axisymmetric flow does not support azimuthal acceleration or rotation".into(),
+                );
+            }
+            if mesh
+                .faces()
+                .iter()
+                .any(|f| f.area_vector.z.abs() > 1e-10 * f.area)
+            {
+                return Err("Axisymmetric flow requires a meridian mesh in the XY plane".into());
+            }
+        }
+        self.compute.validate()?;
+        self.volume_models.validate()?;
+        if self.volume_models.mean_velocity.is_some() {
+            return Err("Mean-velocity pressure-gradient control is not available for this conservative model".into());
+        }
+        if ![
+            self.acceleration.x,
+            self.acceleration.y,
+            self.acceleration.z,
+            self.heat_source,
+        ]
+        .iter()
+        .all(|v| v.is_finite())
+        {
+            return Err("Body acceleration and heat source must be finite".into());
+        }
+        self.scripting.validate(true)?;
+        for (name, bindings) in &self.scripting.bindings {
+            let boundary = self
+                .boundaries
+                .get(name)
+                .ok_or_else(|| format!("Missing scripted boundary {name}"))?;
+            for binding in bindings {
+                boundary.check_script(binding.quantity)?;
+            }
+        }
         self.gas.validate()?;
         self.initial.validate()?;
         self.viscosity
@@ -359,6 +483,20 @@ impl Settings {
             }
         }
         let cyclic = crate::periodic::resolve(mesh, &self.cyclic_pairs)?;
+        if self.coordinates != crate::multiphysics::metrics::Coordinates::Cartesian {
+            let measures = self.coordinates.measures(mesh)?;
+            for (i, _) in mesh.faces().iter().enumerate() {
+                if let Some(link) = cyclic.link(i) {
+                    let a = measures.areas[i];
+                    let b = measures.areas[link.peer_face];
+                    if (a - b).abs() > 1e-9 * a.max(b).max(1e-30) {
+                        return Err(
+                            "Axisymmetric cyclic faces must have equal revolved areas".into()
+                        );
+                    }
+                }
+            }
+        }
         let mut bc = vec![None; mesh.face_count()];
         for patch in mesh.boundary_patches() {
             if patch
@@ -401,13 +539,41 @@ impl Settings {
                         }
                     }
                 }
-                Boundary::FarField { state } | Boundary::SupersonicInlet { state } => {
-                    state.validate()?
-                }
+                Boundary::FarField { state }
+                | Boundary::SupersonicInlet { state }
+                | Boundary::CharacteristicFarField { state } => state.validate()?,
                 Boundary::PressureOutlet { pressure }
                     if !pressure.is_finite() || pressure <= 0.0 =>
                 {
                     return Err("Outlet absolute pressure must be positive".into());
+                }
+                Boundary::PressureOutletBackflow { pressure, state } => {
+                    state.validate()?;
+                    if !pressure.is_finite() || pressure <= 0. {
+                        return Err("Outlet absolute pressure must be positive".into());
+                    }
+                }
+                Boundary::MovingWall {
+                    velocity,
+                    temperature,
+                } => {
+                    if matches!(self.viscosity, Viscosity::Inviscid) {
+                        return Err("Moving no-slip walls require viscosity".into());
+                    }
+                    if ![velocity.x, velocity.y, velocity.z]
+                        .iter()
+                        .all(|v| v.is_finite())
+                        || temperature.is_some_and(|t| !t.is_finite() || t <= 0.)
+                    {
+                        return Err("Invalid moving wall velocity or temperature".into());
+                    }
+                    for &face in &patch.face_indices {
+                        if velocity.dot(mesh.faces()[face].normal).abs()
+                            > 1e-10 * velocity.norm().max(1.)
+                        {
+                            return Err("Moving walls must be tangential to a fixed mesh".into());
+                        }
+                    }
                 }
                 Boundary::NoSlipWall { temperature } => {
                     if matches!(self.viscosity, Viscosity::Inviscid) {

@@ -20,7 +20,7 @@ fn rusanov(l: Primitive, r: Primitive, gas: IdealGas, n: Vec3) -> Conservative {
             .scale(0.5 * speed),
     )
 }
-pub(super) fn evaluate(
+pub(crate) fn evaluate(
     l: Primitive,
     r: Primitive,
     gas: IdealGas,
@@ -68,4 +68,11 @@ pub(super) fn evaluate(
     } else {
         (rusanov(l, r, gas, n), true)
     }
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct Input {
+    pub left: Primitive,
+    pub right: Primitive,
+    pub normal: Vec3,
 }

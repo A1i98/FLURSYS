@@ -210,6 +210,11 @@ impl WorkbenchSession {
         else {
             return Err(invalid("Mapped meshing requires an analytic planar face"));
         };
+        if t.method == MeshMethod::MappedQuad && outer_loop.len() != 4 && inner_loops.is_empty() {
+            if let Some(mapped) = self.mapped_orthogonal_partition(&export, face, outer_loop)? {
+                return Ok(mapped);
+            }
+        }
         if outer_loop.len() != 4
             || outer_loop.iter().any(|e| {
                 !matches!(
@@ -413,5 +418,269 @@ impl WorkbenchSession {
         }
         export.document = export.document.with_appended_source(source);
         Ok(export)
+    }
+}
+
+impl WorkbenchSession {
+    fn mapped_orthogonal_partition(
+        &self,
+        export: &GeometryGmshExport,
+        face: crate::FaceId,
+        boundary: &[OrientedEdge],
+    ) -> Result<Option<GeometryGmshExport>, WorkbenchError> {
+        use std::collections::{BTreeMap, BTreeSet};
+        use std::fmt::Write;
+        let mut polygon = Vec::new();
+        let mut original = Vec::new();
+        for edge in boundary {
+            let Some(EdgeGeometry::Line { start, end }) =
+                self.geometry.edge(edge.edge).map(|e| &e.geometry)
+            else {
+                return Ok(None);
+            };
+            let (a, b) = if edge.reversed {
+                (*end, *start)
+            } else {
+                (*start, *end)
+            };
+            let pa = self
+                .geometry
+                .vertex(a)
+                .ok_or_else(|| invalid("Missing block vertex"))?
+                .position;
+            let pb = self
+                .geometry
+                .vertex(b)
+                .ok_or_else(|| invalid("Missing block vertex"))?
+                .position;
+            if pa.z.abs() > 1e-12
+                || pb.z.abs() > 1e-12
+                || ((pa.x - pb.x).abs() > 1e-12 && (pa.y - pb.y).abs() > 1e-12)
+            {
+                return Ok(None);
+            }
+            polygon.push(pa);
+            original.push((edge.edge, a, pa, pb));
+        }
+        if self
+            .mesh_recipe
+            .boundary_layers
+            .iter()
+            .any(|control| control.enabled)
+        {
+            return Err(invalid("Mapped blocks grade wall spacing from Minimum size; disable separate inflation fields"));
+        }
+        let axis = |component: usize| {
+            let mut coordinates: Vec<f64> = polygon
+                .iter()
+                .map(|p| if component == 0 { p.x } else { p.y })
+                .collect();
+            coordinates.sort_by(f64::total_cmp);
+            coordinates.dedup_by(|a, b| (*a - *b).abs() < 1e-12);
+            let mut split = Vec::new();
+            for pair in coordinates.windows(2) {
+                split.push(pair[0]);
+                split.push(0.5 * (pair[0] + pair[1]));
+            }
+            split.push(*coordinates.last().unwrap());
+            split
+        };
+        let xs = axis(0);
+        let ys = axis(1);
+        if xs.len() > 129 || ys.len() > 129 {
+            return Err(invalid(
+                "Mapped orthogonal partition exceeds 64 coordinate intervals",
+            ));
+        }
+        let inside = |x: f64, y: f64| {
+            let mut result = false;
+            for i in 0..polygon.len() {
+                let a = polygon[i];
+                let b = polygon[(i + 1) % polygon.len()];
+                if (a.y > y) != (b.y > y) && x < (b.x - a.x) * (y - a.y) / (b.y - a.y) + a.x {
+                    result = !result;
+                }
+            }
+            result
+        };
+        let nx = xs.len();
+        let point = |x: usize, y: usize| 1000 + y * nx + x;
+        let mut used = BTreeSet::new();
+        let mut blocks = Vec::new();
+        for y in 0..ys.len() - 1 {
+            for x in 0..xs.len() - 1 {
+                if inside(0.5 * (xs[x] + xs[x + 1]), 0.5 * (ys[y] + ys[y + 1])) {
+                    let corners = [
+                        point(x, y),
+                        point(x + 1, y),
+                        point(x + 1, y + 1),
+                        point(x, y + 1),
+                    ];
+                    used.extend(corners);
+                    blocks.push(corners);
+                }
+            }
+        }
+        if blocks.is_empty() {
+            return Err(invalid("Mapped partition has no fluid blocks"));
+        }
+        let mut lines: BTreeMap<(usize, usize), (usize, usize)> = BTreeMap::new();
+        for corners in &blocks {
+            for i in 0..4 {
+                let (a, b) = (corners[i], corners[(i + 1) % 4]);
+                let key = (a.min(b), a.max(b));
+                let next = 2000 + lines.len();
+                let value = lines.entry(key).or_insert((next, 0));
+                value.1 += 1;
+            }
+        }
+        let position = |tag: usize| {
+            let index = tag - 1000;
+            Vec3::new(xs[index % nx], ys[index / nx], 0.)
+        };
+        let mut source = String::from("SetFactory(\"Built-in\");\nMesh.MshFileVersion = 4.1;\n");
+        let mut map = export.map.clone();
+        for &tag in &used {
+            let p = position(tag);
+            writeln!(
+                source,
+                "Point({tag}) = {{{:.17}, {:.17}, 0, {:.17}}};",
+                p.x, p.y, self.global_size
+            )
+            .unwrap();
+        }
+        let counts = [
+            self.mesh_recipe.tuning.divisions[0].div_ceil(2).max(1),
+            self.mesh_recipe.tuning.divisions[1].div_ceil(2).max(1),
+        ];
+        let start_sizes: [f64; 2] = std::array::from_fn(|axis| {
+            let coordinates = if axis == 0 { &xs } else { &ys };
+            let shortest = coordinates
+                .windows(2)
+                .map(|p| p[1] - p[0])
+                .fold(f64::INFINITY, f64::min);
+            self.mesh_recipe.tuning.mapped_start_sizes[axis]
+                .unwrap_or(self.min_size)
+                .min(shortest / counts[axis] as f64)
+        });
+        for (&(a, b), &(tag, _)) in &lines {
+            let pa = position(a);
+            let pb = position(b);
+            writeln!(source, "Line({tag}) = {{{a},{b}}};").unwrap();
+            let horizontal = (pa.y - pb.y).abs() < 1e-12;
+            let index = if horizontal {
+                (a - 1000) % nx
+            } else {
+                (a - 1000) / nx
+            };
+            let count = counts[usize::from(!horizontal)] as usize;
+            let length = (pb - pa).norm();
+            let target = start_sizes[usize::from(!horizontal)];
+            let first = target.min(length / count as f64);
+            let mut lo = 1.;
+            let mut hi = 2.;
+            let span = |ratio: f64| {
+                if (ratio - 1.).abs() < 1e-12 {
+                    first * count as f64
+                } else {
+                    first * (ratio.powi(count as i32) - 1.) / (ratio - 1.)
+                }
+            };
+            while span(hi) < length && hi < 16. {
+                hi *= 2.;
+            }
+            for _ in 0..64 {
+                let mid = 0.5 * (lo + hi);
+                if span(mid) < length {
+                    lo = mid;
+                } else {
+                    hi = mid;
+                }
+            }
+            let ratio = 0.5 * (lo + hi);
+            let signed = if index % 2 == 0 {
+                tag as i64
+            } else {
+                -(tag as i64)
+            };
+            writeln!(
+                source,
+                "Transfinite Curve {{{signed}}} = {} Using Progression {ratio:.17};",
+                count + 1
+            )
+            .unwrap();
+        }
+        let mut surfaces = Vec::new();
+        for (index, corners) in blocks.iter().enumerate() {
+            let tag = 3000 + index;
+            let mut loop_tags = Vec::new();
+            for i in 0..4 {
+                let (a, b) = (corners[i], corners[(i + 1) % 4]);
+                let curve = lines[&(a.min(b), a.max(b))].0;
+                loop_tags.push(if a < b { curve as i64 } else { -(curve as i64) });
+            }
+            writeln!(source,"Curve Loop({tag}) = {{{}}};\nPlane Surface({tag}) = {{{tag}}};\nTransfinite Surface {{{tag}}} = {{{},{},{},{}}};\nRecombine Surface {{{tag}}};",loop_tags.iter().map(ToString::to_string).collect::<Vec<_>>().join(","),corners[0],corners[1],corners[2],corners[3]).unwrap();
+            surfaces.push(tag);
+        }
+        for &(edge, vertex, pa, pb) in &original {
+            let mut tags = Vec::new();
+            for (&(a, b), &(tag, uses)) in &lines {
+                if uses != 1 {
+                    continue;
+                }
+                let on = |p: Vec3| {
+                    (pb - pa).cross(p - pa).norm() < 1e-10 * (pb - pa).norm()
+                        && (p - pa).dot(p - pb) <= 1e-20
+                };
+                if on(position(a)) && on(position(b)) {
+                    tags.push(tag);
+                }
+            }
+            if tags.is_empty() {
+                return Err(invalid("Mapped boundary edge was lost during partition"));
+            }
+            map.set_edge_tags(edge, tags);
+            if let Some(&tag) = used
+                .iter()
+                .find(|&&tag| (position(tag) - pa).norm() < 1e-12)
+            {
+                map.set_vertex_tag(vertex, tag);
+            }
+        }
+        let mut physical = 1;
+        for (name, edges) in self.boundary_groups_2d()? {
+            let tags: BTreeSet<_> = edges
+                .into_iter()
+                .flat_map(|edge| map.edge_tags(edge))
+                .collect();
+            if tags.is_empty() {
+                return Err(invalid("Mapped boundary group has no curves"));
+            }
+            writeln!(
+                source,
+                "Physical Curve(\"{name}\", {physical}) = {{{}}};",
+                tags.iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(",")
+            )
+            .unwrap();
+            physical += 1;
+        }
+        writeln!(
+            source,
+            "Physical Surface(\"fluid\", {physical}) = {{{}}};",
+            surfaces
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(",")
+        )
+        .unwrap();
+        map.set_face_tags(face, surfaces);
+        Ok(Some(GeometryGmshExport {
+            document: crate::GmshGeoDocument::from_source(MeshDimension::TwoD, source),
+            map,
+        }))
     }
 }

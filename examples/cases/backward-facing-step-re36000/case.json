@@ -1,0 +1,1084 @@
+{
+  "$schema": "../../case.schema.json",
+  "format_version": 2,
+  "id": "backward-facing-step-re36000",
+  "name": "Backward-facing step · Re 36000 · SST",
+  "category": "Validation benchmarks",
+  "description": "Driver–Seegmiller backward-facing step with graded quadrilateral blocks and experimental Cp, Cf and velocity profiles.",
+  "capabilities": [
+    "Workbench",
+    "Editable",
+    "Unvalidated",
+    "TwoD",
+    "RANS"
+  ],
+  "expectations": {
+    "closed_domain": false,
+    "positive_streamwise_flow": false,
+    "curved_boundary": false,
+    "non_ideal_mesh_quality": false,
+    "notes": "The default example loads a shared structured reference mesh; choose a mesh preset or generate a new mesh to study refinement. Velocity-blended wall viscosity, bounded convection and conservative non-orthogonal correction are enabled. Results require numerical validation."
+  },
+  "project_template": {
+    "format_version": 2,
+    "project_id": "template-backward-facing-step-re36000",
+    "name": "Backward-facing step · Re 36000 · SST",
+    "geometry": {
+      "cad_bodies": {},
+      "hidden_profiles": [],
+      "revision": 18,
+      "next_vertex_id": 10,
+      "next_edge_id": 10,
+      "next_face_id": 2,
+      "next_body_id": 1,
+      "next_sketch_id": 1,
+      "next_feature_id": 1,
+      "vertices": {
+        "1": {
+          "id": 1,
+          "position": {
+            "x": -1.651,
+            "y": 0.0127,
+            "z": 0
+          }
+        },
+        "2": {
+          "id": 2,
+          "position": {
+            "x": -1.397,
+            "y": 0.0127,
+            "z": 0
+          }
+        },
+        "3": {
+          "id": 3,
+          "position": {
+            "x": 0.0,
+            "y": 0.0127,
+            "z": 0
+          }
+        },
+        "4": {
+          "id": 4,
+          "position": {
+            "x": 0.0,
+            "y": 0.0,
+            "z": 0
+          }
+        },
+        "5": {
+          "id": 5,
+          "position": {
+            "x": 0.635,
+            "y": 0.0,
+            "z": 0
+          }
+        },
+        "6": {
+          "id": 6,
+          "position": {
+            "x": 0.635,
+            "y": 0.1143,
+            "z": 0
+          }
+        },
+        "7": {
+          "id": 7,
+          "position": {
+            "x": -1.397,
+            "y": 0.1143,
+            "z": 0
+          }
+        },
+        "8": {
+          "id": 8,
+          "position": {
+            "x": -1.651,
+            "y": 0.1143,
+            "z": 0
+          }
+        },
+        "9": {
+          "id": 9,
+          "position": {
+            "x": -0.0127,
+            "y": 0.0127,
+            "z": 0
+          }
+        }
+      },
+      "edges": {
+        "1": {
+          "id": 1,
+          "geometry": {
+            "Line": {
+              "start": 1,
+              "end": 2
+            }
+          }
+        },
+        "2": {
+          "id": 2,
+          "geometry": {
+            "Line": {
+              "start": 2,
+              "end": 9
+            }
+          }
+        },
+        "3": {
+          "id": 3,
+          "geometry": {
+            "Line": {
+              "start": 3,
+              "end": 4
+            }
+          }
+        },
+        "4": {
+          "id": 4,
+          "geometry": {
+            "Line": {
+              "start": 4,
+              "end": 5
+            }
+          }
+        },
+        "5": {
+          "id": 5,
+          "geometry": {
+            "Line": {
+              "start": 5,
+              "end": 6
+            }
+          }
+        },
+        "6": {
+          "id": 6,
+          "geometry": {
+            "Line": {
+              "start": 6,
+              "end": 7
+            }
+          }
+        },
+        "7": {
+          "id": 7,
+          "geometry": {
+            "Line": {
+              "start": 7,
+              "end": 8
+            }
+          }
+        },
+        "8": {
+          "id": 8,
+          "geometry": {
+            "Line": {
+              "start": 8,
+              "end": 1
+            }
+          }
+        },
+        "9": {
+          "id": 9,
+          "geometry": {
+            "Line": {
+              "start": 9,
+              "end": 3
+            }
+          }
+        }
+      },
+      "faces": {
+        "1": {
+          "id": 1,
+          "representation": {
+            "Planar": {
+              "outer_loop": [
+                {
+                  "edge": 1,
+                  "reversed": false
+                },
+                {
+                  "edge": 2,
+                  "reversed": false
+                },
+                {
+                  "edge": 9,
+                  "reversed": false
+                },
+                {
+                  "edge": 3,
+                  "reversed": false
+                },
+                {
+                  "edge": 4,
+                  "reversed": false
+                },
+                {
+                  "edge": 5,
+                  "reversed": false
+                },
+                {
+                  "edge": 6,
+                  "reversed": false
+                },
+                {
+                  "edge": 7,
+                  "reversed": false
+                },
+                {
+                  "edge": 8,
+                  "reversed": false
+                }
+              ],
+              "inner_loops": []
+            }
+          }
+        }
+      },
+      "bodies": {},
+      "sketches": {},
+      "extrude_features": {},
+      "pocket_features": {}
+    },
+    "cad_document": null,
+    "plane_monitors": [],
+    "fluid_face": 1,
+    "named_selections": [
+      {
+        "name": "inlet",
+        "targets": [
+          {
+            "Edge": 8
+          }
+        ]
+      },
+      {
+        "name": "outlet",
+        "targets": [
+          {
+            "Edge": 5
+          }
+        ]
+      },
+      {
+        "name": "startup-slip",
+        "targets": [
+          {
+            "Edge": 1
+          },
+          {
+            "Edge": 7
+          }
+        ]
+      },
+      {
+        "name": "upstream-wall",
+        "targets": [
+          {
+            "Edge": 2
+          },
+          {
+            "Edge": 9
+          }
+        ]
+      },
+      {
+        "name": "step",
+        "targets": [
+          {
+            "Edge": 3
+          }
+        ]
+      },
+      {
+        "name": "lower-wall",
+        "targets": [
+          {
+            "Edge": 4
+          }
+        ]
+      },
+      {
+        "name": "upper-wall",
+        "targets": [
+          {
+            "Edge": 6
+          }
+        ]
+      }
+    ],
+    "mesh": {
+      "threads": 1,
+      "dimension": "two-d",
+      "global_size": 0.007619999999999999,
+      "min_size": 6.35e-06,
+      "max_size": 0.007619999999999999,
+      "element_order": 1
+    },
+    "mesh_recipe": {
+      "tuning": {
+        "method": "mapped-quad",
+        "max_size_growth": null,
+        "divisions": [
+          192,
+          128,
+          1
+        ],
+        "progression": [
+          1.0,
+          1.0
+        ],
+        "algorithm_2d": 5,
+        "algorithm_3d": 1,
+        "curvature_points": 32,
+        "smoothing_steps": 0,
+        "optimize": true,
+        "optimize_netgen": false,
+        "optimize_threshold": 0.3,
+        "extend_boundary_sizes": true,
+        "mapped_start_sizes": [
+          0.0002199704525612474,
+          null
+        ]
+      },
+      "edge_divisions": [],
+      "regions": [],
+      "local_sizes": [],
+      "refinements": [],
+      "boundary_layers": []
+    },
+    "boundaries": [
+      {
+        "selection": "inlet",
+        "condition": {
+          "velocity-inlet": {
+            "velocity": {
+              "x": 44.2,
+              "y": 0,
+              "z": 0
+            }
+          }
+        }
+      },
+      {
+        "selection": "outlet",
+        "condition": {
+          "pressure-outlet": {
+            "pressure": 0.0
+          }
+        }
+      },
+      {
+        "selection": "startup-slip",
+        "condition": "slip"
+      },
+      {
+        "selection": "upstream-wall",
+        "condition": "no-slip-wall"
+      },
+      {
+        "selection": "step",
+        "condition": "no-slip-wall"
+      },
+      {
+        "selection": "lower-wall",
+        "condition": "no-slip-wall"
+      },
+      {
+        "selection": "upper-wall",
+        "condition": "no-slip-wall"
+      }
+    ],
+    "material": {
+      "catalog": null,
+      "density": 1.225,
+      "kinematic_viscosity": 1.56e-05
+    },
+    "solver": {
+      "compute": {
+        "backend": "parallel",
+        "adapter": "",
+        "cpu_fallback": true,
+        "parallel_min_rows": 4096,
+        "gpu_min_rows": 16384,
+        "gpu_memory_fraction": 0.8,
+        "gpu_preconditioner": "auto",
+        "gpu_restart": 24,
+        "gpu_inner_iterations": 8,
+        "gpu_smoothing_sweeps": 2,
+        "gpu_timeout_ms": 10000,
+        "gpu_host_basis_mb": 256
+      },
+      "pressure_coupling": {
+        "algorithm": "simple",
+        "pressure_correctors": 1,
+        "non_orthogonal_correctors": 0,
+        "non_orthogonal_limiter": 1.0,
+        "allow_outlet_backflow": true
+      },
+      "volume_models": {
+        "resistance": null,
+        "rotating_frame": null
+      },
+      "cyclic_pairs": [],
+      "initial_profile": {
+        "type": "uniform",
+        "velocity": {
+          "x": 1e-08,
+          "y": 0.0,
+          "z": 0.0
+        },
+        "pressure": 0.0
+      },
+      "compressible": null,
+      "equations": {
+        "velocity": {
+          "preconditioner": "smooth-solver",
+          "absolute_tolerance": 1e-10,
+          "relative_tolerance": 1e-07,
+          "max_iterations": 1000
+        },
+        "pressure": {
+          "preconditioner": "auto",
+          "absolute_tolerance": 1e-10,
+          "relative_tolerance": 1e-07,
+          "max_iterations": 1000
+        },
+        "temperature": {
+          "preconditioner": "jacobi",
+          "absolute_tolerance": 1e-10,
+          "relative_tolerance": 1e-08,
+          "max_iterations": 1000
+        },
+        "k": {
+          "preconditioner": "smooth-solver",
+          "absolute_tolerance": 1e-10,
+          "relative_tolerance": 1e-07,
+          "max_iterations": 1000
+        },
+        "omega": {
+          "preconditioner": "smooth-solver",
+          "absolute_tolerance": 1e-10,
+          "relative_tolerance": 1e-07,
+          "max_iterations": 1000
+        },
+        "epsilon": {
+          "preconditioner": "jacobi",
+          "absolute_tolerance": 1e-10,
+          "relative_tolerance": 1e-08,
+          "max_iterations": 1000
+        },
+        "nu_tilda": {
+          "preconditioner": "jacobi",
+          "absolute_tolerance": 1e-10,
+          "relative_tolerance": 1e-08,
+          "max_iterations": 1000
+        }
+      },
+      "boundary_profiles": {},
+      "scripting": {
+        "contract_version": 1,
+        "scripts": {},
+        "bindings": {}
+      },
+      "thermal": {
+        "enabled": false,
+        "initial_temperature": 293.15,
+        "specific_heat": 1005.0,
+        "conductivity": 0.025,
+        "source_w_m3": 0.0,
+        "relaxation": 0.7,
+        "relative_tolerance": 1e-08,
+        "turbulent_prandtl": 0.85,
+        "wall_treatment": "molecular",
+        "buoyancy": false,
+        "reference_temperature": 293.15,
+        "expansion": 0.0,
+        "gravity": {
+          "x": 0.0,
+          "y": -9.81,
+          "z": 0.0
+        },
+        "max_boussinesq_fraction": 0.1,
+        "boundaries": {}
+      },
+      "time": {
+        "mode": "steady"
+      },
+      "physical_end_time": null,
+      "force_analysis": {
+        "patches": [
+          "lower-wall"
+        ],
+        "frequency_start_time": 0.5,
+        "speed": 44.2,
+        "measure": 0.0127,
+        "length": 0.0127,
+        "center": {
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0
+        },
+        "drag_direction": {
+          "x": 1.0,
+          "y": 0.0,
+          "z": 0.0
+        },
+        "lift_direction": {
+          "x": 0.0,
+          "y": 1.0,
+          "z": 0.0
+        },
+        "reattachment": true,
+        "wall_start": {
+          "x": 0,
+          "y": 0,
+          "z": 0
+        },
+        "wall_direction": {
+          "x": 1.0,
+          "y": 0.0,
+          "z": 0.0
+        },
+        "wall_tolerance": 1.27e-07
+      },
+      "turbulence": {
+        "model": "k-omega-sst",
+        "wall_treatment": "velocity-blended-k-omega",
+        "inlets": {
+          "inlet": {
+            "type": "direct",
+            "k": 0.00109,
+            "omega": 181728.0,
+            "epsilon": 1e-05
+          },
+          "outlet": {
+            "type": "direct",
+            "k": 0.00109,
+            "omega": 181728.0,
+            "epsilon": 1e-05
+          }
+        },
+        "k": 0.00109,
+        "omega": 181728.0,
+        "epsilon": 1e-05,
+        "nu_tilda": 1e-05,
+        "relaxation": 0.8,
+        "relative_tolerance": 1e-06,
+        "ck": 0.094,
+        "ce": 1.048,
+        "cw": 0.325,
+        "convection": "bounded-limited-linear-tvd",
+        "diffusivity_interpolation": "linear",
+        "diffusion_correction": "over-relaxed-limited",
+        "include_isotropic_stress": false,
+        "full_viscous_stress": true
+      },
+      "convection": "bounded-lust",
+      "threads": 0,
+      "max_outer_iterations": 2000,
+      "continuity_absolute_tolerance": 1e-08,
+      "coupling_relative_tolerance": 1e-06,
+      "velocity_relaxation": 0.4,
+      "pressure_relaxation": 0.2,
+      "momentum_diffusion_correction": "over-relaxed-limited"
+    },
+    "runs": []
+  },
+  "metadata": {
+    "revision": "4",
+    "sources": [
+      {
+        "id": "driver-seegmiller",
+        "title": "Features of Reattaching Turbulent Shear Layer in Divergent Channel Flow",
+        "authors": [
+          "D. M. Driver",
+          "H. L. Seegmiller"
+        ],
+        "year": 1985,
+        "doi": "10.2514/3.8890",
+        "url": "https://tmbwg.github.io/turbmodels/backstep_val.html",
+        "relationship": "reference",
+        "notes": "NASA experimental dataset, straight opposite wall. Corrected Re_H approximately 36000; original and shifted Cp retained."
+      },
+      {
+        "id": "nasa-sst",
+        "title": "2DBFS: SSTm Model Results",
+        "url": "https://tmbwg.github.io/turbmodels/backstep_val_sst.html",
+        "relationship": "inspired",
+        "notes": "Freestream turbulence and long-lead setup guidance; SSTm CFD results are not experimental targets."
+      }
+    ],
+    "dimensionless": [
+      {
+        "symbol": "Re_H",
+        "value": 36000,
+        "formula": "Uref H / nu",
+        "scales": [
+          {
+            "symbol": "H",
+            "value": 0.0127,
+            "unit": "m",
+            "definition": "Step height"
+          },
+          {
+            "symbol": "Uref",
+            "value": 44.2,
+            "unit": "m/s",
+            "definition": "Nominal centre-channel velocity near x/H=-4"
+          },
+          {
+            "symbol": "nu",
+            "value": 1.559277777777778e-05,
+            "unit": "m^2/s",
+            "definition": "Kinematic viscosity"
+          }
+        ],
+        "notes": "Check actual Uref after development."
+      },
+      {
+        "symbol": "expansion-ratio",
+        "value": 1.125,
+        "formula": "9H / 8H",
+        "scales": [],
+        "notes": "Straight top wall."
+      }
+    ],
+    "display": {
+      "field": "speed",
+      "mode": "filled-contours",
+      "palette": "viridis",
+      "plane": "surface",
+      "vectors": true,
+      "cell_edges": false,
+      "levels": 16,
+      "probes": [],
+      "plots": [
+        {
+          "name": "U at x/H=-4",
+          "kind": "line-profile",
+          "quantity": "velocity-x",
+          "start": {
+            "x": -0.0508,
+            "y": 0.012712699999999999,
+            "z": 0
+          },
+          "end": {
+            "x": -0.0508,
+            "y": 0.11428730000000001,
+            "z": 0
+          },
+          "notes": "Compare U/Uref against experimental y/H; upstream floor is y/H=1."
+        },
+        {
+          "name": "U at x/H=1",
+          "kind": "line-profile",
+          "quantity": "velocity-x",
+          "start": {
+            "x": 0.0127,
+            "y": 1.27e-05,
+            "z": 0
+          },
+          "end": {
+            "x": 0.0127,
+            "y": 0.11428730000000001,
+            "z": 0
+          },
+          "notes": "Compare U/Uref against experimental y/H; upstream floor is y/H=1."
+        },
+        {
+          "name": "U at x/H=4",
+          "kind": "line-profile",
+          "quantity": "velocity-x",
+          "start": {
+            "x": 0.0508,
+            "y": 1.27e-05,
+            "z": 0
+          },
+          "end": {
+            "x": 0.0508,
+            "y": 0.11428730000000001,
+            "z": 0
+          },
+          "notes": "Compare U/Uref against experimental y/H; upstream floor is y/H=1."
+        },
+        {
+          "name": "U at x/H=6",
+          "kind": "line-profile",
+          "quantity": "velocity-x",
+          "start": {
+            "x": 0.07619999999999999,
+            "y": 1.27e-05,
+            "z": 0
+          },
+          "end": {
+            "x": 0.07619999999999999,
+            "y": 0.11428730000000001,
+            "z": 0
+          },
+          "notes": "Compare U/Uref against experimental y/H; upstream floor is y/H=1."
+        },
+        {
+          "name": "U at x/H=10",
+          "kind": "line-profile",
+          "quantity": "velocity-x",
+          "start": {
+            "x": 0.127,
+            "y": 1.27e-05,
+            "z": 0
+          },
+          "end": {
+            "x": 0.127,
+            "y": 0.11428730000000001,
+            "z": 0
+          },
+          "notes": "Compare U/Uref against experimental y/H; upstream floor is y/H=1."
+        }
+      ]
+    },
+    "comparisons": [
+      {
+        "id": "reattachment",
+        "quantity": "reattachment-x-over-h",
+        "source_id": "driver-seegmiller",
+        "kind": "external-reference",
+        "target": 6.26,
+        "absolute_tolerance": 0.1,
+        "error_metric": "absolute",
+        "procedure": "Find the downstream negative-to-positive zero crossing of signed lower-wall Cf after the main recirculation region; x_r/H=(x_r-0)/H. Experimental reported uncertainty is +/-0.10 H; this is not a numerical convergence criterion."
+      },
+      {
+        "id": "bottom-cf",
+        "quantity": "skin-friction-coefficient",
+        "source_id": "driver-seegmiller",
+        "kind": "external-reference",
+        "asset": "reference/bottom-cf.csv",
+        "coordinate_column": "x_over_h",
+        "value_column": "cf",
+        "error_metric": "l2",
+        "procedure": "Cf=2*tau_x/(rho*Uref^2); retain sign and source error bars, use lower wall only."
+      },
+      {
+        "id": "bottom-cp",
+        "quantity": "pressure-coefficient",
+        "source_id": "driver-seegmiller",
+        "kind": "external-reference",
+        "asset": "reference/bottom-cp.csv",
+        "coordinate_column": "x_over_h",
+        "value_column": "cp_shifted",
+        "error_metric": "l2",
+        "procedure": "Cp=2*(p/rho-p_ref/rho)/Uref^2; align constant offset to zero near x/H=40. The file also retains original Cp."
+      },
+      {
+        "id": "top-cp",
+        "quantity": "pressure-coefficient",
+        "source_id": "driver-seegmiller",
+        "kind": "external-reference",
+        "asset": "reference/top-cp.csv",
+        "coordinate_column": "x_over_h",
+        "value_column": "cp_shifted",
+        "error_metric": "l2",
+        "procedure": "Use the same pressure offset as bottom-wall Cp, not an independent fit."
+      },
+      {
+        "id": "velocity-x-4",
+        "quantity": "velocity-x",
+        "source_id": "driver-seegmiller",
+        "kind": "external-reference",
+        "asset": "reference/profile-x-4.csv",
+        "coordinate_column": "y_over_h",
+        "value_column": "u_over_uref",
+        "error_metric": "l2",
+        "procedure": "Sample at x/H=-4; normalize U by measured upstream Uref and y by H. Reference includes V and turbulent moments, with factors recorded in column names."
+      },
+      {
+        "id": "velocity-x1",
+        "quantity": "velocity-x",
+        "source_id": "driver-seegmiller",
+        "kind": "external-reference",
+        "asset": "reference/profile-x1.csv",
+        "coordinate_column": "y_over_h",
+        "value_column": "u_over_uref",
+        "error_metric": "l2",
+        "procedure": "Sample at x/H=1; normalize U by measured upstream Uref and y by H. Reference includes V and turbulent moments, with factors recorded in column names."
+      },
+      {
+        "id": "velocity-x4",
+        "quantity": "velocity-x",
+        "source_id": "driver-seegmiller",
+        "kind": "external-reference",
+        "asset": "reference/profile-x4.csv",
+        "coordinate_column": "y_over_h",
+        "value_column": "u_over_uref",
+        "error_metric": "l2",
+        "procedure": "Sample at x/H=4; normalize U by measured upstream Uref and y by H. Reference includes V and turbulent moments, with factors recorded in column names."
+      },
+      {
+        "id": "velocity-x6",
+        "quantity": "velocity-x",
+        "source_id": "driver-seegmiller",
+        "kind": "external-reference",
+        "asset": "reference/profile-x6.csv",
+        "coordinate_column": "y_over_h",
+        "value_column": "u_over_uref",
+        "error_metric": "l2",
+        "procedure": "Sample at x/H=6; normalize U by measured upstream Uref and y by H. Reference includes V and turbulent moments, with factors recorded in column names."
+      },
+      {
+        "id": "velocity-x10",
+        "quantity": "velocity-x",
+        "source_id": "driver-seegmiller",
+        "kind": "external-reference",
+        "asset": "reference/profile-x10.csv",
+        "coordinate_column": "y_over_h",
+        "value_column": "u_over_uref",
+        "error_metric": "l2",
+        "procedure": "Sample at x/H=10; normalize U by measured upstream Uref and y by H. Reference includes V and turbulent moments, with factors recorded in column names."
+      }
+    ],
+    "verification": {
+      "status": "unvalidated",
+      "evidence": [],
+      "notes": "Use the measured centre-channel Uref near x/H=-4, not automatically the inlet velocity. H=0.0127 m; coordinates match the experiment: downstream floor y/H=0, upstream floor y/H=1. Check upstream Re_theta~5000, delta/H~1.5 and Cf~0.0029. Adjust inlet speed or development length if necessary. Resolve and inspect y+; compare three meshes and time steps; average after startup and report averaging interval. Native SST is not asserted equivalent to NASA SSTm. The 2D incompressible model omits sidewalls and small Mach=0.128 effects. The mapped quadrilateral mesh grades toward the walls and step. Check wall y+ independently. The run stops at the configured step budget or end time; continue as needed."
+    },
+    "presets": [
+      {
+        "id": "coarse",
+        "name": "Coarse wall-resolved mesh",
+        "description": "Spatial refinement with the same physical setup; inspect achieved y+ and inflow boundary layer.",
+        "mesh": {
+          "threads": 1,
+          "dimension": "two-d",
+          "global_size": 0.015239999999999998,
+          "min_size": 1.27e-05,
+          "max_size": 0.015239999999999998,
+          "element_order": 1
+        },
+        "mesh_recipe": {
+          "tuning": {
+            "method": "mapped-quad",
+            "max_size_growth": null,
+            "divisions": [
+              128,
+              96,
+              1
+            ],
+            "progression": [
+              1.0,
+              1.0
+            ],
+            "algorithm_2d": 5,
+            "algorithm_3d": 1,
+            "curvature_points": 32,
+            "smoothing_steps": 0,
+            "optimize": true,
+            "optimize_netgen": false,
+            "optimize_threshold": 0.3,
+            "extend_boundary_sizes": true,
+            "mapped_start_sizes": [
+              0.0004399409051224948,
+              null
+            ]
+          },
+          "edge_divisions": [],
+          "regions": [],
+          "local_sizes": [],
+          "refinements": [],
+          "boundary_layers": []
+        }
+      },
+      {
+        "id": "medium",
+        "name": "Medium wall-resolved mesh",
+        "description": "Spatial refinement with the same physical setup; inspect achieved y+ and inflow boundary layer.",
+        "mesh": {
+          "threads": 1,
+          "dimension": "two-d",
+          "global_size": 0.007619999999999999,
+          "min_size": 6.35e-06,
+          "max_size": 0.007619999999999999,
+          "element_order": 1
+        },
+        "mesh_recipe": {
+          "tuning": {
+            "method": "mapped-quad",
+            "max_size_growth": null,
+            "divisions": [
+              192,
+              128,
+              1
+            ],
+            "progression": [
+              1.0,
+              1.0
+            ],
+            "algorithm_2d": 5,
+            "algorithm_3d": 1,
+            "curvature_points": 32,
+            "smoothing_steps": 0,
+            "optimize": true,
+            "optimize_netgen": false,
+            "optimize_threshold": 0.3,
+            "extend_boundary_sizes": true,
+            "mapped_start_sizes": [
+              0.0002199704525612474,
+              null
+            ]
+          },
+          "edge_divisions": [],
+          "regions": [],
+          "local_sizes": [],
+          "refinements": [],
+          "boundary_layers": []
+        }
+      },
+      {
+        "id": "fine",
+        "name": "Fine wall-resolved mesh",
+        "description": "Spatial refinement with the same physical setup; inspect achieved y+ and inflow boundary layer.",
+        "mesh": {
+          "threads": 1,
+          "dimension": "two-d",
+          "global_size": 0.0038099999999999996,
+          "min_size": 3.175e-06,
+          "max_size": 0.0038099999999999996,
+          "element_order": 1
+        },
+        "mesh_recipe": {
+          "tuning": {
+            "method": "mapped-quad",
+            "max_size_growth": null,
+            "divisions": [
+              256,
+              160,
+              1
+            ],
+            "progression": [
+              1.0,
+              1.0
+            ],
+            "algorithm_2d": 5,
+            "algorithm_3d": 1,
+            "curvature_points": 32,
+            "smoothing_steps": 0,
+            "optimize": true,
+            "optimize_netgen": false,
+            "optimize_threshold": 0.3,
+            "extend_boundary_sizes": true,
+            "mapped_start_sizes": [
+              0.0001099852262806237,
+              null
+            ]
+          },
+          "edge_divisions": [],
+          "regions": [],
+          "local_sizes": [],
+          "refinements": [],
+          "boundary_layers": []
+        }
+      }
+    ],
+    "assets": [
+      {
+        "path": "reference/cp.expnew.dat",
+        "role": "reference-data",
+        "media_type": "text/plain",
+        "sha256": "2b3ec9f8d8025b958d6ddcf6767daaf3c93083d45ef350a8cf9c4b46f93a882a",
+        "content": "# Exp data from Driver and Seegmiller\n# x means x/H\n# cp_orig is the original Cp data, referenced to conditions near x/H=-4\n# cp has been shifted for convenience so that Cp=0 near x/H=40 (see Eca et al: AIAA-2009-3647, AIAA-2007-4089, AIAA-2005-4728)\nvariables=\"x\",\"cp\",\"cp_orig\"\nzone,t=\"bottom wall\"\n     -8.5     -0.1102      0.0039\n     -6.5     -0.1141      0.0000\n     -4.5     -0.1189     -0.0048\n     -2.5     -0.1372     -0.0231\n     -0.5     -0.1613     -0.0472\n      0.5     -0.1777     -0.0636\n      1.0     -0.1806     -0.0665\n      2.0     -0.1883     -0.0742\n      3.0     -0.1903     -0.0762\n      3.5     -0.1806     -0.0665\n      4.0     -0.1565     -0.0424\n      4.5     -0.1064      0.0077\n      5.0     -0.0659      0.0482\n      5.5     -0.0359      0.0782\n      6.0     -0.0012      0.1129\n      6.5      0.0162      0.1303\n      7.0      0.0248      0.1389\n      8.0      0.0374      0.1515\n      9.0      0.0394      0.1535\n     11.0      0.0336      0.1477\n     13.0      0.0268      0.1409\n     15.0      0.0201      0.1342\n     17.0      0.0162      0.1303\n     19.5      0.0144      0.1285\n     21.5      0.0105      0.1246\n     23.5      0.0086      0.1227\n     25.5      0.0086      0.1227\n     27.5      0.0077      0.1218\n     29.5      0.0077      0.1218\n     31.5      0.0058      0.1199\n     33.5      0.0019      0.1160\n     35.5      0.0048      0.1189\n     37.5      0.0000      0.1141\nzone,t=\"top wall\"\n     -5.0     -0.1054      0.0087\n      3.0     -0.0727      0.0414\n      5.0     -0.0630      0.0511\n      7.0     -0.0543      0.0598\n      9.0     -0.0331      0.0810\n     11.0     -0.0148      0.0993\n     13.0     -0.0023      0.1118\n     15.0     -0.0003      0.1138\n     17.0      0.0065      0.1206\n     19.0      0.0075      0.1216\n     21.0      0.0075      0.1216\n     23.0      0.0066      0.1207\n     25.0      0.0095      0.1236\n     27.0      0.0076      0.1217\n     29.0      0.0067      0.1208\n     31.0      0.0048      0.1189\n     33.0      0.0019      0.1160\n     35.0      0.0038      0.1179\n     37.0     -0.0010      0.1131\n"
+      },
+      {
+        "path": "reference/cf.exp.dat",
+        "role": "reference-data",
+        "media_type": "text/plain",
+        "sha256": "cd9b6434b7956bc58e859de6af654cd7f891e25303babf1dd8633d6c58f74276",
+        "content": "# Exp data from Driver and Seegmiller, bottom wall\n# x means x/H\nvariables=\"x\",\"cf\",\"error\"\n-3.956  2.88e-3  .202e-3\n-1.804  2.85e-3  .171e-3\n-.804   3.11e-3  .311e-3\n.484     .09e-3  .014e-3\n1.804   -.11e-3  .019e-3\n2.804   -.52e-3  .109e-3\n3.804  -1.02e-3  .163e-3\n4.804   -.82e-3  .123e-3\n5.882   -.22e-3  .062e-3\n7.090    .45e-3  .167e-3\n7.978   1.02e-3  .122e-3\n9.196   1.18e-3  .106e-3\n11.196  1.54e-3  .123e-3\n13.196  1.73e-3  .121e-3\n16.196  1.91e-3  .134e-3\n20.196  2.02e-3  .141e-3\n24.136  2.04e-3  .143e-3\n28.130  2.05e-3  .205e-3\n32.196  2.12e-3  .148e-3\n35.994  2.30e-3  .184e-3\n"
+      },
+      {
+        "path": "reference/profiles.exp.dat",
+        "role": "reference-data",
+        "media_type": "text/plain",
+        "sha256": "23e8b44db52bfc36c66af6b743a4080c34f0165eb213a3db29c0914e12cf598d",
+        "content": "# Exp data drom Driver and Seegmiller,\n# y is y/H, u is u/Uref, v is v/Uref, \n# uu is 1000*u'u'/Uref**2\n# vv is 1000*v'v'/Uref**2\n# uv is 1000*u'v'/Uref**2\n# triple moments are 10000*u'u'u'/Uref**3 (for example)\nvariables=\"ID\",\"y\",\"u\",\"v\",\"uu\",\"vv\",\"uv\",\"uuu\",\"uvv\",\"vuu\",\"vvv\"\nzone,t=\"exp, x/H=-4\"\n           13  1.10  0.657  0.000  5.16  2.70 -1.02  -0.18 -0.14  0.12  0.22\n           14  1.15  0.696  0.000  5.26  2.19 -1.01  -0.29 -0.12  0.11  0.22\n           15  1.20  0.719  0.001  4.67  2.23 -1.07  -0.36 -0.13  0.19  0.16\n           16  1.30  0.760  0.000  3.86  2.32 -1.07  -0.36 -0.17  0.18  0.14\n           17  1.40  0.790  0.001  3.49  2.10 -0.97  -0.17 -0.03  0.02  0.07\n           18  1.50  0.818 -0.001  3.06  2.05 -0.92  -0.15 -0.12  0.11  0.13\n           19  1.70  0.870  0.000  2.58  1.64 -0.71  -0.25 -0.13  0.14  0.13\n           20  2.00  0.926  0.000  1.80  1.18 -0.44  -0.23 -0.10  0.10  0.11\n           21  2.40  0.982  0.003  0.86  0.63 -0.10  -0.12 -0.06  0.05  0.04\n           22  2.80  1.003  0.007  0.42  0.32  0.02   0.02  0.01  0.00  0.00\n           23  3.20  1.003  0.006  0.39  0.30  0.03   0.03  0.02  0.00  0.01\n           24  3.60  1.000  0.006  0.37  0.28  0.04   0.02  0.01  0.00  0.00\n           25  4.00  1.001  0.003  0.37  0.28  0.03   0.02  0.01 -0.01  0.00\n           26  5.00  1.001  0.000  0.37  0.27  0.03   0.02  0.01 -0.01  0.00\n           27  6.00  1.000 -0.004  0.36  0.26  0.04   0.01  0.01 -0.01  0.00\n           28  7.50  1.001 -0.006  0.37  0.28  0.04   0.02  0.01  0.00  0.00\n           29  8.20  0.943  0.002  1.60  1.28  0.46  -0.28 -0.17 -0.13 -0.08\nzone,t=\"exp, x/H=1\"\n            2  0.10 -0.008 -0.005  3.18  2.94 -0.72   0.00 -0.35  0.14  0.19\n            3  0.15 -0.017 -0.004  4.71  3.22  0.46  -0.46 -0.14  0.15  0.06\n            4  0.20 -0.027 -0.001  5.04  3.29  0.21  -0.38 -0.11  0.22 -0.01\n            5  0.30 -0.035  0.004  5.12  3.49 -0.14  -0.31 -0.21  0.31  0.05\n            6  0.40 -0.035  0.014  4.50  3.67 -0.43  -0.33 -0.24  0.33  0.31\n            7  0.50 -0.035  0.022  4.94  2.90 -0.65  -0.48 -0.25  0.32  0.20\n            8  0.60 -0.027  0.028  4.56  3.00 -0.74  -0.61 -0.23  0.28  0.18\n            9  0.70 -0.005  0.025  5.03  3.44 -0.92  -0.39 -0.15 -0.10 -0.04\n           10  0.80  0.081  0.006  9.24  7.38 -3.71   2.63  2.22 -2.73 -2.24\n           11  0.90  0.292 -0.027 13.80 11.77 -7.05   1.18  0.94 -0.65 -1.00\n           12  1.00  0.519 -0.033 13.93 10.41 -5.85  -4.18 -2.73  2.91  2.32\n           13  1.10  0.704 -0.023  6.18  3.79 -1.54  -1.19 -0.49  0.45  0.62\n           14  1.15  0.740 -0.022  4.87  2.84 -1.25  -0.07 -0.16  0.12  0.25\n           15  1.20  0.762 -0.023  4.27  2.51 -1.05  -0.21 -0.11  0.09  0.24\n           16  1.30  0.793 -0.031  3.87  2.26 -0.98  -0.22 -0.11  0.14  0.16\n           17  1.40  0.827 -0.027  3.38  2.05 -0.82  -0.26 -0.09  0.13  0.15\n           18  1.50  0.851 -0.031  3.08  1.98 -0.81  -0.26 -0.11  0.14  0.13\n           19  1.70  0.891 -0.034  2.49  1.57 -0.64  -0.25 -0.11  0.09  0.09\n           20  2.00  0.942 -0.033  1.76  1.21 -0.44  -0.24 -0.09  0.11  0.09\n           21  2.40  0.990 -0.031  0.91  0.67 -0.12  -0.11 -0.04  0.05  0.04\n           22  2.80  1.009 -0.028  0.45  0.36  0.01   0.01  0.01  0.00  0.01\n           23  3.20  1.003 -0.028  0.41  0.33  0.04   0.02  0.02  0.00  0.00\n           24  3.60  1.002 -0.026  0.40  0.33  0.03   0.01  0.01  0.00  0.00\n           25  4.00  1.000 -0.028  0.38  0.30  0.03   0.02  0.01  0.00  0.00\n           26  5.00  0.997 -0.027  0.36  0.29  0.01   0.02  0.01  0.00  0.00\n           27  6.00  0.994 -0.027  0.33  0.27 -0.01   0.01  0.01 -0.01 -0.01\n           28  7.50  0.993 -0.025  0.36  0.30  0.01   0.01  0.01  0.00  0.00\n           29  8.20  0.919 -0.013  1.83  1.56  0.59  -0.30 -0.19 -0.15 -0.14\nzone,t=\"exp, x/H=4\"\n            2  0.10 -0.171 -0.014  9.71  7.67  -2.64   4.26  2.49 -2.60 -2.47\n            3  0.15 -0.154 -0.020 13.20 10.10  -4.45  10.50  4.70 -5.18 -4.94\n            4  0.20 -0.134 -0.027 16.50 12.98  -6.30  13.67  5.61 -6.52 -5.34\n            5  0.30 -0.057 -0.046 25.91 16.16  -9.94  16.29  4.72 -5.66 -4.41\n            6  0.40  0.052 -0.068 32.92 18.95 -12.02  -4.83 -2.74  3.50  2.13\n            7  0.50  0.169 -0.082 30.67 18.32 -11.11 -26.75 -8.98 11.86  6.02\n            8  0.60  0.279 -0.093 23.24 15.90  -8.99 -19.61 -9.14  9.42  6.90\n            9  0.70  0.381 -0.094 18.21 13.03  -6.93  -5.06 -4.23  3.71  4.03\n           10  0.80  0.473 -0.097 17.03 10.98  -5.98  -3.65 -3.38  3.11  3.89\n           11  0.90  0.568 -0.097 14.45  8.30  -4.52  -5.19 -2.98  2.45  3.04\n           12  1.00  0.656 -0.092 11.55  6.33  -3.48  -6.85 -2.78  2.86  2.55\n           13  1.10  0.730 -0.089  7.70  4.20  -2.10  -3.69 -1.47  1.52  1.57\n           14  1.15  0.754 -0.087  6.27  3.52  -1.65  -2.27 -0.94  1.00  1.14\n           15  1.20  0.778 -0.084  4.85  2.83  -1.19  -0.84 -0.42  0.48  0.71\n           16  1.30  0.811 -0.083  3.80  2.19  -0.87  -0.44 -0.19  0.16  0.32\n           17  1.40  0.835 -0.081  3.17  1.80  -0.67  -0.29 -0.11  0.13  0.20\n           18  1.50  0.856 -0.079  2.86  1.52  -0.56  -0.31 -0.08  0.10  0.14\n           19  1.70  0.895 -0.076  2.27  1.25  -0.45  -0.34 -0.10  0.14  0.13\n           20  2.00  0.940 -0.072  1.47  0.78  -0.23  -0.22 -0.07  0.07  0.07\n           21  2.40  0.978 -0.063  0.61  0.39   0.00  -0.06 -0.01  0.03  0.02\n           22  2.80  0.986 -0.056  0.38  0.26   0.06   0.01  0.00 -0.01  0.00\n           23  3.20  0.984 -0.050  0.36  0.23   0.05   0.01  0.00  0.00  0.00\n           24  3.60  0.985 -0.047  0.36  0.23   0.07   0.01  0.00  0.00  0.00\n           25  4.00  0.985 -0.043  0.33  0.21   0.06   0.00  0.00  0.00  0.00\n           26  5.00  0.983 -0.037  0.33  0.22   0.06   0.01  0.00  0.00  0.00\n           27  6.00  0.980 -0.031  0.34  0.23   0.06   0.01  0.00  0.00  0.00\n           28  7.50  0.980 -0.025  0.35  0.25   0.07   0.01  0.00 -0.01  0.00\n           29  8.20  0.892 -0.013  2.23  1.59   0.65  -0.40 -0.22 -0.19 -0.13\nzone,t=\"exp, x/H=6\"\n            2  0.10  0.147 -0.052 17.58 12.81 -4.10   0.03  0.65 -0.11 -2.05\n            3  0.15  0.169 -0.061 19.50 15.02 -5.48   0.04  0.24  0.11 -1.31\n            4  0.20  0.188 -0.067 19.53 16.50 -6.79  -2.21 -1.70  1.31  0.58\n            5  0.30  0.248 -0.084 20.73 16.98 -7.86  -5.45 -4.28  3.36  3.25\n            6  0.40  0.306 -0.091 19.70 16.60 -8.23  -6.80 -5.78  4.97  5.60\n            7  0.50  0.369 -0.097 20.03 15.89 -8.24  -9.08 -7.74  7.14  6.87\n            8  0.60  0.435 -0.099 18.36 13.86 -7.36  -8.93 -6.86  6.50  6.48\n            9  0.70  0.501 -0.095 17.26 12.00 -6.57 -10.43 -7.51  7.32  7.26\n           10  0.80  0.569 -0.094 14.96  9.63 -5.06 -10.37 -5.91  6.20  5.55\n           11  0.90  0.632 -0.091 11.96  7.62 -3.79 -10.19 -4.74  5.11  4.09\n           12  1.00  0.686 -0.089  8.88  5.57 -2.80  -7.74 -3.45  3.55  2.93\n           13  1.10  0.730 -0.086  6.11  3.95 -1.76  -3.81 -1.72  1.93  1.87\n           14  1.15  0.747 -0.086  5.23  3.35 -1.51  -2.68 -1.23  1.39  1.33\n           15  1.20  0.763 -0.085  4.36  2.75 -1.25  -1.54 -0.74  0.84  0.79\n           16  1.30  0.794 -0.083  3.40  2.19 -0.80  -0.47 -0.23  0.25  0.44\n           17  1.40  0.815 -0.082  2.87  1.79 -0.65  -0.33 -0.12  0.20  0.25\n           18  1.50  0.834 -0.081  2.50  1.53 -0.61  -0.29 -0.10  0.14  0.14\n           19  1.70  0.869 -0.077  2.01  1.24 -0.43  -0.27 -0.10  0.13  0.13\n           20  2.00  0.915 -0.074  1.28  0.80 -0.21  -0.22 -0.06  0.08  0.04\n           21  2.40  0.949 -0.066  0.53  0.44 -0.04  -0.01  0.00  0.01  0.02\n           22  2.80  0.954 -0.060  0.42  0.33  0.03   0.02  0.02  0.00  0.00\n           23  3.20  0.956 -0.054  0.41  0.33  0.03   0.02  0.02  0.01  0.00\n           24  3.60  0.959 -0.050  0.39  0.31  0.03   0.03  0.02  0.00  0.00\n           25  4.00  0.961 -0.046  0.38  0.29  0.02   0.03  0.02  0.00  0.01\n           26  5.00  0.963 -0.040  0.38  0.30  0.02   0.02  0.02  0.00  0.00\n           27  6.00  0.965 -0.035  0.38  0.31  0.02   0.02  0.02  0.00 -0.01\n           28  7.50  0.969 -0.027  0.42  0.34  0.03   0.02  0.01  0.00  0.00\n           29  8.20  0.870 -0.018  2.75  1.84  0.76  -0.55 -0.20 -0.20 -0.11\nzone,t=\"exp, x/H=10\"\n            2  0.10  0.418 -0.029  8.89  5.63 -1.43   2.05  0.73 -0.34 -0.46\n            3  0.15  0.433 -0.027  9.97  6.15 -1.84   2.59  0.74 -0.35 -1.10\n            4  0.20  0.447 -0.032 10.51  6.97 -2.35   2.19  0.83 -0.25 -0.99\n            5  0.30  0.471 -0.036 11.57  8.34 -3.43   1.23  0.55 -0.24 -0.37\n            6  0.40  0.496 -0.041 12.24  9.08 -4.19   0.67 -0.37  0.07  0.46\n            7  0.50  0.526 -0.043 12.86  9.16 -4.51  -1.12 -1.29  0.99  1.47\n            8  0.60  0.560 -0.045 13.37  9.05 -4.61  -3.54 -2.59  2.08  2.43\n            9  0.70  0.596 -0.047 13.03  8.44 -4.61  -5.62 -3.18  3.10  3.00\n           10  0.80  0.638 -0.047 12.00  7.75 -4.30  -7.23 -4.00  3.65  3.93\n           11  0.90  0.676 -0.046 10.96  6.44 -3.68  -8.76 -3.81  3.96  3.37\n           12  1.00  0.712 -0.047  9.04  5.35 -2.94  -8.54 -3.51  3.72  2.94\n           13  1.10  0.745 -0.046  7.23  4.32 -2.33  -6.66 -2.57  2.72  2.36\n           14  1.15  0.758 -0.045  6.44  3.92 -2.02  -5.85 -2.28  2.36  2.02\n           15  1.20  0.772 -0.044  5.66  3.52 -1.71  -5.04 -2.00  2.01  1.68\n           16  1.30  0.798 -0.042  4.22  2.80 -1.36  -2.94 -1.28  1.48  1.38\n           17  1.40  0.819 -0.040  3.29  2.21 -0.96  -1.61 -0.81  0.80  0.96\n           18  1.50  0.839 -0.039  2.54  1.80 -0.72  -0.83 -0.53  0.51  0.65\n           19  1.70  0.871 -0.038  1.60  1.03 -0.35  -0.28 -0.09  0.11  0.15\n           20  2.00  0.908 -0.034  0.96  0.66 -0.14  -0.13 -0.03  0.08  0.09\n           21  2.40  0.929 -0.032  0.43  0.35  0.02   0.02  0.02  0.02  0.03\n           22  2.80  0.933 -0.031  0.35  0.27  0.04   0.03  0.02  0.01  0.02\n           23  3.20  0.937 -0.032  0.33  0.25  0.04   0.04  0.03  0.02  0.03\n           24  3.60  0.939 -0.030  0.32  0.24  0.04   0.04  0.03  0.02  0.02\n           25  4.00  0.940 -0.031  0.31  0.22  0.02   0.05  0.02  0.01  0.01\n           26  5.00  0.944 -0.029  0.30  0.22  0.03   0.04  0.02  0.01  0.01\n           27  6.00  0.947 -0.028  0.30  0.23  0.03   0.03  0.02  0.01  0.02\n           28  7.50  0.949 -0.024  0.38  0.32  0.05   0.00  0.01  0.01  0.01\n           29  8.20  0.827 -0.019  3.14  2.18  0.95  -0.49 -0.25 -0.20 -0.16\n"
+      },
+      {
+        "path": "reference/bottom-cp.csv",
+        "role": "reference-data",
+        "media_type": "text/csv",
+        "sha256": "baed0d85341b4f3fa7cba2d5ff1296101104871eb10fed0427dde938acfa83fd",
+        "content": "x_over_h,cp_shifted,cp_original\n-8.5,-0.1102,0.0039\n-6.5,-0.1141,0.0\n-4.5,-0.1189,-0.0048\n-2.5,-0.1372,-0.0231\n-0.5,-0.1613,-0.0472\n0.5,-0.1777,-0.0636\n1.0,-0.1806,-0.0665\n2.0,-0.1883,-0.0742\n3.0,-0.1903,-0.0762\n3.5,-0.1806,-0.0665\n4.0,-0.1565,-0.0424\n4.5,-0.1064,0.0077\n5.0,-0.0659,0.0482\n5.5,-0.0359,0.0782\n6.0,-0.0012,0.1129\n6.5,0.0162,0.1303\n7.0,0.0248,0.1389\n8.0,0.0374,0.1515\n9.0,0.0394,0.1535\n11.0,0.0336,0.1477\n13.0,0.0268,0.1409\n15.0,0.0201,0.1342\n17.0,0.0162,0.1303\n19.5,0.0144,0.1285\n21.5,0.0105,0.1246\n23.5,0.0086,0.1227\n25.5,0.0086,0.1227\n27.5,0.0077,0.1218\n29.5,0.0077,0.1218\n31.5,0.0058,0.1199\n33.5,0.0019,0.116\n35.5,0.0048,0.1189\n37.5,0.0,0.1141\n"
+      },
+      {
+        "path": "reference/top-cp.csv",
+        "role": "reference-data",
+        "media_type": "text/csv",
+        "sha256": "4a6f091024eb3e4a25acf1036490352b181a42e82a2eaa3fbe715f64a30bf0ce",
+        "content": "x_over_h,cp_shifted,cp_original\n-5.0,-0.1054,0.0087\n3.0,-0.0727,0.0414\n5.0,-0.063,0.0511\n7.0,-0.0543,0.0598\n9.0,-0.0331,0.081\n11.0,-0.0148,0.0993\n13.0,-0.0023,0.1118\n15.0,-0.0003,0.1138\n17.0,0.0065,0.1206\n19.0,0.0075,0.1216\n21.0,0.0075,0.1216\n23.0,0.0066,0.1207\n25.0,0.0095,0.1236\n27.0,0.0076,0.1217\n29.0,0.0067,0.1208\n31.0,0.0048,0.1189\n33.0,0.0019,0.116\n35.0,0.0038,0.1179\n37.0,-0.001,0.1131\n"
+      },
+      {
+        "path": "reference/bottom-cf.csv",
+        "role": "reference-data",
+        "media_type": "text/csv",
+        "sha256": "55388e782de8577f4162726357be30d8646ce3775297efd651e883d44da7922e",
+        "content": "x_over_h,cf,cf_error_reported\n-3.956,0.00288,0.000202\n-1.804,0.00285,0.000171\n-0.804,0.00311,0.000311\n0.484,9e-05,1.4e-05\n1.804,-0.00011,1.9e-05\n2.804,-0.00052,0.000109\n3.804,-0.00102,0.000163\n4.804,-0.00082,0.000123\n5.882,-0.00022,6.2e-05\n7.09,0.00045,0.000167\n7.978,0.00102,0.000122\n9.196,0.00118,0.000106\n11.196,0.00154,0.000123\n13.196,0.00173,0.000121\n16.196,0.00191,0.000134\n20.196,0.00202,0.000141\n24.136,0.00204,0.000143\n28.13,0.00205,0.000205\n32.196,0.00212,0.000148\n35.994,0.0023,0.000184\n"
+      },
+      {
+        "path": "reference/profile-x-4.csv",
+        "role": "reference-data",
+        "media_type": "text/csv",
+        "sha256": "4fe14c07ea2a375b15fb43e72a1eb38f33f542a5613e1601cd135f480e3ae278",
+        "content": "x_over_h,id,y_over_h,u_over_uref,v_over_uref,uu_times_1000,vv_times_1000,uv_times_1000,uuu_times_10000,uvv_times_10000,vuu_times_10000,vvv_times_10000\n-4.0,13.0,1.1,0.657,0.0,5.16,2.7,-1.02,-0.18,-0.14,0.12,0.22\n-4.0,14.0,1.15,0.696,0.0,5.26,2.19,-1.01,-0.29,-0.12,0.11,0.22\n-4.0,15.0,1.2,0.719,0.001,4.67,2.23,-1.07,-0.36,-0.13,0.19,0.16\n-4.0,16.0,1.3,0.76,0.0,3.86,2.32,-1.07,-0.36,-0.17,0.18,0.14\n-4.0,17.0,1.4,0.79,0.001,3.49,2.1,-0.97,-0.17,-0.03,0.02,0.07\n-4.0,18.0,1.5,0.818,-0.001,3.06,2.05,-0.92,-0.15,-0.12,0.11,0.13\n-4.0,19.0,1.7,0.87,0.0,2.58,1.64,-0.71,-0.25,-0.13,0.14,0.13\n-4.0,20.0,2.0,0.926,0.0,1.8,1.18,-0.44,-0.23,-0.1,0.1,0.11\n-4.0,21.0,2.4,0.982,0.003,0.86,0.63,-0.1,-0.12,-0.06,0.05,0.04\n-4.0,22.0,2.8,1.003,0.007,0.42,0.32,0.02,0.02,0.01,0.0,0.0\n-4.0,23.0,3.2,1.003,0.006,0.39,0.3,0.03,0.03,0.02,0.0,0.01\n-4.0,24.0,3.6,1.0,0.006,0.37,0.28,0.04,0.02,0.01,0.0,0.0\n-4.0,25.0,4.0,1.001,0.003,0.37,0.28,0.03,0.02,0.01,-0.01,0.0\n-4.0,26.0,5.0,1.001,0.0,0.37,0.27,0.03,0.02,0.01,-0.01,0.0\n-4.0,27.0,6.0,1.0,-0.004,0.36,0.26,0.04,0.01,0.01,-0.01,0.0\n-4.0,28.0,7.5,1.001,-0.006,0.37,0.28,0.04,0.02,0.01,0.0,0.0\n-4.0,29.0,8.2,0.943,0.002,1.6,1.28,0.46,-0.28,-0.17,-0.13,-0.08\n"
+      },
+      {
+        "path": "reference/profile-x1.csv",
+        "role": "reference-data",
+        "media_type": "text/csv",
+        "sha256": "880bad2f5637f118e4f17b842ed0d279e1e6537e7f6710f4e88a98f32083c97c",
+        "content": "x_over_h,id,y_over_h,u_over_uref,v_over_uref,uu_times_1000,vv_times_1000,uv_times_1000,uuu_times_10000,uvv_times_10000,vuu_times_10000,vvv_times_10000\n1.0,2.0,0.1,-0.008,-0.005,3.18,2.94,-0.72,0.0,-0.35,0.14,0.19\n1.0,3.0,0.15,-0.017,-0.004,4.71,3.22,0.46,-0.46,-0.14,0.15,0.06\n1.0,4.0,0.2,-0.027,-0.001,5.04,3.29,0.21,-0.38,-0.11,0.22,-0.01\n1.0,5.0,0.3,-0.035,0.004,5.12,3.49,-0.14,-0.31,-0.21,0.31,0.05\n1.0,6.0,0.4,-0.035,0.014,4.5,3.67,-0.43,-0.33,-0.24,0.33,0.31\n1.0,7.0,0.5,-0.035,0.022,4.94,2.9,-0.65,-0.48,-0.25,0.32,0.2\n1.0,8.0,0.6,-0.027,0.028,4.56,3.0,-0.74,-0.61,-0.23,0.28,0.18\n1.0,9.0,0.7,-0.005,0.025,5.03,3.44,-0.92,-0.39,-0.15,-0.1,-0.04\n1.0,10.0,0.8,0.081,0.006,9.24,7.38,-3.71,2.63,2.22,-2.73,-2.24\n1.0,11.0,0.9,0.292,-0.027,13.8,11.77,-7.05,1.18,0.94,-0.65,-1.0\n1.0,12.0,1.0,0.519,-0.033,13.93,10.41,-5.85,-4.18,-2.73,2.91,2.32\n1.0,13.0,1.1,0.704,-0.023,6.18,3.79,-1.54,-1.19,-0.49,0.45,0.62\n1.0,14.0,1.15,0.74,-0.022,4.87,2.84,-1.25,-0.07,-0.16,0.12,0.25\n1.0,15.0,1.2,0.762,-0.023,4.27,2.51,-1.05,-0.21,-0.11,0.09,0.24\n1.0,16.0,1.3,0.793,-0.031,3.87,2.26,-0.98,-0.22,-0.11,0.14,0.16\n1.0,17.0,1.4,0.827,-0.027,3.38,2.05,-0.82,-0.26,-0.09,0.13,0.15\n1.0,18.0,1.5,0.851,-0.031,3.08,1.98,-0.81,-0.26,-0.11,0.14,0.13\n1.0,19.0,1.7,0.891,-0.034,2.49,1.57,-0.64,-0.25,-0.11,0.09,0.09\n1.0,20.0,2.0,0.942,-0.033,1.76,1.21,-0.44,-0.24,-0.09,0.11,0.09\n1.0,21.0,2.4,0.99,-0.031,0.91,0.67,-0.12,-0.11,-0.04,0.05,0.04\n1.0,22.0,2.8,1.009,-0.028,0.45,0.36,0.01,0.01,0.01,0.0,0.01\n1.0,23.0,3.2,1.003,-0.028,0.41,0.33,0.04,0.02,0.02,0.0,0.0\n1.0,24.0,3.6,1.002,-0.026,0.4,0.33,0.03,0.01,0.01,0.0,0.0\n1.0,25.0,4.0,1.0,-0.028,0.38,0.3,0.03,0.02,0.01,0.0,0.0\n1.0,26.0,5.0,0.997,-0.027,0.36,0.29,0.01,0.02,0.01,0.0,0.0\n1.0,27.0,6.0,0.994,-0.027,0.33,0.27,-0.01,0.01,0.01,-0.01,-0.01\n1.0,28.0,7.5,0.993,-0.025,0.36,0.3,0.01,0.01,0.01,0.0,0.0\n1.0,29.0,8.2,0.919,-0.013,1.83,1.56,0.59,-0.3,-0.19,-0.15,-0.14\n"
+      },
+      {
+        "path": "reference/profile-x4.csv",
+        "role": "reference-data",
+        "media_type": "text/csv",
+        "sha256": "776018c0c8e35d42ebcbbe9e6344b023492418331e401ddf9bf55a7628600bab",
+        "content": "x_over_h,id,y_over_h,u_over_uref,v_over_uref,uu_times_1000,vv_times_1000,uv_times_1000,uuu_times_10000,uvv_times_10000,vuu_times_10000,vvv_times_10000\n4.0,2.0,0.1,-0.171,-0.014,9.71,7.67,-2.64,4.26,2.49,-2.6,-2.47\n4.0,3.0,0.15,-0.154,-0.02,13.2,10.1,-4.45,10.5,4.7,-5.18,-4.94\n4.0,4.0,0.2,-0.134,-0.027,16.5,12.98,-6.3,13.67,5.61,-6.52,-5.34\n4.0,5.0,0.3,-0.057,-0.046,25.91,16.16,-9.94,16.29,4.72,-5.66,-4.41\n4.0,6.0,0.4,0.052,-0.068,32.92,18.95,-12.02,-4.83,-2.74,3.5,2.13\n4.0,7.0,0.5,0.169,-0.082,30.67,18.32,-11.11,-26.75,-8.98,11.86,6.02\n4.0,8.0,0.6,0.279,-0.093,23.24,15.9,-8.99,-19.61,-9.14,9.42,6.9\n4.0,9.0,0.7,0.381,-0.094,18.21,13.03,-6.93,-5.06,-4.23,3.71,4.03\n4.0,10.0,0.8,0.473,-0.097,17.03,10.98,-5.98,-3.65,-3.38,3.11,3.89\n4.0,11.0,0.9,0.568,-0.097,14.45,8.3,-4.52,-5.19,-2.98,2.45,3.04\n4.0,12.0,1.0,0.656,-0.092,11.55,6.33,-3.48,-6.85,-2.78,2.86,2.55\n4.0,13.0,1.1,0.73,-0.089,7.7,4.2,-2.1,-3.69,-1.47,1.52,1.57\n4.0,14.0,1.15,0.754,-0.087,6.27,3.52,-1.65,-2.27,-0.94,1.0,1.14\n4.0,15.0,1.2,0.778,-0.084,4.85,2.83,-1.19,-0.84,-0.42,0.48,0.71\n4.0,16.0,1.3,0.811,-0.083,3.8,2.19,-0.87,-0.44,-0.19,0.16,0.32\n4.0,17.0,1.4,0.835,-0.081,3.17,1.8,-0.67,-0.29,-0.11,0.13,0.2\n4.0,18.0,1.5,0.856,-0.079,2.86,1.52,-0.56,-0.31,-0.08,0.1,0.14\n4.0,19.0,1.7,0.895,-0.076,2.27,1.25,-0.45,-0.34,-0.1,0.14,0.13\n4.0,20.0,2.0,0.94,-0.072,1.47,0.78,-0.23,-0.22,-0.07,0.07,0.07\n4.0,21.0,2.4,0.978,-0.063,0.61,0.39,0.0,-0.06,-0.01,0.03,0.02\n4.0,22.0,2.8,0.986,-0.056,0.38,0.26,0.06,0.01,0.0,-0.01,0.0\n4.0,23.0,3.2,0.984,-0.05,0.36,0.23,0.05,0.01,0.0,0.0,0.0\n4.0,24.0,3.6,0.985,-0.047,0.36,0.23,0.07,0.01,0.0,0.0,0.0\n4.0,25.0,4.0,0.985,-0.043,0.33,0.21,0.06,0.0,0.0,0.0,0.0\n4.0,26.0,5.0,0.983,-0.037,0.33,0.22,0.06,0.01,0.0,0.0,0.0\n4.0,27.0,6.0,0.98,-0.031,0.34,0.23,0.06,0.01,0.0,0.0,0.0\n4.0,28.0,7.5,0.98,-0.025,0.35,0.25,0.07,0.01,0.0,-0.01,0.0\n4.0,29.0,8.2,0.892,-0.013,2.23,1.59,0.65,-0.4,-0.22,-0.19,-0.13\n"
+      },
+      {
+        "path": "reference/profile-x6.csv",
+        "role": "reference-data",
+        "media_type": "text/csv",
+        "sha256": "d5c04be652c914e4df5adf77da6821aa53a22ce5f6e61284ae7480e1659710c6",
+        "content": "x_over_h,id,y_over_h,u_over_uref,v_over_uref,uu_times_1000,vv_times_1000,uv_times_1000,uuu_times_10000,uvv_times_10000,vuu_times_10000,vvv_times_10000\n6.0,2.0,0.1,0.147,-0.052,17.58,12.81,-4.1,0.03,0.65,-0.11,-2.05\n6.0,3.0,0.15,0.169,-0.061,19.5,15.02,-5.48,0.04,0.24,0.11,-1.31\n6.0,4.0,0.2,0.188,-0.067,19.53,16.5,-6.79,-2.21,-1.7,1.31,0.58\n6.0,5.0,0.3,0.248,-0.084,20.73,16.98,-7.86,-5.45,-4.28,3.36,3.25\n6.0,6.0,0.4,0.306,-0.091,19.7,16.6,-8.23,-6.8,-5.78,4.97,5.6\n6.0,7.0,0.5,0.369,-0.097,20.03,15.89,-8.24,-9.08,-7.74,7.14,6.87\n6.0,8.0,0.6,0.435,-0.099,18.36,13.86,-7.36,-8.93,-6.86,6.5,6.48\n6.0,9.0,0.7,0.501,-0.095,17.26,12.0,-6.57,-10.43,-7.51,7.32,7.26\n6.0,10.0,0.8,0.569,-0.094,14.96,9.63,-5.06,-10.37,-5.91,6.2,5.55\n6.0,11.0,0.9,0.632,-0.091,11.96,7.62,-3.79,-10.19,-4.74,5.11,4.09\n6.0,12.0,1.0,0.686,-0.089,8.88,5.57,-2.8,-7.74,-3.45,3.55,2.93\n6.0,13.0,1.1,0.73,-0.086,6.11,3.95,-1.76,-3.81,-1.72,1.93,1.87\n6.0,14.0,1.15,0.747,-0.086,5.23,3.35,-1.51,-2.68,-1.23,1.39,1.33\n6.0,15.0,1.2,0.763,-0.085,4.36,2.75,-1.25,-1.54,-0.74,0.84,0.79\n6.0,16.0,1.3,0.794,-0.083,3.4,2.19,-0.8,-0.47,-0.23,0.25,0.44\n6.0,17.0,1.4,0.815,-0.082,2.87,1.79,-0.65,-0.33,-0.12,0.2,0.25\n6.0,18.0,1.5,0.834,-0.081,2.5,1.53,-0.61,-0.29,-0.1,0.14,0.14\n6.0,19.0,1.7,0.869,-0.077,2.01,1.24,-0.43,-0.27,-0.1,0.13,0.13\n6.0,20.0,2.0,0.915,-0.074,1.28,0.8,-0.21,-0.22,-0.06,0.08,0.04\n6.0,21.0,2.4,0.949,-0.066,0.53,0.44,-0.04,-0.01,0.0,0.01,0.02\n6.0,22.0,2.8,0.954,-0.06,0.42,0.33,0.03,0.02,0.02,0.0,0.0\n6.0,23.0,3.2,0.956,-0.054,0.41,0.33,0.03,0.02,0.02,0.01,0.0\n6.0,24.0,3.6,0.959,-0.05,0.39,0.31,0.03,0.03,0.02,0.0,0.0\n6.0,25.0,4.0,0.961,-0.046,0.38,0.29,0.02,0.03,0.02,0.0,0.01\n6.0,26.0,5.0,0.963,-0.04,0.38,0.3,0.02,0.02,0.02,0.0,0.0\n6.0,27.0,6.0,0.965,-0.035,0.38,0.31,0.02,0.02,0.02,0.0,-0.01\n6.0,28.0,7.5,0.969,-0.027,0.42,0.34,0.03,0.02,0.01,0.0,0.0\n6.0,29.0,8.2,0.87,-0.018,2.75,1.84,0.76,-0.55,-0.2,-0.2,-0.11\n"
+      },
+      {
+        "path": "reference/profile-x10.csv",
+        "role": "reference-data",
+        "media_type": "text/csv",
+        "sha256": "59e08c2d8a43137291e6eda4c26d6096395b6dc8171a4bd289e46029ac3f0c9d",
+        "content": "x_over_h,id,y_over_h,u_over_uref,v_over_uref,uu_times_1000,vv_times_1000,uv_times_1000,uuu_times_10000,uvv_times_10000,vuu_times_10000,vvv_times_10000\n10.0,2.0,0.1,0.418,-0.029,8.89,5.63,-1.43,2.05,0.73,-0.34,-0.46\n10.0,3.0,0.15,0.433,-0.027,9.97,6.15,-1.84,2.59,0.74,-0.35,-1.1\n10.0,4.0,0.2,0.447,-0.032,10.51,6.97,-2.35,2.19,0.83,-0.25,-0.99\n10.0,5.0,0.3,0.471,-0.036,11.57,8.34,-3.43,1.23,0.55,-0.24,-0.37\n10.0,6.0,0.4,0.496,-0.041,12.24,9.08,-4.19,0.67,-0.37,0.07,0.46\n10.0,7.0,0.5,0.526,-0.043,12.86,9.16,-4.51,-1.12,-1.29,0.99,1.47\n10.0,8.0,0.6,0.56,-0.045,13.37,9.05,-4.61,-3.54,-2.59,2.08,2.43\n10.0,9.0,0.7,0.596,-0.047,13.03,8.44,-4.61,-5.62,-3.18,3.1,3.0\n10.0,10.0,0.8,0.638,-0.047,12.0,7.75,-4.3,-7.23,-4.0,3.65,3.93\n10.0,11.0,0.9,0.676,-0.046,10.96,6.44,-3.68,-8.76,-3.81,3.96,3.37\n10.0,12.0,1.0,0.712,-0.047,9.04,5.35,-2.94,-8.54,-3.51,3.72,2.94\n10.0,13.0,1.1,0.745,-0.046,7.23,4.32,-2.33,-6.66,-2.57,2.72,2.36\n10.0,14.0,1.15,0.758,-0.045,6.44,3.92,-2.02,-5.85,-2.28,2.36,2.02\n10.0,15.0,1.2,0.772,-0.044,5.66,3.52,-1.71,-5.04,-2.0,2.01,1.68\n10.0,16.0,1.3,0.798,-0.042,4.22,2.8,-1.36,-2.94,-1.28,1.48,1.38\n10.0,17.0,1.4,0.819,-0.04,3.29,2.21,-0.96,-1.61,-0.81,0.8,0.96\n10.0,18.0,1.5,0.839,-0.039,2.54,1.8,-0.72,-0.83,-0.53,0.51,0.65\n10.0,19.0,1.7,0.871,-0.038,1.6,1.03,-0.35,-0.28,-0.09,0.11,0.15\n10.0,20.0,2.0,0.908,-0.034,0.96,0.66,-0.14,-0.13,-0.03,0.08,0.09\n10.0,21.0,2.4,0.929,-0.032,0.43,0.35,0.02,0.02,0.02,0.02,0.03\n10.0,22.0,2.8,0.933,-0.031,0.35,0.27,0.04,0.03,0.02,0.01,0.02\n10.0,23.0,3.2,0.937,-0.032,0.33,0.25,0.04,0.04,0.03,0.02,0.03\n10.0,24.0,3.6,0.939,-0.03,0.32,0.24,0.04,0.04,0.03,0.02,0.02\n10.0,25.0,4.0,0.94,-0.031,0.31,0.22,0.02,0.05,0.02,0.01,0.01\n10.0,26.0,5.0,0.944,-0.029,0.3,0.22,0.03,0.04,0.02,0.01,0.01\n10.0,27.0,6.0,0.947,-0.028,0.3,0.23,0.03,0.03,0.02,0.01,0.02\n10.0,28.0,7.5,0.949,-0.024,0.38,0.32,0.05,0.0,0.01,0.01,0.01\n10.0,29.0,8.2,0.827,-0.019,3.14,2.18,0.95,-0.49,-0.25,-0.2,-0.16\n"
+      },
+      {
+        "path": "reference/provenance.json",
+        "role": "provenance",
+        "media_type": "application/json",
+        "sha256": "b91b12c907089e962c9a8d8606b46859e7a9c9c482c24c6da9c6c046db3edaf6",
+        "content": "{\n  \"source\": \"https://tmbwg.github.io/turbmodels/backstep_val.html\",\n  \"downloaded\": \"2026-10-26\",\n  \"original_urls\": {\n    \"cp.expnew.dat\": \"https://tmbwg.github.io/turbmodels/Backstep_validation/cp.expnew.dat\",\n    \"cf.exp.dat\": \"https://tmbwg.github.io/turbmodels/Backstep_validation/cf.exp.dat\",\n    \"profiles.exp.dat\": \"https://tmbwg.github.io/turbmodels/Backstep_validation/profiles.exp.dat\"\n  },\n  \"derived_csv\": \"Numeric columns copied without interpolation. Cf error column retains the source label; no confidence level is assumed. Reynolds stress columns retain source factors 1000; triple moments retain 10000.\",\n  \"method\": \"Use the measured centre-channel Uref near x/H=-4, not automatically the inlet velocity. H=0.0127 m; coordinates match the experiment: downstream floor y/H=0, upstream floor y/H=1. Check upstream Re_theta~5000, delta/H~1.5 and Cf~0.0029. Adjust inlet speed or development length if necessary. Resolve and inspect y+; compare three meshes and time steps; average after startup and report averaging interval. Native SST is not asserted equivalent to NASA SSTm. The 2D incompressible model omits sidewalls and small Mach=0.128 effects.\"\n}\n"
+      },
+      {
+        "path": "reference/citation.bib",
+        "role": "citation",
+        "media_type": "text/plain",
+        "sha256": "0d2a190917b3e1bd9ce980c8215f226e41549c4e94fd17a6d344bd2d8a68ea79",
+        "content": "@article{DriverSeegmiller1985,\n  author={Driver, D. M. and Seegmiller, H. L.},\n  title={Features of Reattaching Turbulent Shear Layer in Divergent Channel Flow},\n  journal={AIAA Journal}, year={1985}, volume={23}, number={2}, pages={163--171},\n  doi={10.2514/3.8890}\n}\n"
+      },
+      {
+        "path": "reference/reference-grid.msh",
+        "role": "reference-mesh",
+        "media_type": "application/vnd.gmsh",
+        "sha256": "5142387b57f160944cf472a84750c7330e5588afdfc98015835083f496ec4a18"
+      }
+    ]
+  }
+}

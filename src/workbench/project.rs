@@ -218,6 +218,8 @@ pub struct MeshTuning {
     pub divisions: [u32; 3],
     /// Cell-to-cell growth along mapped I/J or O-grid radial direction.
     pub progression: [f64; 2],
+    #[serde(skip_serializing_if = "mapped_start_sizes_unset")]
+    pub mapped_start_sizes: [Option<f64>; 2],
 
     pub algorithm_2d: u8,
     pub algorithm_3d: u8,
@@ -228,6 +230,9 @@ pub struct MeshTuning {
     pub optimize_threshold: f64,
     pub extend_boundary_sizes: bool,
 }
+fn mapped_start_sizes_unset(sizes: &[Option<f64>; 2]) -> bool {
+    sizes.iter().all(Option::is_none)
+}
 impl Default for MeshTuning {
     fn default() -> Self {
         Self {
@@ -235,6 +240,7 @@ impl Default for MeshTuning {
             method: MeshMethod::Unstructured,
             divisions: [40, 40, 10],
             progression: [1.0, 1.0],
+            mapped_start_sizes: [None, None],
             algorithm_2d: 6,
             algorithm_3d: 1,
             curvature_points: 32,
@@ -248,6 +254,14 @@ impl Default for MeshTuning {
 }
 impl MeshTuning {
     pub fn validate(&self) -> Result<(), String> {
+        if self
+            .mapped_start_sizes
+            .iter()
+            .flatten()
+            .any(|x| !x.is_finite() || *x <= 0.0)
+        {
+            return Err("Mapped start sizes must be positive and finite".into());
+        }
         if self
             .max_size_growth
             .is_some_and(|g| !g.is_finite() || !(1.01..=2.0).contains(&g))
@@ -345,6 +359,8 @@ pub struct BoundaryLayerControl {
     pub first_layer_height: f64,
     pub growth_ratio: f64,
     pub layer_count: u32,
+    #[serde(default)]
+    pub triangles: bool,
     pub enabled: bool,
 }
 
@@ -428,6 +444,8 @@ pub struct WorkbenchSolverSettings {
     pub turbulence: crate::turbulence::TurbulenceOptions,
     #[serde(default)]
     pub convection: crate::momentum::MomentumConvection,
+    #[serde(default = "default_momentum_diffusion")]
+    pub momentum_diffusion_correction: crate::NonOrthogonalCorrection,
     #[serde(default = "default_cpu_threads")]
     pub threads: usize,
     pub max_outer_iterations: usize,
@@ -456,6 +474,7 @@ impl Default for WorkbenchSolverSettings {
             force_analysis: Default::default(),
             turbulence: Default::default(),
             convection: crate::momentum::MomentumConvection::Upwind,
+            momentum_diffusion_correction: crate::NonOrthogonalCorrection::Limited,
             threads: 0,
             max_outer_iterations: 1000,
             continuity_absolute_tolerance: 1.0e-10,
@@ -464,6 +483,10 @@ impl Default for WorkbenchSolverSettings {
             pressure_relaxation: 0.3,
         }
     }
+}
+
+fn default_momentum_diffusion() -> crate::NonOrthogonalCorrection {
+    crate::NonOrthogonalCorrection::Limited
 }
 
 fn default_cpu_threads() -> usize {
@@ -477,6 +500,8 @@ fn default_coupling_tolerance() -> f64 {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum RunStatus {
+    Completed,
+    Stopped,
     Converged,
     MaxIterations,
     Failed,
@@ -676,7 +701,7 @@ impl WorkbenchProject {
         }
         self.solver
             .scripting
-            .validate(self.solver.time.is_transient())
+            .validate(self.solver.compressible.is_some() || self.solver.time.is_transient())
             .map_err(ProjectDocumentError::Invalid)?;
         for p in self.solver.boundary_profiles.values() {
             p.validate().map_err(ProjectDocumentError::Invalid)?;
@@ -684,10 +709,27 @@ impl WorkbenchProject {
         if let Some(e) = &self.solver.equations {
             e.validate().map_err(ProjectDocumentError::Invalid)?;
         }
-        self.solver
-            .thermal
-            .validate()
-            .map_err(ProjectDocumentError::Invalid)?;
+        if self.solver.compressible.is_some() {
+            let thermal = &self.solver.thermal;
+            if ![
+                thermal.source_w_m3,
+                thermal.gravity.x,
+                thermal.gravity.y,
+                thermal.gravity.z,
+            ]
+            .iter()
+            .all(|v| v.is_finite())
+            {
+                return Err(ProjectDocumentError::Invalid(
+                    "Heat source and gravity must be finite".into(),
+                ));
+            }
+        } else {
+            self.solver
+                .thermal
+                .validate()
+                .map_err(ProjectDocumentError::Invalid)?;
+        }
         if let Some(material) = &self.material.catalog {
             material.validate().map_err(ProjectDocumentError::Invalid)?;
         }
@@ -920,7 +962,7 @@ pub fn load_workspace_result(
         .iter()
         .find(|run| run.id == run_id)
         .ok_or_else(|| ProjectDocumentError::Invalid(format!("run {run_id:?} does not exist")))?;
-    if matches!(run.status, RunStatus::Failed) {
+    if matches!(run.status, RunStatus::Failed) && run.solution_path.is_none() {
         return Err(ProjectDocumentError::Artifact(format!(
             "run {run_id:?} failed and has no result fields"
         )));
@@ -929,6 +971,11 @@ pub fn load_workspace_result(
         ProjectDocumentError::Artifact(format!("run {run_id:?} has no solution artifact"))
     })?;
     validate_relative_artifact_path(solution)?;
+    if super::flow_frame::is_frame(&workspace.join(solution)) {
+        return super::flow_frame::FlowFrame::read(&workspace.join(solution))
+            .and_then(|f| f.dataset())
+            .map_err(ProjectDocumentError::Artifact);
+    }
     load_legacy_vtk_result(&workspace.join(solution), &run.id)
         .map_err(|error| ProjectDocumentError::Artifact(error.to_string()))
 }
@@ -954,6 +1001,8 @@ pub fn finalize_workspace_run_continuing(
 ) -> Result<Option<RunRecord>, ProjectDocumentError> {
     let status = match session.status() {
         SolveStatus::Converged => RunStatus::Converged,
+        SolveStatus::Completed => RunStatus::Completed,
+        SolveStatus::Stopped => RunStatus::Stopped,
         SolveStatus::MaxIterations => RunStatus::MaxIterations,
         SolveStatus::Failed(_) => RunStatus::Failed,
         SolveStatus::Idle | SolveStatus::Solving => return Ok(None),
@@ -1680,6 +1729,7 @@ mod tests {
                 first_layer_height: 0.005,
                 growth_ratio: 1.2,
                 layer_count: 5,
+                triangles: false,
                 enabled: true,
             }],
             ..MeshRecipe::default()
@@ -1691,6 +1741,16 @@ mod tests {
         assert!(geo.contains("Field[1] = BoundaryLayer"));
         assert!(geo.contains("Field[1].CurvesList = {2000}"));
         assert!(geo.contains("BoundaryLayer Field = 1"));
+        assert!(geo.contains("Field[1].Quads = 1;"));
+        let mut recipe = session.mesh_recipe().clone();
+        recipe.boundary_layers[0].triangles = true;
+        session.set_mesh_recipe(recipe);
+        let (export, _) = session.mesh_generation_inputs().unwrap();
+        assert!(export
+            .document
+            .to_geo_string()
+            .unwrap()
+            .contains("Field[1].Quads = 0;"));
     }
 
     #[test]
@@ -1920,6 +1980,7 @@ mod tests {
                 first_layer_height: 0.01,
                 growth_ratio: 1.2,
                 layer_count: 4,
+                triangles: false,
                 enabled: true,
             }],
             ..MeshRecipe::default()

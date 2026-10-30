@@ -178,6 +178,8 @@ pub struct CaseContext {
     pub id: String,
     pub revision: String,
     pub selected_preset: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reference_mesh_intent: Option<String>,
     pub metadata: CaseMetadata,
 }
 
@@ -463,10 +465,22 @@ pub fn instantiate(
             project.plane_monitors.push(section.clone());
         }
     }
+    let reference_mesh_intent = if preset.is_none()
+        && entry
+            .metadata
+            .assets
+            .iter()
+            .any(|a| a.role == "reference-mesh")
+    {
+        Some(super::mesh_storage::intent(&project)?)
+    } else {
+        None
+    };
     project.case_context = Some(CaseContext {
         id: entry.id.clone(),
         revision: entry.metadata.revision.clone(),
         selected_preset: preset.map(str::to_owned),
+        reference_mesh_intent,
         metadata: entry.metadata.clone(),
     });
     project.validate().map_err(|e| e.to_string())?;
@@ -519,6 +533,55 @@ pub fn compare(observed: &[f64], expected: &[f64], weights: &[f64]) -> Result<Er
 mod tests {
     use super::*;
     #[test]
+    fn reference_mesh_is_installed_only_for_its_original_intent() {
+        use crate::workbench::{GeometrySelectionTarget, NamedSelection, WorkbenchSession};
+        const MESH: &str = "$MeshFormat\n4.1 0 8\n$EndMeshFormat\n$PhysicalNames\n1\n1 7 \"walls\"\n$EndPhysicalNames\n$Entities\n0 1 1 0\n1 0 0 0 1 1 0 1 7 4 1 2 3 4\n1 0 0 0 1 1 0 0 1 1\n$EndEntities\n$Nodes\n1 4 10 50000\n2 1 0 4\n10 42 1001 50000\n0 0 0\n1 0 0\n1 1 0\n0 1 0\n$EndNodes\n$Elements\n2 6 1 6\n1 1 1 4\n1 10 42\n2 42 1001\n3 1001 50000\n4 50000 10\n2 1 2 2\n5 10 42 1001\n6 10 1001 50000\n$EndElements\n";
+        let mut project = WorkbenchProject::blank("Imported square");
+        let square = project.geometry.add_rectangle(1., 1.).unwrap();
+        project.fluid_face = Some(square.face);
+        project.named_selections = vec![NamedSelection {
+            name: "walls".into(),
+            targets: [square.bottom, square.right, square.top, square.left]
+                .into_iter()
+                .map(GeometrySelectionTarget::Edge)
+                .collect(),
+        }];
+        let mut metadata = CaseMetadata::default();
+        metadata.assets.push(Asset {
+            path: "reference/grid.msh".into(),
+            role: "reference-mesh".into(),
+            content: Some(MESH.into()),
+            sha256: Some(digest(MESH)),
+            ..Default::default()
+        });
+        let entry = CaseTemplateManifest {
+            format_version: CASE_FORMAT_VERSION,
+            id: "square".into(),
+            name: "Square".into(),
+            category: "Test".into(),
+            description: String::new(),
+            capabilities: vec![],
+            expectations: Default::default(),
+            metadata,
+            project_template: project,
+        };
+        let mut instance = instantiate(&entry, None).unwrap();
+        assert_eq!(
+            WorkbenchSession::from_project(&instance)
+                .unwrap()
+                .mesh()
+                .unwrap()
+                .mesh
+                .cell_count(),
+            2
+        );
+        instance.mesh.global_size *= 0.5;
+        assert!(WorkbenchSession::from_project(&instance)
+            .unwrap()
+            .mesh()
+            .is_none());
+    }
+    #[test]
     fn case_metadata_presets_preserve_independent_study_axes() {
         let cases = crate::workbench::catalogue::builtin_templates().expect("case library");
         assert!(!cases.is_empty());
@@ -534,7 +597,7 @@ mod tests {
                     project.case_context.as_ref().map(|c| c.id.as_str()),
                     Some(case.id.as_str())
                 );
-                if preset.id.starts_with("time-") {
+                if preset.id.starts_with("time-") || preset.time.is_some() {
                     assert_eq!(project.mesh, case.project_template.mesh);
                     assert_eq!(project.mesh_recipe, case.project_template.mesh_recipe);
                 } else {

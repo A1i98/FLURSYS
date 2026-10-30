@@ -1,0 +1,11 @@
+{
+  "source": "https://tmbwg.github.io/turbmodels/backstep_val.html",
+  "downloaded": "2026-10-26",
+  "original_urls": {
+    "cp.expnew.dat": "https://tmbwg.github.io/turbmodels/Backstep_validation/cp.expnew.dat",
+    "cf.exp.dat": "https://tmbwg.github.io/turbmodels/Backstep_validation/cf.exp.dat",
+    "profiles.exp.dat": "https://tmbwg.github.io/turbmodels/Backstep_validation/profiles.exp.dat"
+  },
+  "derived_csv": "Numeric columns copied without interpolation. Cf error column retains the source label; no confidence level is assumed. Reynolds stress columns retain source factors 1000; triple moments retain 10000.",
+  "method": "Use the measured centre-channel Uref near x/H=-4, not automatically the inlet velocity. H=0.0127 m; coordinates match the experiment: downstream floor y/H=0, upstream floor y/H=1. Check upstream Re_theta~5000, delta/H~1.5 and Cf~0.0029. Adjust inlet speed or development length if necessary. Resolve and inspect y+; compare three meshes and time steps; average after startup and report averaging interval. Native SST is not asserted equivalent to NASA SSTm. The 2D incompressible model omits sidewalls and small Mach=0.128 effects."
+}
