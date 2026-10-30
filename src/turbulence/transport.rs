@@ -259,13 +259,57 @@ pub(super) fn scalar_solve(
     options.correction_field = Some(field);
     options.allow_iterative_outlet_backflow = true;
     let system = assemble_momentum_component(mesh, options)?;
-    let matrix = system.matrix();
+    let (mut matrix, mut rhs) = system.into_matrix_and_rhs();
+    let diagonal_positions: Option<Vec<_>> = (0..mesh.cell_count())
+        .map(|i| {
+            let start = matrix.row_offsets()[i];
+            let end = matrix.row_offsets()[i + 1];
+            matrix.column_indices()[start..end]
+                .binary_search(&i)
+                .ok()
+                .map(|offset| start + offset)
+        })
+        .collect();
+    if let Some(diagonal_positions) = diagonal_positions {
+        for (i, cell) in mesh.cells().iter().enumerate() {
+            let start = matrix.row_offsets()[i];
+            let end = matrix.row_offsets()[i + 1];
+            if let Some(v) = prescribed.and_then(|p| p[i]) {
+                matrix.values_mut()[start..end].fill(0.0);
+                matrix.values_mut()[diagonal_positions[i]] = 1.0;
+                rhs[i] = v;
+                continue;
+            }
+            let diag = matrix.values()[diagonal_positions[i]] + sink[i] * cell.volume;
+            for j in start..end {
+                let col = matrix.column_indices()[j];
+                if let Some(v) = prescribed.and_then(|p| p[col]) {
+                    rhs[i] -= matrix.values()[j] * v;
+                    matrix.values_mut()[j] = 0.0;
+                }
+            }
+            matrix.values_mut()[diagonal_positions[i]] +=
+                sink[i] * cell.volume + (1.0 / alpha - 1.0) * diag;
+            rhs[i] += (1.0 / alpha - 1.0) * diag * field[i];
+        }
+        let report = linear.solve(&matrix, &rhs, field.values_mut(), false)?;
+        if report.status != LinearSolverStatus::Converged {
+            return Err(SimpleError::PhysicalBoundary(
+                format!("Turbulence {equation} linear solve did not converge: iterations={}, initial={:.6e}, final={:.6e}, relative={:.6e}, preconditioner={:?}", report.iterations, report.initial_residual, report.final_residual, report.relative_residual, linear.preconditioner),
+            ));
+        }
+        if field.values().iter().any(|x| !x.is_finite()) {
+            return Err(SimpleError::PhysicalBoundary(
+                "Non-finite turbulence transport solution".into(),
+            ));
+        }
+        return Ok(report);
+    }
     let mut builder = CsrBuilder::with_capacity(
         mesh.cell_count(),
         mesh.cell_count(),
         matrix.nnz() + mesh.cell_count(),
     );
-    let mut rhs = system.rhs().to_vec();
     for (i, cell) in mesh.cells().iter().enumerate() {
         if let Some(v) = prescribed.and_then(|p| p[i]) {
             builder.add(i, i, 1.0)?;

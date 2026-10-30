@@ -462,25 +462,12 @@ impl Closure {
         }
         for (i, g) in gradient.iter().enumerate() {
             let mut s2 = 0.0;
-            let mut sd2 = 0.0;
-            let mut g2 = [[0.0; 3]; 3];
-            for a in 0..3 {
-                for b in 0..3 {
-                    g2[a][b] = (0..3).map(|c| g[a][c] * g[c][b]).sum();
-                }
-            }
-            let trace = (0..3).map(|a| g[a][a]).sum::<f64>();
-            let trace_g2 = (0..3).map(|a| g2[a][a]).sum::<f64>();
             for a in 0..3 {
                 for b in 0..3 {
                     let strain = 0.5 * (g[a][b] + g[b][a]);
                     s2 += strain * strain;
-                    let sd =
-                        0.5 * (g2[a][b] + g2[b][a]) - if a == b { trace_g2 / 3.0 } else { 0.0 };
-                    sd2 += sd * sd;
                 }
             }
-            let delta = mesh.cells()[i].volume.cbrt();
             let k = self.fields.k[i].max(1e-14);
             let w = self.fields.omega[i].max(1e-12);
             self.fields.nut[i] = match self.config.model {
@@ -508,6 +495,8 @@ impl Closure {
                     0.31 * k / (0.31 * w).max(f2 * (2.0 * s2).sqrt())
                 }
                 TurbulenceModel::Smagorinsky => {
+                    let delta = mesh.cells()[i].volume.cbrt();
+                    let trace = (0..3).map(|a| g[a][a]).sum::<f64>();
                     let a = self.config.ce / delta;
                     let b = 2.0 / 3.0 * trace;
                     let c = 2.0 * self.config.ck * delta * (s2 - trace * trace / 3.0).max(0.0);
@@ -525,6 +514,22 @@ impl Closure {
                     self.config.ck * delta * sqrt_k
                 }
                 TurbulenceModel::Wale => {
+                    let delta = mesh.cells()[i].volume.cbrt();
+                    let mut g2 = [[0.0; 3]; 3];
+                    for a in 0..3 {
+                        for b in 0..3 {
+                            g2[a][b] = (0..3).map(|c| g[a][c] * g[c][b]).sum();
+                        }
+                    }
+                    let trace_g2 = (0..3).map(|a| g2[a][a]).sum::<f64>();
+                    let mut sd2 = 0.0;
+                    for a in 0..3 {
+                        for b in 0..3 {
+                            let sd = 0.5 * (g2[a][b] + g2[b][a])
+                                - if a == b { trace_g2 / 3.0 } else { 0.0 };
+                            sd2 += sd * sd;
+                        }
+                    }
                     let denominator = s2.powf(2.5) + sd2.powf(1.25);
                     let nut = if denominator > 0.0 {
                         (self.config.cw * delta).powi(2) * sd2.powf(1.5) / denominator
@@ -696,28 +701,38 @@ fn velocity_gradient(
     u: &CellField<Vec3>,
     bc: &ResolvedVelocityBoundaryConditions,
 ) -> Result<Vec<[[f64; 3]; 3]>, SimpleError> {
-    let gradients = [
-        MomentumComponent::X,
-        MomentumComponent::Y,
-        MomentumComponent::Z,
-    ]
-    .map(|c| {
+    let gradient = |c| {
         scalar_gradient(
             mesh,
             &momentum_component_field(mesh, u, c)?,
             bc.component(c),
         )
-    })
-    .into_iter()
-    .collect::<Result<Vec<_>, SimpleError>>()?;
+    };
+    let (x, y, z) = if crate::compute::parallel_rows(mesh.cell_count()) {
+        let (x, (y, z)) = rayon::join(
+            || gradient(MomentumComponent::X),
+            || {
+                rayon::join(
+                    || gradient(MomentumComponent::Y),
+                    || gradient(MomentumComponent::Z),
+                )
+            },
+        );
+        (x?, y?, z?)
+    } else {
+        (
+            gradient(MomentumComponent::X)?,
+            gradient(MomentumComponent::Y)?,
+            gradient(MomentumComponent::Z)?,
+        )
+    };
     Ok((0..mesh.cell_count())
         .map(|i| {
-            gradients
-                .iter()
-                .map(|v| [v[i].x, v[i].y, v[i].z])
-                .collect::<Vec<_>>()
-                .try_into()
-                .unwrap()
+            [
+                [x[i].x, x[i].y, x[i].z],
+                [y[i].x, y[i].y, y[i].z],
+                [z[i].x, z[i].y, z[i].z],
+            ]
         })
         .collect())
 }
