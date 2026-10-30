@@ -62,7 +62,7 @@ impl PressureDirect {
                 message: format!("Pressure LDLT update: {e}"),
             })?;
         validate_diagonal(&self.factor)?;
-        self.matrix = matrix.clone();
+        self.matrix.values_mut().copy_from_slice(matrix.values());
         Ok(())
     }
     pub fn matches_pattern(&self, matrix: &CsrMatrix) -> bool {
