@@ -1,6 +1,44 @@
 use super::LinearAlgebraError;
 use rayon::prelude::*;
 
+#[cfg(test)]
+mod pattern_tests {
+    use super::*;
+
+    #[test]
+    fn cached_assembly_matches_full_builder_when_values_and_topology_change() {
+        let mut cache = CsrPatternCache::default();
+        let mut entries = vec![
+            (0, 1, -2.0),
+            (0, 0, 2.0),
+            (1, 1, 3.0),
+            (0, 1, 2.0),
+            (1, 0, -1.0),
+        ];
+        for iteration in 0..5 {
+            if iteration == 1 {
+                entries[3].2 = 1.0;
+            }
+            if iteration == 2 {
+                entries[0].2 = -1.0;
+            }
+            if iteration == 3 {
+                entries.push((1, 0, 0.5));
+            }
+            if iteration == 4 {
+                entries.swap(0, 4);
+            }
+            let expected = CsrBuilder::from_entries(2, 2, entries.clone())
+                .unwrap()
+                .finalize()
+                .unwrap();
+            assert_eq!(cache.assemble(2, 2, &entries).unwrap(), expected);
+        }
+        assert!(cache.assemble(2, 2, &[(3, 0, 1.0)]).is_err());
+        assert!(cache.assemble(2, 2, &[(0, 0, f64::NAN)]).is_err());
+    }
+}
+
 /// Immutable compressed-sparse-row matrix with strictly ascending row columns.
 #[derive(Clone, Debug, PartialEq)]
 pub struct CsrMatrix {
@@ -181,7 +219,121 @@ pub struct CsrBuilder {
     entries_by_row: Vec<(usize, f64)>,
 }
 
+#[derive(Debug, Default)]
+pub(crate) struct CsrPatternCache {
+    nrows: usize,
+    ncols: usize,
+    coordinates: Vec<(usize, usize)>,
+    row_offsets: Vec<usize>,
+    ordered: Vec<(usize, usize)>,
+}
+
+impl CsrPatternCache {
+    pub(crate) fn assemble(
+        &mut self,
+        nrows: usize,
+        ncols: usize,
+        entries: &[(usize, usize, f64)],
+    ) -> Result<CsrMatrix, LinearAlgebraError> {
+        for (index, &(row, column, value)) in entries.iter().enumerate() {
+            if row >= nrows || column >= ncols {
+                return Err(LinearAlgebraError::IndexOutOfBounds { row, column });
+            }
+            if !value.is_finite() {
+                return Err(LinearAlgebraError::NonFiniteValue {
+                    context: "matrix",
+                    index,
+                });
+            }
+        }
+        if self.nrows != nrows
+            || self.ncols != ncols
+            || self.row_offsets.len() != nrows + 1
+            || self.coordinates.len() != entries.len()
+            || self
+                .coordinates
+                .iter()
+                .zip(entries)
+                .any(|(&(r, c), &(er, ec, _))| r != er || c != ec)
+        {
+            self.nrows = nrows;
+            self.ncols = ncols;
+            self.coordinates = entries.iter().map(|&(r, c, _)| (r, c)).collect();
+            self.row_offsets = vec![0; nrows + 1];
+            for &(row, _, _) in entries {
+                self.row_offsets[row + 1] += 1;
+            }
+            for row in 0..nrows {
+                self.row_offsets[row + 1] += self.row_offsets[row];
+            }
+            let mut cursor = self.row_offsets[..nrows].to_vec();
+            self.ordered = vec![(0, 0); entries.len()];
+            for (index, &(row, column, _)) in entries.iter().enumerate() {
+                self.ordered[cursor[row]] = (column, index);
+                cursor[row] += 1;
+            }
+            for row in 0..nrows {
+                self.ordered[self.row_offsets[row]..self.row_offsets[row + 1]]
+                    .sort_unstable_by_key(|&(column, _)| column);
+            }
+        }
+        let mut offsets = Vec::with_capacity(nrows + 1);
+        let mut columns = Vec::with_capacity(entries.len());
+        let mut values = Vec::with_capacity(entries.len());
+        offsets.push(0);
+        for row in 0..nrows {
+            let ordered = &self.ordered[self.row_offsets[row]..self.row_offsets[row + 1]];
+            let mut index = 0;
+            while index < ordered.len() {
+                let column = ordered[index].0;
+                let mut value = 0.0;
+                while index < ordered.len() && ordered[index].0 == column {
+                    value += entries[ordered[index].1].2;
+                    index += 1;
+                }
+                if !value.is_finite() {
+                    return Err(LinearAlgebraError::NonFiniteValue {
+                        context: "assembled matrix",
+                        index: values.len(),
+                    });
+                }
+                if value != 0.0 {
+                    columns.push(column);
+                    values.push(value);
+                }
+            }
+            offsets.push(values.len());
+        }
+        CsrMatrix::new(nrows, ncols, offsets, columns, values)
+    }
+}
+
 impl CsrBuilder {
+    pub(crate) fn from_entries(
+        nrows: usize,
+        ncols: usize,
+        entries: Vec<(usize, usize, f64)>,
+    ) -> Result<Self, LinearAlgebraError> {
+        for (index, &(row, column, value)) in entries.iter().enumerate() {
+            if row >= nrows || column >= ncols {
+                return Err(LinearAlgebraError::IndexOutOfBounds { row, column });
+            }
+            if !value.is_finite() {
+                return Err(LinearAlgebraError::NonFiniteValue {
+                    context: "matrix",
+                    index,
+                });
+            }
+        }
+        Ok(Self {
+            nrows,
+            ncols,
+            entries,
+            row_offsets: vec![0; nrows + 1],
+            cursors: vec![0; nrows],
+            entries_by_row: Vec::new(),
+        })
+    }
     pub fn new(nrows: usize, ncols: usize) -> Self {
         Self::with_capacity(nrows, ncols, 0)
     }

@@ -295,6 +295,11 @@ pub fn solve_simple_with_observer(
     let mut last_pressure = None;
     let mut pressure_workspace = crate::equations::PressureWorkspace::default();
     let mut momentum_workspace = crate::momentum::MomentumWorkspace::default();
+    let mut momentum_patterns = [
+        crate::linear::CsrPatternCache::default(),
+        crate::linear::CsrPatternCache::default(),
+        crate::linear::CsrPatternCache::default(),
+    ];
     let mut velocity_stencils: [Option<(
         ResolvedScalarBoundaryConditions,
         LeastSquaresGradientStencil,
@@ -317,6 +322,8 @@ pub fn solve_simple_with_observer(
         if is_cancelled() {
             return Err(SimpleError::Cancelled);
         }
+        let boundary_timer =
+            crate::compute::StageTimer::new(crate::compute::Stage::BoundaryResolution);
         let dynamic = options
             .boundary_case
             .map(|case| case.resolve_boundaries_at(Some(&state.velocity), Some(&state.face_flux)))
@@ -376,6 +383,7 @@ pub fn solve_simple_with_observer(
                 }
             }
         }
+        drop(boundary_timer);
         let correction_stencil = if dynamic.is_some() {
             correction_cache.as_ref().map(|(_, stencil)| stencil)
         } else {
@@ -387,6 +395,7 @@ pub fn solve_simple_with_observer(
             options.pressure_stencil,
             options.pressure_boundary,
         )?;
+        let turbulence_timer = crate::compute::StageTimer::new(crate::compute::Stage::Turbulence);
         let closure_correction = if let Some(closure) = options.closure {
             let nu = options
                 .boundary_case
@@ -403,6 +412,7 @@ pub fn solve_simple_with_observer(
         } else {
             None
         };
+        drop(turbulence_timer);
         if let Some((viscosity, _)) = &closure_correction {
             options.viscosity = Diffusivity::Faces(viscosity);
         }
@@ -492,51 +502,81 @@ pub fn solve_simple_with_observer(
                 }
             }
         }
-        let assemble = |component, source, current, stencil| {
-            crate::momentum::assemble_momentum_component_with_sink(
-                mesh,
-                MomentumOptions {
-                    convection: options.convection,
-                    viscosity: options.viscosity,
-                    boundary: options.velocity_boundary.component(component),
-                    flux: &state.face_flux,
-                    old: temporal.as_ref().map(|v| {
-                        &v[match component {
-                            MomentumComponent::X => 0,
-                            MomentumComponent::Y => 1,
-                            MomentumComponent::Z => 2,
-                        }]
-                    }),
-                    time_step: options.time_step,
-                    source: Some(source),
-                    relaxation_field: relaxed.then_some(current),
-                    correction_field: Some(current),
-                    least_squares_stencil: stencil,
-                    under_relaxation: options.velocity_relaxation,
-                    diffusion: options.momentum_diffusion,
-                    allow_iterative_outlet_backflow: options.pressure_correction_boundary.is_some(),
-                },
-                model_terms.as_ref().map(|(sink, _)| sink),
+        let momentum_timer = crate::compute::StageTimer::new(crate::compute::Stage::MomentumWall);
+        let face_viscosity = crate::interpolate_diffusivity(
+            mesh,
+            options.viscosity,
+            options.momentum_diffusion.diffusivity_interpolation,
+        )?;
+        let assemble =
+            |component, source, current, stencil, cache: &mut crate::linear::CsrPatternCache| {
+                crate::momentum::assemble_momentum_component_with_prepared_viscosity(
+                    mesh,
+                    MomentumOptions {
+                        convection: options.convection,
+                        viscosity: options.viscosity,
+                        boundary: options.velocity_boundary.component(component),
+                        flux: &state.face_flux,
+                        old: temporal.as_ref().map(|v| {
+                            &v[match component {
+                                MomentumComponent::X => 0,
+                                MomentumComponent::Y => 1,
+                                MomentumComponent::Z => 2,
+                            }]
+                        }),
+                        time_step: options.time_step,
+                        source: Some(source),
+                        relaxation_field: relaxed.then_some(current),
+                        correction_field: Some(current),
+                        least_squares_stencil: stencil,
+                        under_relaxation: options.velocity_relaxation,
+                        diffusion: options.momentum_diffusion,
+                        allow_iterative_outlet_backflow: options
+                            .pressure_correction_boundary
+                            .is_some(),
+                    },
+                    model_terms.as_ref().map(|(sink, _)| sink),
+                    Some(&face_viscosity),
+                    Some(cache),
+                )
+            };
+        let [x_pattern, y_pattern, z_pattern] = &mut momentum_patterns;
+        let mut x = || {
+            assemble(
+                MomentumComponent::X,
+                &source_x,
+                &current_x,
+                velocity_stencils[0].as_ref().map(|v| &v.1),
+                x_pattern,
             )
         };
-        let x_system = assemble(
-            MomentumComponent::X,
-            &source_x,
-            &current_x,
-            velocity_stencils[0].as_ref().map(|v| &v.1),
-        )?;
-        let y_system = assemble(
-            MomentumComponent::Y,
-            &source_y,
-            &current_y,
-            velocity_stencils[1].as_ref().map(|v| &v.1),
-        )?;
-        let z_system = assemble(
-            MomentumComponent::Z,
-            &source_z,
-            &current_z,
-            velocity_stencils[2].as_ref().map(|v| &v.1),
-        )?;
+        let mut y = || {
+            assemble(
+                MomentumComponent::Y,
+                &source_y,
+                &current_y,
+                velocity_stencils[1].as_ref().map(|v| &v.1),
+                y_pattern,
+            )
+        };
+        let mut z = || {
+            assemble(
+                MomentumComponent::Z,
+                &source_z,
+                &current_z,
+                velocity_stencils[2].as_ref().map(|v| &v.1),
+                z_pattern,
+            )
+        };
+        let (x_system, y_system, z_system) = if crate::compute::parallel_rows(mesh.cell_count()) {
+            let (x, (y, z)) = rayon::join(x, || rayon::join(y, z));
+            (x?, y?, z?)
+        } else {
+            (x()?, y()?, z()?)
+        };
+        drop(momentum_timer);
+        let momentum_solve_timer =
+            crate::compute::StageTimer::new(crate::compute::Stage::MomentumSolve);
         let mut predictor = state.velocity.clone();
         let momentum_reports = crate::momentum::solve_momentum_velocity_with_workspace(
             [&x_system, &y_system, &z_system],
@@ -547,6 +587,7 @@ pub fn solve_simple_with_observer(
             ),
             &mut momentum_workspace,
         )?;
+        drop(momentum_solve_timer);
         if !momentum_reports.iter().all(LinearSolveReport::converged) {
             return Err(SimpleError::MomentumLinearDidNotConverge {
                 reports: momentum_reports,
@@ -669,6 +710,8 @@ pub fn solve_simple_with_observer(
                 }
             }
         }
+        let pressure_timer =
+            crate::compute::StageTimer::new(crate::compute::Stage::PressureCorrection);
         let mut final_pressure_report = None;
         for corrector in 0..options.pressure_coupling.pressure_correctors {
             if is_cancelled() {
@@ -794,6 +837,7 @@ pub fn solve_simple_with_observer(
             state.face_flux = corrected_flux;
             final_pressure_report = Some(pressure_report);
         }
+        drop(pressure_timer);
         let pressure_report = final_pressure_report
             .ok_or_else(|| SimpleError::PhysicalBoundary("Missing inner pressure solve".into()))?;
         let mut update_sq = 0.0_f64;

@@ -24,6 +24,7 @@ pub use profile::{cg_profile_snapshot, CgProfileSnapshot};
 pub(crate) use solver::validate_solve_inputs;
 mod vector;
 
+pub(crate) use csr::CsrPatternCache;
 pub use csr::{CsrBuilder, CsrMatrix};
 pub use preconditioner::{
     IncompleteCholeskyPreconditioner, JacobiPreconditioner, Preconditioner,

@@ -124,7 +124,7 @@ pub struct PerformanceReport {
 }
 #[derive(Default)]
 struct Counters {
-    stages: [AtomicU64; 5],
+    stages: [AtomicU64; 10],
     spmv: AtomicU64,
     spmv_ns: AtomicU64,
     linear: AtomicU64,
@@ -214,6 +214,11 @@ pub enum Stage {
     PreconditionerSetup = 2,
     PreconditionerApply = 3,
     MonitorOutput = 4,
+    BoundaryResolution = 5,
+    Turbulence = 6,
+    MomentumWall = 7,
+    MomentumSolve = 8,
+    PressureCorrection = 9,
 }
 pub struct StageTimer {
     runtime: Option<Arc<Execution>>,
@@ -524,6 +529,11 @@ impl Execution {
                 "preconditioner_setup",
                 "preconditioner_apply",
                 "monitor_output",
+                "boundary_resolution",
+                "turbulence",
+                "momentum_wall",
+                "momentum_solve",
+                "pressure_correction",
             ]
             .into_iter()
             .enumerate()

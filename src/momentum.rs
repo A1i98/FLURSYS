@@ -167,6 +167,10 @@ pub struct MomentumSystem {
 }
 
 impl MomentumSystem {
+    pub(crate) fn into_matrix_and_rhs(self) -> (CsrMatrix, Vec<f64>) {
+        (self.matrix, self.rhs)
+    }
+
     pub fn mesh_id(&self) -> crate::MeshId {
         self.mesh_id
     }
@@ -236,6 +240,16 @@ pub(crate) fn assemble_momentum_component_with_sink(
     options: MomentumOptions<'_>,
     sink: Option<&CellField<f64>>,
 ) -> Result<MomentumSystem, MomentumError> {
+    assemble_momentum_component_with_prepared_viscosity(mesh, options, sink, None, None)
+}
+
+pub(crate) fn assemble_momentum_component_with_prepared_viscosity(
+    mesh: &UnstructuredMesh,
+    options: MomentumOptions<'_>,
+    sink: Option<&CellField<f64>>,
+    prepared_viscosity: Option<&FaceField<f64>>,
+    pattern_cache: Option<&mut crate::linear::CsrPatternCache>,
+) -> Result<MomentumSystem, MomentumError> {
     let _timer = crate::compute::StageTimer::new(crate::compute::Stage::MomentumAssembly);
     if let Some(s) = sink {
         s.ensure_mesh(mesh)?;
@@ -273,13 +287,31 @@ pub(crate) fn assemble_momentum_component_with_sink(
             return Err(MomentumError::MissingVelocityForTransient);
         }
     }
-    let viscosity = interpolate_diffusivity(
-        mesh,
-        options.viscosity,
-        options.diffusion.diffusivity_interpolation,
-    )?;
+    let interpolated;
+    let viscosity = if let Some(viscosity) = prepared_viscosity {
+        viscosity.ensure_mesh(mesh)?;
+        viscosity
+    } else {
+        interpolated = interpolate_diffusivity(
+            mesh,
+            options.viscosity,
+            options.diffusion.diffusivity_interpolation,
+        )?;
+        &interpolated
+    };
     let mut entries = Vec::with_capacity(mesh.face_count() * 4 + mesh.cell_count());
     let mut rhs = vec![0.0; mesh.cell_count()];
+    if matches!(
+        options.convection,
+        MomentumConvection::BoundedLust | MomentumConvection::BoundedLimitedLinearTvd
+    ) {
+        for (i, face) in mesh.faces().iter().enumerate() {
+            entries.push((face.owner, face.owner, -options.flux[i]));
+            if let Some(neighbour) = face.neighbour {
+                entries.push((neighbour, neighbour, options.flux[i]));
+            }
+        }
+    }
     for (cell_index, cell) in mesh.cells().iter().enumerate() {
         if let Some(s) = sink {
             let coefficient = s[cell_index] * cell.volume;
@@ -416,24 +448,13 @@ pub(crate) fn assemble_momentum_component_with_sink(
             }
         }
     }
-    add_explicit_nonorthogonal_rhs(mesh, options, &viscosity, &mut rhs)?;
+    add_explicit_nonorthogonal_rhs(mesh, options, viscosity, &mut rhs)?;
     convection::correct(mesh, options, &mut rhs)?;
-    let mut builder = CsrBuilder::new(mesh.cell_count(), mesh.cell_count());
-    if matches!(
-        options.convection,
-        MomentumConvection::BoundedLust | MomentumConvection::BoundedLimitedLinearTvd
-    ) {
-        for (i, face) in mesh.faces().iter().enumerate() {
-            builder.add(face.owner, face.owner, -options.flux[i])?;
-            if let Some(neighbour) = face.neighbour {
-                builder.add(neighbour, neighbour, options.flux[i])?;
-            }
-        }
-    }
-    for (row, column, value) in entries {
-        builder.add(row, column, value)?;
-    }
-    let mut unrelaxed = builder.finalize()?;
+    let mut unrelaxed = if let Some(cache) = pattern_cache {
+        cache.assemble(mesh.cell_count(), mesh.cell_count(), &entries)?
+    } else {
+        CsrBuilder::from_entries(mesh.cell_count(), mesh.cell_count(), entries)?.finalize()?
+    };
     let unrelaxed_diagonal = unrelaxed.diagonal()?;
     if options.under_relaxation == 1.0 {
         return Ok(MomentumSystem {
