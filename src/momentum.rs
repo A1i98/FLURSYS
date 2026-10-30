@@ -248,7 +248,7 @@ pub(crate) fn assemble_momentum_component_with_prepared_viscosity(
     options: MomentumOptions<'_>,
     sink: Option<&CellField<f64>>,
     prepared_viscosity: Option<&FaceField<f64>>,
-    pattern_cache: Option<&mut crate::linear::CsrPatternCache>,
+    mut pattern_cache: Option<&mut crate::linear::CsrPatternCache>,
 ) -> Result<MomentumSystem, MomentumError> {
     let _timer = crate::compute::StageTimer::new(crate::compute::Stage::MomentumAssembly);
     if let Some(s) = sink {
@@ -299,7 +299,11 @@ pub(crate) fn assemble_momentum_component_with_prepared_viscosity(
         )?;
         &interpolated
     };
-    let mut entries = Vec::with_capacity(mesh.face_count() * 4 + mesh.cell_count());
+    let entry_capacity = mesh.face_count() * 4 + mesh.cell_count();
+    let mut entries = match pattern_cache.as_deref_mut() {
+        Some(cache) => cache.take_entries(entry_capacity),
+        None => Vec::with_capacity(entry_capacity),
+    };
     let mut rhs = vec![0.0; mesh.cell_count()];
     if matches!(
         options.convection,
@@ -451,7 +455,9 @@ pub(crate) fn assemble_momentum_component_with_prepared_viscosity(
     add_explicit_nonorthogonal_rhs(mesh, options, viscosity, &mut rhs)?;
     convection::correct(mesh, options, &mut rhs)?;
     let mut unrelaxed = if let Some(cache) = pattern_cache {
-        cache.assemble(mesh.cell_count(), mesh.cell_count(), &entries)?
+        let result = cache.assemble(mesh.cell_count(), mesh.cell_count(), &entries);
+        cache.recycle_entries(entries);
+        result?
     } else {
         CsrBuilder::from_entries(mesh.cell_count(), mesh.cell_count(), entries)?.finalize()?
     };

@@ -226,9 +226,25 @@ pub(crate) struct CsrPatternCache {
     coordinates: Vec<(usize, usize)>,
     row_offsets: Vec<usize>,
     ordered: Vec<(usize, usize)>,
+    unique_entries: usize,
+    entry_buffer: Vec<(usize, usize, f64)>,
 }
 
 impl CsrPatternCache {
+    pub(crate) fn take_entries(&mut self, capacity: usize) -> Vec<(usize, usize, f64)> {
+        let mut entries = std::mem::take(&mut self.entry_buffer);
+        entries.clear();
+        if entries.capacity() < capacity {
+            entries.reserve(capacity);
+        }
+        entries
+    }
+
+    pub(crate) fn recycle_entries(&mut self, mut entries: Vec<(usize, usize, f64)>) {
+        entries.clear();
+        self.entry_buffer = entries;
+    }
+
     pub(crate) fn assemble(
         &mut self,
         nrows: usize,
@@ -276,10 +292,20 @@ impl CsrPatternCache {
                 self.ordered[self.row_offsets[row]..self.row_offsets[row + 1]]
                     .sort_unstable_by_key(|&(column, _)| column);
             }
+            self.unique_entries = (0..nrows)
+                .map(|row| {
+                    let entries = &self.ordered[self.row_offsets[row]..self.row_offsets[row + 1]];
+                    usize::from(!entries.is_empty())
+                        + entries
+                            .windows(2)
+                            .filter(|pair| pair[0].0 != pair[1].0)
+                            .count()
+                })
+                .sum();
         }
         let mut offsets = Vec::with_capacity(nrows + 1);
-        let mut columns = Vec::with_capacity(entries.len());
-        let mut values = Vec::with_capacity(entries.len());
+        let mut columns = Vec::with_capacity(self.unique_entries);
+        let mut values = Vec::with_capacity(self.unique_entries);
         offsets.push(0);
         for row in 0..nrows {
             let ordered = &self.ordered[self.row_offsets[row]..self.row_offsets[row + 1]];
