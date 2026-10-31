@@ -1,0 +1,26 @@
+{
+  "source": "Ghia, Ghia and Shin (1982), tables I and II",
+  "reynolds_number": 100,
+  "cells": 3720,
+  "iterations": 1307,
+  "status": "converged",
+  "solver_version": "0.21.1",
+  "u_centerline_errors_over_lid_speed": {
+    "points": 15,
+    "mae": 0.0057195335314097285,
+    "rmse": 0.007623958880342064,
+    "max_abs": 0.018072970228994234
+  },
+  "v_centerline_errors_over_lid_speed": {
+    "points": 15,
+    "mae": 0.006400921539532685,
+    "rmse": 0.0066541320634901,
+    "max_abs": 0.009327076862585548
+  },
+  "continuity_rms": 4.60211653476941e-12,
+  "momentum_relative_residual": 9.968486522525029e-07,
+  "relative_velocity_change": 7.739603573279686e-07,
+  "actual_backend": "CPU serial",
+  "cpu_threads": 1,
+  "elapsed_solver_s": 20.131950103
+}
