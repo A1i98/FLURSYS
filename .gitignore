@@ -6,6 +6,12 @@
 /benchmarks/
 /scripts/benchmark/
 
+/examples/validation/**/*.vtk
+/examples/validation/**/cell-data.csv
+/examples/validation/**/convergence.csv
+/examples/validation/**/report.json
+/examples/validation/**/*-report.json
+
 *.mp4
 *.gif
 *.profraw

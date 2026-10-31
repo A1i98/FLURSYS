@@ -1,0 +1,171 @@
+{
+  "reference": {
+    "drag": 5.57953523384,
+    "lift": 0.010618948146,
+    "pressure_difference": 0.11752016697
+  },
+  "runs": [
+    {
+      "cells": 15894,
+      "iterations": 1507,
+      "status": "converged",
+      "solver_version": "0.21.1",
+      "comparison": {
+        "drag": {
+          "reference": 5.57953523384,
+          "computed": 5.554965047034173,
+          "difference": -0.024570186805826566,
+          "relative_error_percent": -0.440362606849543
+        },
+        "lift": {
+          "reference": 0.010618948146,
+          "computed": 0.01237072526681106,
+          "difference": 0.0017517771208110603,
+          "relative_error_percent": 16.49671037776871
+        },
+        "pressure_difference": {
+          "reference": 0.11752016697,
+          "computed": 0.11624044590562499,
+          "difference": -0.0012797210643750168,
+          "relative_error_percent": -1.0889374116543742
+        }
+      },
+      "force_unit": "N/m",
+      "cylinder_force": {
+        "x": 0.011109930094068349,
+        "y": 2.4741450533622127e-05,
+        "z": 0.0
+      },
+      "pressure_force": {
+        "x": 0.0071974660409136835,
+        "y": 1.101855752174517e-05,
+        "z": 0.0
+      },
+      "shear_force": {
+        "x": 0.003912464053154666,
+        "y": 1.3722893011876958e-05,
+        "z": 0.0
+      },
+      "cylinder_wall_faces": 160,
+      "pressure_measurement": "Mean pressure of the two owner cells at the closest wall faces; approximate wall value, not exact point sampling",
+      "pressure_front_samples": [
+        {
+          "x": 0.1500192740940361,
+          "y": 0.20098149539535543,
+          "owner": 9889,
+          "owner_pressure": 0.1311255821581
+        },
+        {
+          "x": 0.1500192740940984,
+          "y": 0.19901850460305892,
+          "owner": 9878,
+          "owner_pressure": 0.130970241938
+        }
+      ],
+      "pressure_rear_samples": [
+        {
+          "x": 0.2499807259059639,
+          "y": 0.1990185046046446,
+          "owner": 9888,
+          "owner_pressure": 0.014806125155
+        },
+        {
+          "x": 0.2499807259059016,
+          "y": 0.2009814953969411,
+          "owner": 9877,
+          "owner_pressure": 0.01480880712985
+        }
+      ],
+      "continuity_rms": 1.3464227539709632e-14,
+      "net_boundary_flux": 1.9290125052862095e-15,
+      "coupling_convergence": {
+        "momentum_relative_residual": 9.997120988819546e-07,
+        "velocity_relative_change": 5.470849973828183e-07
+      },
+      "actual_backend": "CPU parallel",
+      "cpu_threads": 6,
+      "elapsed_solver_s": 30.697240055
+    },
+    {
+      "cells": 42823,
+      "iterations": 8642,
+      "status": "converged",
+      "solver_version": "0.21.1",
+      "comparison": {
+        "drag": {
+          "reference": 5.57953523384,
+          "computed": 5.573286667112527,
+          "difference": -0.0062485667274723156,
+          "relative_error_percent": -0.11199081044554797
+        },
+        "lift": {
+          "reference": 0.010618948146,
+          "computed": 0.013585009473851946,
+          "difference": 0.002966061327851946,
+          "relative_error_percent": 27.931780879532944
+        },
+        "pressure_difference": {
+          "reference": 0.11752016697,
+          "computed": 0.11691229447253998,
+          "difference": -0.0006078724974600269,
+          "relative_error_percent": -0.5172495182169047
+        }
+      },
+      "force_unit": "N/m",
+      "cylinder_force": {
+        "x": 0.011146573334225057,
+        "y": 2.71700189477039e-05,
+        "z": 0.0
+      },
+      "pressure_force": {
+        "x": 0.007234581342091639,
+        "y": 1.67736796804539e-05,
+        "z": 0.0
+      },
+      "shear_force": {
+        "x": 0.003911991992133417,
+        "y": 1.0396339267249999e-05,
+        "z": 0.0
+      },
+      "cylinder_wall_faces": 316,
+      "pressure_measurement": "Mean pressure of the two owner cells at the closest wall faces; approximate wall value, not exact point sampling",
+      "pressure_front_samples": [
+        {
+          "x": 0.1500049417557266,
+          "y": 0.2004970546905326,
+          "owner": 27246,
+          "owner_pressure": 0.131736197488
+        },
+        {
+          "x": 0.1500049417557924,
+          "y": 0.19950294530615856,
+          "owner": 27141,
+          "owner_pressure": 0.1316398904658
+        }
+      ],
+      "pressure_rear_samples": [
+        {
+          "x": 0.2499950582442734,
+          "y": 0.19950294530946744,
+          "owner": 9219,
+          "owner_pressure": 0.01476384960761
+        },
+        {
+          "x": 0.2499950582442076,
+          "y": 0.20049705469384144,
+          "owner": 10179,
+          "owner_pressure": 0.01478764940111
+        }
+      ],
+      "continuity_rms": 9.591888123022145e-14,
+      "net_boundary_flux": -3.597122599785507e-14,
+      "coupling_convergence": {
+        "momentum_relative_residual": 0.007460745063420704,
+        "velocity_relative_change": 0.0
+      },
+      "actual_backend": "CPU parallel",
+      "cpu_threads": 6,
+      "elapsed_solver_s": 191.630003335
+    }
+  ]
+}
