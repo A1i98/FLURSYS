@@ -1,0 +1,79 @@
+{
+  "case": "Turbulent flat plate SST",
+  "reference": "NASA TMR theoretical Karman-Schoenherr and SSTm CFL3D",
+  "mesh_cells": 13056,
+  "mesh_points": "137 x 97",
+  "reynolds_per_length": 5000000.0,
+  "inlet_turbulence_intensity": 0.00039,
+  "inlet_turbulent_viscosity_ratio": 0.009,
+  "run_status": "converged",
+  "iterations": 17945,
+  "coupling": {
+    "momentum_relative_residual": 9.999992873520119e-07,
+    "velocity_relative_change": 1.5867720973484018e-08
+  },
+  "cf_comparison": {
+    "re_theta_range": [
+      4098.985864002286,
+      12755.243915483672
+    ],
+    "samples": 41,
+    "mean_absolute_relative_error_percent_vs_karman_schoenherr": 3.7615631286998394,
+    "mean_signed_relative_error_percent_vs_karman_schoenherr": -3.7615631286998394,
+    "samples_overlapping_nasa_sst": 41,
+    "mean_absolute_relative_error_percent_vs_nasa_sst": 1.0654956321651923
+  },
+  "selected_velocity_profile": {
+    "x": 1.334143735315,
+    "re_theta": 10061.253454284019,
+    "target_re_theta": 10000,
+    "reference_same_station": true
+  },
+  "grid_comparison": {
+    "coarse_mesh": "69 x 49",
+    "coarse_cells": 3264,
+    "coarse_run_status": "converged",
+    "common_re_theta_samples": 41,
+    "mean_absolute_relative_cf_difference_percent": 1.2765320682410086,
+    "max_absolute_relative_cf_difference_percent": 1.3782449692403687
+  },
+  "y_plus": {
+    "min": 0.1731503202796243,
+    "mean": 0.1879711707093447,
+    "max": 0.3623360643181025
+  },
+  "limits": "Two grids do not establish grid independence; the local-edge approximation differs from the nominal-freestream formula used for the NASA reference.",
+  "openfoam": {
+    "version": "v2606 simpleFoam",
+    "mesh_cells": 13056,
+    "iterations": 30000,
+    "status": "iteration limit; no stopping criterion configured",
+    "pressure_initial_residual": 1.06135186236e-06,
+    "mean_absolute_relative_cf_error_percent_vs_nasa_sst": 1.1720179314615564,
+    "mean_absolute_relative_cf_error_percent_vs_karman_schoenherr": 3.8678505480858485,
+    "comparison_samples": 41,
+    "flursys_vs_openfoam_common_samples": 41,
+    "flursys_vs_openfoam_mean_absolute_relative_cf_difference_percent": 0.10776492365991577,
+    "cf_mean_change_last_1000_iterations_percent_at_fixed_x": 0.00011687983458393014,
+    "cf_max_change_last_1000_iterations_percent_at_fixed_x": 0.0003289630591212078,
+    "selected_velocity_re_theta": 10022.257303612208,
+    "notes": "Identical converted grid and fixed omega at wall. Different turbulence implementations, discretization, startup and pressure solver tolerance; wall friction on both calculated using the first-cell velocity and wall distance."
+  },
+  "solver_version": "0.21.1",
+  "reference_grid_source": "https://tmbwg.github.io/turbmodels/flatplate_grids.html",
+  "reference_sst_source": "https://tmbwg.github.io/turbmodels/flatplate_val_sst.html",
+  "example_reference_mesh_sha256": "e9be51dc3d266d8f60d539053ad5010f07df9c0049ca88592718270b63d83c1f",
+  "error_measure": "Unweighted mean absolute relative error at 41 nonuniform wall sample locations; references interpolated at local-edge Re_theta.",
+  "freestream_speed": 1.0,
+  "kinematic_viscosity": 2e-07,
+  "density": 1.0,
+  "velocity_relaxation": 0.2,
+  "pressure_relaxation": 0.1,
+  "momentum_convection": "limited-linear",
+  "wall_treatment": "resolved",
+  "integration_method": "Local edge velocity is interpolated at y=0.05; theta integrates (u/Ue)*(1-u/Ue) from wall to y=0.05; Re_theta=Ue*theta/nu; Cf=2*tau_wall/(rho*Ue^2).",
+  "edge_height_sensitivity": "At y=0.1 the FLURSYS mean relative difference to NASA changes from 1.07% to approximately 1.12%; reference interval and x sampling are unchanged.",
+  "previous_analysis_correction": "Earlier full-height integration using inlet speed introduced large negative outer-flow contributions; the previously reported 9.51% is superseded.",
+  "default_example_note": "The example uses the NASA reference mesh and matched turbulence settings. The previous regenerated mesh presets were removed because a tested preset failed.",
+  "reference_profile_note": "Profiles are near Re_theta=10000 and not exactly the same station; qualitative comparison."
+}
