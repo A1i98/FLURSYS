@@ -11,6 +11,7 @@
 /examples/validation/**/convergence.csv
 /examples/validation/**/report.json
 /examples/validation/**/*-report.json
+/examples/validation/sod-shock-tube/profile-[0-9]*.csv
 
 *.mp4
 *.gif
