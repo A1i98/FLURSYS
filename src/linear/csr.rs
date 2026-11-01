@@ -335,6 +335,31 @@ impl CsrPatternCache {
 }
 
 impl CsrBuilder {
+    pub(crate) fn with_pattern_cache(
+        nrows: usize,
+        ncols: usize,
+        capacity: usize,
+        cache: &mut CsrPatternCache,
+    ) -> Self {
+        Self {
+            nrows,
+            ncols,
+            entries: cache.take_entries(capacity),
+            row_offsets: vec![0; nrows + 1],
+            cursors: vec![0; nrows],
+            entries_by_row: Vec::new(),
+        }
+    }
+
+    pub(crate) fn finalize_cached(
+        self,
+        cache: &mut CsrPatternCache,
+    ) -> Result<CsrMatrix, LinearAlgebraError> {
+        let result = cache.assemble(self.nrows, self.ncols, &self.entries);
+        cache.recycle_entries(self.entries);
+        result
+    }
+
     pub(crate) fn from_entries(
         nrows: usize,
         ncols: usize,

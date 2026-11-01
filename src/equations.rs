@@ -228,6 +228,7 @@ impl EquationSolvers {
 // refreshing coefficients; far-field switching may change the pressure graph.
 #[derive(Default)]
 pub(crate) struct PressureWorkspace {
+    pub(crate) pattern: crate::linear::CsrPatternCache,
     direct: Option<crate::linear::direct::PressureDirect>,
     direct_unavailable: bool,
     multigrid: Option<AlgebraicMultigrid>,

@@ -1183,6 +1183,16 @@ pub fn assemble_pressure_correction(
     coefficients: &FaceField<f64>,
     reference_cell: usize,
 ) -> Result<PressureCorrectionSystem, SimpleError> {
+    assemble_pressure_correction_cached(mesh, predicted_flux, coefficients, reference_cell, None)
+}
+
+fn assemble_pressure_correction_cached(
+    mesh: &UnstructuredMesh,
+    predicted_flux: &FaceField<f64>,
+    coefficients: &FaceField<f64>,
+    reference_cell: usize,
+    mut pattern: Option<&mut crate::linear::CsrPatternCache>,
+) -> Result<PressureCorrectionSystem, SimpleError> {
     predicted_flux.ensure_mesh(mesh)?;
     coefficients.ensure_mesh(mesh)?;
     if reference_cell >= mesh.cell_count() {
@@ -1229,13 +1239,24 @@ pub fn assemble_pressure_correction(
     }
     rhs[reference_cell] = 0.0;
     constrained.push((reference_cell, reference_cell, 1.0));
-    let mut builder = CsrBuilder::new(mesh.cell_count(), mesh.cell_count());
+    let mut builder = match pattern.as_deref_mut() {
+        Some(cache) => CsrBuilder::with_pattern_cache(
+            mesh.cell_count(),
+            mesh.cell_count(),
+            constrained.len(),
+            cache,
+        ),
+        None => CsrBuilder::new(mesh.cell_count(), mesh.cell_count()),
+    };
     for (row, column, value) in constrained {
         builder.add(row, column, value)?;
     }
     Ok(PressureCorrectionSystem {
         mesh_id: mesh.id(),
-        matrix: builder.finalize()?,
+        matrix: match pattern {
+            Some(cache) => builder.finalize_cached(cache)?,
+            None => builder.finalize()?,
+        },
         rhs,
     })
 }
@@ -1248,7 +1269,14 @@ pub fn assemble_pressure_correction_with_boundary(
     coefficients: &FaceField<f64>,
     boundary: &ResolvedScalarBoundaryConditions,
 ) -> Result<PressureCorrectionSystem, SimpleError> {
-    assemble_pressure_correction_with_reference(mesh, predicted_flux, coefficients, boundary, None)
+    assemble_pressure_correction_with_reference(
+        mesh,
+        predicted_flux,
+        coefficients,
+        boundary,
+        None,
+        None,
+    )
 }
 fn assemble_pressure_correction_with_reference(
     mesh: &UnstructuredMesh,
@@ -1256,12 +1284,21 @@ fn assemble_pressure_correction_with_reference(
     coefficients: &FaceField<f64>,
     boundary: &ResolvedScalarBoundaryConditions,
     reference: Option<usize>,
+    mut pattern: Option<&mut crate::linear::CsrPatternCache>,
 ) -> Result<PressureCorrectionSystem, SimpleError> {
     predicted_flux.ensure_mesh(mesh)?;
     coefficients.ensure_mesh(mesh)?;
     boundary.ensure_mesh(mesh)?;
     let mut rhs = vec![0.0; mesh.cell_count()];
-    let mut builder = CsrBuilder::new(mesh.cell_count(), mesh.cell_count());
+    let mut builder = match pattern.as_deref_mut() {
+        Some(cache) => CsrBuilder::with_pattern_cache(
+            mesh.cell_count(),
+            mesh.cell_count(),
+            mesh.face_count() * 4,
+            cache,
+        ),
+        None => CsrBuilder::new(mesh.cell_count(), mesh.cell_count()),
+    };
     let mut anchored = false;
     for (face_index, face) in mesh.faces().iter().enumerate() {
         let flux = predicted_flux[face_index];
@@ -1317,7 +1354,10 @@ fn assemble_pressure_correction_with_reference(
                 cell_count: mesh.cell_count(),
             },
         )?;
-        let matrix = builder.finalize()?;
+        let matrix = match pattern {
+            Some(cache) => builder.finalize_cached(cache)?,
+            None => builder.finalize()?,
+        };
         let mut constrained = CsrBuilder::new(mesh.cell_count(), mesh.cell_count());
         for row in 0..matrix.nrows() {
             if row == r {
@@ -1340,7 +1380,10 @@ fn assemble_pressure_correction_with_reference(
     }
     Ok(PressureCorrectionSystem {
         mesh_id: mesh.id(),
-        matrix: builder.finalize()?,
+        matrix: match pattern {
+            Some(cache) => builder.finalize_cached(cache)?,
+            None => builder.finalize()?,
+        },
         rhs,
     })
 }
@@ -1887,6 +1930,56 @@ mod tests {
     fn momentum_inverse_diagonal_matches_the_hand_calculation() {
         let inverse = momentum_inverse_diagonal(&[2.0, 4.0, 0.5]).unwrap();
         assert_eq!(inverse, vec![0.5, 0.25, 2.0]);
+    }
+
+    #[test]
+    fn pressure_pattern_cache_matches_fresh_assembly_across_boundary_changes() {
+        for mesh in [square_grid(3, 2), hexahedral_grid(2, 2, 2)] {
+            let mut cache = crate::linear::CsrPatternCache::default();
+            for step in 0..6 {
+                let boundary_type = if step % 2 == 0 {
+                    ScalarBoundaryCondition::FixedValue(step as f64)
+                } else {
+                    ScalarBoundaryCondition::ZeroGradient
+                };
+                let boundary =
+                    ResolvedScalarBoundaryConditions::strict(&mesh, &[("wall", boundary_type)])
+                        .unwrap();
+                let flux = FaceField::from_faces(&mesh, |i, _| (i as f64 - 3.0) * 0.01);
+                let coefficients = FaceField::from_faces(&mesh, |i, _| 1.0 + i as f64 * 0.02);
+                let fresh = assemble_pressure_correction_with_reference(
+                    &mesh,
+                    &flux,
+                    &coefficients,
+                    &boundary,
+                    Some(0),
+                    None,
+                )
+                .unwrap();
+                let cached = assemble_pressure_correction_with_reference(
+                    &mesh,
+                    &flux,
+                    &coefficients,
+                    &boundary,
+                    Some(0),
+                    Some(&mut cache),
+                )
+                .unwrap();
+                assert_eq!(fresh.matrix(), cached.matrix());
+                assert_eq!(fresh.rhs(), cached.rhs());
+                let fresh = assemble_pressure_correction(&mesh, &flux, &coefficients, 0).unwrap();
+                let cached = assemble_pressure_correction_cached(
+                    &mesh,
+                    &flux,
+                    &coefficients,
+                    0,
+                    Some(&mut cache),
+                )
+                .unwrap();
+                assert_eq!(fresh.matrix(), cached.matrix());
+                assert_eq!(fresh.rhs(), cached.rhs());
+            }
+        }
     }
 
     #[test]

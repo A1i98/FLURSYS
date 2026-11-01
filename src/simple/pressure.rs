@@ -132,19 +132,25 @@ pub(super) fn project(
     workspace: &mut crate::equations::PressureWorkspace,
     cancelled: &mut impl FnMut() -> bool,
 ) -> Result<(CellField<f64>, FaceField<f64>, LinearSolveReport), SimpleError> {
-    let assemble = |flux: &FaceField<f64>| match options.pressure_correction_boundary {
-        Some(b) => assemble_pressure_correction_with_reference(
-            mesh,
-            flux,
-            coefficients,
-            b,
-            Some(options.reference_cell),
-        ),
-        None => assemble_pressure_correction(mesh, flux, coefficients, options.reference_cell),
-    };
     let mut system = {
         let _timer = crate::compute::StageTimer::new(crate::compute::Stage::PressureAssembly);
-        assemble(predicted)?
+        match options.pressure_correction_boundary {
+            Some(b) => assemble_pressure_correction_with_reference(
+                mesh,
+                predicted,
+                coefficients,
+                b,
+                Some(options.reference_cell),
+                Some(&mut workspace.pattern),
+            ),
+            None => assemble_pressure_correction_cached(
+                mesh,
+                predicted,
+                coefficients,
+                options.reference_cell,
+                Some(&mut workspace.pattern),
+            ),
+        }?
     };
     let base_rhs = system.rhs.clone();
     let control =
