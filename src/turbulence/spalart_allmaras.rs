@@ -119,6 +119,7 @@ impl Closure {
             &self.walls,
             nu / SIGMA,
             None,
+            &mut self.transport_patterns[0],
         )?;
         for value in field.values_mut() {
             *value = value.max(0.0);

@@ -191,6 +191,9 @@ pub(crate) struct Closure {
     extrapolate_outlet: bool,
     distance: Vec<f64>,
     old: Option<TurbulenceFields>,
+    previous: TurbulenceFields,
+    rans_workspace: Option<transport::RansWorkspace>,
+    transport_patterns: [crate::linear::CsrPatternCache; 2],
     pub relative_change: f64,
 }
 impl Closure {
@@ -336,6 +339,9 @@ impl Closure {
             last_linear: Default::default(),
             config,
             old: Some(fields.clone()),
+            previous: fields.clone(),
+            rans_workspace: None,
+            transport_patterns: Default::default(),
             fields,
             walls,
             wall_viscosity: vec![0.; mesh.face_count()],
@@ -452,7 +458,27 @@ impl Closure {
             }
         }
         let gradient = velocity_gradient(mesh, &state.velocity, bc)?;
-        let previous = self.fields.clone();
+        self.previous
+            .k
+            .values_mut()
+            .copy_from_slice(self.fields.k.values());
+        self.previous
+            .omega
+            .values_mut()
+            .copy_from_slice(self.fields.omega.values());
+        self.previous
+            .nut
+            .values_mut()
+            .copy_from_slice(self.fields.nut.values());
+        if let (Some(previous), Some(current)) =
+            (&mut self.previous.nu_tilda, &self.fields.nu_tilda)
+        {
+            previous.values_mut().copy_from_slice(current.values());
+        }
+        if let (Some(previous), Some(current)) = (&mut self.previous.epsilon, &self.fields.epsilon)
+        {
+            previous.values_mut().copy_from_slice(current.values());
+        }
         if self.config.model == TurbulenceModel::SpalartAllmaras {
             self.advance_sa(mesh, state, &gradient, nu, dt, linear)?;
         } else if self.config.model.uses_epsilon() {
@@ -546,17 +572,17 @@ impl Closure {
                 )));
             }
         }
-        self.relative_change = relative_change(&previous.k, &self.fields.k)
-            .max(relative_change(&previous.omega, &self.fields.omega))
-            .max(relative_change(&previous.nut, &self.fields.nut));
-        if let (Some(a), Some(b)) = (&previous.nu_tilda, &self.fields.nu_tilda) {
+        self.relative_change = relative_change(&self.previous.k, &self.fields.k)
+            .max(relative_change(&self.previous.omega, &self.fields.omega))
+            .max(relative_change(&self.previous.nut, &self.fields.nut));
+        if let (Some(a), Some(b)) = (&self.previous.nu_tilda, &self.fields.nu_tilda) {
             self.relative_change = self.relative_change.max(relative_change(a, b));
         }
-        if let (Some(a), Some(b)) = (&previous.epsilon, &self.fields.epsilon) {
+        if let (Some(a), Some(b)) = (&self.previous.epsilon, &self.fields.epsilon) {
             self.relative_change = self.relative_change.max(relative_change(a, b));
         }
         if !self.config.is_rans() {
-            self.relative_change = relative_change(&previous.nut, &self.fields.nut);
+            self.relative_change = relative_change(&self.previous.nut, &self.fields.nut);
         }
         let mut viscosity = FaceField::filled(mesh, nu);
         let mut source = CellField::filled(mesh, Vec3::ZERO);

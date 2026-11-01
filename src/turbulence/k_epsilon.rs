@@ -119,6 +119,7 @@ impl Closure {
             &self.walls,
             nu,
             Some(&wall.epsilon),
+            &mut self.transport_patterns[0],
         )?;
         self.last_linear.insert("epsilon".into(), report);
         // Couple k destruction to the newly solved dissipation, not its lagged value.
@@ -153,6 +154,7 @@ impl Closure {
             &self.walls,
             nu,
             None,
+            &mut self.transport_patterns[1],
         )?;
         self.last_linear.insert("k".into(), report);
         for i in 0..n {

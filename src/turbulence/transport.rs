@@ -1,5 +1,33 @@
 //! Positivity-preserving source splitting for k/omega. Upwind scalar transport.
 use super::*;
+
+#[derive(Debug)]
+pub(super) struct RansWorkspace {
+    dk: CellField<f64>,
+    dw: CellField<f64>,
+    sk: CellField<f64>,
+    sw: CellField<f64>,
+    sinkk: Vec<f64>,
+    sinkw: Vec<f64>,
+    trace: Vec<f64>,
+    production_gradient: Vec<f64>,
+}
+
+impl RansWorkspace {
+    fn new(mesh: &UnstructuredMesh) -> Self {
+        Self {
+            dk: CellField::filled(mesh, 0.0),
+            dw: CellField::filled(mesh, 0.0),
+            sk: CellField::filled(mesh, 0.0),
+            sw: CellField::filled(mesh, 0.0),
+            sinkk: vec![0.0; mesh.cell_count()],
+            sinkw: vec![0.0; mesh.cell_count()],
+            trace: vec![0.0; mesh.cell_count()],
+            production_gradient: vec![0.0; mesh.cell_count()],
+        }
+    }
+}
+
 impl Closure {
     pub(super) fn advance_rans(
         &mut self,
@@ -72,12 +100,26 @@ impl Closure {
         wb.set_cyclic(self.cyclic.clone());
         let gradk = scalar_gradient(mesh, &self.fields.k, &kb)?;
         let gradw = scalar_gradient(mesh, &self.fields.omega, &wb)?;
-        let mut dk = CellField::filled(mesh, nu);
-        let mut dw = dk.clone();
-        let mut sk = CellField::filled(mesh, 0.0);
-        let mut sw = sk.clone();
-        let mut sinkk = vec![0.0; n];
-        let mut sinkw = sinkk.clone();
+        let mut workspace = self
+            .rans_workspace
+            .take()
+            .unwrap_or_else(|| RansWorkspace::new(mesh));
+        workspace.dk.fill(nu);
+        workspace.dw.fill(nu);
+        workspace.sk.fill(0.0);
+        workspace.sw.fill(0.0);
+        workspace.sinkk.fill(0.0);
+        workspace.sinkw.fill(0.0);
+        let RansWorkspace {
+            dk,
+            dw,
+            sk,
+            sw,
+            sinkk,
+            sinkw,
+            trace,
+            production_gradient,
+        } = &mut workspace;
         for i in 0..n {
             let k = self.fields.k[i].max(1e-14);
             let w = self.fields.omega[i].max(1e-12);
@@ -91,6 +133,8 @@ impl Closure {
                 }
             }
             let gnu = (s2 - 2.0 / 3.0 * tr * tr).max(0.0);
+            trace[i] = tr;
+            production_gradient[i] = gnu;
             let production = wall.production[i].unwrap_or(nut * gnu);
             let (ak, aw, beta, gamma, cross) = if self.config.model == TurbulenceModel::KOmegaSst {
                 let cd = 2.0 * 0.856 * gradk[i].dot(gradw[i]) / w;
@@ -143,9 +187,9 @@ impl Closure {
             mesh,
             &state.face_flux,
             &wb,
-            &dw,
-            &sw,
-            &sinkw,
+            dw,
+            sw,
+            sinkw,
             &mut self.fields.omega,
             old.map(|o| &o.omega),
             dt,
@@ -159,6 +203,7 @@ impl Closure {
             &self.walls,
             nu,
             if omega_walls { Some(&wall.omega) } else { None },
+            &mut self.transport_patterns[0],
         )?;
         self.last_linear.insert("omega".into(), report);
         // Use the newly solved bounded omega in k destruction and SST limiter.
@@ -166,16 +211,10 @@ impl Closure {
             let k = self.fields.k[i].max(1e-14);
             self.fields.omega[i] = self.fields.omega[i].max(1e-12).max(k / (1e5 * nu));
             let w = self.fields.omega[i];
-            let tr = (0..3).map(|a| g[i][a][a]).sum::<f64>();
+            let tr = trace[i];
             sinkk[i] = 0.09 * w + (2.0 / 3.0 * tr).max(0.0);
             if self.config.model == TurbulenceModel::KOmegaSst {
-                let mut strain = 0.0;
-                for (a, row) in g[i].iter().enumerate() {
-                    for (b, value) in row.iter().enumerate() {
-                        strain += 0.5 * (value + g[i][b][a]).powi(2);
-                    }
-                }
-                let production = self.fields.nut[i] * (strain - 2.0 / 3.0 * tr * tr).max(0.0);
+                let production = self.fields.nut[i] * production_gradient[i];
                 sk[i] = wall.production[i].unwrap_or(production.min(10.0 * 0.09 * k * w))
                     + (-2.0 / 3.0 * tr).max(0.0) * k;
             }
@@ -185,9 +224,9 @@ impl Closure {
             mesh,
             &state.face_flux,
             &kb,
-            &dk,
-            &sk,
-            &sinkk,
+            dk,
+            sk,
+            sinkk,
             &mut self.fields.k,
             old.map(|o| &o.k),
             dt,
@@ -201,6 +240,7 @@ impl Closure {
             &self.walls,
             nu,
             None,
+            &mut self.transport_patterns[1],
         )?;
         self.last_linear.insert("k".into(), report);
         for i in 0..n {
@@ -209,6 +249,7 @@ impl Closure {
                 .max(1e-12)
                 .max(self.fields.k[i] / (1e5 * nu));
         }
+        self.rans_workspace = Some(workspace);
         Ok(())
     }
 }
@@ -230,6 +271,7 @@ pub(super) fn scalar_solve(
     walls: &[bool],
     nu: f64,
     prescribed: Option<&[Option<f64>]>,
+    pattern: &mut crate::linear::CsrPatternCache,
 ) -> Result<LinearSolveReport, SimpleError> {
     let mut face_diffusion = interpolate_diffusivity(
         mesh,
@@ -258,7 +300,13 @@ pub(super) fn scalar_solve(
     options.diffusion.non_orthogonal_correction = numerics.diffusion_correction;
     options.correction_field = Some(field);
     options.allow_iterative_outlet_backflow = true;
-    let system = assemble_momentum_component(mesh, options)?;
+    let system = crate::momentum::assemble_momentum_component_with_prepared_viscosity(
+        mesh,
+        options,
+        None,
+        None,
+        Some(pattern),
+    )?;
     let (mut matrix, mut rhs) = system.into_matrix_and_rhs();
     let diagonal_positions: Option<Vec<_>> = (0..mesh.cell_count())
         .map(|i| {
