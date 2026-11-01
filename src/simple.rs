@@ -629,14 +629,19 @@ pub fn solve_simple_with_observer(
                 }
             }
         }
-        let r_au = CellField::from_values(
-            mesh,
-            inverse
-                .iter()
-                .zip(mesh.cells())
-                .map(|(a, cell)| a * cell.volume)
-                .collect(),
-        )?;
+        let consistent_r_au = if options.pressure_coupling.algorithm == CouplingAlgorithm::Simplec {
+            Some(CellField::from_values(
+                mesh,
+                inverse
+                    .iter()
+                    .zip(mesh.cells())
+                    .map(|(a, cell)| a * cell.volume)
+                    .collect(),
+            )?)
+        } else {
+            None
+        };
+        let r_au = consistent_r_au.as_ref().unwrap_or(&flux_r_au);
         if let Some(mean) = options.volume_models.mean_velocity {
             let direction = mean.target / mean.target.norm();
             let volume: f64 = mesh.cells().iter().map(|c| c.volume).sum();
@@ -668,9 +673,13 @@ pub fn solve_simple_with_observer(
         // Keep the original momentum interpolation in the predicted flux.
         // SIMPLEC changes the pressure-INCREMENT response, not the converged
         // Rhie–Chow discretization of the old-pressure momentum predictor.
-        let mut flux_coefficients = match options.pressure_correction_boundary {
-            Some(b) => pressure_face_coefficients_with_boundary(mesh, &flux_r_au, b)?,
-            None => pressure_face_coefficients(mesh, &flux_r_au)?,
+        let mut flux_coefficients = if consistent_r_au.is_some() {
+            match options.pressure_correction_boundary {
+                Some(b) => pressure_face_coefficients_with_boundary(mesh, &flux_r_au, b)?,
+                None => pressure_face_coefficients(mesh, &flux_r_au)?,
+            }
+        } else {
+            coefficients.clone()
         };
         let mut coefficients = coefficients;
         for (index, face) in mesh.faces().iter().enumerate() {
