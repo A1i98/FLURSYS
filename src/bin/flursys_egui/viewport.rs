@@ -1081,6 +1081,7 @@ impl GeometryGpu {
                     } else {
                         [0.; 3]
                     };
+                    let color = scene.color(color);
                     for point in triangle {
                         scene.tri(cp(point).to_f32(), normal, color);
                     }
@@ -1094,6 +1095,7 @@ impl GeometryGpu {
                     } else {
                         [8, 16, 27, 255]
                     };
+                    let color = scene.color(color);
                     for pair in points.windows(2) {
                         scene.line(
                             cp(pair[0]).to_f32(),
@@ -1141,6 +1143,8 @@ impl GeometryGpu {
         painter.add(egui_wgpu::Callback::new_paint_callback(
             rect,
             GeometryCallback(Frame {
+                product_lights: None,
+                upload_error: None,
                 product: false,
                 key,
                 slot: self.slot.clone(),
@@ -1157,6 +1161,7 @@ impl GeometryGpu {
                 clip: [0.; 4],
                 cap: [0.4, 0.45, 0.5, 1.],
                 images: Vec::new(),
+                clouds: Vec::new(),
                 analysis: [0.; 8],
                 analysis_colors: [0.; 36],
                 access: None,
@@ -1172,9 +1177,11 @@ impl GeometryGpu {
                 } else {
                     0.
                 },
+                ao_samples: 16,
                 ssaa: 1.,
                 hover_tint: [0.; 3],
                 selection_tint: [0.; 3],
+                sky: [0.; 4],
             }),
         ));
     }
@@ -1198,6 +1205,7 @@ pub fn install_geometry_renderer(rs: &egui_wgpu::RenderState) {
         depth: egui_wgpu::depth_format_from_bits(24, 8),
         samples: 1,
         tess: false,
+        oit: false,
     };
     renderer
         .callback_resources

@@ -43,19 +43,21 @@ pub(super) fn patch_color(
 }
 
 fn triangle(scene: &mut GpuScene, points: [Vec3; 3], normal: Vec3, color: Color32) {
+    let color = scene.color(color.to_array());
     for p in points {
         scene.tri(
             [p.x as f32, p.y as f32, p.z as f32],
             [normal.x as f32, normal.y as f32, normal.z as f32],
-            color.to_array(),
+            color,
         );
     }
 }
 fn line(scene: &mut GpuScene, a: Vec3, b: Vec3, color: Color32, width: f32, overlay: bool) {
+    let color = scene.color(color.to_array());
     scene.line(
         [a.x as f32, a.y as f32, a.z as f32],
         [b.x as f32, b.y as f32, b.z as f32],
-        color.to_array(),
+        color,
         width,
         overlay,
     );
@@ -589,11 +591,8 @@ impl App {
                     for j in 1..face.vertices.len().saturating_sub(1) {
                         for i in [face.vertices[0], face.vertices[j], face.vertices[j + 1]] {
                             let p = source.points()[i].position;
-                            scene.trans_tri(
-                                [p.x as f32, p.y as f32, p.z as f32],
-                                [0.; 3],
-                                [142, 166, 188, 32],
-                            );
+                            let color = scene.color([142, 166, 188, 32]);
+                            scene.trans_tri([p.x as f32, p.y as f32, p.z as f32], [0.; 3], color);
                         }
                     }
                 }

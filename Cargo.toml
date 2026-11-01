@@ -5,7 +5,7 @@ default-members = ["."]
 exclude = ["vendor/cad-workbench/vendor"]
 
 [workspace.package]
-version = "0.18.4"
+version = "0.29.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 rust-version = "1.95"
@@ -19,6 +19,7 @@ encoding_rs = "0.8"
 chardetng = "0.1"
 robust = "1.2"
 nix = { version = "0.31", default-features = false, features = ["signal"] }
+gethostname = "1"
 # internal
 solidcraft-geom = { path = "vendor/cad-workbench/crates/geom" }
 solidcraft-sketch = { path = "vendor/cad-workbench/crates/sketch" }
@@ -74,7 +75,7 @@ cadmpeg-ir = "=0.6.3"
 cadmpeg-registry = { version = "=0.6.3", default-features = false, features = ["fcstd", "rhino", "step"] }
 
 # fonts (sketch text outlines; MIT OR Apache-2.0, pure Rust)
-ttf-parser = { version = "0.25", default-features = false, features = ["std"] }
+ttf-parser = { version = "0.25", default-features = false, features = ["std", "variable-fonts"] }
 
 # images
 image = { version = "0.25", default-features = false, features = ["png", "hdr"] }
