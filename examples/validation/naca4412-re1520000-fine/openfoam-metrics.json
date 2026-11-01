@@ -1,0 +1,52 @@
+{
+  "solver": "OpenFOAM v2606 simpleFoam",
+  "mesh_cells": 14336,
+  "angle_degrees": 13.87,
+  "reynolds": 1520000,
+  "iterations": 20000,
+  "cd": 0.03082851628351,
+  "cl": 1.578118348438,
+  "last_1000_iterations_cd_minmax": [
+    0.03053986364564,
+    0.03113884592415
+  ],
+  "last_1000_iterations_cl_minmax": [
+    1.577489228244,
+    1.579093340247
+  ],
+  "comparison_cp": {
+    "flursys": {
+      "lower": {
+        "points": 19,
+        "mae": 0.11196900886495775,
+        "rmse": 0.12346246726144365
+      },
+      "upper": {
+        "points": 29,
+        "mae": 0.20927044424407862,
+        "rmse": 0.21601840506652065
+      }
+    },
+    "openfoam": {
+      "lower": {
+        "points": 19,
+        "mae": 0.10460869523833065,
+        "rmse": 0.11606099282067055
+      },
+      "upper": {
+        "points": 29,
+        "mae": 0.22242361356400678,
+        "rmse": 0.2248521752220224
+      }
+    }
+  },
+  "runtime_seconds": 808.7426707400009,
+  "peak_rss_kib_measured_parent": 142176,
+  "note": "Solver definitions and normalization differ; wall omega uses the FLURSYS resolved-wall face values, but the SST discretization, startup and stress models are not identical. The Linux process measurement does not establish aggregate MPI memory.",
+  "status": "Iteration limit reached; convergence was not established.",
+  "pressure_initial_residual_at_final_iteration": 0.00133434228571,
+  "pressure_sample": "OpenFOAM patch face pressure; FLURSYS adjacent-cell pressure.",
+  "cp_comparison_method": "Linear interpolation at experimental tap x/c, separately on upper and lower surfaces; no extrapolation.",
+  "wall_omega": "Fixed face values 60 nu / (0.075 y^2), using FLURSYS wall distances.",
+  "limitations": "SST implementation, discretization, startup and residual definitions differ. Aggregate MPI peak memory was not measured."
+}

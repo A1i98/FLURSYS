@@ -1,0 +1,18 @@
+{
+  "case": "NACA 4412; NASA C-grid 225 x 65",
+  "cells": 14336,
+  "solver_version": "0.21.1",
+  "status": "max-iterations",
+  "iterations": 38000,
+  "Re": 1520000,
+  "angle_degrees": 13.87,
+  "drag_coefficient_preliminary": 0.033911222701938915,
+  "lift_coefficient_preliminary": 1.602619261932181,
+  "continuity_rms": 1.9091740078648922e-15,
+  "coupling_convergence": {
+    "momentum_relative_residual": 0.9726443991933955,
+    "velocity_relative_change": 6.47237054329101e-08
+  },
+  "wall_force_method": "adjacent-cell pressure and first-cell shear",
+  "warning": "No convergence or experimental validation claimed."
+}
