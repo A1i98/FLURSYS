@@ -8,4 +8,5 @@
 | [Backward-facing step](backward-facing-step) | Experimental wall coefficients and velocity profiles |
 | [NACA 4412 · Re = 1.52 million](naca4412-re1520000-fine) | Preliminary surface pressure and NASA C-grid |
 | [Sod shock tube](sod-shock-tube) | Exact density, velocity and pressure profiles |
+| [Natural convection · Ra = 10⁵](natural-convection-ra100000) | Heat transfer and centreline velocities; grid study in progress |
 | [Turbulent flat plate](turbulent-flat-plate) | Wall friction and boundary-layer velocity |
