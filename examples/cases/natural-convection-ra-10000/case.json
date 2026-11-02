@@ -282,6 +282,7 @@
         "turbulent_prandtl": 0.85,
         "wall_treatment": "molecular",
         "buoyancy": true,
+        "reduced_pressure": true,
         "reference_temperature": 300.0,
         "expansion": 0.0033333333333333335,
         "gravity": {
