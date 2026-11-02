@@ -62,6 +62,29 @@ fn initial_temperature(
         _ => default,
     }
 }
+
+fn buoyancy_acceleration(
+    options: &crate::thermal::Options,
+    temperature: f64,
+) -> Result<Vec3, String> {
+    let relative = options.relative_buoyancy_acceleration(temperature)?;
+    Ok(if options.reduced_pressure {
+        relative
+    } else {
+        options.gravity + relative
+    })
+}
+
+fn relative_energy_imbalance(
+    imbalance: f64,
+    storage: f64,
+    advection: f64,
+    heat: f64,
+    source: f64,
+) -> Option<f64> {
+    let scale = storage.abs() + advection + heat + source.abs();
+    (scale > 0.0).then(|| imbalance.abs() / scale)
+}
 /// `history` uses the solver's effective dt and normalized Euler/BDF2 weights.
 pub fn evaluate(
     case: &IncompressibleCase,
@@ -146,6 +169,8 @@ pub fn evaluate(
         imbalance_w: 0.,
         relative_imbalance: None,
     };
+    let mut gross_heat_w = 0.0;
+    let mut gross_advection_w = 0.0;
     let mut patch_by_face = vec![None; mesh.face_count()];
     for patch in mesh.boundary_patches() {
         for &i in &patch.face_indices {
@@ -164,7 +189,7 @@ pub fn evaluate(
                 .temperature
                 .as_ref()
                 .ok_or("Missing temperature for buoyancy budget")?[i];
-            acceleration += thermal.gravity + thermal.relative_buoyancy_acceleration(t)?;
+            acceleration += buoyancy_acceleration(thermal, t)?;
         }
         m.body_force += acceleration * (rho * c.volume);
         if thermal.enabled {
@@ -292,9 +317,11 @@ pub fn evaluate(
                     (intercept - slope * t[i]) * f.area
                 }
             };
+            let advection = rho * thermal.specific_heat * q * if q < 0. { incoming } else { t[i] };
             e.inward_heat_w += heat;
-            e.outward_advection_w +=
-                rho * thermal.specific_heat * q * if q < 0. { incoming } else { t[i] };
+            e.outward_advection_w += advection;
+            gross_heat_w += heat.abs();
+            gross_advection_w += advection.abs();
         }
     }
     m.imbalance =
@@ -314,15 +341,57 @@ pub fn evaluate(
     result.momentum = Some(m);
     if thermal.enabled {
         e.imbalance_w = e.storage_w + e.outward_advection_w - e.inward_heat_w - e.source_w;
-        let scale = e.storage_w.abs()
-            + e.outward_advection_w.abs()
-            + e.inward_heat_w.abs()
-            + e.source_w.abs();
-        e.relative_imbalance = (scale > 0.).then(|| e.imbalance_w.abs() / scale);
+        let scale = e.storage_w.abs() + gross_advection_w + gross_heat_w + e.source_w.abs();
+        e.relative_imbalance = relative_energy_imbalance(
+            e.imbalance_w,
+            e.storage_w,
+            gross_advection_w,
+            gross_heat_w,
+            e.source_w,
+        );
         if !e.imbalance_w.is_finite() || !scale.is_finite() {
             return Err("Energy budget overflow".into());
         }
         result.energy = Some(e);
     }
     Ok(result)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn buoyancy_budget_respects_pressure_reference() {
+        let mut options = crate::thermal::Options {
+            enabled: true,
+            buoyancy: true,
+            reduced_pressure: true,
+            reference_temperature: 300.0,
+            expansion: 0.01,
+            gravity: Vec3::new(0.0, -10.0, 0.0),
+            ..Default::default()
+        };
+        assert_eq!(buoyancy_acceleration(&options, 300.0).unwrap(), Vec3::ZERO);
+        assert!((buoyancy_acceleration(&options, 301.0).unwrap().y - 0.1).abs() < 1e-12);
+        options.reduced_pressure = false;
+        assert_eq!(
+            buoyancy_acceleration(&options, 300.0).unwrap(),
+            options.gravity
+        );
+        assert!((buoyancy_acceleration(&options, 301.0).unwrap().y + 9.9).abs() < 1e-12);
+    }
+
+    #[test]
+    fn energy_balance_uses_gross_boundary_exchange() {
+        assert_eq!(
+            relative_energy_imbalance(0.0, 0.0, 0.0, 20.0, 0.0),
+            Some(0.0)
+        );
+        assert_eq!(
+            relative_energy_imbalance(1.0, 0.0, 0.0, 19.0, 0.0),
+            Some(1.0 / 19.0)
+        );
+        assert_eq!(relative_energy_imbalance(0.0, 0.0, 0.0, 0.0, 0.0), None);
+    }
 }
