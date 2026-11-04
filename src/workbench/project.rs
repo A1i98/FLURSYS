@@ -452,6 +452,8 @@ pub struct WorkbenchSolverSettings {
     pub continuity_absolute_tolerance: f64,
     #[serde(default = "default_coupling_tolerance")]
     pub coupling_relative_tolerance: f64,
+    #[serde(default)]
+    pub convergence: crate::simple::ConvergenceSettings,
     pub velocity_relaxation: f64,
     pub pressure_relaxation: f64,
 }
@@ -479,6 +481,7 @@ impl Default for WorkbenchSolverSettings {
             max_outer_iterations: 1000,
             continuity_absolute_tolerance: 1.0e-10,
             coupling_relative_tolerance: default_coupling_tolerance(),
+            convergence: Default::default(),
             velocity_relaxation: 0.7,
             pressure_relaxation: 0.3,
         }
@@ -544,6 +547,8 @@ pub struct WorkbenchProject {
     pub catalog_history: Vec<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scalar_transport: Option<crate::multiphysics::Options>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub passive_species: Option<crate::multiphysics::species::SpeciesConfiguration>,
     pub geometry: GeometryTopology,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cad_document: Option<String>,
@@ -580,6 +585,7 @@ impl WorkbenchProject {
             name: name.into(),
             catalog_history: Vec::new(),
             scalar_transport: None,
+            passive_species: None,
             geometry: GeometryTopology::new(),
             cad_document: None,
             cad_geometry_hash: None,
@@ -660,6 +666,16 @@ impl WorkbenchProject {
             return Err(ProjectDocumentError::Invalid(
                 "Momentum/velocity relative tolerance must be finite and positive".into(),
             ));
+        }
+        self.solver
+            .convergence
+            .validate()
+            .map_err(ProjectDocumentError::Invalid)?;
+        if self.solver.compressible.is_none() {
+            self.solver
+                .convergence
+                .validate_for_models(self.solver.thermal.enabled, self.solver.turbulence.model)
+                .map_err(ProjectDocumentError::Invalid)?;
         }
         if self.fluid_face.is_some_and(|id| {
             self.geometry.face(id).is_none() || self.geometry.cad_owner(id).is_some()
@@ -1061,6 +1077,7 @@ pub fn finalize_workspace_run_continuing(
         "last_time_step_s":session.solution().and_then(|s|s.last_time_step),
         "rejected_time_steps":session.solution().map(|s|s.rejected_time_steps),
         "wall_reports":session.solution().and_then(|s|session.prepare_case().ok().and_then(|c|super::wall_reports::reports_with_turbulence(&c,&s.velocity,&s.pressure,s.turbulence.as_ref(),true).ok())),
+        "thermal_wall_reports":session.solution().and_then(|s|s.temperature.as_ref().map(|t|session.prepare_case().map_err(|e|e.to_string()).and_then(|c|super::wall_reports::thermal_reports(&c,t)))),
         "turbulence":session.solution().and_then(|s|s.turbulence.as_ref()).map(|t|serde_json::json!({
             "model":t.model,
             "nut_max":t.nut.values().iter().copied().fold(0.0,f64::max),
@@ -1082,7 +1099,11 @@ pub fn finalize_workspace_run_continuing(
         "convergence_histories": session.solution().map(|s|serde_json::json!({"momentum":s.report.simple.momentum_relative_history,"velocity":s.report.simple.velocity_change_history,"pressure_linear":s.report.simple.pressure_linear_history})),
         "coupling_convergence": session.solution().map(|solution| serde_json::json!({
             "momentum_relative_residual": solution.report.simple.final_momentum_relative_residual,
+            "momentum_initial_residual": solution.report.simple.final_momentum_initial_residual,
+            "momentum_convergence_basis": solution.report.simple.momentum_convergence_basis,
             "velocity_relative_change": solution.report.simple.final_velocity_relative_change,
+            "max_cell_divergence_per_s": solution.report.simple.final_max_cell_divergence,
+            "temperature_absolute_change_k": solution.report.simple.final_temperature_absolute_change,
         })),
     });
     atomic_json_write(&run_directory.join("report.json"), &report)?;
@@ -1585,6 +1606,10 @@ mod tests {
             });
         }
         project.solver.threads = 2;
+        project.solver.convergence.allow_absolute_momentum = false;
+        project.solver.convergence.momentum_relative_tolerance = Some(1e-7);
+        project.solver.convergence.pressure_initial_tolerance = Some(1e-9);
+        project.solver.convergence.consecutive_iterations = 4;
         project.mesh.threads = 3;
         save_workspace(directory.path(), &project).unwrap();
         let restored = load_workspace(directory.path()).unwrap();
@@ -1598,12 +1623,18 @@ mod tests {
             assert!(round_trip.boundaries.contains(assignment));
         }
         assert_eq!(round_trip.solver.threads, 2);
+        assert_eq!(round_trip.solver.convergence, project.solver.convergence);
         assert_eq!(round_trip.mesh.threads, 3);
         assert_eq!(session.mesh_cpu_threads(), 3);
         let mut old_settings = serde_json::to_value(&project.solver).unwrap();
         old_settings.as_object_mut().unwrap().remove("threads");
+        old_settings.as_object_mut().unwrap().remove("convergence");
         let old_settings: WorkbenchSolverSettings = serde_json::from_value(old_settings).unwrap();
         assert_eq!(old_settings.threads, 1);
+        assert_eq!(
+            old_settings.convergence,
+            crate::simple::ConvergenceSettings::default()
+        );
     }
 
     #[test]
@@ -2483,5 +2514,33 @@ mod tests {
             Err(ProjectDocumentError::Invalid(_))
         ));
         assert!(!directory.path().parent().unwrap().join("outside").exists());
+    }
+    #[test]
+    fn passive_species_settings_survive_workspace_and_session_round_trip() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut project = WorkbenchProject::blank("Species");
+        let mut species = crate::multiphysics::species::SpeciesConfiguration {
+            initial_fraction: 0.25,
+            use_flow: true,
+            ..Default::default()
+        };
+        species.options.diffusivity = 0.002;
+        species
+            .options
+            .fixed_boundary_fraction
+            .insert("wall".into(), 0.4);
+        project.passive_species = Some(species.clone());
+        save_workspace(directory.path(), &project).unwrap();
+        let restored = load_workspace(directory.path()).unwrap();
+        assert_eq!(restored.passive_species.as_ref(), Some(&species));
+        let session = WorkbenchSession::from_project(&restored).unwrap();
+        assert_eq!(session.to_project("copy").passive_species, Some(species));
+        let legacy = WorkbenchProject::blank("legacy");
+        let value = serde_json::to_value(&legacy).unwrap();
+        assert!(value.get("passive_species").is_none());
+        assert!(serde_json::from_value::<WorkbenchProject>(value)
+            .unwrap()
+            .passive_species
+            .is_none());
     }
 }

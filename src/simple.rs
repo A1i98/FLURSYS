@@ -3,6 +3,180 @@
 mod pressure;
 pub use pressure::{CouplingAlgorithm, PressureCoupling};
 
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct ConvergenceSettings {
+    pub momentum_relative_tolerance: Option<f64>,
+    pub velocity_relative_tolerance: Option<f64>,
+    pub allow_absolute_momentum: bool,
+    pub momentum_absolute_tolerance: Option<f64>,
+    pub pressure_initial_tolerance: Option<f64>,
+    pub temperature_initial_tolerance: Option<f64>,
+    pub k_initial_tolerance: Option<f64>,
+    pub omega_initial_tolerance: Option<f64>,
+    pub epsilon_initial_tolerance: Option<f64>,
+    pub nu_tilda_initial_tolerance: Option<f64>,
+    pub max_cell_divergence_tolerance: Option<f64>,
+    pub temperature_absolute_change_tolerance: Option<f64>,
+    pub minimum_iterations: usize,
+    pub consecutive_iterations: usize,
+}
+
+impl Default for ConvergenceSettings {
+    fn default() -> Self {
+        Self {
+            momentum_relative_tolerance: None,
+            velocity_relative_tolerance: None,
+            allow_absolute_momentum: true,
+            momentum_absolute_tolerance: None,
+            pressure_initial_tolerance: None,
+            temperature_initial_tolerance: None,
+            k_initial_tolerance: None,
+            omega_initial_tolerance: None,
+            epsilon_initial_tolerance: None,
+            nu_tilda_initial_tolerance: None,
+            max_cell_divergence_tolerance: None,
+            temperature_absolute_change_tolerance: None,
+            minimum_iterations: 1,
+            consecutive_iterations: 1,
+        }
+    }
+}
+
+impl ConvergenceSettings {
+    fn momentum_basis(
+        &self,
+        relative: f64,
+        initial: f64,
+        relative_fallback: f64,
+        absolute_fallback: f64,
+    ) -> Option<&'static str> {
+        if relative
+            <= self
+                .momentum_relative_tolerance
+                .unwrap_or(relative_fallback)
+        {
+            Some("relative")
+        } else if self.allow_absolute_momentum
+            && initial
+                <= self
+                    .momentum_absolute_tolerance
+                    .unwrap_or(absolute_fallback)
+        {
+            Some("absolute")
+        } else {
+            None
+        }
+    }
+    pub fn validate(&self) -> Result<(), String> {
+        if self.minimum_iterations == 0 || self.consecutive_iterations == 0 {
+            return Err("Convergence iteration counts must be positive".into());
+        }
+        for value in [
+            self.momentum_relative_tolerance,
+            self.velocity_relative_tolerance,
+            self.momentum_absolute_tolerance,
+            self.pressure_initial_tolerance,
+            self.temperature_initial_tolerance,
+            self.k_initial_tolerance,
+            self.omega_initial_tolerance,
+            self.epsilon_initial_tolerance,
+            self.nu_tilda_initial_tolerance,
+            self.max_cell_divergence_tolerance,
+            self.temperature_absolute_change_tolerance,
+        ]
+        .into_iter()
+        .flatten()
+        {
+            if !value.is_finite() || value <= 0.0 {
+                return Err("Convergence tolerances must be finite and positive".into());
+            }
+        }
+        Ok(())
+    }
+
+    pub fn validate_for_models(
+        &self,
+        thermal_enabled: bool,
+        model: crate::turbulence::TurbulenceModel,
+    ) -> Result<(), String> {
+        use crate::turbulence::TurbulenceModel as T;
+        self.validate()?;
+        for (name, enabled, available) in [
+            (
+                "temperature",
+                self.temperature_initial_tolerance.is_some()
+                    || self.temperature_absolute_change_tolerance.is_some(),
+                thermal_enabled,
+            ),
+            (
+                "k",
+                self.k_initial_tolerance.is_some(),
+                matches!(
+                    model,
+                    T::KOmega | T::KOmegaSst | T::KEpsilon | T::RngKEpsilon | T::RealizableKEpsilon
+                ),
+            ),
+            (
+                "omega",
+                self.omega_initial_tolerance.is_some(),
+                matches!(model, T::KOmega | T::KOmegaSst),
+            ),
+            (
+                "epsilon",
+                self.epsilon_initial_tolerance.is_some(),
+                model.uses_epsilon(),
+            ),
+            (
+                "nu-tilde",
+                self.nu_tilda_initial_tolerance.is_some(),
+                model == T::SpalartAllmaras,
+            ),
+        ] {
+            if enabled && !available {
+                return Err(format!(
+                    "The {name} residual criterion requires its equation to be enabled"
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    fn equations_satisfied(
+        &self,
+        reports: &std::collections::BTreeMap<String, LinearSolveReport>,
+    ) -> bool {
+        [
+            ("pressure", self.pressure_initial_tolerance),
+            ("temperature", self.temperature_initial_tolerance),
+            ("k", self.k_initial_tolerance),
+            ("omega", self.omega_initial_tolerance),
+            ("epsilon", self.epsilon_initial_tolerance),
+            ("nu_tilda", self.nu_tilda_initial_tolerance),
+        ]
+        .into_iter()
+        .all(|(name, tolerance)| {
+            tolerance.is_none_or(|limit| {
+                reports.get(name).is_some_and(|report| {
+                    report.initial_residual.is_finite() && report.initial_residual <= limit
+                })
+            })
+        })
+    }
+}
+
+fn record_linear_report(
+    reports: &mut std::collections::BTreeMap<String, LinearSolveReport>,
+    name: &str,
+    value: LinearSolveReport,
+) {
+    if let Some(existing) = reports.get_mut(name) {
+        *existing = value;
+    } else {
+        reports.insert(name.to_owned(), value);
+    }
+}
+
 use crate::{
     interpolate_vector_into, least_squares_gradient, momentum_component_field, CellField,
     CsrBuilder, CsrMatrix, DiffusionOptions, Diffusivity, FaceField, FieldError,
@@ -119,6 +293,7 @@ pub struct SimpleOptions<'a> {
     /// Both momentum-residual reduction and the relative velocity update must
     /// meet this tolerance; pressure projection alone cannot end a steady solve.
     pub coupling_relative_tolerance: f64,
+    pub convergence: ConvergenceSettings,
     pub equations: Option<&'a crate::equations::EquationSolvers>,
     pub momentum_solver: LinearSolverOptions,
     pub pressure_solver: LinearSolverOptions,
@@ -153,6 +328,7 @@ impl<'a> SimpleOptions<'a> {
             max_outer_iterations: 1000,
             continuity_absolute_tolerance: 1.0e-10,
             coupling_relative_tolerance: 1.0e-6,
+            convergence: ConvergenceSettings::default(),
             equations: None,
             pressure_coupling: PressureCoupling::default(),
             volume_models: Default::default(),
@@ -175,6 +351,10 @@ pub struct SimpleReport {
     pub velocity_change_history: Vec<f64>,
     pub pressure_linear_history: Vec<f64>,
     pub final_momentum_relative_residual: f64,
+    pub final_momentum_initial_residual: f64,
+    pub momentum_convergence_basis: Option<&'static str>,
+    pub final_max_cell_divergence: Option<f64>,
+    pub final_temperature_absolute_change: Option<f64>,
     pub final_velocity_relative_change: f64,
     pub final_turbulence_relative_change: Option<f64>,
     pub final_thermal_relative_change: Option<f64>,
@@ -240,6 +420,10 @@ pub fn solve_simple_with_observer(
     if options.max_outer_iterations == 0 {
         return Err(SimpleError::InvalidOuterIterations { value: 0 });
     }
+    options
+        .convergence
+        .validate()
+        .map_err(SimpleError::PhysicalBoundary)?;
     if !(options.pressure_relaxation.is_finite()
         && 0.0 < options.pressure_relaxation
         && options.pressure_relaxation <= 1.0)
@@ -288,7 +472,10 @@ pub fn solve_simple_with_observer(
     let mut momentum_reference = 0.0_f64;
     let mut mean_acceleration = Vec3::ZERO;
     let mut momentum_relative = f64::INFINITY;
+    let mut final_momentum_initial = f64::INFINITY;
+    let mut final_max_cell_divergence = None;
     let mut velocity_relative = f64::INFINITY;
+    let mut converged_iterations = 0usize;
 
     let mut equation_linear_reports = std::collections::BTreeMap::new();
     let mut last_momentum = None;
@@ -597,6 +784,7 @@ pub fn solve_simple_with_observer(
             .iter()
             .map(|report| report.initial_residual)
             .fold(0.0_f64, f64::max);
+        final_momentum_initial = momentum_initial;
         momentum_reference = momentum_reference.max(momentum_initial);
         momentum_relative = momentum_initial / momentum_reference.max(1.0e-30);
         let old_velocity = state.velocity.clone();
@@ -857,7 +1045,12 @@ pub fn solve_simple_with_observer(
             scale_sq += new.dot(*new);
         }
         velocity_relative = (update_sq / scale_sq.max(1.0e-60)).sqrt();
-        let continuity = continuity_rms(mesh, &state.face_flux)?;
+        let (continuity, max_divergence) = continuity_metrics(
+            mesh,
+            &state.face_flux,
+            options.convergence.max_cell_divergence_tolerance.is_some(),
+        )?;
+        final_max_cell_divergence = max_divergence;
         history.push(continuity);
         momentum_history.push(momentum_relative);
         velocity_history.push(velocity_relative);
@@ -875,28 +1068,64 @@ pub fn solve_simple_with_observer(
         last_momentum = Some(momentum_reports);
         last_pressure = Some(pressure_report);
         for (name, r) in ["Ux", "Uy", "Uz"].into_iter().zip(momentum_reports) {
-            equation_linear_reports.insert(name.into(), r);
+            record_linear_report(&mut equation_linear_reports, name, r);
         }
-        equation_linear_reports.insert("pressure".into(), pressure_report);
+        record_linear_report(&mut equation_linear_reports, "pressure", pressure_report);
         if let Some(t) = options.thermal {
             if let Some(r) = t.lock().unwrap().last_linear {
-                equation_linear_reports.insert("temperature".into(), r);
+                record_linear_report(&mut equation_linear_reports, "temperature", r);
             }
         }
         if let Some(t) = options.closure {
-            equation_linear_reports.extend(t.lock().unwrap().last_linear.clone());
+            let closure = t.lock().unwrap();
+            for (name, report) in &closure.last_linear {
+                record_linear_report(&mut equation_linear_reports, name, *report);
+            }
         }
 
-        if continuity <= options.continuity_absolute_tolerance
-            && (momentum_relative <= options.coupling_relative_tolerance
-                || momentum_initial <= options.momentum_solver.absolute_tolerance)
-            && velocity_relative <= options.coupling_relative_tolerance
+        let momentum_basis = options.convergence.momentum_basis(
+            momentum_relative,
+            momentum_initial,
+            options.coupling_relative_tolerance,
+            options.momentum_solver.absolute_tolerance,
+        );
+        let criteria_met = continuity <= options.continuity_absolute_tolerance
+            && momentum_basis.is_some()
+            && velocity_relative
+                <= options
+                    .convergence
+                    .velocity_relative_tolerance
+                    .unwrap_or(options.coupling_relative_tolerance)
             && options
-                .thermal
-                .is_none_or(|t| t.lock().unwrap().converged())
+                .convergence
+                .equations_satisfied(&equation_linear_reports)
+            && options
+                .convergence
+                .max_cell_divergence_tolerance
+                .is_none_or(|limit| max_divergence.is_some_and(|value| value <= limit))
+            && (options
+                .convergence
+                .temperature_absolute_change_tolerance
+                .is_none()
+                || options.thermal.is_some())
+            && options.thermal.is_none_or(|t| {
+                let thermal = t.lock().unwrap();
+                thermal.converged()
+                    && options
+                        .convergence
+                        .temperature_absolute_change_tolerance
+                        .is_none_or(|limit| thermal.absolute_change <= limit)
+            })
             && options
                 .closure
-                .is_none_or(|c| c.lock().unwrap().converged())
+                .is_none_or(|c| c.lock().unwrap().converged());
+        converged_iterations = if criteria_met {
+            converged_iterations + 1
+        } else {
+            0
+        };
+        if iteration >= options.convergence.minimum_iterations
+            && converged_iterations >= options.convergence.consecutive_iterations
         {
             return Ok(SimpleReport {
                 converged: true,
@@ -908,6 +1137,12 @@ pub fn solve_simple_with_observer(
                 velocity_change_history: velocity_history,
                 pressure_linear_history: pressure_history,
                 final_momentum_relative_residual: momentum_relative,
+                final_momentum_initial_residual: momentum_initial,
+                momentum_convergence_basis: momentum_basis,
+                final_max_cell_divergence,
+                final_temperature_absolute_change: options
+                    .thermal
+                    .map(|t| t.lock().unwrap().absolute_change),
                 final_velocity_relative_change: velocity_relative,
                 final_turbulence_relative_change: options
                     .closure
@@ -931,6 +1166,12 @@ pub fn solve_simple_with_observer(
         velocity_change_history: velocity_history,
         pressure_linear_history: pressure_history,
         final_momentum_relative_residual: momentum_relative,
+        final_momentum_initial_residual: final_momentum_initial,
+        momentum_convergence_basis: None,
+        final_max_cell_divergence,
+        final_temperature_absolute_change: options
+            .thermal
+            .map(|t| t.lock().unwrap().absolute_change),
         final_velocity_relative_change: velocity_relative,
         final_turbulence_relative_change: options
             .closure
@@ -1457,11 +1698,38 @@ pub fn correct_cell_velocity_from_gradient(
 /// imbalance. Its units are volumetric flux; it is not a volume-normalized
 /// divergence and is computed from the authoritative corrected `FaceField`.
 pub fn continuity_rms(mesh: &UnstructuredMesh, flux: &FaceField<f64>) -> Result<f64, SimpleError> {
+    Ok(continuity_metrics(mesh, flux, false)?.0)
+}
+
+fn continuity_metrics(
+    mesh: &UnstructuredMesh,
+    flux: &FaceField<f64>,
+    include_divergence: bool,
+) -> Result<(f64, Option<f64>), SimpleError> {
     let imbalance = crate::integrated_divergence(mesh, flux)?;
     let squared_sum: f64 = imbalance.values().iter().map(|value| value * value).sum();
     let result = (squared_sum / mesh.cell_count() as f64).sqrt();
     if result.is_finite() {
-        Ok(result)
+        let maximum = if include_divergence {
+            let mut maximum = 0.0_f64;
+            for (i, (value, cell)) in imbalance.values().iter().zip(mesh.cells()).enumerate() {
+                if !cell.volume.is_finite() || cell.volume <= 0.0 {
+                    return Err(NumericsError::InvalidCellMeasure { cell: i }.into());
+                }
+                let divergence = (value / cell.volume).abs();
+                if !divergence.is_finite() {
+                    return Err(SimpleError::InvalidPressureFaceCoefficient {
+                        face: 0,
+                        value: divergence,
+                    });
+                }
+                maximum = maximum.max(divergence);
+            }
+            Some(maximum)
+        } else {
+            None
+        };
+        Ok((result, maximum))
     } else {
         Err(SimpleError::InvalidPressureFaceCoefficient {
             face: 0,
@@ -2165,6 +2433,14 @@ mod tests {
         );
         // Integrated cell residuals are [+3, -3], whose RMS is 3.
         assert_eq!(continuity_rms(&mesh, &flux).unwrap(), 3.0);
+        assert_eq!(
+            continuity_metrics(&mesh, &flux, true).unwrap(),
+            (3.0, Some(3.0))
+        );
+        assert_eq!(
+            continuity_metrics(&mesh, &flux, false).unwrap(),
+            (3.0, None)
+        );
     }
 
     #[test]
@@ -2225,6 +2501,121 @@ mod tests {
             .all(|value| *value == Vec3::ZERO));
         assert!(state.pressure.values().iter().all(|value| *value == 0.0));
         assert!(state.face_flux.values().iter().all(|value| *value == 0.0));
+    }
+
+    #[test]
+    fn convergence_controls_require_stable_iterations_and_available_equations() {
+        let mesh = two_cells();
+        let pressure = ResolvedScalarBoundaryConditions::strict(
+            &mesh,
+            &[("wall", ScalarBoundaryCondition::FixedValue(0.0))],
+        )
+        .unwrap();
+        let stencil = LeastSquaresGradientStencil::new(&mesh, &pressure).unwrap();
+        let velocity = ResolvedVelocityBoundaryConditions::strict(
+            &mesh,
+            &[("wall", VelocityBoundaryCondition::FixedVelocity(Vec3::ZERO))],
+        )
+        .unwrap();
+        let state = || {
+            SimpleState::new(
+                &mesh,
+                CellField::filled(&mesh, Vec3::ZERO),
+                CellField::filled(&mesh, 0.0),
+                FaceField::filled(&mesh, 0.0),
+            )
+            .unwrap()
+        };
+        let mut options = SimpleOptions::steady(Diffusivity::Constant(1.0), &velocity, &stencil);
+        options.max_outer_iterations = 6;
+        options.convergence.minimum_iterations = 3;
+        options.convergence.consecutive_iterations = 2;
+        options.convergence.pressure_initial_tolerance = Some(1e-8);
+        options.convergence.max_cell_divergence_tolerance = Some(1e-6);
+        let report = solve_simple(&mesh, &mut state(), options).unwrap();
+        assert!(report.converged);
+        assert_eq!(report.outer_iterations, 3);
+        assert_eq!(report.momentum_convergence_basis, Some("relative"));
+        assert_eq!(report.final_max_cell_divergence, Some(0.0));
+        options.convergence.temperature_initial_tolerance = Some(1e-8);
+        let report = solve_simple(&mesh, &mut state(), options).unwrap();
+        assert!(!report.converged);
+        assert_eq!(report.outer_iterations, 6);
+    }
+
+    #[test]
+    fn momentum_stop_basis_distinguishes_relative_and_absolute_criteria() {
+        let mut settings = ConvergenceSettings::default();
+        assert_eq!(
+            settings.momentum_basis(0.1, 1e-11, 1e-6, 1e-10),
+            Some("absolute")
+        );
+        settings.allow_absolute_momentum = false;
+        assert_eq!(settings.momentum_basis(0.1, 1e-11, 1e-6, 1e-10), None);
+        assert_eq!(
+            settings.momentum_basis(1e-7, 1e-5, 1e-6, 1e-10),
+            Some("relative")
+        );
+        settings.allow_absolute_momentum = true;
+        settings.momentum_absolute_tolerance = Some(1e-13);
+        assert_eq!(settings.momentum_basis(0.1, 1e-11, 1e-6, 1e-10), None);
+        assert!(
+            serde_json::from_str::<ConvergenceSettings>("{}")
+                .unwrap()
+                .allow_absolute_momentum
+        );
+        settings.temperature_initial_tolerance = Some(1e-8);
+        assert!(settings
+            .validate_for_models(false, crate::turbulence::TurbulenceModel::Laminar)
+            .is_err());
+        assert!(settings
+            .validate_for_models(true, crate::turbulence::TurbulenceModel::Laminar)
+            .is_ok());
+        settings.k_initial_tolerance = Some(1e-8);
+        assert!(settings
+            .validate_for_models(true, crate::turbulence::TurbulenceModel::Laminar)
+            .is_err());
+        assert!(settings
+            .validate_for_models(true, crate::turbulence::TurbulenceModel::KOmegaSst)
+            .is_ok());
+    }
+
+    #[test]
+    fn disabling_absolute_momentum_changes_outer_stop_decision() {
+        let mesh = two_cells();
+        let pressure = ResolvedScalarBoundaryConditions::strict(
+            &mesh,
+            &[("wall", ScalarBoundaryCondition::FixedValue(0.0))],
+        )
+        .unwrap();
+        let stencil = LeastSquaresGradientStencil::new(&mesh, &pressure).unwrap();
+        let velocity = ResolvedVelocityBoundaryConditions::strict(
+            &mesh,
+            &[("wall", VelocityBoundaryCondition::FixedVelocity(Vec3::ZERO))],
+        )
+        .unwrap();
+        let initial = || {
+            SimpleState::new(
+                &mesh,
+                CellField::filled(&mesh, Vec3::new(1.0, 0.0, 0.0)),
+                CellField::filled(&mesh, 0.0),
+                FaceField::filled(&mesh, 0.0),
+            )
+            .unwrap()
+        };
+        let mut options = SimpleOptions::steady(Diffusivity::Constant(1.0), &velocity, &stencil);
+        options.max_outer_iterations = 1;
+        options.continuity_absolute_tolerance = 1e6;
+        options.convergence.momentum_relative_tolerance = Some(1e-12);
+        options.convergence.velocity_relative_tolerance = Some(1e6);
+        options.convergence.momentum_absolute_tolerance = Some(1e6);
+        let accepted = solve_simple(&mesh, &mut initial(), options).unwrap();
+        assert!(accepted.converged);
+        assert_eq!(accepted.momentum_convergence_basis, Some("absolute"));
+        options.convergence.allow_absolute_momentum = false;
+        let rejected = solve_simple(&mesh, &mut initial(), options).unwrap();
+        assert!(!rejected.converged);
+        assert_eq!(rejected.momentum_convergence_basis, None);
     }
 
     #[test]

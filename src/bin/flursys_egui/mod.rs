@@ -171,6 +171,7 @@ struct App {
     iteration: usize,
     limit: usize,
     wall_reports: Vec<workbench::wall_reports::WallPatchReport>,
+    thermal_wall_reports: Vec<workbench::wall_reports::ThermalWallReport>,
     force_history: Vec<force_analysis::Sample>,
     force_series: Vec<workbench::series_plot::Series>,
     recording: Option<PathBuf>,
@@ -389,6 +390,7 @@ impl App {
             iteration: 0,
             limit: 0,
             wall_reports: vec![],
+            thermal_wall_reports: vec![],
             force_history: vec![],
             force_series: Vec::new(),
             recording: None,
@@ -549,11 +551,13 @@ impl App {
             || self.mesh_import.is_some()
             || self.analysis_job.is_some()
             || self.transport.receiver.is_some()
+            || self.transport.species_receiver.is_some()
     }
     fn sync_project(&mut self) {
         let mut p = self.session.to_project(self.project.name.clone());
         p.project_id = self.project.project_id.clone();
         p.scalar_transport = self.project.scalar_transport.clone();
+        p.passive_species = self.project.passive_species.clone();
         p.runs = self.project.runs.clone();
         p.mesh_asset = self.project.mesh_asset.clone();
         p.cad_document = self.project.cad_document.clone();
@@ -575,6 +579,11 @@ impl App {
         self.cad = cad::app(p.cad_document.as_deref(), None)?;
         self.transport = Default::default();
         self.transport.options = p.scalar_transport.clone().unwrap_or_default();
+        if let Some(species) = &p.passive_species {
+            self.transport.species_options = species.options.clone();
+            self.transport.species_initial = species.initial_fraction;
+            self.transport.use_flow = species.use_flow;
+        }
         self.published_document = Some(self.cad.session.doc.to_json());
         self.project = p;
         (self.initial_velocity, self.initial_pressure) = self
@@ -615,6 +624,7 @@ impl App {
         self.frame_scan = None;
         self.live_fields = true;
         self.wall_reports.clear();
+        self.thermal_wall_reports.clear();
         self.force_history.clear();
         self.histories = Default::default();
         self.selected.clear();
@@ -858,7 +868,10 @@ impl App {
     }
     fn stage(&mut self, next: Stage) {
         self.home_open = false;
-        if next == Stage::Geometry && (self.jobs.is_running() || self.transport.receiver.is_some())
+        if next == Stage::Geometry
+            && (self.jobs.is_running()
+                || self.transport.receiver.is_some()
+                || self.transport.species_receiver.is_some())
         {
             self.message("Stop the active job before editing CAD.");
             return;
@@ -1073,6 +1086,11 @@ impl App {
                     true,
                 )
                 .unwrap_or_default();
+                self.thermal_wall_reports = s
+                    .temperature
+                    .as_ref()
+                    .and_then(|t| workbench::wall_reports::thermal_reports(&c, t).ok())
+                    .unwrap_or_default();
             }
         }
     }
@@ -1357,15 +1375,26 @@ impl App {
                 WorkbenchJobEvent::SolveCompleted(result) => {
                     self.iteration = self.jobs.completed_iterations();
                     match &result {
-                        Ok(solution) => self.message(format!(
-                            "Solve {:?} at iteration {} · continuity RMS {:.8e} · inflow {:.8e} · outflow {:.8e} · net flux {:.8e}",
-                            solution.report.status, self.iteration,
-                            solution.report.final_continuity_rms, solution.report.total_inflow,
-                            solution.report.total_outflow, solution.report.net_boundary_flux,
-                        )),
+                        Ok(solution) => {
+                            self.message(format!(
+                                "Solve {:?} at iteration {} · continuity RMS {:.8e} · inflow {:.8e} · outflow {:.8e} · net flux {:.8e}",
+                                solution.report.status, self.iteration,
+                                solution.report.final_continuity_rms, solution.report.total_inflow,
+                                solution.report.total_outflow, solution.report.net_boundary_flux,
+                            ));
+                            let report = &solution.report.simple;
+                            self.append_log(format!(
+                                "Momentum initial residual {:.6e} · relative reduction {:.6e} · velocity change {:.6e} · stopping basis: {}",
+                                report.final_momentum_initial_residual, report.final_momentum_relative_residual,
+                                report.final_velocity_relative_change, report.momentum_convergence_basis.unwrap_or("not converged")
+                            ));
+                        }
                         Err(error) => {
                             self.show_log = true;
-                            self.message(format!("ERROR after iteration {}: {error}", self.iteration));
+                            self.message(format!(
+                                "ERROR after iteration {}: {error}",
+                                self.iteration
+                            ));
                         }
                     }
                     for series in &mut self.solve_histories {

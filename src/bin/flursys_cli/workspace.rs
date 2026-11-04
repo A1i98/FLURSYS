@@ -3,6 +3,8 @@
 mod catalog;
 #[path = "compressible.rs"]
 mod compressible;
+#[path = "species.rs"]
+mod species;
 #[path = "transport.rs"]
 mod transport;
 use flursys::workbench::{catalogue, mesh_storage, solve_review};
@@ -85,6 +87,8 @@ pub fn help() {
   flursys project mesh <directory> [--gmsh PATH] [--threads N] [--json]
   flursys project import-mesh <directory> --input mesh.msh [--json]
   flursys project solve <directory> [--threads N] [--iterations N] [--restart FILE] [--backend serial|parallel|gpu] [--adapter NAME] [--gpu-required] [--gpu-min-rows N] [--json]
+  flursys project species-template <directory> --output species.json [--json]
+  flursys project species <directory> --config species.json --output result.json [--json]
   flursys project transport-template <directory> --output transport.json [--json]
   flursys project transport <directory> --config transport.json --output NEW_DIRECTORY [--json]
   flursys project benchmark <directory> [--threads 1,2,4] [--iterations N] [--include-gpu] [--gpu-min-rows N] [--json]
@@ -199,7 +203,8 @@ pub fn run(args: &[String]) -> Result<(), String> {
     let folder = Path::new(args.get(2).ok_or("Missing project directory")?);
     let allowed: &[&str] = match action {
         "inspect" | "check" | "checkpoint" | "analyses" => &["json"],
-        "transport-template" => &["json", "output"],
+        "transport-template" | "species-template" => &["json", "output"],
+        "species" => &["json", "config", "output"],
         "transport" => &["json", "config", "output", "restart"],
         "benchmark" => &[
             "json",
@@ -334,6 +339,24 @@ pub fn run(args: &[String]) -> Result<(), String> {
     let mut session = WorkbenchSession::from_project(&project).map_err(|e| e.to_string())?;
     let restored =
         mesh_storage::restore(folder, &project, &mut session)? || session.mesh().is_some();
+    if action == "species-template" || action == "species" {
+        let mesh = &session
+            .mesh()
+            .ok_or("A current saved mesh is required for species transport")?
+            .mesh;
+        let output = Path::new(opts.get("output").ok_or("Missing --output")?);
+        let report = if action == "species-template" {
+            species::template(mesh, output)?
+        } else {
+            species::execute(
+                mesh,
+                Path::new(opts.get("config").ok_or("Missing --config")?),
+                output,
+            )?
+        };
+        emit(report, json_output);
+        return Ok(());
+    }
     if action == "transport-template" || action == "transport" {
         let mesh = &session
             .mesh()

@@ -90,6 +90,7 @@ pub struct IncompressibleSolverOptions {
     pub max_outer_iterations: usize,
     pub continuity_absolute_tolerance: f64,
     pub coupling_relative_tolerance: f64,
+    pub convergence: crate::simple::ConvergenceSettings,
     pub velocity_relaxation: f64,
     pub pressure_relaxation: f64,
     pub momentum_solver: LinearSolverOptions,
@@ -147,6 +148,7 @@ impl Default for IncompressibleSolverOptions {
             max_outer_iterations: 1000,
             continuity_absolute_tolerance: 1.0e-10,
             coupling_relative_tolerance: 1.0e-6,
+            convergence: Default::default(),
             velocity_relaxation: 0.7,
             pressure_relaxation: 0.3,
             momentum_solver: LinearSolverOptions::default(),
@@ -1065,6 +1067,10 @@ fn solve_incompressible_impl(
     case: &IncompressibleCase,
     control: Option<&SolveControl<'_>>,
 ) -> Result<IncompressibleSolution, IncompressibleSolveError> {
+    case.solver
+        .convergence
+        .validate_for_models(case.solver.thermal.enabled, case.solver.turbulence.model)
+        .map_err(|e| IncompressibleSolveError::Simple(SimpleError::PhysicalBoundary(e)))?;
     let execution = crate::compute::Execution::controlled(
         case.solver.compute.clone(),
         control.and_then(|c| c.linear_control.clone()),
@@ -1301,6 +1307,7 @@ fn solve_incompressible_on_pool(
     options.max_outer_iterations = case.solver.max_outer_iterations;
     options.continuity_absolute_tolerance = case.solver.continuity_absolute_tolerance;
     options.coupling_relative_tolerance = case.solver.coupling_relative_tolerance;
+    options.convergence = case.solver.convergence;
     options.velocity_relaxation = case.solver.velocity_relaxation;
     options.pressure_relaxation = case.solver.pressure_relaxation;
     options.pressure_coupling = case.solver.pressure_coupling;

@@ -139,13 +139,20 @@ impl App {
                 _ => MeshQualityMetric::NonOrthogonality,
             })
         });
-        let transport = self
-            .transport
-            .latest
-            .as_ref()
-            .filter(|_| self.stage == Stage::Setup && self.page == 5);
+        let transport =
+            self.transport.latest.as_ref().filter(|_| {
+                self.stage == Stage::Setup && self.page == 5 && self.transport.field != 3
+            });
+        let species = (self.stage == Stage::Setup && self.page == 5 && self.transport.field == 3)
+            .then_some(self.transport.species_latest.as_ref())
+            .flatten()
+            .filter(|(mesh_id, values)| {
+                *mesh_id == source.id() && values.len() == source.cell_count()
+            })
+            .map(|(_, values)| values.as_slice());
         let values = data
             .map(|d| d.scalar_values(self.result_field))
+            .or(species)
             .or_else(|| {
                 transport.map(|s| match self.transport.field {
                     1 => s.phase_fraction.as_slice(),

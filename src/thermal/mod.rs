@@ -233,12 +233,58 @@ pub(crate) struct Closure {
     rho: f64,
     field: CellField<f64>,
     old: CellField<f64>,
+    previous: CellField<f64>,
+    pattern: crate::linear::CsrPatternCache,
     face_bc: Vec<Option<Boundary>>,
     walls: Vec<bool>,
     pub relative_change: f64,
+    pub absolute_change: f64,
 }
 fn failure(message: impl Into<String>) -> SimpleError {
     SimpleError::PhysicalBoundary(message.into())
+}
+
+fn relax_temperature_matrix(
+    mut matrix: CsrMatrix,
+    rhs: &mut [f64],
+    extra: &[f64],
+    field: &[f64],
+    alpha: f64,
+) -> Result<CsrMatrix, SimpleError> {
+    let n = matrix.nrows();
+    let factor = 1.0 / alpha - 1.0;
+    let reusable = (0..n).all(|i| {
+        matrix.get(i, i).is_some_and(|old| {
+            let diagonal = old + extra[i];
+            let addition = extra[i] + factor * diagonal;
+            addition.is_finite() && (old + addition).is_finite() && old + addition != 0.0
+        })
+    });
+    if reusable {
+        for i in 0..n {
+            let start = matrix.row_offsets()[i];
+            let end = matrix.row_offsets()[i + 1];
+            let diagonal = start
+                + matrix.column_indices()[start..end]
+                    .binary_search(&i)
+                    .expect("validated diagonal");
+            let old = matrix.values()[diagonal];
+            let diag = old + extra[i];
+            matrix.values_mut()[diagonal] += extra[i] + factor * diag;
+            rhs[i] += factor * diag * field[i];
+        }
+        return Ok(matrix);
+    }
+    let mut builder = CsrBuilder::with_capacity(n, n, matrix.nnz() + n);
+    for i in 0..n {
+        let diag = matrix.get(i, i).unwrap_or(0.0) + extra[i];
+        for j in matrix.row_offsets()[i]..matrix.row_offsets()[i + 1] {
+            builder.add(i, matrix.column_indices()[j], matrix.values()[j])?;
+        }
+        builder.add(i, i, extra[i] + factor * diag)?;
+        rhs[i] += factor * diag * field[i];
+    }
+    Ok(builder.finalize()?)
 }
 impl Closure {
     pub fn new(
@@ -343,10 +389,13 @@ impl Closure {
             config,
             rho: case.material.density,
             old: field.clone(),
+            previous: field.clone(),
+            pattern: Default::default(),
             field,
             face_bc,
             walls,
             relative_change: f64::INFINITY,
+            absolute_change: f64::INFINITY,
         })
     }
     pub fn backward_old(&mut self, older: Option<&CellField<f64>>, weights: [f64; 2]) {
@@ -476,25 +525,24 @@ impl Closure {
         options.correction_field = Some(&self.field);
         options.diffusion.non_orthogonal_correction = NonOrthogonalCorrection::Limited;
         options.allow_iterative_outlet_backflow = true;
-        let system = assemble_momentum_component(mesh, options)?;
-        let matrix = system.matrix();
-        let mut builder = CsrBuilder::with_capacity(
-            mesh.cell_count(),
-            mesh.cell_count(),
-            matrix.nnz() + mesh.cell_count(),
-        );
-        let mut rhs = system.rhs().to_vec();
-        let previous = self.field.clone();
-        let alpha = self.config.relaxation;
-        for i in 0..mesh.cell_count() {
-            let diag = matrix.get(i, i).unwrap_or(0.0) + extra_diag[i];
-            for j in matrix.row_offsets()[i]..matrix.row_offsets()[i + 1] {
-                builder.add(i, matrix.column_indices()[j], matrix.values()[j])?;
-            }
-            builder.add(i, i, extra_diag[i] + (1.0 / alpha - 1.0) * diag)?;
-            rhs[i] += (1.0 / alpha - 1.0) * diag * self.field[i];
-        }
-        let matrix = builder.finalize()?;
+        let system = crate::momentum::assemble_momentum_component_with_prepared_viscosity(
+            mesh,
+            options,
+            None,
+            None,
+            Some(&mut self.pattern),
+        )?;
+        let (matrix, mut rhs) = system.into_matrix_and_rhs();
+        self.previous
+            .values_mut()
+            .copy_from_slice(self.field.values());
+        let matrix = relax_temperature_matrix(
+            matrix,
+            &mut rhs,
+            &extra_diag,
+            self.field.values(),
+            self.config.relaxation,
+        )?;
         let report = self
             .linear
             .unwrap_or(crate::equations::EquationControl::from_options(linear))
@@ -515,12 +563,17 @@ impl Closure {
                 "Nonphysical temperature; no temperature clipping was applied",
             ));
         }
-        self.relative_change = previous
-            .values()
-            .iter()
-            .zip(self.field.values())
-            .map(|(a, b)| (a - b).abs() / b.abs().max(1.0))
-            .fold(0.0, f64::max);
+        (self.relative_change, self.absolute_change) =
+            self.previous.values().iter().zip(self.field.values()).fold(
+                (0.0_f64, 0.0_f64),
+                |(relative, absolute), (a, b)| {
+                    let difference = (a - b).abs();
+                    (
+                        relative.max(difference / b.abs().max(1.0)),
+                        absolute.max(difference),
+                    )
+                },
+            );
         let mut force = CellField::filled(mesh, Vec3::ZERO);
         if self.config.buoyancy {
             for i in 0..mesh.cell_count() {
@@ -541,5 +594,49 @@ impl Closure {
     }
     pub fn converged(&self) -> bool {
         self.relative_change <= self.config.relative_tolerance
+    }
+}
+
+#[cfg(test)]
+mod matrix_reuse_tests {
+    use super::*;
+
+    #[test]
+    fn relaxation_preserves_coefficients_and_handles_missing_diagonal() {
+        for missing in [false, true] {
+            let mut builder = CsrBuilder::new(2, 2);
+            if !missing {
+                builder.add(0, 0, 2.0).unwrap();
+            }
+            builder.add(0, 1, -1.0).unwrap();
+            builder.add(1, 0, -1.0).unwrap();
+            builder.add(1, 1, 2.0).unwrap();
+            let mut rhs = vec![1.0, 2.0];
+            let matrix = relax_temperature_matrix(
+                builder.finalize().unwrap(),
+                &mut rhs,
+                &[1.0, 0.0],
+                &[10.0, 20.0],
+                0.5,
+            )
+            .unwrap();
+            assert_eq!(matrix.get(0, 0), Some(if missing { 2.0 } else { 6.0 }));
+            assert_eq!(matrix.get(0, 1), Some(-1.0));
+            assert_eq!(matrix.get(1, 0), Some(-1.0));
+            assert_eq!(matrix.get(1, 1), Some(4.0));
+            assert_eq!(rhs, [if missing { 11.0 } else { 31.0 }, 42.0]);
+        }
+    }
+
+    #[test]
+    fn relaxation_removes_an_exactly_cancelled_diagonal() {
+        let mut builder = CsrBuilder::new(1, 1);
+        builder.add(0, 0, 2.0).unwrap();
+        let mut rhs = [1.0];
+        let matrix =
+            relax_temperature_matrix(builder.finalize().unwrap(), &mut rhs, &[-2.0], &[10.0], 0.5)
+                .unwrap();
+        assert_eq!(matrix.get(0, 0), None);
+        assert_eq!(rhs, [1.0]);
     }
 }

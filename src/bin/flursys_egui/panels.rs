@@ -1,6 +1,21 @@
 use super::*;
 use flursys::unstructured_incompressible::{AdaptiveTimeStep, TimeIntegration};
 use widgets::{heading, icon_button, number, vector};
+
+fn optional_tolerance(ui: &mut egui::Ui, label: &str, value: &mut Option<f64>, inherited: f64) {
+    let mut custom = value.is_some();
+    if ui
+        .checkbox(&mut custom, format!("Custom {label}"))
+        .changed()
+    {
+        *value = custom.then_some(inherited);
+    }
+    if let Some(value) = value {
+        number(ui, label, value);
+    } else {
+        ui.small(format!("{label}: {inherited:.3e} (inherited)"));
+    }
+}
 impl App {
     pub fn shell(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
@@ -299,7 +314,7 @@ impl App {
                     });
             }
             egui::CentralPanel::default().show(ui, |ui| {
-                if self.transport.receiver.is_some() {
+                if self.transport.receiver.is_some() || self.transport.species_receiver.is_some() {
                     ui.horizontal(|ui| {
                         if ui.button("Pause transport").clicked() {
                             self.transport
@@ -1354,6 +1369,32 @@ impl App {
                     self.iteration, self.editor.solver.max_outer_iterations
                 ));
                 ui.label("Monitors have different definitions. Continuity alone does not establish convergence.");
+                if let Some(solution) = self.session.solution() {
+                    let report = &solution.report.simple;
+                    ui.label(format!(
+                        "Momentum stop: {} · initial L2 {:.3e} · relative {:.3e}",
+                        report.momentum_convergence_basis.unwrap_or("not converged"),
+                        report.final_momentum_initial_residual,
+                        report.final_momentum_relative_residual,
+                    ));
+                    if let Some(value) = report.final_max_cell_divergence {
+                        ui.label(format!("Maximum cell divergence: {value:.3e} 1/s"));
+                    }
+                    if let Some(value) = report.final_temperature_absolute_change {
+                        ui.label(format!("Maximum temperature change: {value:.3e} K"));
+                    }
+                    ui.collapsing("Last equation solves · L2 residuals", |ui| {
+                        for (name, linear) in &report.equation_linear_reports {
+                            ui.label(format!(
+                                "{name}: initial {:.3e} · final {:.3e} · {} iterations · {:?}",
+                                linear.initial_residual,
+                                linear.final_residual,
+                                linear.iterations,
+                                linear.status,
+                            ));
+                        }
+                    });
+                }
                 if let Some(s) = self.session.solution() {
                     ui.label(format!(
                         "Final continuity {:.6e}",
@@ -1402,9 +1443,87 @@ impl App {
                 );
                 number(
                     ui,
-                    "Coupling tolerance",
+                    "Default relative tolerance",
                     &mut self.editor.solver.coupling_relative_tolerance,
                 );
+                if self.editor.solver.compressible.is_none() {
+                    let fallback = self.editor.solver.coupling_relative_tolerance;
+                    let thermal_enabled = self.editor.solver.thermal.enabled;
+                    let turbulence_model = self.editor.solver.turbulence.model;
+                    let c = &mut self.editor.solver.convergence;
+                    heading(ui, "OUTER CONVERGENCE");
+                    optional_tolerance(
+                        ui,
+                        "Momentum residual reduction",
+                        &mut c.momentum_relative_tolerance,
+                        fallback,
+                    );
+                    optional_tolerance(
+                        ui,
+                        "Relative velocity change",
+                        &mut c.velocity_relative_tolerance,
+                        fallback,
+                    );
+                    optional_tolerance(
+                        ui,
+                        "Maximum cell divergence (1/s)",
+                        &mut c.max_cell_divergence_tolerance,
+                        1e-6,
+                    );
+                    optional_tolerance(
+                        ui,
+                        "Maximum temperature change (K)",
+                        &mut c.temperature_absolute_change_tolerance,
+                        1e-6,
+                    );
+                    ui.checkbox(
+                        &mut c.allow_absolute_momentum,
+                        "Allow absolute momentum residual alternative",
+                    );
+                    if c.allow_absolute_momentum {
+                        let linear_abs = self
+                            .editor
+                            .solver
+                            .equations
+                            .as_ref()
+                            .map_or(1e-10, |e| e.velocity.absolute_tolerance);
+                        optional_tolerance(
+                            ui,
+                            "Absolute momentum residual",
+                            &mut c.momentum_absolute_tolerance,
+                            linear_abs,
+                        );
+                    }
+                    ui.collapsing("Additional equation initial residuals", |ui| {
+                        ui.small("Optional absolute L2 thresholds. All enabled equations must be solved and meet their thresholds on every accepted iteration.");
+                        optional_tolerance(ui, "Pressure correction", &mut c.pressure_initial_tolerance, 1e-8);
+                        optional_tolerance(ui, "Temperature", &mut c.temperature_initial_tolerance, 1e-8);
+                        optional_tolerance(ui, "Turbulent k", &mut c.k_initial_tolerance, 1e-8);
+                        optional_tolerance(ui, "Turbulent omega", &mut c.omega_initial_tolerance, 1e-8);
+                        optional_tolerance(ui, "Turbulent epsilon", &mut c.epsilon_initial_tolerance, 1e-8);
+                        optional_tolerance(ui, "Spalart–Allmaras nu-tilde", &mut c.nu_tilda_initial_tolerance, 1e-8);
+                        ui.small("Disable criteria for equations absent from the selected model; a missing equation cannot satisfy a criterion.");
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("Minimum outer iterations");
+                        ui.add(
+                            egui::DragValue::new(&mut c.minimum_iterations).range(1..=1_000_000),
+                        );
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("Consecutive satisfied iterations");
+                        ui.add(
+                            egui::DragValue::new(&mut c.consecutive_iterations)
+                                .range(1..=1_000_000),
+                        );
+                    });
+                    ui.small("Inherited values use the default relative tolerance or velocity linear tolerance. Momentum uses the maximum initial linear residual; relative reduction and iteration counts reset on restart. Temperature and turbulence use their own tolerances. These residuals are not normalized like OpenFOAM.");
+                    if let Err(error) = c.validate_for_models(thermal_enabled, turbulence_model) {
+                        widgets::error(ui, &error);
+                    }
+                } else {
+                    ui.small("Outer convergence controls apply to the incompressible solver.");
+                }
                 ui.horizontal(|ui| {
                     ui.label("CPU threads (0 = automatic)");
                     ui.add(egui::DragValue::new(&mut self.editor.solver.threads).range(0..=256));
@@ -2134,6 +2253,27 @@ impl App {
                         .force_analysis
                         .summary(&self.wall_reports, self.session.material().density),
                 );
+                if !self.thermal_wall_reports.is_empty() {
+                    ui.separator();
+                    heading(ui, "WALL HEAT TRANSFER");
+                    ui.small("Positive heat enters the fluid; evaluated on the saved field.");
+                    for report in &self.thermal_wall_reports {
+                        match (report.inward_heat, report.mean_inward_heat_flux) {
+                            (Some(heat), Some(flux)) => {
+                                ui.label(format!(
+                                    "{}: {:.4e} {} · {:.4e} W/m²",
+                                    report.patch, heat, report.heat_unit, flux
+                                ));
+                            }
+                            _ => {
+                                ui.label(format!(
+                                    "{}: unavailable ({})",
+                                    report.patch, report.method
+                                ));
+                            }
+                        }
+                    }
+                }
             }
         }
     }
@@ -2369,6 +2509,7 @@ impl App {
         self.force_history.clear();
         self.force_series.clear();
         self.wall_reports.clear();
+        self.thermal_wall_reports.clear();
         if let Some(run) = self.project.runs.iter().find(|r| r.id == id) {
             self.result_iteration = if run.time_steps > 0 {
                 run.time_steps
@@ -2380,6 +2521,11 @@ impl App {
             self.histories = continuation::read_histories(&report, self.result_iteration);
             self.wall_reports = report
                 .get("wall_reports")
+                .and_then(|v| serde_json::from_value(v.clone()).ok())
+                .unwrap_or_default();
+            self.thermal_wall_reports = report
+                .get("thermal_wall_reports")
+                .and_then(|v| v.get("Ok"))
                 .and_then(|v| serde_json::from_value(v.clone()).ok())
                 .unwrap_or_default();
             self.force_history = flursys::headless::force_history(path, run).unwrap_or_default();

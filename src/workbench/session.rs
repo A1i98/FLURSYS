@@ -110,6 +110,7 @@ pub struct WorkbenchSession {
     catalog_material: Option<crate::materials::MaterialSnapshot>,
     catalog_history: Vec<serde_json::Value>,
     scalar_transport: Option<crate::multiphysics::Options>,
+    passive_species: Option<crate::multiphysics::species::SpeciesConfiguration>,
     initial_profile: Option<super::initialization::InitialProfile>,
     case_context: Option<super::case_format::CaseContext>,
     compressible: Option<crate::compressible::Settings>,
@@ -149,6 +150,7 @@ impl WorkbenchSession {
             catalog_material: None,
             catalog_history: Vec::new(),
             scalar_transport: None,
+            passive_species: None,
             initial_profile: None,
             case_context: None,
             compressible: None,
@@ -200,6 +202,7 @@ impl WorkbenchSession {
         session.solver.force_analysis = project.solver.force_analysis.clone();
         session.solver.turbulence = project.solver.turbulence.clone();
         session.solver.coupling_relative_tolerance = project.solver.coupling_relative_tolerance;
+        session.solver.convergence = project.solver.convergence;
         session.geometry.ensure_extrusion_edges()?;
         session.geometry.ensure_cad_subelements()?;
         session.set_mesh_configuration(
@@ -228,6 +231,7 @@ impl WorkbenchSession {
         session.catalog_material = project.material.catalog.clone();
         session.catalog_history = project.catalog_history.clone();
         session.scalar_transport = project.scalar_transport.clone();
+        session.passive_species = project.passive_species.clone();
         session.set_solver_controls(
             project.solver.max_outer_iterations,
             project.solver.velocity_relaxation,
@@ -306,6 +310,7 @@ impl WorkbenchSession {
         project.material.catalog = self.catalog_material.clone();
         project.catalog_history = self.catalog_history.clone();
         project.scalar_transport = self.scalar_transport.clone();
+        project.passive_species = self.passive_species.clone();
         project.solver.initial_profile = self.initial_profile.clone();
         project.case_context = self.case_context.clone();
         project.solver.compressible = self.compressible.clone();
@@ -325,6 +330,7 @@ impl WorkbenchSession {
         project.solver.max_outer_iterations = self.solver.max_outer_iterations;
         project.solver.continuity_absolute_tolerance = self.solver.continuity_absolute_tolerance;
         project.solver.coupling_relative_tolerance = self.solver.coupling_relative_tolerance;
+        project.solver.convergence = self.solver.convergence;
         project.solver.velocity_relaxation = self.solver.velocity_relaxation;
         project.solver.pressure_relaxation = self.solver.pressure_relaxation;
         project.solver.threads = self.solver.threads;

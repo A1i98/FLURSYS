@@ -3,6 +3,125 @@
 //! on the wall; two-dimensional integrated forces are per unit depth.
 use crate::{CellField, IncompressibleBoundaryCondition, IncompressibleCase, Vec3};
 use serde::{Deserialize, Serialize};
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ThermalWallReport {
+    pub patch: String,
+    pub measure: f64,
+    pub inward_heat: Option<f64>,
+    pub mean_inward_heat_flux: Option<f64>,
+    pub heat_unit: String,
+    pub method: String,
+}
+
+pub fn thermal_reports(
+    case: &IncompressibleCase,
+    temperature: &CellField<f64>,
+) -> Result<Vec<ThermalWallReport>, String> {
+    let mesh = &case.mesh;
+    temperature
+        .ensure_mesh(mesh)
+        .map_err(|e| format!("{e:?}"))?;
+    let thermal = &case.solver.thermal;
+    if !thermal.enabled {
+        return Ok(Vec::new());
+    }
+    thermal.validate_for_case(case)?;
+    let mut result = Vec::new();
+    for (name, boundary) in &case.boundaries {
+        if !matches!(
+            boundary,
+            IncompressibleBoundaryCondition::NoSlipWall
+                | IncompressibleBoundaryCondition::MovingWall { .. }
+        ) {
+            continue;
+        }
+        let patch = mesh
+            .boundary_patches()
+            .iter()
+            .find(|p| p.name == *name)
+            .ok_or_else(|| format!("Missing wall patch {name}"))?;
+        let condition = *thermal
+            .boundaries
+            .get(name)
+            .ok_or_else(|| format!("Missing thermal boundary for {name}"))?;
+        let scripted = case
+            .solver
+            .scripting
+            .bindings
+            .get(name)
+            .is_some_and(|bindings| {
+                bindings
+                    .iter()
+                    .any(|binding| binding.quantity == crate::scripting::Quantity::Temperature)
+            })
+            || case
+                .solver
+                .boundary_profiles
+                .get(name)
+                .is_some_and(|profile| {
+                    profile.quantity
+                        == crate::unstructured_incompressible::BoundaryQuantity::Temperature
+                });
+        let supported = !scripted
+            && match condition {
+                crate::thermal::Boundary::Adiabatic | crate::thermal::Boundary::HeatFlux { .. } => {
+                    true
+                }
+                crate::thermal::Boundary::FixedTemperature { .. } => {
+                    thermal.wall_treatment == crate::thermal::ThermalWallTreatment::Molecular
+                }
+                _ => false,
+            };
+        let mut measure = 0.0;
+        let mut heat = 0.0;
+        for &index in &patch.face_indices {
+            let face = &mesh.faces()[index];
+            measure += face.area;
+            if !supported {
+                continue;
+            }
+            heat += match condition {
+                crate::thermal::Boundary::Adiabatic => 0.0,
+                crate::thermal::Boundary::HeatFlux { inward_flux } => inward_flux * face.area,
+                crate::thermal::Boundary::FixedTemperature { temperature: wall } => {
+                    let displacement = face.center - mesh.cells()[face.owner].center;
+                    let (factor, _) = crate::numerics::diffusion_geometry(
+                        face.area_vector,
+                        displacement,
+                        crate::NonOrthogonalCorrection::Limited,
+                        index,
+                    )
+                    .map_err(|e| format!("{e:?}"))?;
+                    thermal.conductivity * factor * (wall - temperature[face.owner])
+                }
+                _ => unreachable!(),
+            };
+        }
+        if !measure.is_finite() || measure <= 0.0 || !heat.is_finite() {
+            return Err(format!("Invalid thermal wall measure or heat on {name}"));
+        }
+        result.push(ThermalWallReport {
+            patch: name.clone(),
+            measure,
+            inward_heat: supported.then_some(heat),
+            mean_inward_heat_flux: supported.then_some(heat / measure),
+            heat_unit: if mesh.dimension() == crate::MeshDimension::TwoD {
+                "W/m"
+            } else {
+                "W"
+            }
+            .into(),
+            method: if supported {
+                "solver boundary discretization, evaluated at saved field"
+            } else {
+                "unsupported boundary, wall treatment, or script"
+            }
+            .into(),
+        });
+    }
+    Ok(result)
+}
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct WallFaceSample {
     pub face: usize,
@@ -434,4 +553,96 @@ pub fn reattachment_distances(
             (x1 > x0 && t0 <= 0.0 && t1 > 0.0).then(|| x0 + (x1 - x0) * (-t0) / (t1 - t0))
         })
         .collect())
+}
+
+#[cfg(test)]
+mod thermal_report_tests {
+    use super::*;
+    use crate::{
+        BoundaryPatch, BoundaryType, CellDefinition, IncompressibleMaterial,
+        IncompressibleSolverOptions, MeshDimension, Point, UnstructuredMesh,
+    };
+
+    #[test]
+    fn wall_heat_uses_the_solver_discretization_and_marks_unsupported_conditions() {
+        let mesh = UnstructuredMesh::from_cells(
+            MeshDimension::TwoD,
+            vec![
+                Point::new(0., 0., 0.),
+                Point::new(2., 0., 0.),
+                Point::new(2.5, 1., 0.),
+                Point::new(0.5, 1., 0.),
+            ],
+            vec![CellDefinition::polygon(vec![0, 1, 2, 3])],
+        )
+        .unwrap();
+        let left = mesh.faces().iter().position(|f| f.center.x < 0.5).unwrap();
+        let rest = (0..mesh.face_count()).filter(|i| *i != left).collect();
+        let mesh = mesh
+            .with_boundary_patches(vec![
+                BoundaryPatch {
+                    name: "left".into(),
+                    face_indices: vec![left],
+                    boundary_type: BoundaryType::Wall,
+                },
+                BoundaryPatch {
+                    name: "rest".into(),
+                    face_indices: rest,
+                    boundary_type: BoundaryType::Wall,
+                },
+            ])
+            .unwrap();
+        let mut solver = IncompressibleSolverOptions::default();
+        solver.thermal.enabled = true;
+        solver.thermal.conductivity = 2.;
+        solver.thermal.boundaries.insert(
+            "left".into(),
+            crate::thermal::Boundary::FixedTemperature { temperature: 301. },
+        );
+        solver
+            .thermal
+            .boundaries
+            .insert("rest".into(), crate::thermal::Boundary::Adiabatic);
+        let mut case = IncompressibleCase::steady(
+            mesh,
+            vec![
+                ("left".into(), IncompressibleBoundaryCondition::NoSlipWall),
+                ("rest".into(), IncompressibleBoundaryCondition::NoSlipWall),
+            ],
+            IncompressibleMaterial {
+                density: 1.,
+                kinematic_viscosity: 0.01,
+            },
+            solver,
+        );
+        let field = CellField::filled(&case.mesh, 300.);
+        let reports = thermal_reports(&case, &field).unwrap();
+        let left = reports.iter().find(|r| r.patch == "left").unwrap();
+        assert!((left.inward_heat.unwrap() - 2.).abs() < 1e-12);
+        assert_eq!(left.heat_unit, "W/m");
+        assert_eq!(
+            reports
+                .iter()
+                .find(|r| r.patch == "rest")
+                .unwrap()
+                .inward_heat,
+            Some(0.)
+        );
+        case.solver.thermal.boundaries.insert(
+            "left".into(),
+            crate::thermal::Boundary::Convection {
+                coefficient: 1.,
+                ambient_temperature: 301.,
+            },
+        );
+        assert_eq!(
+            thermal_reports(&case, &field)
+                .unwrap()
+                .iter()
+                .find(|r| r.patch == "left")
+                .unwrap()
+                .inward_heat,
+            None
+        );
+    }
 }
