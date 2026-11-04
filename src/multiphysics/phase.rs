@@ -18,6 +18,8 @@ pub enum AdvectionScheme {
 pub struct PhaseOptions {
     #[serde(skip_serializing_if = "is_upwind")]
     pub scheme: AdvectionScheme,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub cyclic_pairs: Vec<crate::periodic::TranslationalCyclicPair>,
     pub max_courant: f64,
     pub max_subcycles: usize,
     /// First-phase fraction for every patch that experiences inflow/backflow.
@@ -30,6 +32,7 @@ impl Default for PhaseOptions {
     fn default() -> Self {
         Self {
             scheme: AdvectionScheme::Upwind,
+            cyclic_pairs: Vec::new(),
             max_courant: 0.5,
             max_subcycles: 10000,
             incoming: BTreeMap::new(),
@@ -113,6 +116,32 @@ pub fn advance(
     {
         return Err("Incoming phase fractions must be in [0,1] on existing patches".into());
     }
+    let cyclic = if options.cyclic_pairs.is_empty() {
+        None
+    } else {
+        Some(crate::periodic::resolve(mesh, &options.cyclic_pairs)?)
+    };
+    for pair in &options.cyclic_pairs {
+        if options.incoming.contains_key(&pair.first) || options.incoming.contains_key(&pair.second)
+        {
+            return Err("Cyclic phase patches cannot also prescribe incoming fractions".into());
+        }
+    }
+    for (i, _) in mesh.faces().iter().enumerate() {
+        if let Some(link) = cyclic.as_ref().and_then(|map| map.link(i)) {
+            let peer = link.peer_face;
+            let scale = flux[i].abs().max(flux[peer].abs());
+            if (flux[i] + flux[peer]).abs() > 1e-10 * scale + 1e-14 {
+                return Err(format!(
+                    "Cyclic phase flux mismatch between faces {i} and {peer}"
+                ));
+            }
+            let scale = metrics.areas[i].abs().max(metrics.areas[peer].abs());
+            if (metrics.areas[i] - metrics.areas[peer]).abs() > 1e-10 * scale + 1e-14 {
+                return Err("Cyclic phase faces require equal physical areas".into());
+            }
+        }
+    }
     let mut incoming = vec![None; mesh.face_count()];
     for patch in mesh.boundary_patches() {
         for &f in &patch.face_indices {
@@ -134,7 +163,10 @@ pub fn advance(
             divergence[n] -= q;
             magnitude[n] += q.abs();
             outgoing[n] += (-q).max(0.0);
-        } else if q < 0.0 && incoming[i].is_none() {
+        } else if q < 0.0
+            && incoming[i].is_none()
+            && cyclic.as_ref().and_then(|map| map.link(i)).is_none()
+        {
             return Err(format!(
                 "Assign incoming phase fraction for inflow face {i}"
             ));
@@ -182,6 +214,33 @@ pub fn advance(
         vec![0.0; mesh.cell_count()]
     };
     let mut negative = positive.clone();
+    let mut owner_weight = if correction.is_empty() {
+        Vec::new()
+    } else {
+        vec![0.5; mesh.face_count()]
+    };
+    if !owner_weight.is_empty() {
+        for (i, face) in mesh.faces().iter().enumerate() {
+            let link = cyclic.as_ref().and_then(|map| map.link(i));
+            if link.is_some_and(|link| i > link.peer_face) {
+                continue;
+            }
+            let neighbour = face
+                .neighbour
+                .or_else(|| link.map(|link| mesh.faces()[link.peer_face].owner));
+            if let Some(neighbour) = neighbour {
+                let a = (face.center - mesh.cells()[face.owner].center).dot(face.normal);
+                let other_center = mesh.cells()[neighbour].center
+                    - link.map_or(crate::Vec3::ZERO, |link| link.translation);
+                let b = (other_center - face.center).dot(face.normal);
+                if !a.is_finite() || !b.is_finite() || a <= 0.0 || b <= 0.0 || !(a + b).is_finite()
+                {
+                    return Err(format!("Invalid phase interpolation distances at face {i}"));
+                }
+                owner_weight[i] = b / (a + b);
+            }
+        }
+    }
     for _ in 0..count {
         crate::compute::checkpoint().map_err(|e| e.to_string())?;
         delta.fill(0.0);
@@ -190,6 +249,8 @@ pub fn advance(
                 candidate[f.owner]
             } else if let Some(n) = f.neighbour {
                 candidate[n]
+            } else if let Some(link) = cyclic.as_ref().and_then(|map| map.link(i)) {
+                candidate[mesh.faces()[link.peer_face].owner]
             } else {
                 incoming[i].unwrap_or(candidate[f.owner])
             };
@@ -204,8 +265,12 @@ pub fn advance(
             positive.fill(0.0);
             negative.fill(0.0);
             for (i, face) in mesh.faces().iter().enumerate() {
-                let Some(neighbour) = face.neighbour else {
-                    continue;
+                let neighbour = match face.neighbour {
+                    Some(neighbour) => neighbour,
+                    None => match cyclic.as_ref().and_then(|map| map.link(i)) {
+                        Some(link) if i < link.peer_face => mesh.faces()[link.peer_face].owner,
+                        _ => continue,
+                    },
                 };
                 let donor = if flux[i] >= 0.0 {
                     candidate[face.owner]
@@ -214,7 +279,9 @@ pub fn advance(
                 };
                 let anti = subdt
                     * flux[i]
-                    * (0.5 * (candidate[face.owner] + candidate[neighbour]) - donor);
+                    * (owner_weight[i] * candidate[face.owner]
+                        + (1.0 - owner_weight[i]) * candidate[neighbour]
+                        - donor);
                 correction[i] = anti;
                 if anti >= 0.0 {
                     negative[face.owner] += anti;
@@ -238,8 +305,12 @@ pub fn advance(
                 };
             }
             for (i, face) in mesh.faces().iter().enumerate() {
-                let Some(neighbour) = face.neighbour else {
-                    continue;
+                let neighbour = match face.neighbour {
+                    Some(neighbour) => neighbour,
+                    None => match cyclic.as_ref().and_then(|map| map.link(i)) {
+                        Some(link) if i < link.peer_face => mesh.faces()[link.peer_face].owner,
+                        _ => continue,
+                    },
                 };
                 let anti = correction[i];
                 let limited = anti
@@ -251,6 +322,9 @@ pub fn advance(
                 delta[face.owner] -= limited;
                 delta[neighbour] += limited;
                 mean[i] += limited / dt;
+                if let Some(link) = cyclic.as_ref().and_then(|map| map.link(i)) {
+                    mean[link.peer_face] -= limited / dt;
+                }
             }
         }
         for i in 0..candidate.len() {
@@ -273,7 +347,9 @@ pub fn advance(
         .faces()
         .iter()
         .enumerate()
-        .filter(|(_, f)| f.neighbour.is_none())
+        .filter(|(i, f)| {
+            f.neighbour.is_none() && cyclic.as_ref().and_then(|map| map.link(*i)).is_none()
+        })
         .map(|(i, _)| mean[i])
         .sum::<f64>();
     let report = PhaseReport {
@@ -359,5 +435,322 @@ mod tests {
             serde_json::from_str::<PhaseOptions>("{}").unwrap().scheme,
             AdvectionScheme::Upwind
         );
+    }
+    #[test]
+    fn cyclic_transport_preserves_mass_bounds_and_paired_fluxes() {
+        let mesh = UnstructuredMesh::from_cells(
+            MeshDimension::TwoD,
+            vec![
+                Point::new(0., 0., 0.),
+                Point::new(1., 0., 0.),
+                Point::new(2., 0., 0.),
+                Point::new(0., 1., 0.),
+                Point::new(1., 1., 0.),
+                Point::new(2., 1., 0.),
+            ],
+            vec![
+                CellDefinition::polygon(vec![0, 1, 4, 3]),
+                CellDefinition::polygon(vec![1, 2, 5, 4]),
+            ],
+        )
+        .unwrap();
+        let mut left = Vec::new();
+        let mut right = Vec::new();
+        let mut walls = Vec::new();
+        for (i, f) in mesh
+            .faces()
+            .iter()
+            .enumerate()
+            .filter(|(_, f)| f.neighbour.is_none())
+        {
+            if f.center.x < 1e-12 {
+                left.push(i);
+            } else if f.center.x > 2.0 - 1e-12 {
+                right.push(i);
+            } else {
+                walls.push(i);
+            }
+        }
+        let (a, b) = (left[0], right[0]);
+        let mesh = mesh
+            .with_boundary_patches(vec![
+                BoundaryPatch {
+                    name: "left".into(),
+                    face_indices: left,
+                    boundary_type: BoundaryType::ZeroGradient,
+                },
+                BoundaryPatch {
+                    name: "right".into(),
+                    face_indices: right,
+                    boundary_type: BoundaryType::ZeroGradient,
+                },
+                BoundaryPatch {
+                    name: "walls".into(),
+                    face_indices: walls,
+                    boundary_type: BoundaryType::Wall,
+                },
+            ])
+            .unwrap();
+        let measures = crate::multiphysics::metrics::Coordinates::Cartesian
+            .measures(&mesh)
+            .unwrap();
+        let flux: Vec<_> = mesh.faces().iter().map(|f| f.area_vector.x).collect();
+        let pair = crate::periodic::TranslationalCyclicPair {
+            first: "left".into(),
+            second: "right".into(),
+            translation: crate::Vec3::new(2., 0., 0.),
+            tolerance: 1e-8,
+        };
+        let mut temperature = vec![300.0, 400.0];
+        let mut energy_options = crate::multiphysics::energy::EnergyOptions::default();
+        energy_options.boundaries.insert(
+            "walls".into(),
+            crate::multiphysics::energy::Boundary::Adiabatic,
+        );
+        let energy_report = crate::multiphysics::energy::advance_with_cyclic(
+            &mesh,
+            &measures,
+            &[1.0, 1.0],
+            &[1.0, 1.0],
+            &[1.0, 1.0],
+            &vec![0.0; mesh.face_count()],
+            &[0.0, 0.0],
+            &[false, false],
+            &mut temperature,
+            0.1,
+            &energy_options,
+            crate::LinearSolverOptions::default(),
+            std::slice::from_ref(&pair),
+        )
+        .unwrap();
+        assert!((temperature[0] - (300.0 + 100.0 / 7.0)).abs() < 1e-8);
+        assert!((temperature[1] - (400.0 - 100.0 / 7.0)).abs() < 1e-8);
+        assert!(energy_report.balance_error.abs() < 1e-8);
+        let mut species_options = crate::multiphysics::species::SpeciesOptions {
+            diffusivity: 0.1,
+            ..Default::default()
+        };
+        species_options.advection.cyclic_pairs.push(pair.clone());
+        let mut concentration = vec![1.0, 0.0];
+        let species_report = crate::multiphysics::species::advance(
+            &mesh,
+            &measures,
+            &vec![0.0; mesh.face_count()],
+            &mut concentration,
+            0.1,
+            &species_options,
+        )
+        .unwrap();
+        assert!((concentration[0] - 0.98).abs() < 1e-12 && (concentration[1] - 0.02).abs() < 1e-12);
+        assert!(species_report.conservation_error.abs() < 1e-12);
+        let mut transport = crate::multiphysics::Options {
+            initial_phase_fraction: 0.0,
+            initial_temperature: 300.0,
+            mesh_signature: Some(crate::multiphysics::mesh_signature(&mesh)),
+            face_flux: Some(flux.clone()),
+            dt: 0.2,
+            steps: 2,
+            ..Default::default()
+        };
+        transport.regions.push(crate::multiphysics::Region {
+            minimum: crate::Vec3::new(0.0, 0.0, 0.0),
+            maximum: crate::Vec3::new(1.0, 1.0, 0.0),
+            phase_fraction: 1.0,
+            temperature: 300.0,
+            solid: None,
+            source_w_m3: 0.0,
+        });
+        transport.phase.cyclic_pairs.push(pair.clone());
+        transport.phase.scheme = AdvectionScheme::FluxCorrected;
+        transport.energy.boundaries.insert(
+            "walls".into(),
+            crate::multiphysics::energy::Boundary::Adiabatic,
+        );
+        let state = crate::multiphysics::run(
+            &mesh,
+            &transport,
+            crate::LinearSolverOptions::default(),
+            |_, report| {
+                assert!(report.mass_balance_error.abs() < 1e-9);
+                assert!(report.energy.balance_error.abs() < 1e-4);
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert!(state.temperature.iter().all(|t| (t - 300.0).abs() < 1e-8));
+        let restart =
+            crate::multiphysics::checkpoint::Checkpoint::capture(&mesh, &transport, &state)
+                .unwrap();
+        let resumed = crate::multiphysics::run_controlled(
+            &mesh,
+            &transport,
+            crate::LinearSolverOptions::default(),
+            Some(&restart),
+            None,
+            |_, _| Ok(()),
+        )
+        .unwrap();
+        let mut uninterrupted_options = transport.clone();
+        uninterrupted_options.steps = 4;
+        let uninterrupted = crate::multiphysics::run(
+            &mesh,
+            &uninterrupted_options,
+            crate::LinearSolverOptions::default(),
+            |_, _| Ok(()),
+        )
+        .unwrap();
+        assert_eq!(resumed.phase_fraction, uninterrupted.phase_fraction);
+        assert_eq!(resumed.temperature, uninterrupted.temperature);
+        assert_eq!(resumed.time, uninterrupted.time);
+        for scheme in [AdvectionScheme::Upwind, AdvectionScheme::FluxCorrected] {
+            let options = PhaseOptions {
+                scheme,
+                cyclic_pairs: vec![pair.clone()],
+                ..Default::default()
+            };
+            let mut fraction = vec![1.0, 0.0];
+            let report = advance(&mesh, &measures, &flux, &mut fraction, 1.2, &options).unwrap();
+            assert!(fraction.iter().all(|v| (0.0..=1.0).contains(v)));
+            assert!((fraction.iter().sum::<f64>() - 1.0).abs() < 1e-12);
+            assert_eq!(report.net_boundary_outflow, 0.0);
+            assert!((report.phase_flux[a] + report.phase_flux[b]).abs() < 1e-12);
+            assert!(report.conservation_error.abs() < 1e-12);
+            let mut broken = flux.clone();
+            broken[a] *= 0.8;
+            assert!(advance(&mesh, &measures, &broken, &mut fraction, 0.2, &options).is_err());
+        }
+    }
+    #[test]
+    fn cyclic_transport_is_conservative_on_three_dimensional_cells() {
+        let point = |x: usize, y: usize, z: usize| x + 3 * (y + 2 * z);
+        let points = (0..=1)
+            .flat_map(|z| {
+                (0..=1).flat_map(move |y| {
+                    (0..=2).map(move |x| Point::new(x as f64, y as f64, z as f64))
+                })
+            })
+            .collect();
+        let cells = (0..2)
+            .map(|x| {
+                CellDefinition::Hexahedron([
+                    point(x, 0, 0),
+                    point(x + 1, 0, 0),
+                    point(x + 1, 1, 0),
+                    point(x, 1, 0),
+                    point(x, 0, 1),
+                    point(x + 1, 0, 1),
+                    point(x + 1, 1, 1),
+                    point(x, 1, 1),
+                ])
+            })
+            .collect();
+        let mesh = UnstructuredMesh::from_cells(MeshDimension::ThreeD, points, cells).unwrap();
+        let mut left = Vec::new();
+        let mut right = Vec::new();
+        let mut walls = Vec::new();
+        for (i, f) in mesh
+            .faces()
+            .iter()
+            .enumerate()
+            .filter(|(_, f)| f.neighbour.is_none())
+        {
+            if f.center.x < 1e-12 {
+                left.push(i);
+            } else if f.center.x > 2.0 - 1e-12 {
+                right.push(i);
+            } else {
+                walls.push(i);
+            }
+        }
+        let mesh = mesh
+            .with_boundary_patches(vec![
+                BoundaryPatch {
+                    name: "left".into(),
+                    face_indices: left,
+                    boundary_type: BoundaryType::ZeroGradient,
+                },
+                BoundaryPatch {
+                    name: "right".into(),
+                    face_indices: right,
+                    boundary_type: BoundaryType::ZeroGradient,
+                },
+                BoundaryPatch {
+                    name: "walls".into(),
+                    face_indices: walls,
+                    boundary_type: BoundaryType::Wall,
+                },
+            ])
+            .unwrap();
+        let metrics = crate::multiphysics::metrics::Coordinates::Cartesian
+            .measures(&mesh)
+            .unwrap();
+        let flux: Vec<_> = mesh.faces().iter().map(|f| f.area_vector.x).collect();
+        let pair = crate::periodic::TranslationalCyclicPair {
+            first: "left".into(),
+            second: "right".into(),
+            translation: crate::Vec3::new(2., 0., 0.),
+            tolerance: 1e-8,
+        };
+        let options = PhaseOptions {
+            scheme: AdvectionScheme::FluxCorrected,
+            cyclic_pairs: vec![pair],
+            ..Default::default()
+        };
+        let mut alpha = vec![1.0, 0.0];
+        let report = advance(&mesh, &metrics, &flux, &mut alpha, 0.4, &options).unwrap();
+        assert!(alpha.iter().all(|v| (0.0..=1.0).contains(v)));
+        assert!((alpha.iter().sum::<f64>() - 1.0).abs() < 1e-12);
+        assert_eq!(report.net_boundary_outflow, 0.0);
+        assert!(report.conservation_error.abs() < 1e-12);
+    }
+    #[test]
+    fn corrected_flux_interpolates_at_the_face_on_unequal_cells() {
+        let mesh = UnstructuredMesh::from_cells(
+            MeshDimension::TwoD,
+            vec![
+                Point::new(0., 0., 0.),
+                Point::new(1., 0., 0.),
+                Point::new(3., 0., 0.),
+                Point::new(0., 1., 0.),
+                Point::new(1., 1., 0.),
+                Point::new(3., 1., 0.),
+            ],
+            vec![
+                CellDefinition::polygon(vec![0, 1, 4, 3]),
+                CellDefinition::polygon(vec![1, 2, 5, 4]),
+            ],
+        )
+        .unwrap();
+        let faces = mesh
+            .faces()
+            .iter()
+            .enumerate()
+            .filter_map(|(i, f)| f.neighbour.is_none().then_some(i))
+            .collect();
+        let mesh = mesh
+            .with_boundary_patches(vec![BoundaryPatch {
+                name: "boundary".into(),
+                face_indices: faces,
+                boundary_type: BoundaryType::ZeroGradient,
+            }])
+            .unwrap();
+        let metrics = crate::multiphysics::metrics::Coordinates::Cartesian
+            .measures(&mesh)
+            .unwrap();
+        let flux: Vec<_> = mesh.faces().iter().map(|f| f.area_vector.x).collect();
+        let mut options = PhaseOptions {
+            scheme: AdvectionScheme::FluxCorrected,
+            ..Default::default()
+        };
+        options.incoming.insert("boundary".into(), 0.2);
+        let mut alpha = vec![0.2, 0.6];
+        let report = advance(&mesh, &metrics, &flux, &mut alpha, 0.1, &options).unwrap();
+        let interior = mesh
+            .faces()
+            .iter()
+            .position(|f| f.neighbour.is_some())
+            .unwrap();
+        assert!((report.phase_flux[interior] - (1.0 / 3.0)).abs() < 1e-12);
+        assert!(report.conservation_error.abs() < 1e-12);
     }
 }

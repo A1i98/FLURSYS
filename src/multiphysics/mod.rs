@@ -448,7 +448,7 @@ pub fn run_controlled(
             }
         }
         let mut next_temperature = state.temperature.clone();
-        let energy_report = energy::advance(
+        let energy_report = energy::advance_with_cyclic(
             mesh,
             &metrics,
             &old_capacity,
@@ -461,6 +461,7 @@ pub fn run_controlled(
             actual_dt,
             &options.energy,
             linear,
+            &options.phase.cyclic_pairs,
         )?;
         state.step = step;
         state.time += actual_dt;

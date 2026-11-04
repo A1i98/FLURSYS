@@ -51,6 +51,7 @@ pub fn execute(
     mesh: &UnstructuredMesh,
     config: &Path,
     output: &Path,
+    restart: Option<&Path>,
 ) -> Result<serde_json::Value, String> {
     let config: Config = serde_json::from_slice(&fs::read(config).map_err(|e| e.to_string())?)
         .map_err(|e| e.to_string())?;
@@ -66,7 +67,20 @@ pub fn execute(
         return Err("Invalid species time step or step count".into());
     }
     let measures = config.coordinates.measures(mesh)?;
-    let mut fraction = config.initial_fraction;
+    let checkpoint = restart.map(species::SpeciesCheckpoint::load).transpose()?;
+    if let Some(checkpoint) = &checkpoint {
+        checkpoint.validate(mesh, config.coordinates, &config.face_flux, &config.options)?;
+    }
+    let initial_step = checkpoint.as_ref().map_or(0, |c| c.step);
+    let initial_time = checkpoint.as_ref().map_or(0.0, |c| c.time);
+    let final_step = initial_step
+        .checked_add(config.steps)
+        .ok_or("Species step overflow")?;
+    let final_time = initial_time + config.dt * config.steps as f64;
+    if !final_time.is_finite() {
+        return Err("Species time overflow".into());
+    }
+    let mut fraction = checkpoint.map_or(config.initial_fraction, |c| c.fraction);
     let mut history = Vec::with_capacity(config.steps);
     for _ in 0..config.steps {
         history.push(species::advance(
@@ -78,9 +92,84 @@ pub fn execute(
             &config.options,
         )?);
     }
-    let result = serde_json::json!({"mesh_signature":config.mesh_signature,"time":config.dt * config.steps as f64,"fraction":fraction,"history":history});
+    let checkpoint = species::SpeciesCheckpoint::capture(
+        mesh,
+        config.coordinates,
+        &config.face_flux,
+        &config.options,
+        final_step,
+        final_time,
+        fraction,
+    )?;
+    let result = serde_json::json!({"mesh_signature":config.mesh_signature,"time":final_time,"fraction":checkpoint.fraction,"history":history,"checkpoint":checkpoint});
     write_new(output, &result)?;
     Ok(
         serde_json::json!({"summary":format!("Species transport completed: {} steps, output {}", config.steps, output.display())}),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use flursys::{BoundaryPatch, BoundaryType, CellDefinition, MeshDimension, Point};
+
+    #[test]
+    fn checkpoint_result_resumes_without_changing_the_solution() {
+        let mesh = UnstructuredMesh::from_cells(
+            MeshDimension::TwoD,
+            vec![
+                Point::new(0., 0., 0.),
+                Point::new(1., 0., 0.),
+                Point::new(2., 0., 0.),
+                Point::new(0., 1., 0.),
+                Point::new(1., 1., 0.),
+                Point::new(2., 1., 0.),
+            ],
+            vec![
+                CellDefinition::polygon(vec![0, 1, 4, 3]),
+                CellDefinition::polygon(vec![1, 2, 5, 4]),
+            ],
+        )
+        .unwrap();
+        let faces = mesh
+            .faces()
+            .iter()
+            .enumerate()
+            .filter_map(|(i, f)| f.neighbour.is_none().then_some(i))
+            .collect();
+        let mesh = mesh
+            .with_boundary_patches(vec![BoundaryPatch {
+                name: "wall".into(),
+                face_indices: faces,
+                boundary_type: BoundaryType::Wall,
+            }])
+            .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("config.json");
+        template(&mesh, &config).unwrap();
+        let mut settings: Config = serde_json::from_slice(&fs::read(&config).unwrap()).unwrap();
+        settings.initial_fraction = vec![1.0, 0.0];
+        settings.options.diffusivity = 0.1;
+        settings.dt = 0.1;
+        settings.steps = 2;
+        fs::write(&config, serde_json::to_vec(&settings).unwrap()).unwrap();
+        let first = dir.path().join("first.json");
+        let continued = dir.path().join("continued.json");
+        let full = dir.path().join("full.json");
+        execute(&mesh, &config, &first, None).unwrap();
+        execute(&mesh, &config, &continued, Some(&first)).unwrap();
+        settings.steps = 4;
+        fs::write(&config, serde_json::to_vec(&settings).unwrap()).unwrap();
+        execute(&mesh, &config, &full, None).unwrap();
+        let resumed: serde_json::Value =
+            serde_json::from_slice(&fs::read(continued).unwrap()).unwrap();
+        let uninterrupted: serde_json::Value =
+            serde_json::from_slice(&fs::read(full).unwrap()).unwrap();
+        assert_eq!(resumed["fraction"], uninterrupted["fraction"]);
+        assert_eq!(resumed["checkpoint"]["step"], 4);
+        assert_eq!(
+            resumed["checkpoint"]["time"],
+            uninterrupted["checkpoint"]["time"]
+        );
+    }
 }

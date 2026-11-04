@@ -34,6 +34,93 @@ pub struct SpeciesConfiguration {
     pub options: SpeciesOptions,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SpeciesCheckpoint {
+    pub format_version: u32,
+    pub mesh_signature: String,
+    pub physics_signature: String,
+    pub step: usize,
+    pub time: f64,
+    pub fraction: Vec<f64>,
+}
+impl SpeciesCheckpoint {
+    pub fn capture(
+        mesh: &UnstructuredMesh,
+        coordinates: super::metrics::Coordinates,
+        flux: &[f64],
+        options: &SpeciesOptions,
+        step: usize,
+        time: f64,
+        fraction: Vec<f64>,
+    ) -> Result<Self, String> {
+        let checkpoint = Self {
+            format_version: 1,
+            mesh_signature: super::mesh_signature(mesh),
+            physics_signature: species_signature(coordinates, flux, options)?,
+            step,
+            time,
+            fraction,
+        };
+        checkpoint.validate(mesh, coordinates, flux, options)?;
+        Ok(checkpoint)
+    }
+    pub fn save(&self, path: &std::path::Path) -> Result<(), String> {
+        crate::storage::write_json(path, self, None, || Ok(()))?;
+        Ok(())
+    }
+    pub fn load(path: &std::path::Path) -> Result<Self, String> {
+        let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
+        let value: serde_json::Value = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+        serde_json::from_value(value.get("checkpoint").cloned().unwrap_or(value))
+            .map_err(|e| e.to_string())
+    }
+    pub fn validate_mesh(&self, mesh: &UnstructuredMesh) -> Result<(), String> {
+        if self.format_version != 1 || self.mesh_signature != super::mesh_signature(mesh) {
+            return Err("Species checkpoint does not match the active mesh".into());
+        }
+        if self.fraction.len() != mesh.cell_count()
+            || !self.time.is_finite()
+            || self.time < 0.0
+            || self
+                .fraction
+                .iter()
+                .any(|v| !v.is_finite() || !(0.0..=1.0).contains(v))
+        {
+            return Err("Invalid species checkpoint fields or time".into());
+        }
+        Ok(())
+    }
+    pub fn validate(
+        &self,
+        mesh: &UnstructuredMesh,
+        coordinates: super::metrics::Coordinates,
+        flux: &[f64],
+        options: &SpeciesOptions,
+    ) -> Result<(), String> {
+        if flux.len() != mesh.face_count() || flux.iter().any(|v| !v.is_finite()) {
+            return Err("Invalid species checkpoint face flux".into());
+        }
+        self.validate_mesh(mesh)?;
+        if self.physics_signature != species_signature(coordinates, flux, options)? {
+            return Err(
+                "Species checkpoint requires the same coordinates, flow and transport settings"
+                    .into(),
+            );
+        }
+        Ok(())
+    }
+}
+fn species_signature(
+    coordinates: super::metrics::Coordinates,
+    flux: &[f64],
+    options: &SpeciesOptions,
+) -> Result<String, String> {
+    use sha2::{Digest, Sha256};
+    let data = serde_json::to_vec(&(coordinates, flux, options)).map_err(|e| e.to_string())?;
+    Ok(format!("{:x}", Sha256::digest(data)))
+}
+
 #[derive(Clone, Debug, Serialize)]
 pub struct SpeciesReport {
     pub advection_subcycles: usize,
@@ -68,6 +155,23 @@ pub fn advance(
         dt,
         &options.advection,
     )?;
+    let cyclic = if options.advection.cyclic_pairs.is_empty() {
+        None
+    } else {
+        Some(crate::periodic::resolve(
+            mesh,
+            &options.advection.cyclic_pairs,
+        )?)
+    };
+    for pair in &options.advection.cyclic_pairs {
+        if options.fixed_boundary_fraction.contains_key(&pair.first)
+            || options.fixed_boundary_fraction.contains_key(&pair.second)
+        {
+            return Err(
+                "Cyclic species patches cannot prescribe a diffusive boundary fraction".into(),
+            );
+        }
+    }
     let mut fixed = vec![None; mesh.face_count()];
     for (name, &value) in &options.fixed_boundary_fraction {
         if !value.is_finite() || !(0.0..=1.0).contains(&value) {
@@ -86,8 +190,18 @@ pub fn advance(
     let mut outgoing = vec![0.0; mesh.cell_count()];
     if options.diffusivity > 0.0 {
         for (i, face) in mesh.faces().iter().enumerate() {
-            let destination = match face.neighbour {
-                Some(neighbour) => mesh.cells()[neighbour].center,
+            let link = cyclic.as_ref().and_then(|map| map.link(i));
+            if link.is_some_and(|link| i > link.peer_face) {
+                continue;
+            }
+            let neighbour = face
+                .neighbour
+                .or_else(|| link.map(|link| mesh.faces()[link.peer_face].owner));
+            let destination = match neighbour {
+                Some(neighbour) => {
+                    mesh.cells()[neighbour].center
+                        - link.map_or(crate::Vec3::ZERO, |link| link.translation)
+                }
                 None if fixed[i].is_some() => face.center,
                 None => continue,
             };
@@ -104,7 +218,7 @@ pub fn advance(
             }
             conductance[i] = factor;
             outgoing[face.owner] += factor;
-            if let Some(neighbour) = face.neighbour {
+            if let Some(neighbour) = neighbour {
                 outgoing[neighbour] += factor;
             }
         }
@@ -128,7 +242,14 @@ pub fn advance(
         crate::compute::checkpoint().map_err(|e| e.to_string())?;
         delta.fill(0.0);
         for (i, face) in mesh.faces().iter().enumerate() {
-            if let Some(neighbour) = face.neighbour {
+            let link = cyclic.as_ref().and_then(|map| map.link(i));
+            if link.is_some_and(|link| i > link.peer_face) {
+                continue;
+            }
+            let neighbour = face
+                .neighbour
+                .or_else(|| link.map(|link| mesh.faces()[link.peer_face].owner));
+            if let Some(neighbour) = neighbour {
                 let transfer =
                     subdt * conductance[i] * (candidate[neighbour] - candidate[face.owner]);
                 delta[face.owner] += transfer;
@@ -144,6 +265,7 @@ pub fn advance(
             if !candidate[i].is_finite() || candidate[i] < -1e-12 || candidate[i] > 1.0 + 1e-12 {
                 return Err(format!("Species fraction outside [0,1] in cell {i}"));
             }
+            candidate[i] = candidate[i].clamp(0.0, 1.0);
         }
     }
     let final_integral = candidate
@@ -246,5 +368,59 @@ mod tests {
         assert!(fractions.iter().all(|f| *f > 0.0 && *f <= 1.0));
         assert!(report.boundary_outflow < 0.0);
         assert!(report.conservation_error.abs() < 1e-12);
+    }
+    #[test]
+    fn checkpoint_continuation_matches_uninterrupted_and_rejects_changed_physics() {
+        let mesh = mesh();
+        let coordinates = crate::multiphysics::metrics::Coordinates::Cartesian;
+        let measures = coordinates.measures(&mesh).unwrap();
+        let flux = vec![0.0; mesh.face_count()];
+        let mut options = SpeciesOptions {
+            diffusivity: 0.1,
+            ..Default::default()
+        };
+        let mut continuous = vec![1.0, 0.0];
+        for _ in 0..4 {
+            advance(&mesh, &measures, &flux, &mut continuous, 0.1, &options).unwrap();
+        }
+        let mut partial = vec![1.0, 0.0];
+        for _ in 0..2 {
+            advance(&mesh, &measures, &flux, &mut partial, 0.1, &options).unwrap();
+        }
+        let saved =
+            SpeciesCheckpoint::capture(&mesh, coordinates, &flux, &options, 2, 0.2, partial)
+                .unwrap();
+        let folder = tempfile::tempdir().unwrap();
+        let path = folder.path().join("species.json");
+        saved.save(&path).unwrap();
+        saved.save(&path).unwrap();
+        let from_disk = SpeciesCheckpoint::load(&path).unwrap();
+        assert_eq!(from_disk.fraction, saved.fraction);
+        std::fs::write(
+            &path,
+            serde_json::to_vec(&serde_json::json!({"checkpoint": saved})).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            SpeciesCheckpoint::load(&path).unwrap().fraction,
+            saved.fraction
+        );
+        let encoded = serde_json::to_vec(&saved).unwrap();
+        let restored: SpeciesCheckpoint = serde_json::from_slice(&encoded).unwrap();
+        restored
+            .validate(&mesh, coordinates, &flux, &options)
+            .unwrap();
+        let mut resumed = restored.fraction.clone();
+        for _ in 0..2 {
+            advance(&mesh, &measures, &flux, &mut resumed, 0.1, &options).unwrap();
+        }
+        assert_eq!(resumed, continuous);
+        options.diffusivity = 0.2;
+        assert!(restored
+            .validate(&mesh, coordinates, &flux, &options)
+            .is_err());
+        assert!(restored
+            .validate(&mesh, coordinates, &[0.0], &options)
+            .is_err());
     }
 }

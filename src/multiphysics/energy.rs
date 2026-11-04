@@ -79,6 +79,39 @@ pub fn advance(
     options: &EnergyOptions,
     linear: LinearSolverOptions,
 ) -> Result<EnergyReport, String> {
+    advance_with_cyclic(
+        mesh,
+        metrics,
+        old_capacity,
+        capacity,
+        conductivity,
+        capacity_flux,
+        source,
+        solid,
+        temperature,
+        dt,
+        options,
+        linear,
+        &[],
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn advance_with_cyclic(
+    mesh: &UnstructuredMesh,
+    metrics: &Measures,
+    old_capacity: &[f64],
+    capacity: &[f64],
+    conductivity: &[f64],
+    capacity_flux: &[f64],
+    source: &[f64],
+    solid: &[bool],
+    temperature: &mut [f64],
+    dt: f64,
+    options: &EnergyOptions,
+    linear: LinearSolverOptions,
+    cyclic_pairs: &[crate::periodic::TranslationalCyclicPair],
+) -> Result<EnergyReport, String> {
     let n = mesh.cell_count();
     let nf = mesh.face_count();
     if [
@@ -120,8 +153,32 @@ pub fn advance(
             );
         }
     }
+    let cyclic = if cyclic_pairs.is_empty() {
+        None
+    } else {
+        Some(crate::periodic::resolve(mesh, cyclic_pairs)?)
+    };
+    for pair in cyclic_pairs {
+        for name in [&pair.first, &pair.second] {
+            if options
+                .boundaries
+                .get(name)
+                .is_some_and(|b| *b != Boundary::Adiabatic)
+            {
+                return Err(format!(
+                    "Cyclic energy patch {name} cannot have a physical boundary condition"
+                ));
+            }
+        }
+    }
     let mut bc = vec![None; nf];
     for patch in mesh.boundary_patches() {
+        if cyclic_pairs
+            .iter()
+            .any(|p| p.first == patch.name || p.second == patch.name)
+        {
+            continue;
+        }
         let value = *options
             .boundaries
             .get(&patch.name)
@@ -161,6 +218,24 @@ pub fn advance(
     let mut flux_magnitude = vec![0.0; n];
     for (i, f) in mesh.faces().iter().enumerate() {
         let q = capacity_flux[i];
+        if let Some(link) = cyclic.as_ref().and_then(|map| map.link(i)) {
+            let peer = link.peer_face;
+            let scale = q.abs().max(capacity_flux[peer].abs());
+            if (q + capacity_flux[peer]).abs() > 1e-10 * scale + 1e-12 {
+                return Err(format!(
+                    "Cyclic energy flux mismatch between faces {i} and {peer}"
+                ));
+            }
+            let scale = metrics.areas[i].abs().max(metrics.areas[peer].abs());
+            if (metrics.areas[i] - metrics.areas[peer]).abs() > 1e-10 * scale + 1e-14 {
+                return Err("Cyclic energy faces require equal physical areas".into());
+            }
+            if solid[mesh.faces()[peer].owner] && q != 0.0 {
+                return Err(format!(
+                    "Nonzero advective energy flux into solid at cyclic face {i}"
+                ));
+            }
+        }
         if (solid[f.owner] || f.neighbour.is_some_and(|j| solid[j]) || metrics.areas[i] == 0.0)
             && q != 0.0
         {
@@ -191,6 +266,13 @@ pub fn advance(
                 }
                 distance / conductivity[j]
                     + options.contact_resistance.get(&i).copied().unwrap_or(0.0)
+            } else if let Some(link) = cyclic.as_ref().and_then(|map| map.link(i)) {
+                let peer = &mesh.faces()[link.peer_face];
+                let distance = (peer.center - mesh.cells()[peer.owner].center).dot(peer.normal);
+                if distance <= 0.0 {
+                    return Err(format!("Nonpositive cyclic thermal distance at face {i}"));
+                }
+                distance / conductivity[peer.owner]
             } else {
                 0.0
             };
@@ -228,7 +310,14 @@ pub fn advance(
             let o = f.owner;
             let g = conductance[i];
             let q = capacity_flux[i];
-            if let Some(j) = f.neighbour {
+            let link = cyclic.as_ref().and_then(|map| map.link(i));
+            if link.is_some_and(|link| i > link.peer_face) {
+                continue;
+            }
+            let neighbour = f
+                .neighbour
+                .or_else(|| link.map(|link| mesh.faces()[link.peer_face].owner));
+            if let Some(j) = neighbour {
                 add(o, o, g)?;
                 add(o, j, -g)?;
                 add(j, j, g)?;
@@ -313,12 +402,9 @@ pub fn advance(
             .fold(0.0, f64::max);
         if !has_radiation || change <= options.relative_tolerance {
             let mut boundary_power = 0.0;
-            for (i, f) in mesh
-                .faces()
-                .iter()
-                .enumerate()
-                .filter(|(_, f)| f.neighbour.is_none())
-            {
+            for (i, f) in mesh.faces().iter().enumerate().filter(|(i, f)| {
+                f.neighbour.is_none() && cyclic.as_ref().and_then(|map| map.link(*i)).is_none()
+            }) {
                 let t = candidate[f.owner];
                 let q = capacity_flux[i];
                 let g = conductance[i];

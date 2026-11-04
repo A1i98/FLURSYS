@@ -88,7 +88,7 @@ pub fn help() {
   flursys project import-mesh <directory> --input mesh.msh [--json]
   flursys project solve <directory> [--threads N] [--iterations N] [--restart FILE] [--backend serial|parallel|gpu] [--adapter NAME] [--gpu-required] [--gpu-min-rows N] [--json]
   flursys project species-template <directory> --output species.json [--json]
-  flursys project species <directory> --config species.json --output result.json [--json]
+  flursys project species <directory> --config species.json --output result.json [--restart result.json] [--json]
   flursys project transport-template <directory> --output transport.json [--json]
   flursys project transport <directory> --config transport.json --output NEW_DIRECTORY [--json]
   flursys project benchmark <directory> [--threads 1,2,4] [--iterations N] [--include-gpu] [--gpu-min-rows N] [--json]
@@ -204,7 +204,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
     let allowed: &[&str] = match action {
         "inspect" | "check" | "checkpoint" | "analyses" => &["json"],
         "transport-template" | "species-template" => &["json", "output"],
-        "species" => &["json", "config", "output"],
+        "species" => &["json", "config", "output", "restart"],
         "transport" => &["json", "config", "output", "restart"],
         "benchmark" => &[
             "json",
@@ -352,6 +352,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
                 mesh,
                 Path::new(opts.get("config").ok_or("Missing --config")?),
                 output,
+                opts.get("restart").map(|p| Path::new(p)),
             )?
         };
         emit(report, json_output);
