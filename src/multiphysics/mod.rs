@@ -9,6 +9,7 @@ pub mod energy;
 pub use catalog::Selection as CatalogSelection;
 pub mod metrics;
 pub mod phase;
+pub mod species;
 use crate::{LinearSolverOptions, UnstructuredMesh, Vec3};
 use serde::{Deserialize, Serialize};
 
@@ -118,6 +119,8 @@ pub struct Options {
     pub phase: phase::PhaseOptions,
     pub energy: energy::EnergyOptions,
     pub dt: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_transport_courant: Option<f64>,
     pub steps: usize,
     pub write_every: usize,
     /// Already integrated physical volume flux, owner-outward, m³/s (2D
@@ -148,6 +151,7 @@ impl Default for Options {
             phase: Default::default(),
             energy: Default::default(),
             dt: 0.001,
+            max_transport_courant: None,
             steps: 100,
             write_every: 10,
             face_flux: None,
@@ -165,15 +169,33 @@ pub struct State {
     pub solid: Vec<bool>,
 }
 #[derive(Clone, Debug, Serialize)]
+pub struct PhaseBudget {
+    pub initial_volume: f64,
+    pub final_volume: f64,
+    pub net_boundary_outflow: f64,
+    pub volume_balance_error: f64,
+    pub initial_mass: f64,
+    pub final_mass: f64,
+    pub net_boundary_mass_outflow: f64,
+    pub mass_balance_error: f64,
+}
+
+#[derive(Clone, Debug, Serialize)]
 pub struct StepReport {
     pub step: usize,
     pub time: f64,
+    pub time_step: f64,
+    pub transport_courant: f64,
+    pub volume_unit: &'static str,
+    pub mass_unit: &'static str,
     pub phase: phase::PhaseReport,
+    pub phase_budgets: [PhaseBudget; 2],
     pub energy: energy::EnergyReport,
     pub initial_fluid_mass: f64,
     pub final_fluid_mass: f64,
     pub net_boundary_mass_outflow: f64,
     pub mass_balance_error: f64,
+    pub max_cell_mass_residual: f64,
 }
 /// Advances phase and sensible energy with consistent mixture-capacity flux.
 /// The observer receives only accepted steps. Errors leave caller-owned data
@@ -221,6 +243,12 @@ pub fn run_controlled(
             "Invalid transport initial values, dt, step budget or recording interval".into(),
         );
     }
+    if options
+        .max_transport_courant
+        .is_some_and(|v| !v.is_finite() || v <= 0.0 || v > 1.0)
+    {
+        return Err("Maximum transport Courant must be finite and in (0, 1]".into());
+    }
     for r in &options.regions {
         r.validate()?;
     }
@@ -243,6 +271,29 @@ pub fn run_controlled(
     if flux.len() != mesh.face_count() || flux.iter().any(|q| !q.is_finite()) {
         return Err("Transport face_flux must match restored mesh face ordering".into());
     }
+    let mut outgoing = vec![0.0; n];
+    for (i, face) in mesh.faces().iter().enumerate() {
+        outgoing[face.owner] += flux[i].max(0.0);
+        if let Some(neighbour) = face.neighbour {
+            outgoing[neighbour] += (-flux[i]).max(0.0);
+        }
+    }
+    let max_rate = outgoing
+        .iter()
+        .zip(&metrics.volumes)
+        .map(|(q, v)| q / v)
+        .fold(0.0_f64, f64::max);
+    if !max_rate.is_finite() {
+        return Err("Invalid transport Courant rate".into());
+    }
+    let actual_dt = options
+        .max_transport_courant
+        .filter(|_| max_rate > 0.0)
+        .map_or(options.dt, |limit| options.dt.min(limit / max_rate));
+    if !actual_dt.is_finite() || actual_dt <= 0.0 {
+        return Err("Transport time step is too small".into());
+    }
+    let transport_courant = actual_dt * max_rate;
     let mut alpha = vec![options.initial_phase_fraction; n];
     let mut temperature = vec![options.initial_temperature; n];
     let mut solid = vec![false; n];
@@ -334,7 +385,7 @@ pub fn run_controlled(
             &metrics,
             &flux,
             &mut next_alpha,
-            options.dt,
+            actual_dt,
             &options.phase,
         )?;
         // Phase inventories describe fluid only. The immutable solid occupies
@@ -372,6 +423,30 @@ pub fn run_controlled(
             .zip(&flux)
             .map(|(a, q)| options.first.capacity() * a + options.second.capacity() * (q - a))
             .collect::<Vec<_>>();
+        let mass_flux = phase::mixture_mass_flux(
+            &phase_report.phase_flux,
+            &flux,
+            options.first.density,
+            options.second.density,
+        )?;
+        let mut mass_divergence = vec![0.0; n];
+        for (i, face) in mesh.faces().iter().enumerate() {
+            mass_divergence[face.owner] += mass_flux[i];
+            if let Some(neighbour) = face.neighbour {
+                mass_divergence[neighbour] -= mass_flux[i];
+            }
+        }
+        let mut max_cell_mass_residual = 0.0_f64;
+        for i in 0..n {
+            if !state.solid[i] {
+                let residual = (density[i] - state.density[i]) / actual_dt
+                    + mass_divergence[i] / metrics.volumes[i];
+                if !residual.is_finite() {
+                    return Err(format!("Non-finite mass continuity residual in cell {i}"));
+                }
+                max_cell_mass_residual = max_cell_mass_residual.max(residual.abs());
+            }
+        }
         let mut next_temperature = state.temperature.clone();
         let energy_report = energy::advance(
             mesh,
@@ -383,12 +458,12 @@ pub fn run_controlled(
             &source,
             &state.solid,
             &mut next_temperature,
-            options.dt,
+            actual_dt,
             &options.energy,
             linear,
         )?;
         state.step = step;
-        state.time += options.dt;
+        state.time += actual_dt;
         if !state.time.is_finite() {
             return Err("Scalar physical time overflow".into());
         }
@@ -417,17 +492,62 @@ pub fn run_controlled(
             options.second.density * fluid_volume + rho_difference * phase_report.final_volume;
         let boundary_mass = options.second.density * net_volume_flux
             + rho_difference * phase_report.net_boundary_outflow;
+        let phase_budget = |initial: f64, final_volume: f64, outflow: f64, density: f64| {
+            let volume_balance_error = final_volume - initial + actual_dt * outflow;
+            PhaseBudget {
+                initial_volume: initial,
+                final_volume,
+                net_boundary_outflow: outflow,
+                volume_balance_error,
+                initial_mass: density * initial,
+                final_mass: density * final_volume,
+                net_boundary_mass_outflow: density * outflow,
+                mass_balance_error: density * volume_balance_error,
+            }
+        };
+        let phase_budgets = [
+            phase_budget(
+                phase_report.initial_volume,
+                phase_report.final_volume,
+                phase_report.net_boundary_outflow,
+                options.first.density,
+            ),
+            phase_budget(
+                fluid_volume - phase_report.initial_volume,
+                fluid_volume - phase_report.final_volume,
+                net_volume_flux - phase_report.net_boundary_outflow,
+                options.second.density,
+            ),
+        ];
         observer(
             &state,
             &StepReport {
                 step,
                 time: state.time,
+                time_step: actual_dt,
+                transport_courant,
+                volume_unit: if mesh.dimension() == crate::MeshDimension::TwoD
+                    && options.coordinates == metrics::Coordinates::Cartesian
+                {
+                    "m²"
+                } else {
+                    "m³"
+                },
+                mass_unit: if mesh.dimension() == crate::MeshDimension::TwoD
+                    && options.coordinates == metrics::Coordinates::Cartesian
+                {
+                    "kg/m"
+                } else {
+                    "kg"
+                },
                 phase: phase_report,
+                phase_budgets,
                 energy: energy_report,
                 initial_fluid_mass: initial_mass,
                 final_fluid_mass: final_mass,
                 net_boundary_mass_outflow: boundary_mass,
-                mass_balance_error: final_mass - initial_mass + options.dt * boundary_mass,
+                mass_balance_error: final_mass - initial_mass + actual_dt * boundary_mass,
+                max_cell_mass_residual,
             },
         )?;
     }
@@ -465,4 +585,110 @@ pub fn mesh_signature(mesh: &UnstructuredMesh) -> String {
         }
     }
     format!("{:x}", h.finalize())
+}
+
+#[cfg(test)]
+mod adaptive_transport_tests {
+    use super::*;
+    use crate::{BoundaryPatch, BoundaryType, CellDefinition, MeshDimension, Point};
+
+    #[test]
+    fn courant_limit_controls_all_equations_and_restart_time() {
+        let mesh = UnstructuredMesh::from_cells(
+            MeshDimension::TwoD,
+            vec![
+                Point::new(0., 0., 0.),
+                Point::new(1., 0., 0.),
+                Point::new(2., 0., 0.),
+                Point::new(0., 1., 0.),
+                Point::new(1., 1., 0.),
+                Point::new(2., 1., 0.),
+            ],
+            vec![
+                CellDefinition::polygon(vec![0, 1, 4, 3]),
+                CellDefinition::polygon(vec![1, 2, 5, 4]),
+            ],
+        )
+        .unwrap();
+        let faces = mesh
+            .faces()
+            .iter()
+            .enumerate()
+            .filter_map(|(i, f)| f.neighbour.is_none().then_some(i))
+            .collect();
+        let mesh = mesh
+            .with_boundary_patches(vec![BoundaryPatch {
+                name: "boundary".into(),
+                face_indices: faces,
+                boundary_type: BoundaryType::ZeroGradient,
+            }])
+            .unwrap();
+        let mut options = Options {
+            dt: 1.0,
+            steps: 2,
+            max_transport_courant: Some(0.5),
+            initial_phase_fraction: 0.0,
+            mesh_signature: Some(mesh_signature(&mesh)),
+            face_flux: Some(mesh.faces().iter().map(|f| f.area_vector.x).collect()),
+            ..Default::default()
+        };
+        options.phase.scheme = phase::AdvectionScheme::FluxCorrected;
+        options.phase.incoming.insert("boundary".into(), 1.0);
+        options.energy.boundaries.insert(
+            "boundary".into(),
+            energy::Boundary::InletOutlet {
+                incoming_temperature: 293.15,
+            },
+        );
+        let mut reports = Vec::new();
+        let state = run(&mesh, &options, LinearSolverOptions::default(), |_, r| {
+            reports.push((
+                r.time_step,
+                r.transport_courant,
+                r.mass_balance_error,
+                r.energy.balance_error / r.energy.initial_energy.abs().max(1.0),
+                r.max_cell_mass_residual,
+                r.phase_budgets[0].mass_balance_error,
+                r.phase_budgets[1].mass_balance_error,
+            ));
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(state.time, 1.0);
+        assert!(
+            reports.iter().all(|r| r.0 == 0.5
+                && r.1 == 0.5
+                && r.2.abs() < 1e-10
+                && r.3.abs() < 1e-12
+                && r.4 < 1e-10
+                && r.5.abs() < 1e-10
+                && r.6.abs() < 1e-10),
+            "{reports:?}"
+        );
+        let checkpoint = checkpoint::Checkpoint::capture(&mesh, &options, &state).unwrap();
+        let continued = run_controlled(
+            &mesh,
+            &options,
+            LinearSolverOptions::default(),
+            Some(&checkpoint),
+            None,
+            |_, _| Ok(()),
+        )
+        .unwrap();
+        assert_eq!(continued.time, 2.0);
+        assert_eq!(continued.step, 4);
+        options.max_transport_courant = None;
+        let fixed = run(&mesh, &options, LinearSolverOptions::default(), |_, _| {
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(fixed.time, 2.0);
+        options.max_transport_courant = Some(0.0);
+        assert!(
+            run(&mesh, &options, LinearSolverOptions::default(), |_, _| Ok(
+                ()
+            ))
+            .is_err()
+        );
+    }
 }

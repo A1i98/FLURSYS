@@ -92,6 +92,7 @@ pub fn physics_signature(mesh: &UnstructuredMesh, options: &Options) -> Result<S
     }
     frozen.mesh_signature = None; // already guarded independently by the checkpoint
 
+    frozen.max_transport_courant = None;
     frozen.dt = 1.0;
     frozen.steps = 1;
     frozen.write_every = 1;
