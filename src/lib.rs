@@ -64,9 +64,9 @@ pub use meshing::{
 };
 pub use momentum::{
     assemble_momentum_component, constant_body_force, momentum_component_field,
-    pressure_gradient_source, solve_momentum_component, solve_momentum_velocity, MomentumComponent,
-    MomentumError, MomentumOptions, MomentumSystem, ResolvedVelocityBoundaryConditions,
-    VelocityBoundaryCondition,
+    physical_pressure_gravity_source, pressure_gradient_source, solve_momentum_component,
+    solve_momentum_velocity, MomentumComponent, MomentumError, MomentumOptions, MomentumSystem,
+    ResolvedVelocityBoundaryConditions, TransientDensity, VelocityBoundaryCondition,
 };
 pub use numerics::{
     divergence, divergence_into, face_flux, face_flux_into, gauss_gradient_from_faces,

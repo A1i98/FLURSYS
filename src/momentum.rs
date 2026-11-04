@@ -15,6 +15,12 @@ mod convection;
 pub use convection::MomentumConvection;
 
 #[derive(Clone, Copy, Debug)]
+pub struct TransientDensity<'a> {
+    pub current: &'a CellField<f64>,
+    pub previous: &'a CellField<f64>,
+}
+
+#[derive(Clone, Copy, Debug)]
 pub struct MomentumOptions<'a> {
     pub convection: MomentumConvection,
     pub viscosity: Diffusivity<'a>,
@@ -22,6 +28,8 @@ pub struct MomentumOptions<'a> {
     pub flux: &'a FaceField<f64>,
     pub old: Option<&'a CellField<f64>>,
     pub time_step: Option<f64>,
+    /// When set, flux is mass flux and viscosity is dynamic viscosity.
+    pub transient_density: Option<TransientDensity<'a>>,
     pub source: Option<&'a CellField<f64>>,
     /// Current component iterate used exclusively by equation under-relaxation.
     /// It is distinct from `old`, which is the previous physical time level.
@@ -147,6 +155,7 @@ impl<'a> MomentumOptions<'a> {
             flux,
             old: None,
             time_step: None,
+            transient_density: None,
             source: None,
             relaxation_field: None,
             correction_field: None,
@@ -197,7 +206,11 @@ pub enum MomentumError {
     InvalidTimeStep { value: f64 },
     InvalidUnderRelaxation { value: f64 },
     InvalidDensity { value: f64 },
+    InvalidGravity,
     MissingVelocityForTransient,
+    MissingTimeStepForVariableDensity,
+    UnsupportedVariableDensityConvection,
+    InconsistentMassContinuity { cell: usize, residual: f64 },
     MissingVelocityForUnderRelaxation,
     MissingCorrectionField,
     BackflowOnZeroGradient { face: usize },
@@ -287,6 +300,48 @@ pub(crate) fn assemble_momentum_component_with_prepared_viscosity(
             return Err(MomentumError::MissingVelocityForTransient);
         }
     }
+    if let Some(density) = options.transient_density {
+        density.current.ensure_mesh(mesh)?;
+        density.previous.ensure_mesh(mesh)?;
+        let dt = options
+            .time_step
+            .ok_or(MomentumError::MissingTimeStepForVariableDensity)?;
+        if options.convection != MomentumConvection::Upwind {
+            return Err(MomentumError::UnsupportedVariableDensityConvection);
+        }
+        for &rho in density
+            .current
+            .values()
+            .iter()
+            .chain(density.previous.values())
+        {
+            if !rho.is_finite() || rho <= 0.0 {
+                return Err(MomentumError::InvalidDensity { value: rho });
+            }
+        }
+        let mut divergence = vec![0.0; mesh.cell_count()];
+        let mut flux_scale = vec![0.0; mesh.cell_count()];
+        for (i, face) in mesh.faces().iter().enumerate() {
+            let q = options.flux[i];
+            if !q.is_finite() {
+                return Err(MomentumError::NonFiniteFlux { face: i, value: q });
+            }
+            divergence[face.owner] += q;
+            flux_scale[face.owner] += q.abs();
+            if let Some(n) = face.neighbour {
+                divergence[n] -= q;
+                flux_scale[n] += q.abs();
+            }
+        }
+        for (i, cell) in mesh.cells().iter().enumerate() {
+            let change = (density.current[i] - density.previous[i]) * cell.volume / dt;
+            let residual = change + divergence[i];
+            let scale = change.abs() + flux_scale[i];
+            if !residual.is_finite() || residual.abs() > 1e-9 * scale + 1e-12 {
+                return Err(MomentumError::InconsistentMassContinuity { cell: i, residual });
+            }
+        }
+    }
     let interpolated;
     let viscosity = if let Some(viscosity) = prepared_viscosity {
         viscosity.ensure_mesh(mesh)?;
@@ -338,9 +393,14 @@ pub(crate) fn assemble_momentum_component_with_prepared_viscosity(
         }
         if let Some(dt) = options.time_step {
             let coefficient = cell.volume / dt;
-            entries.push((cell_index, cell_index, coefficient));
-            rhs[cell_index] +=
-                coefficient * options.old.expect("validated transient velocity")[cell_index];
+            let (current_density, previous_density) =
+                options.transient_density.map_or((1.0, 1.0), |density| {
+                    (density.current[cell_index], density.previous[cell_index])
+                });
+            entries.push((cell_index, cell_index, coefficient * current_density));
+            rhs[cell_index] += coefficient
+                * previous_density
+                * options.old.expect("validated transient velocity")[cell_index];
         }
     }
     for (face_index, face) in mesh.faces().iter().enumerate() {
@@ -563,6 +623,46 @@ pub fn pressure_gradient_source(
     let mut source = least_squares_gradient(mesh, stencil, pressure)?;
     for value in source.values_mut() {
         *value = -*value / density;
+    }
+    Ok(source)
+}
+
+/// Pressure and gravity source per unit volume for physical pressure in Pa.
+/// With a constant reference density, pressure is reduced by rho_ref * g · x.
+pub fn physical_pressure_gravity_source(
+    mesh: &UnstructuredMesh,
+    pressure: &CellField<f64>,
+    stencil: &LeastSquaresGradientStencil,
+    density: &CellField<f64>,
+    gravity: Vec3,
+    reference_density: f64,
+) -> Result<CellField<Vec3>, MomentumError> {
+    density.ensure_mesh(mesh)?;
+    if !reference_density.is_finite() || reference_density < 0.0 {
+        return Err(MomentumError::InvalidDensity {
+            value: reference_density,
+        });
+    }
+    if [gravity.x, gravity.y, gravity.z]
+        .iter()
+        .any(|v| !v.is_finite())
+    {
+        return Err(MomentumError::InvalidGravity);
+    }
+    for &rho in density.values() {
+        if !rho.is_finite() || rho <= 0.0 {
+            return Err(MomentumError::InvalidDensity { value: rho });
+        }
+    }
+    let mut source = least_squares_gradient(mesh, stencil, pressure)?;
+    for (i, value) in source.values_mut().iter_mut().enumerate() {
+        *value = -*value + gravity * (density[i] - reference_density);
+        if [value.x, value.y, value.z].iter().any(|v| !v.is_finite()) {
+            return Err(MomentumError::NonFiniteSource {
+                cell: i,
+                value: value.norm(),
+            });
+        }
     }
     Ok(source)
 }
@@ -2039,5 +2139,141 @@ mod tests {
             assemble_momentum_component(&mesh, invalid_time),
             Err(MomentumError::InvalidTimeStep { .. })
         ));
+    }
+    #[test]
+    fn variable_density_momentum_preserves_uniform_velocity_with_phase_consistent_flux() {
+        let point = |x: usize, y: usize, z: usize| x + 3 * (y + 2 * z);
+        let points = (0..=1)
+            .flat_map(|z| {
+                (0..=1).flat_map(move |y| {
+                    (0..=2).map(move |x| Point::new(x as f64, y as f64, z as f64))
+                })
+            })
+            .collect();
+        let cells = (0..2)
+            .map(|x| {
+                CellDefinition::Hexahedron([
+                    point(x, 0, 0),
+                    point(x + 1, 0, 0),
+                    point(x + 1, 1, 0),
+                    point(x, 1, 0),
+                    point(x, 0, 1),
+                    point(x + 1, 0, 1),
+                    point(x + 1, 1, 1),
+                    point(x, 1, 1),
+                ])
+            })
+            .collect();
+        let three_d = UnstructuredMesh::from_cells(MeshDimension::ThreeD, points, cells).unwrap();
+        let faces = three_d
+            .faces()
+            .iter()
+            .enumerate()
+            .filter_map(|(i, f)| f.neighbour.is_none().then_some(i))
+            .collect();
+        let three_d = three_d
+            .with_boundary_patches(vec![BoundaryPatch {
+                name: "boundary".into(),
+                face_indices: faces,
+                boundary_type: BoundaryType::Wall,
+            }])
+            .unwrap();
+        for mesh in [two_cells(), three_d] {
+            let measures = crate::multiphysics::metrics::Coordinates::Cartesian
+                .measures(&mesh)
+                .unwrap();
+            let q: Vec<f64> = mesh.faces().iter().map(|f| f.area_vector.x).collect();
+            let mut phase_options = crate::multiphysics::phase::PhaseOptions::default();
+            phase_options.incoming.insert("boundary".into(), 1.0);
+            let mut alpha = vec![0.0; mesh.cell_count()];
+            let phase = crate::multiphysics::phase::advance(
+                &mesh,
+                &measures,
+                &q,
+                &mut alpha,
+                0.2,
+                &phase_options,
+            )
+            .unwrap();
+            let mass =
+                crate::multiphysics::phase::mixture_mass_flux(&phase.phase_flux, &q, 1000.0, 1.0)
+                    .unwrap();
+            let mass_flux = FaceField::from_values(&mesh, mass).unwrap();
+            let old_density = CellField::filled(&mesh, 1.0);
+            let new_density =
+                CellField::from_values(&mesh, alpha.iter().map(|a| 1.0 + 999.0 * a).collect())
+                    .unwrap();
+            let old = CellField::filled(&mesh, 2.0);
+            let boundary = ResolvedScalarBoundaryConditions::strict(
+                &mesh,
+                &[("boundary", ScalarBoundaryCondition::FixedValue(2.0))],
+            )
+            .unwrap();
+            let mut options =
+                MomentumOptions::steady(Diffusivity::Constant(0.0), &boundary, &mass_flux);
+            options.old = Some(&old);
+            options.time_step = Some(0.2);
+            options.transient_density = Some(TransientDensity {
+                current: &new_density,
+                previous: &old_density,
+            });
+            let system = assemble_momentum_component(&mesh, options).unwrap();
+            assert!(system
+                .true_residual(&[2.0, 2.0])
+                .unwrap()
+                .iter()
+                .all(|r| r.abs() < 1e-10));
+            let wrong = CellField::filled(&mesh, 1.0);
+            options.transient_density = Some(TransientDensity {
+                current: &wrong,
+                previous: &old_density,
+            });
+            assert!(matches!(
+                assemble_momentum_component(&mesh, options),
+                Err(MomentumError::InconsistentMassContinuity { .. })
+            ));
+        }
+    }
+    #[test]
+    fn physical_pressure_and_gravity_balance_hydrostatic_linear_field() {
+        let mesh = two_cells();
+        let patches = mesh
+            .faces()
+            .iter()
+            .enumerate()
+            .filter(|(_, f)| f.neighbour.is_none())
+            .map(|(i, _)| BoundaryPatch {
+                name: format!("face-{i}"),
+                face_indices: vec![i],
+                boundary_type: BoundaryType::Wall,
+            })
+            .collect();
+        let mesh = mesh.with_boundary_patches(patches).unwrap();
+        let gravity = Vec3::new(0.0, -9.81, 0.0);
+        for reference in [0.0, 2.0] {
+            let physical_density = 3.0;
+            let pressure = |p: Vec3| 100.0 + (physical_density - reference) * gravity.dot(p);
+            let assignments: Vec<_> = mesh
+                .boundary_patches()
+                .iter()
+                .map(|patch| {
+                    (
+                        patch.name.as_str(),
+                        ScalarBoundaryCondition::FixedValue(pressure(
+                            mesh.faces()[patch.face_indices[0]].center,
+                        )),
+                    )
+                })
+                .collect();
+            let boundary = ResolvedScalarBoundaryConditions::strict(&mesh, &assignments).unwrap();
+            let stencil = LeastSquaresGradientStencil::new(&mesh, &boundary).unwrap();
+            let field = CellField::from_cells(&mesh, |_, c| pressure(c.center));
+            let density = CellField::filled(&mesh, physical_density);
+            let force = physical_pressure_gravity_source(
+                &mesh, &field, &stencil, &density, gravity, reference,
+            )
+            .unwrap();
+            assert!(force.values().iter().all(|f| f.norm() < 1e-10));
+        }
     }
 }

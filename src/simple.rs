@@ -712,6 +712,7 @@ pub fn solve_simple_with_observer(
                             }]
                         }),
                         time_step: options.time_step,
+                        transient_density: None,
                         source: Some(source),
                         relaxation_field: relaxed.then_some(current),
                         correction_field: Some(current),
