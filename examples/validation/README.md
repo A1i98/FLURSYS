@@ -10,4 +10,5 @@
 | [Sod shock tube](sod-shock-tube) | Exact density, velocity and pressure profiles |
 | [Natural convection · Ra = 10⁵](natural-convection-ra100000) | Heat transfer and centreline velocities; grid study in progress |
 | [Capillary rise](capillary-rise) | Meniscus height comparison; mesh independence not established |
+| [Slotted-disk rotation](zalesak-disk) | One-revolution phase transport error on two meshes |
 | [Turbulent flat plate](turbulent-flat-plate) | Wall friction and boundary-layer velocity |
