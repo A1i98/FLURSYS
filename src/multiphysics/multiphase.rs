@@ -504,7 +504,21 @@ pub fn advance(
                 .iter()
                 .find(|p| &p.name == patch)
                 .ok_or_else(|| format!("Unknown wetting patch {patch}"))?;
-            if p.boundary_type != crate::BoundaryType::Wall
+            let fixed_velocity = p.face_indices.iter().all(|&face| {
+                [
+                    crate::MomentumComponent::X,
+                    crate::MomentumComponent::Y,
+                    crate::MomentumComponent::Z,
+                ]
+                .iter()
+                .all(|&component| {
+                    matches!(
+                        simple.velocity_boundary.component(component).condition(face),
+                        Some(crate::ScalarBoundaryCondition::FixedValue(_))
+                    )
+                })
+            });
+            if !fixed_velocity
                 || settings
                     .phase
                     .cyclic_pairs

@@ -152,9 +152,17 @@ impl App {
         if case
             .boundaries
             .iter()
-            .any(|(_, b)| !matches!(b, IncompressibleBoundaryCondition::NoSlipWall))
+            .any(|(_, b)| {
+                !matches!(
+                    b,
+                    IncompressibleBoundaryCondition::NoSlipWall
+                        | IncompressibleBoundaryCondition::PressureOutlet { .. }
+                )
+            })
         {
-            return Err("Multiphase GUI currently supports stationary no-slip walls only".into());
+            return Err(
+                "Multiphase GUI supports stationary no-slip walls and pressure outlets".into(),
+            );
         }
         if !case.solver.boundary_profiles.is_empty()
             || !case.solver.scripting.bindings.is_empty()
@@ -196,7 +204,9 @@ impl App {
                     &stencil,
                 );
                 simple.pressure_boundary = Some(resolved.pressure_boundary());
-                if mesh.faces().iter().enumerate().any(|(i, _)| {
+                if case.boundaries.iter().any(|(_, boundary)| {
+                    matches!(boundary, IncompressibleBoundaryCondition::PressureOutlet { .. })
+                }) || mesh.faces().iter().enumerate().any(|(i, _)| {
                     resolved
                         .pressure_correction_boundary()
                         .cyclic_link(i)
