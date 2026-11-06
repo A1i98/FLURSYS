@@ -164,6 +164,11 @@ codegen-units = 1
 # CAD workers contain third-party kernel panics and preserve the source document.
 panic = "unwind"
 
+[profile.profiling]
+inherits = "release"
+debug = 1
+strip = false
+
 [dependencies]
 amd = "0.2.2"
 sprs = { version = "0.11", default-features = false }
