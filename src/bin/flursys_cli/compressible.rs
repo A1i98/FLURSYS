@@ -55,7 +55,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
     let mesh = flursys::load_gmsh(&mesh_path).map_err(|e| format!("{e:?}"))?;
     let settings = input.settings;
     eprintln!(
-        "Compressible {:?}, {} cells, {:?}; experimental, not benchmark validated",
+        "Compressible {:?}, {} cells, {:?}; experimental; Sod HLLC grid verification available, other regimes not established",
         settings.flux,
         mesh.cell_count(),
         settings.viscosity
@@ -86,7 +86,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
         &solution,
         settings.gas,
     )?;
-    let report = serde_json::json!({"format":"flursys-compressible-v1","validation":"experimental; no accuracy or performance claim","mesh":mesh_path,"cells":mesh.cell_count(),"settings":settings,"solve_wall_seconds":elapsed,"report":solution.report,"units_note":"SI; absolute pressure Pa; temperature K; 2D integrals per unit depth; conservation ordering: mass, x/y/z momentum, total energy"});
+    let report = serde_json::json!({"format":"flursys-compressible-v1","validation":"experimental; Sod HLLC grid verification available; no general accuracy or performance claim","mesh":mesh_path,"cells":mesh.cell_count(),"settings":settings,"solve_wall_seconds":elapsed,"report":solution.report,"units_note":"SI; absolute pressure Pa; temperature K; 2D integrals per unit depth; conservation ordering: mass, x/y/z momentum, total energy"});
     let text = serde_json::to_vec_pretty(&report).map_err(|e| e.to_string())?;
     let mut temp = tempfile::NamedTempFile::new_in(directory).map_err(|e| e.to_string())?;
     use std::io::Write;
