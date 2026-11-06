@@ -219,7 +219,7 @@ fn solve_cg_with_workspace(
         profile.iteration();
         profile.measure(false, || matrix.spmv_into(direction, product))?;
         let denominator = dot_with_scratch(direction, product, partials)?;
-        if !denominator.is_finite() || denominator <= BREAKDOWN_EPSILON {
+        if !denominator.is_finite() || denominator <= 0.0 {
             return Err(LinearAlgebraError::Breakdown {
                 reason: "non-positive CG search denominator; pressure operator must be positive definite",
             });
@@ -265,7 +265,7 @@ fn solve_cg_with_workspace(
             preconditioned.copy_from_slice(residual);
         }
         let rho_new = dot_with_scratch(residual, preconditioned, partials)?;
-        if !rho_new.is_finite() || rho.abs() <= BREAKDOWN_EPSILON {
+        if !rho_new.is_finite() || rho <= 0.0 || !rho.is_finite() {
             return Err(LinearAlgebraError::Breakdown {
                 reason: "zero CG recurrence denominator",
             });

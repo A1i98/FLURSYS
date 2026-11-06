@@ -239,6 +239,35 @@ mod tests {
     }
 
     #[test]
+    fn cg_accepts_small_positive_search_products_and_certifies_residual() {
+        let a = matrix(&[&[2.0, -1.0], &[-1.0, 2.0]]);
+        let rhs = [1e-20, 0.0];
+        let options = LinearSolverOptions {
+            absolute_tolerance: 1e-32,
+            relative_tolerance: 1e-12,
+            max_iterations: 50,
+        };
+        let mut solution = [0.0; 2];
+        let report = cg(&a, &rhs, &mut solution, options).unwrap();
+        assert_eq!(report.status, LinearSolverStatus::Converged);
+        assert!((solution[0] - 2e-20 / 3.0).abs() < 1e-31);
+        assert!((solution[1] - 1e-20 / 3.0).abs() < 1e-31);
+        let mut residual = [0.0; 2];
+        residual_into(&a, &solution, &rhs, &mut residual).unwrap();
+        assert!(
+            residual.iter().map(|x| x * x).sum::<f64>().sqrt()
+                <= options.absolute_tolerance
+                    + options.relative_tolerance * report.initial_residual
+        );
+        let indefinite = matrix(&[&[-1.0, 0.0], &[0.0, 2.0]]);
+        let mut invalid_solution = [0.0; 2];
+        assert!(matches!(
+            cg(&indefinite, &[1.0, 0.0], &mut invalid_solution, OPTIONS),
+            Err(LinearAlgebraError::Breakdown { .. })
+        ));
+    }
+
+    #[test]
     fn cg_pcg_and_bicgstab_recover_known_solutions() {
         let spd_rows = [&[4.0, 1.0][..], &[1.0, 3.0][..]];
         let spd = matrix(&spd_rows);
