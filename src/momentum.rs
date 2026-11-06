@@ -337,7 +337,12 @@ pub(crate) fn assemble_momentum_component_with_prepared_viscosity(
             let change = (density.current[i] - density.previous[i]) * cell.volume / dt;
             let residual = change + divergence[i];
             let scale = change.abs() + flux_scale[i];
-            if !residual.is_finite() || residual.abs() > 1e-9 * scale + 1e-12 {
+            let roundoff = 32.0
+                * f64::EPSILON
+                * (density.current[i].abs() + density.previous[i].abs())
+                * cell.volume
+                / dt;
+            if !residual.is_finite() || residual.abs() > 1e-9 * scale + roundoff + 1e-12 {
                 return Err(MomentumError::InconsistentMassContinuity { cell: i, residual });
             }
         }

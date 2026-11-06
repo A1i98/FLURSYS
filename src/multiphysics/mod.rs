@@ -3,11 +3,14 @@
 //! This is an independent transport path: no variable-density momentum,
 //! pressure feedback, capillary force, phase change or mesh motion is implied.
 pub mod archive;
+mod capillary;
 mod catalog;
 pub mod checkpoint;
+pub mod coupled;
 pub mod energy;
 pub use catalog::Selection as CatalogSelection;
 pub mod metrics;
+pub mod multiphase;
 pub mod phase;
 pub mod species;
 use crate::{LinearSolverOptions, UnstructuredMesh, Vec3};

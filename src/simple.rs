@@ -265,6 +265,21 @@ impl SimpleState {
     }
 }
 
+/// One frozen density/flux iterate. Pressure is physical (Pa), viscosity dynamic.
+#[derive(Clone, Copy, Debug)]
+pub struct VariableDensityInput<'a> {
+    pub density: crate::momentum::TransientDensity<'a>,
+    pub mass_flux: &'a FaceField<f64>,
+    pub gravity: Vec3,
+    pub surface_force: Option<&'a CellField<Vec3>>,
+}
+impl VariableDensityInput<'_> {
+    fn force(self, cell: usize) -> Vec3 {
+        self.gravity * self.density.current[cell]
+            + self.surface_force.map_or(Vec3::ZERO, |force| force[cell])
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct SimpleOptions<'a> {
     pub pressure_coupling: PressureCoupling,
@@ -274,6 +289,7 @@ pub struct SimpleOptions<'a> {
     pub time_step: Option<f64>,
     pub time_velocity: Option<&'a CellField<Vec3>>,
     pub time_flux: Option<&'a FaceField<f64>>,
+    pub variable_density: Option<VariableDensityInput<'a>>,
     /// Optional state-dependent slip/free-stream boundary update per outer step.
     pub boundary_case: Option<&'a crate::IncompressibleCase>,
     pub viscosity: Diffusivity<'a>,
@@ -313,6 +329,7 @@ impl<'a> SimpleOptions<'a> {
             time_step: None,
             time_velocity: None,
             time_flux: None,
+            variable_density: None,
             boundary_case: None,
             viscosity,
             velocity_boundary,
@@ -405,9 +422,52 @@ pub fn solve_simple_with_observer(
     mesh: &UnstructuredMesh,
     state: &mut SimpleState,
     options: SimpleOptions<'_>,
+    is_cancelled: impl FnMut() -> bool,
+    on_iteration: impl FnMut(usize, [f64; 4]),
+    on_state: impl FnMut(usize, &SimpleState) -> Result<(), SimpleError>,
+) -> Result<SimpleReport, SimpleError> {
+    solve_simple_with_workspace(
+        mesh,
+        state,
+        options,
+        is_cancelled,
+        on_iteration,
+        on_state,
+        &mut SimpleWorkspace::default(),
+    )
+}
+
+#[derive(Default)]
+pub(crate) struct SimpleWorkspace {
+    momentum: crate::momentum::MomentumWorkspace,
+    momentum_patterns: [crate::linear::CsrPatternCache; 3],
+}
+
+pub(crate) fn solve_simple_cached(
+    mesh: &UnstructuredMesh,
+    state: &mut SimpleState,
+    options: SimpleOptions<'_>,
+    workspace: &mut SimpleWorkspace,
+) -> Result<SimpleReport, SimpleError> {
+    solve_simple_with_workspace(
+        mesh,
+        state,
+        options,
+        || false,
+        |_, _| {},
+        |_, _| Ok(()),
+        workspace,
+    )
+}
+
+fn solve_simple_with_workspace(
+    mesh: &UnstructuredMesh,
+    state: &mut SimpleState,
+    options: SimpleOptions<'_>,
     mut is_cancelled: impl FnMut() -> bool,
     mut on_iteration: impl FnMut(usize, [f64; 4]),
     mut on_state: impl FnMut(usize, &SimpleState) -> Result<(), SimpleError>,
+    workspace: &mut SimpleWorkspace,
 ) -> Result<SimpleReport, SimpleError> {
     options
         .pressure_coupling
@@ -438,6 +498,44 @@ pub fn solve_simple_with_observer(
         return Err(SimpleError::InvalidContinuityTolerance {
             value: options.continuity_absolute_tolerance,
         });
+    }
+    if let Some(variable) = options.variable_density {
+        variable.density.current.ensure_mesh(mesh)?;
+        variable.density.previous.ensure_mesh(mesh)?;
+        variable.mass_flux.ensure_mesh(mesh)?;
+        if let Some(force) = variable.surface_force {
+            force.ensure_mesh(mesh)?;
+            if force
+                .values()
+                .iter()
+                .any(|v| !v.x.is_finite() || !v.y.is_finite() || !v.z.is_finite())
+            {
+                return Err(SimpleError::PhysicalBoundary(
+                    "Surface force must be finite".into(),
+                ));
+            }
+        }
+        if options.time_step.is_none() || options.time_velocity.is_none() {
+            return Err(SimpleError::PhysicalBoundary(
+                "Variable-density momentum requires a transient step and previous velocity".into(),
+            ));
+        }
+        if options.convection != crate::momentum::MomentumConvection::Upwind
+            || options.thermal.is_some()
+            || options.closure.is_some()
+            || options.volume_models != crate::volume_models::VolumeModels::default()
+            || options.boundary_case.is_some()
+        {
+            return Err(SimpleError::PhysicalBoundary("Variable-density pressure coupling currently requires upwind laminar flow without dynamic boundary, thermal or volume models".into()));
+        }
+        if [variable.gravity.x, variable.gravity.y, variable.gravity.z]
+            .iter()
+            .any(|v| !v.is_finite())
+        {
+            return Err(SimpleError::PhysicalBoundary(
+                "Variable-density gravity must be finite".into(),
+            ));
+        }
     }
     let initial = continuity_rms(mesh, &state.face_flux)?;
     if !options.coupling_relative_tolerance.is_finite()
@@ -481,12 +579,6 @@ pub fn solve_simple_with_observer(
     let mut last_momentum = None;
     let mut last_pressure = None;
     let mut pressure_workspace = crate::equations::PressureWorkspace::default();
-    let mut momentum_workspace = crate::momentum::MomentumWorkspace::default();
-    let mut momentum_patterns = [
-        crate::linear::CsrPatternCache::default(),
-        crate::linear::CsrPatternCache::default(),
-        crate::linear::CsrPatternCache::default(),
-    ];
     let mut velocity_stencils: [Option<(
         ResolvedScalarBoundaryConditions,
         LeastSquaresGradientStencil,
@@ -576,11 +668,11 @@ pub fn solve_simple_with_observer(
         } else {
             static_correction_stencil.as_ref()
         };
-        let current_pressure_gradient = pressure_coupling_gradient(
+        let current_pressure_gradient = pressure_coupling_gradient_with_gravity(
             mesh,
             &state.pressure,
-            options.pressure_stencil,
             options.pressure_boundary,
+            options.variable_density,
         )?;
         let turbulence_timer = crate::compute::StageTimer::new(crate::compute::Stage::Turbulence);
         let closure_correction = if let Some(closure) = options.closure {
@@ -604,6 +696,11 @@ pub fn solve_simple_with_observer(
             options.viscosity = Diffusivity::Faces(viscosity);
         }
         let mut pressure_source = current_pressure_gradient.map(|g| -*g);
+        if let Some(variable) = options.variable_density {
+            for (cell, source) in pressure_source.values_mut().iter_mut().enumerate() {
+                *source += variable.force(cell);
+            }
+        }
         if options.volume_models.mean_velocity.is_some() {
             for source in pressure_source.values_mut() {
                 *source += mean_acceleration;
@@ -695,40 +792,43 @@ pub fn solve_simple_with_observer(
             options.viscosity,
             options.momentum_diffusion.diffusivity_interpolation,
         )?;
-        let assemble =
-            |component, source, current, stencil, cache: &mut crate::linear::CsrPatternCache| {
-                crate::momentum::assemble_momentum_component_with_prepared_viscosity(
-                    mesh,
-                    MomentumOptions {
-                        convection: options.convection,
-                        viscosity: options.viscosity,
-                        boundary: options.velocity_boundary.component(component),
-                        flux: &state.face_flux,
-                        old: temporal.as_ref().map(|v| {
-                            &v[match component {
-                                MomentumComponent::X => 0,
-                                MomentumComponent::Y => 1,
-                                MomentumComponent::Z => 2,
-                            }]
-                        }),
-                        time_step: options.time_step,
-                        transient_density: None,
-                        source: Some(source),
-                        relaxation_field: relaxed.then_some(current),
-                        correction_field: Some(current),
-                        least_squares_stencil: stencil,
-                        under_relaxation: options.velocity_relaxation,
-                        diffusion: options.momentum_diffusion,
-                        allow_iterative_outlet_backflow: options
-                            .pressure_correction_boundary
-                            .is_some(),
-                    },
-                    model_terms.as_ref().map(|(sink, _)| sink),
-                    Some(&face_viscosity),
-                    Some(cache),
-                )
-            };
-        let [x_pattern, y_pattern, z_pattern] = &mut momentum_patterns;
+        let assemble = |component,
+                        source,
+                        current,
+                        stencil,
+                        cache: &mut crate::linear::CsrPatternCache| {
+            crate::momentum::assemble_momentum_component_with_prepared_viscosity(
+                mesh,
+                MomentumOptions {
+                    convection: options.convection,
+                    viscosity: options.viscosity,
+                    boundary: options.velocity_boundary.component(component),
+                    flux: options
+                        .variable_density
+                        .map_or(&state.face_flux, |variable| variable.mass_flux),
+                    old: temporal.as_ref().map(|v| {
+                        &v[match component {
+                            MomentumComponent::X => 0,
+                            MomentumComponent::Y => 1,
+                            MomentumComponent::Z => 2,
+                        }]
+                    }),
+                    time_step: options.time_step,
+                    transient_density: options.variable_density.map(|variable| variable.density),
+                    source: Some(source),
+                    relaxation_field: relaxed.then_some(current),
+                    correction_field: Some(current),
+                    least_squares_stencil: stencil,
+                    under_relaxation: options.velocity_relaxation,
+                    diffusion: options.momentum_diffusion,
+                    allow_iterative_outlet_backflow: options.pressure_correction_boundary.is_some(),
+                },
+                model_terms.as_ref().map(|(sink, _)| sink),
+                Some(&face_viscosity),
+                Some(cache),
+            )
+        };
+        let [x_pattern, y_pattern, z_pattern] = &mut workspace.momentum_patterns;
         let mut x = || {
             assemble(
                 MomentumComponent::X,
@@ -773,7 +873,7 @@ pub fn solve_simple_with_observer(
                 crate::equations::EquationControl::transport(options.momentum_solver),
                 |e| e.velocity,
             ),
-            &mut momentum_workspace,
+            &mut workspace.momentum,
         )?;
         drop(momentum_solve_timer);
         if !momentum_reports.iter().all(LinearSolveReport::converged) {
@@ -915,11 +1015,11 @@ pub fn solve_simple_with_observer(
             if is_cancelled() {
                 return Err(SimpleError::Cancelled);
             }
-            let latest_gradient = pressure_coupling_gradient(
+            let latest_gradient = pressure_coupling_gradient_with_gravity(
                 mesh,
                 &state.pressure,
-                options.pressure_stencil,
                 options.pressure_boundary,
+                options.variable_density,
             )?;
             if corrector > 0 {
                 predictor = pressure::predictor_from_defect(
@@ -931,7 +1031,7 @@ pub fn solve_simple_with_observer(
                     &r_au,
                 )?;
             }
-            let mut predicted_flux = rhie_chow_flux_with_coefficients(
+            let mut predicted_flux = rhie_chow_flux_with_gravity(
                 mesh,
                 &predictor,
                 &state.pressure,
@@ -941,6 +1041,7 @@ pub fn solve_simple_with_observer(
                 &flux_coefficients,
                 Some(&latest_gradient),
                 options.pressure_correction_boundary,
+                options.variable_density,
             )?;
             if let Some(correction_boundary) = options.pressure_correction_boundary {
                 correction_boundary.ensure_mesh(mesh)?;
@@ -984,7 +1085,6 @@ pub fn solve_simple_with_observer(
                     {
                         let a = (f.center - mesh.cells()[f.owner].center).norm();
                         let b = (f.center - center).norm();
-                        let rf = (b * flux_r_au[f.owner] + a * flux_r_au[n]) / (a + b);
                         let old_u = if f.neighbour.is_none() {
                             options
                                 .time_velocity
@@ -993,7 +1093,22 @@ pub fn solve_simple_with_observer(
                         } else {
                             old_uf[i]
                         };
-                        predicted_flux[i] += rf / dt * (old_phi[i] - old_u.dot(f.area_vector));
+                        let (owner_density, neighbour_density) =
+                            options.variable_density.map_or((1.0, 1.0), |variable| {
+                                (
+                                    variable.density.previous[f.owner],
+                                    variable.density.previous[n],
+                                )
+                            });
+                        let response = temporal_face_response(
+                            flux_r_au[f.owner],
+                            flux_r_au[n],
+                            owner_density,
+                            neighbour_density,
+                            b / (a + b),
+                        );
+                        predicted_flux[i] +=
+                            response / dt * (old_phi[i] - old_u.dot(f.area_vector));
                     }
                 }
             }
@@ -1806,24 +1921,70 @@ fn pressure_coupling_gradient(
     _stencil: &LeastSquaresGradientStencil,
     boundary: Option<&ResolvedScalarBoundaryConditions>,
 ) -> Result<CellField<Vec3>, SimpleError> {
+    pressure_coupling_gradient_with_gravity(mesh, pressure, boundary, None)
+}
+
+fn pressure_coupling_gradient_with_gravity(
+    mesh: &UnstructuredMesh,
+    pressure: &CellField<f64>,
+    boundary: Option<&ResolvedScalarBoundaryConditions>,
+    variable: Option<VariableDensityInput<'_>>,
+) -> Result<CellField<Vec3>, SimpleError> {
     let mut faces = FaceField::filled(mesh, 0.0);
     for (i, f) in mesh.faces().iter().enumerate() {
         faces[i] = if let Some(n) = f.neighbour {
             let a = (f.center - mesh.cells()[f.owner].center).norm();
             let b = (f.center - mesh.cells()[n].center).norm();
-            (b * pressure[f.owner] + a * pressure[n]) / (a + b)
+            let (po, pn) = if let Some(v) = variable {
+                (
+                    pressure[f.owner]
+                        + v.force(f.owner)
+                            .dot(f.center - mesh.cells()[f.owner].center),
+                    pressure[n] + v.force(n).dot(f.center - mesh.cells()[n].center),
+                )
+            } else {
+                (pressure[f.owner], pressure[n])
+            };
+            (b * po + a * pn) / (a + b)
         } else if let Some((n, center)) = boundary.and_then(|b| b.cyclic_neighbour(mesh, i)) {
             let a = (f.center - mesh.cells()[f.owner].center).norm();
             let b = (f.center - center).norm();
-            (pressure[f.owner] * b + pressure[n] * a) / (a + b)
+            let (po, pn) = if let Some(v) = variable {
+                (
+                    pressure[f.owner]
+                        + v.force(f.owner)
+                            .dot(f.center - mesh.cells()[f.owner].center),
+                    pressure[n] + v.force(n).dot(f.center - center),
+                )
+            } else {
+                (pressure[f.owner], pressure[n])
+            };
+            (po * b + pn * a) / (a + b)
         } else {
             match boundary.and_then(|bc| bc.condition(i)) {
                 Some(ScalarBoundaryCondition::FixedValue(p)) => p,
-                _ => pressure[f.owner],
+                _ => {
+                    pressure[f.owner]
+                        + variable.map_or(0.0, |v| {
+                            v.force(f.owner)
+                                .dot(f.center - mesh.cells()[f.owner].center)
+                        })
+                }
             }
         };
     }
     Ok(crate::gauss_gradient_from_faces(mesh, &faces)?)
+}
+
+fn temporal_face_response(
+    owner_response: f64,
+    neighbour_response: f64,
+    owner_density: f64,
+    neighbour_density: f64,
+    owner_weight: f64,
+) -> f64 {
+    owner_weight * owner_response * owner_density
+        + (1.0 - owner_weight) * neighbour_response * neighbour_density
 }
 
 /// Constructs the pressure-aware Rhie--Chow predictor flux for internal faces.
@@ -1869,6 +2030,33 @@ fn rhie_chow_flux_with_coefficients(
     coupling_gradient: Option<&CellField<Vec3>>,
     boundary: Option<&ResolvedScalarBoundaryConditions>,
 ) -> Result<FaceField<f64>, SimpleError> {
+    rhie_chow_flux_with_gravity(
+        mesh,
+        predictor_velocity,
+        pressure,
+        r_au,
+        pressure_stencil,
+        wall_flux,
+        coefficients,
+        coupling_gradient,
+        boundary,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn rhie_chow_flux_with_gravity(
+    mesh: &UnstructuredMesh,
+    predictor_velocity: &CellField<Vec3>,
+    pressure: &CellField<f64>,
+    r_au: &CellField<f64>,
+    pressure_stencil: &LeastSquaresGradientStencil,
+    wall_flux: &FaceField<f64>,
+    coefficients: &FaceField<f64>,
+    coupling_gradient: Option<&CellField<Vec3>>,
+    boundary: Option<&ResolvedScalarBoundaryConditions>,
+    variable: Option<VariableDensityInput<'_>>,
+) -> Result<FaceField<f64>, SimpleError> {
     predictor_velocity.ensure_mesh(mesh)?;
     pressure.ensure_mesh(mesh)?;
     r_au.ensure_mesh(mesh)?;
@@ -1897,21 +2085,29 @@ fn rhie_chow_flux_with_coefficients(
         let weight = neighbour_distance / (owner_distance + neighbour_distance);
         let velocity = predictor_velocity[face.owner] * weight
             + predictor_velocity[neighbour] * (1.0 - weight);
-        let gradient =
-            pressure_gradient[face.owner] * weight + pressure_gradient[neighbour] * (1.0 - weight);
-        let weighted_response_gradient = pressure_gradient[face.owner]
-            * (weight * r_au[face.owner])
-            + pressure_gradient[neighbour] * ((1.0 - weight) * r_au[neighbour]);
+        let owner_gradient =
+            pressure_gradient[face.owner] - variable.map_or(Vec3::ZERO, |v| v.force(face.owner));
+        let neighbour_gradient =
+            pressure_gradient[neighbour] - variable.map_or(Vec3::ZERO, |v| v.force(neighbour));
+        let gradient = owner_gradient * weight + neighbour_gradient * (1.0 - weight);
+        let weighted_response_gradient = owner_gradient * (weight * r_au[face.owner])
+            + neighbour_gradient * ((1.0 - weight) * r_au[neighbour]);
         let response = weight * r_au[face.owner] + (1.0 - weight) * r_au[neighbour];
         let response_covariance = weighted_response_gradient - gradient * response;
         let d = center - mesh.cells()[face.owner].center;
         // Use the same orthogonal pressure operator for the interpolated and
         // direct pressure differences. Their non-orthogonal terms cancel, so
         // a linear pressure field introduces no artificial Rhie--Chow flux.
+        let hydrostatic_difference = variable.map_or(0.0, |v| {
+            v.force(face.owner)
+                .dot(face.center - mesh.cells()[face.owner].center)
+                + v.force(neighbour).dot(center - face.center)
+        });
         flux[face_index] = velocity.dot(face.area_vector)
             + response_covariance.dot(face.area_vector)
             + coefficients[face_index]
-                * (gradient.dot(d) - (pressure[neighbour] - pressure[face.owner]));
+                * (gradient.dot(d)
+                    - (pressure[neighbour] - pressure[face.owner] - hydrostatic_difference));
         if !flux[face_index].is_finite() {
             return Err(SimpleError::InvalidPressureFaceCoefficient {
                 face: face_index,
@@ -3102,5 +3298,61 @@ mod tests {
             .enumerate()
             .filter(|(_, face)| face.neighbour.is_some())
             .any(|(face, _)| flux[face].abs() > 1.0e-8));
+    }
+    #[test]
+    fn transient_face_response_interpolates_density_weighted_momentum() {
+        let dt = 0.01;
+        let response = temporal_face_response(dt / 1000.0, dt, 1000.0, 1.0, 0.5);
+        assert!((response - dt).abs() < 1e-15);
+        let uniform = temporal_face_response(0.2, 0.4, 1.0, 1.0, 0.25);
+        assert!((uniform - 0.35).abs() < 1e-15);
+    }
+
+    #[test]
+    fn variable_density_pressure_iteration_matches_unit_density_solver() {
+        let mesh = two_cells();
+        let pressure_boundary = ResolvedScalarBoundaryConditions::strict(
+            &mesh,
+            &[("wall", ScalarBoundaryCondition::FixedValue(0.0))],
+        )
+        .unwrap();
+        let stencil = LeastSquaresGradientStencil::new(&mesh, &pressure_boundary).unwrap();
+        let velocity_boundary = ResolvedVelocityBoundaryConditions::strict(
+            &mesh,
+            &[("wall", VelocityBoundaryCondition::FixedVelocity(Vec3::ZERO))],
+        )
+        .unwrap();
+        let old_velocity = CellField::filled(&mesh, Vec3::ZERO);
+        let old_flux = FaceField::filled(&mesh, 0.0);
+        let mut state = SimpleState::new(
+            &mesh,
+            old_velocity.clone(),
+            CellField::from_values(&mesh, vec![0.0, 1.0]).unwrap(),
+            old_flux.clone(),
+        )
+        .unwrap();
+        let mut variable_state = state.clone();
+        let density = CellField::filled(&mesh, 1.0);
+        let mut options =
+            SimpleOptions::steady(Diffusivity::Constant(1.0), &velocity_boundary, &stencil);
+        options.time_step = Some(0.2);
+        options.time_velocity = Some(&old_velocity);
+        options.time_flux = Some(&old_flux);
+        options.max_outer_iterations = 1;
+        let base = solve_simple(&mesh, &mut state, options).unwrap();
+        options.variable_density = Some(VariableDensityInput {
+            density: crate::momentum::TransientDensity {
+                current: &density,
+                previous: &density,
+            },
+            mass_flux: &old_flux,
+            gravity: Vec3::ZERO,
+            surface_force: None,
+        });
+        let variable = solve_simple(&mesh, &mut variable_state, options).unwrap();
+        assert_eq!(state.face_flux.values(), variable_state.face_flux.values());
+        assert_eq!(state.velocity.values(), variable_state.velocity.values());
+        assert_eq!(state.pressure.values(), variable_state.pressure.values());
+        assert_eq!(base.final_continuity_rms, variable.final_continuity_rms);
     }
 }
