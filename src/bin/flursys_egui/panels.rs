@@ -314,7 +314,7 @@ impl App {
                     });
             }
             egui::CentralPanel::default().show(ui, |ui| {
-                if self.transport.receiver.is_some() || self.transport.species_receiver.is_some() {
+                if self.transport.receiver.is_some() || self.transport.species_receiver.is_some() || self.transport.coupled_receiver.is_some() || self.transport.multiphase_receiver.is_some() {
                     ui.horizontal(|ui| {
                         if ui.button("Pause transport").clicked() {
                             self.transport

@@ -3,6 +3,7 @@ mod cad;
 mod case_library;
 mod compressible_flow;
 mod continuation;
+mod coupled;
 mod export;
 mod home;
 mod initialization;
@@ -10,6 +11,7 @@ mod mesh_scene;
 mod mesh_sections;
 mod migration;
 mod monitoring;
+mod multiphase_gui;
 mod panels;
 mod performance;
 mod post;
@@ -552,12 +554,16 @@ impl App {
             || self.analysis_job.is_some()
             || self.transport.receiver.is_some()
             || self.transport.species_receiver.is_some()
+            || self.transport.coupled_receiver.is_some()
+            || self.transport.multiphase_receiver.is_some()
     }
     fn sync_project(&mut self) {
         let mut p = self.session.to_project(self.project.name.clone());
         p.project_id = self.project.project_id.clone();
         p.scalar_transport = self.project.scalar_transport.clone();
         p.passive_species = self.project.passive_species.clone();
+        p.coupled_two_phase = self.project.coupled_two_phase.clone();
+        p.multiphase = self.project.multiphase.clone();
         p.runs = self.project.runs.clone();
         p.mesh_asset = self.project.mesh_asset.clone();
         p.cad_document = self.project.cad_document.clone();
@@ -579,6 +585,8 @@ impl App {
         self.cad = cad::app(p.cad_document.as_deref(), None)?;
         self.transport = Default::default();
         self.transport.options = p.scalar_transport.clone().unwrap_or_default();
+        self.transport.coupled_settings = p.coupled_two_phase.clone().unwrap_or_default();
+        self.transport.multiphase_config = p.multiphase.clone().unwrap_or_default();
         if let Some(species) = &p.passive_species {
             self.transport.species_options = species.options.clone();
             self.transport.species_initial = species.initial_fraction;
@@ -871,7 +879,9 @@ impl App {
         if next == Stage::Geometry
             && (self.jobs.is_running()
                 || self.transport.receiver.is_some()
-                || self.transport.species_receiver.is_some())
+                || self.transport.species_receiver.is_some()
+                || self.transport.coupled_receiver.is_some()
+                || self.transport.multiphase_receiver.is_some())
         {
             self.message("Stop the active job before editing CAD.");
             return;
@@ -1148,6 +1158,8 @@ impl App {
         }
         self.poll_mapping();
         self.poll_transport();
+        self.poll_coupled();
+        self.poll_multiphase();
         if let Some((id, rx)) = &self.frame_scan {
             if let Ok(frames) = rx.try_recv() {
                 let id = id.clone();

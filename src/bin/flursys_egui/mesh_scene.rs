@@ -141,7 +141,7 @@ impl App {
         });
         let transport =
             self.transport.latest.as_ref().filter(|_| {
-                self.stage == Stage::Setup && self.page == 5 && self.transport.field != 3
+                self.stage == Stage::Setup && self.page == 5 && self.transport.field < 3
             });
         let species = (self.stage == Stage::Setup && self.page == 5 && self.transport.field == 3)
             .then_some(self.transport.species_latest.as_ref())
@@ -150,9 +150,25 @@ impl App {
                 *mesh_id == source.id() && values.len() == source.cell_count()
             })
             .map(|(_, values)| values.as_slice());
+        let coupled = (self.stage == Stage::Setup && self.page == 5 && self.transport.field >= 4)
+            .then_some(self.transport.coupled_latest.as_ref())
+            .flatten()
+            .filter(|(mesh_id, alpha, speed)| {
+                *mesh_id == source.id()
+                    && alpha.len() == source.cell_count()
+                    && speed.len() == source.cell_count()
+            })
+            .map(|(_, alpha, speed)| {
+                if self.transport.field == 4 {
+                    alpha.as_slice()
+                } else {
+                    speed.as_slice()
+                }
+            });
         let values = data
             .map(|d| d.scalar_values(self.result_field))
             .or(species)
+            .or(coupled)
             .or_else(|| {
                 transport.map(|s| match self.transport.field {
                     1 => s.phase_fraction.as_slice(),
@@ -181,6 +197,7 @@ impl App {
         (
             values.map(|v| v.as_ptr() as usize),
             self.result_iteration,
+            self.transport.coupled_revision,
             self.mesh_quality,
             quality_mode,
             post,

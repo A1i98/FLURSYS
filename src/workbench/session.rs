@@ -111,6 +111,8 @@ pub struct WorkbenchSession {
     catalog_history: Vec<serde_json::Value>,
     scalar_transport: Option<crate::multiphysics::Options>,
     passive_species: Option<crate::multiphysics::species::SpeciesConfiguration>,
+    coupled_two_phase: Option<crate::multiphysics::coupled::Settings>,
+    multiphase: Option<crate::multiphysics::multiphase::Configuration>,
     initial_profile: Option<super::initialization::InitialProfile>,
     case_context: Option<super::case_format::CaseContext>,
     compressible: Option<crate::compressible::Settings>,
@@ -151,6 +153,8 @@ impl WorkbenchSession {
             catalog_history: Vec::new(),
             scalar_transport: None,
             passive_species: None,
+            coupled_two_phase: None,
+            multiphase: None,
             initial_profile: None,
             case_context: None,
             compressible: None,
@@ -232,6 +236,8 @@ impl WorkbenchSession {
         session.catalog_history = project.catalog_history.clone();
         session.scalar_transport = project.scalar_transport.clone();
         session.passive_species = project.passive_species.clone();
+        session.coupled_two_phase = project.coupled_two_phase.clone();
+        session.multiphase = project.multiphase.clone();
         session.set_solver_controls(
             project.solver.max_outer_iterations,
             project.solver.velocity_relaxation,
@@ -311,6 +317,8 @@ impl WorkbenchSession {
         project.catalog_history = self.catalog_history.clone();
         project.scalar_transport = self.scalar_transport.clone();
         project.passive_species = self.passive_species.clone();
+        project.coupled_two_phase = self.coupled_two_phase.clone();
+        project.multiphase = self.multiphase.clone();
         project.solver.initial_profile = self.initial_profile.clone();
         project.case_context = self.case_context.clone();
         project.solver.compressible = self.compressible.clone();

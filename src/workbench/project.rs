@@ -549,6 +549,10 @@ pub struct WorkbenchProject {
     pub scalar_transport: Option<crate::multiphysics::Options>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub passive_species: Option<crate::multiphysics::species::SpeciesConfiguration>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub coupled_two_phase: Option<crate::multiphysics::coupled::Settings>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub multiphase: Option<crate::multiphysics::multiphase::Configuration>,
     pub geometry: GeometryTopology,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cad_document: Option<String>,
@@ -586,6 +590,8 @@ impl WorkbenchProject {
             catalog_history: Vec::new(),
             scalar_transport: None,
             passive_species: None,
+            coupled_two_phase: None,
+            multiphase: None,
             geometry: GeometryTopology::new(),
             cad_document: None,
             cad_geometry_hash: None,
@@ -1086,7 +1092,11 @@ pub fn finalize_workspace_run_continuing(
             "omega_max":matches!(t.model,crate::turbulence::TurbulenceModel::KOmega|crate::turbulence::TurbulenceModel::KOmegaSst).then(||t.omega.values().iter().copied().fold(0.0,f64::max)),
             "epsilon_max":t.epsilon.as_ref().map(|e|e.values().iter().copied().fold(0.0,f64::max)),
             "wall_treatment":session.solver_options().turbulence.wall_treatment,
-            "validation":"experimental; not benchmark validated"
+            "validation":if t.model == crate::turbulence::TurbulenceModel::KOmegaSst {
+                "Limited SST reference comparisons available; current run is not automatically validated"
+            } else {
+                "Experimental; model-wide validation not established"
+            }
         })),
         "cpu_worker_threads": session.solution().map(|s| s.report.cpu_threads),
         "performance": session.performance(),
@@ -2514,6 +2524,59 @@ mod tests {
             Err(ProjectDocumentError::Invalid(_))
         ));
         assert!(!directory.path().parent().unwrap().join("outside").exists());
+    }
+    #[test]
+    fn multiphase_configuration_survives_workspace_and_session_round_trip() {
+        use crate::multiphysics::multiphase::{Configuration, Interface, MaterialPhase};
+        let directory = tempfile::tempdir().unwrap();
+        let mut project = WorkbenchProject::blank("Multiphase");
+        let mut config = Configuration::default();
+        config.settings.phases.push(MaterialPhase {
+            name: "third".into(),
+            density: 800.0,
+            viscosity: 0.01,
+        });
+        config.initial_fractions.push(0.0);
+        config.settings.interfaces.push(Interface {
+            first: 0,
+            second: 2,
+            surface_tension: 0.03,
+            contact_angles: [("wall".into(), 70.0)].into_iter().collect(),
+        });
+        project.multiphase = Some(config.clone());
+        save_workspace(directory.path(), &project).unwrap();
+        let restored = load_workspace(directory.path()).unwrap();
+        assert_eq!(restored.multiphase.as_ref(), Some(&config));
+        let session = WorkbenchSession::from_project(&restored).unwrap();
+        assert_eq!(session.to_project("copy").multiphase, Some(config));
+        let legacy = serde_json::to_value(WorkbenchProject::blank("legacy")).unwrap();
+        assert!(legacy.get("multiphase").is_none());
+        assert!(serde_json::from_value::<WorkbenchProject>(legacy)
+            .unwrap()
+            .multiphase
+            .is_none());
+    }
+    #[test]
+    fn coupled_settings_survive_workspace_and_session_round_trip() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut project = WorkbenchProject::blank("Coupled");
+        let settings = crate::multiphysics::coupled::Settings {
+            first_density: 850.0,
+            max_courant: Some(0.3),
+            ..Default::default()
+        };
+        project.coupled_two_phase = Some(settings.clone());
+        save_workspace(directory.path(), &project).unwrap();
+        let restored = load_workspace(directory.path()).unwrap();
+        assert_eq!(restored.coupled_two_phase.as_ref(), Some(&settings));
+        let session = WorkbenchSession::from_project(&restored).unwrap();
+        assert_eq!(session.to_project("copy").coupled_two_phase, Some(settings));
+        let legacy = serde_json::to_value(WorkbenchProject::blank("legacy")).unwrap();
+        assert!(legacy.get("coupled_two_phase").is_none());
+        assert!(serde_json::from_value::<WorkbenchProject>(legacy)
+            .unwrap()
+            .coupled_two_phase
+            .is_none());
     }
     #[test]
     fn passive_species_settings_survive_workspace_and_session_round_trip() {

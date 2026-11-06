@@ -16,6 +16,16 @@ pub struct Transport {
     pub folder: Option<PathBuf>,
     pub restart: Option<physics::checkpoint::Checkpoint>,
     pub use_flow: bool,
+    pub coupled_settings: physics::coupled::Settings,
+    pub coupled_latest: Option<(flursys::mesh::MeshId, Vec<f64>, Vec<f64>)>,
+    pub coupled_revision: u64,
+    pub coupled_checkpoint: Option<physics::coupled::Checkpoint>,
+    pub coupled_receiver: Option<Receiver<super::coupled::Event>>,
+    pub multiphase_config: physics::multiphase::Configuration,
+    pub multiphase_receiver: Option<Receiver<super::multiphase_gui::Event>>,
+    pub multiphase_checkpoint: Option<physics::multiphase::Checkpoint>,
+    pub multiphase_latest: Option<(flursys::mesh::MeshId, Vec<Vec<f64>>, Vec<f64>)>,
+    pub multiphase_selected: usize,
     pub species_options: physics::species::SpeciesOptions,
     pub species_initial: f64,
     pub species_latest: Option<(flursys::mesh::MeshId, Vec<f64>)>,
@@ -215,6 +225,10 @@ impl App {
             }
         }
         ui.separator();
+        self.multiphase_properties(ui);
+        ui.separator();
+        self.coupled_properties(ui);
+        ui.separator();
         egui::CollapsingHeader::new("PASSIVE SPECIES")
             .default_open(false)
             .show(ui, |ui| {
@@ -325,7 +339,9 @@ impl App {
                     "Phase-one fraction",
                     "Density (kg/m³)",
                     "Species fraction",
-                ][self.transport.field.min(3)],
+                    "Coupled phase fraction",
+                    "Coupled speed (m/s)",
+                ][self.transport.field.min(5)],
             )
             .show_ui(ui, |ui| {
                 for (i, n) in [
@@ -333,6 +349,8 @@ impl App {
                     "Phase-one fraction",
                     "Density (kg/m³)",
                     "Species fraction",
+                    "Coupled phase fraction",
+                    "Coupled speed (m/s)",
                 ]
                 .iter()
                 .enumerate()
