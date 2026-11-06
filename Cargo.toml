@@ -5,7 +5,7 @@ default-members = ["."]
 exclude = ["vendor/cad-workbench/vendor"]
 
 [workspace.package]
-version = "0.29.0"
+version = "0.30.1"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 rust-version = "1.95"
@@ -34,6 +34,7 @@ solidcraft-space-mouse = { path = "vendor/cad-workbench/crates/space-mouse" }
 solidcraft-mcp = { path = "vendor/cad-workbench/crates/mcp" }
 solidcraft-derive = { path = "vendor/cad-workbench/crates/derive" }
 solidcraft-3dx-client = { path = "vendor/cad-workbench/crates/threedx-client" }
+solidcraft-testkit = { path = "vendor/cad-workbench/crates/testkit" }
 
 # foundation
 thiserror = "2"
@@ -113,7 +114,7 @@ neg_cmp_op_on_partial_ord = "allow"
 
 [package]
 name = "flursys"
-version = "0.22.0"
+version = "0.23.0"
 edition = "2021"
 authors = ["A1i98 and contributors"]
 description = "Rust-native scientific simulation system"
