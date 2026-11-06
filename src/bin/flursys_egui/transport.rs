@@ -54,6 +54,17 @@ impl App {
     pub fn transport_properties(&mut self, ui: &mut egui::Ui) {
         heading(ui, "PHASE AND HEAT TRANSPORT");
         ui.label("Prescribed flux / conduction. This does not feed variable density or capillary force back into momentum.");
+        if self.transport.options.initial_phase_shape.is_some() {
+            ui.label("Initial phase shape is defined in the case file.");
+        }
+        if let Some(physics::PrescribedVelocity::SolidBodyRotation { center, angular_speed }) =
+            &mut self.transport.options.prescribed_velocity
+        {
+            ui.label("Prescribed solid-body rotation");
+            number(ui, "Rotation center X", &mut center.x);
+            number(ui, "Rotation center Y", &mut center.y);
+            number(ui, "Angular speed (rad/s)", angular_speed);
+        }
         egui::ComboBox::from_id_salt("phase-advection-scheme")
             .selected_text(match self.transport.options.phase.scheme {
                 physics::phase::AdvectionScheme::Upwind => "Upwind",
@@ -71,6 +82,25 @@ impl App {
                     "Bounded flux-corrected",
                 );
             });
+        if self.transport.options.phase.scheme == physics::phase::AdvectionScheme::FluxCorrected {
+            ui.add(
+                egui::Slider::new(&mut self.transport.options.phase.interface_compression, 0.0..=1.0)
+                    .text("Interface compression"),
+            );
+            if self.transport.options.phase.interface_compression > 0.0 {
+                use physics::phase::CompressionNormal;
+                let normal = &mut self.transport.options.phase.compression_normal;
+                egui::ComboBox::from_id_salt("phase-compression-normal")
+                    .selected_text(match normal {
+                        CompressionNormal::FaceDifference => "Face difference",
+                        CompressionNormal::ReconstructedGradient => "Reconstructed gradient",
+                    })
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(normal, CompressionNormal::FaceDifference, "Face difference");
+                        ui.selectable_value(normal, CompressionNormal::ReconstructedGradient, "Reconstructed gradient");
+                    });
+            }
+        }
         number(ui, "Δt (s)", &mut self.transport.options.dt);
         let mut adaptive = self.transport.options.max_transport_courant.is_some();
         if ui
@@ -550,6 +580,9 @@ impl App {
         let path = self.workspace.clone().ok_or("Save the workspace first")?;
         let mut options = self.transport.options.clone();
         if self.transport.use_flow {
+            if options.prescribed_velocity.is_some() {
+                return Err("Disable the prescribed velocity before using a solved flow".into());
+            }
             if options.coordinates != physics::metrics::Coordinates::Cartesian {
                 return Err("Axisymmetric transport needs explicitly revolved flux; Cartesian flow flux is not rescaled automatically".into());
             }

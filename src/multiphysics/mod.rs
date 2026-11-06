@@ -105,6 +105,64 @@ impl Region {
         Ok(())
     }
 }
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "kebab-case", deny_unknown_fields)]
+pub enum PhaseShape {
+    Circle {
+        center: Vec3,
+        radius: f64,
+    },
+    Box {
+        minimum: Vec3,
+        maximum: Vec3,
+    },
+    Difference {
+        shape: Box<PhaseShape>,
+        remove: Box<PhaseShape>,
+    },
+}
+
+impl PhaseShape {
+    fn validate(&self) -> bool {
+        let finite = |v: &Vec3| [v.x, v.y, v.z].iter().all(|x| x.is_finite());
+        match self {
+            Self::Circle { center, radius } => {
+                finite(center) && radius.is_finite() && *radius > 0.0
+            }
+            Self::Box { minimum, maximum } => {
+                finite(minimum)
+                    && finite(maximum)
+                    && minimum.x <= maximum.x
+                    && minimum.y <= maximum.y
+                    && minimum.z <= maximum.z
+            }
+            Self::Difference { shape, remove } => shape.validate() && remove.validate(),
+        }
+    }
+    fn contains(&self, p: Vec3) -> bool {
+        match self {
+            Self::Circle { center, radius } => {
+                (p.x - center.x).powi(2) + (p.y - center.y).powi(2) <= radius * radius
+            }
+            Self::Box { minimum, maximum } => {
+                p.x >= minimum.x
+                    && p.x <= maximum.x
+                    && p.y >= minimum.y
+                    && p.y <= maximum.y
+                    && p.z >= minimum.z
+                    && p.z <= maximum.z
+            }
+            Self::Difference { shape, remove } => shape.contains(p) && !remove.contains(p),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "kebab-case", deny_unknown_fields)]
+pub enum PrescribedVelocity {
+    SolidBodyRotation { center: Vec3, angular_speed: f64 },
+}
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Options {
@@ -117,6 +175,8 @@ pub struct Options {
     pub first: Properties,
     pub second: Properties,
     pub initial_phase_fraction: f64,
+    pub initial_phase_shape: Option<PhaseShape>,
+    pub prescribed_velocity: Option<PrescribedVelocity>,
     pub initial_temperature: f64,
     pub regions: Vec<Region>,
     pub phase: phase::PhaseOptions,
@@ -149,6 +209,8 @@ impl Default for Options {
                 conductivity: 0.026,
             },
             initial_phase_fraction: 1.0,
+            initial_phase_shape: None,
+            prescribed_velocity: None,
             initial_temperature: 293.15,
             regions: Vec::new(),
             phase: Default::default(),
@@ -256,6 +318,22 @@ pub fn run_controlled(
         r.validate()?;
     }
     if options
+        .initial_phase_shape
+        .as_ref()
+        .is_some_and(|s| !s.validate())
+    {
+        return Err("Invalid initial phase shape".into());
+    }
+    if options.prescribed_velocity.is_some()
+        && (options.face_flux.is_some()
+            || options.coordinates != metrics::Coordinates::Cartesian
+            || mesh.dimension() != crate::MeshDimension::TwoD)
+    {
+        return Err(
+            "Prescribed velocity requires a 2D Cartesian mesh and no explicit face flux".into(),
+        );
+    }
+    if options
         .mesh_signature
         .as_ref()
         .is_some_and(|s| s != &mesh_signature(mesh))
@@ -267,10 +345,31 @@ pub fn run_controlled(
     }
     let metrics = options.coordinates.measures(mesh)?;
     let n = mesh.cell_count();
-    let flux = options
-        .face_flux
-        .clone()
-        .unwrap_or_else(|| vec![0.0; mesh.face_count()]);
+    let flux = match &options.prescribed_velocity {
+        Some(PrescribedVelocity::SolidBodyRotation {
+            center,
+            angular_speed,
+        }) => {
+            if ![center.x, center.y, center.z, *angular_speed]
+                .iter()
+                .all(|v| v.is_finite())
+            {
+                return Err("Invalid prescribed velocity".into());
+            }
+            mesh.faces()
+                .iter()
+                .map(|face| {
+                    angular_speed
+                        * (-(face.center.y - center.y) * face.area_vector.x
+                            + (face.center.x - center.x) * face.area_vector.y)
+                })
+                .collect()
+        }
+        None => options
+            .face_flux
+            .clone()
+            .unwrap_or_else(|| vec![0.0; mesh.face_count()]),
+    };
     if flux.len() != mesh.face_count() || flux.iter().any(|q| !q.is_finite()) {
         return Err("Transport face_flux must match restored mesh face ordering".into());
     }
@@ -298,6 +397,15 @@ pub fn run_controlled(
     }
     let transport_courant = actual_dt * max_rate;
     let mut alpha = vec![options.initial_phase_fraction; n];
+    if let Some(shape) = &options.initial_phase_shape {
+        for (value, cell) in alpha.iter_mut().zip(mesh.cells()) {
+            *value = if shape.contains(cell.center) {
+                1.0
+            } else {
+                0.0
+            };
+        }
+    }
     let mut temperature = vec![options.initial_temperature; n];
     let mut solid = vec![false; n];
     let mut material = vec![None; n];
@@ -595,6 +703,31 @@ pub fn mesh_signature(mesh: &UnstructuredMesh) -> String {
 mod adaptive_transport_tests {
     use super::*;
     use crate::{BoundaryPatch, BoundaryType, CellDefinition, MeshDimension, Point};
+
+    #[test]
+    fn phase_shape_difference_is_serializable_and_bounded() {
+        let shape = PhaseShape::Difference {
+            shape: Box::new(PhaseShape::Circle {
+                center: Vec3::ZERO,
+                radius: 1.0,
+            }),
+            remove: Box::new(PhaseShape::Box {
+                minimum: Vec3::new(-0.1, -1.0, 0.0),
+                maximum: Vec3::new(0.1, 0.5, 0.0),
+            }),
+        };
+        let decoded: PhaseShape =
+            serde_json::from_str(&serde_json::to_string(&shape).unwrap()).unwrap();
+        assert!(decoded.validate());
+        assert!(decoded.contains(Vec3::new(0.5, 0.0, 0.0)));
+        assert!(!decoded.contains(Vec3::ZERO));
+        assert!(!decoded.contains(Vec3::new(2.0, 0.0, 0.0)));
+        assert!(!PhaseShape::Circle {
+            center: Vec3::ZERO,
+            radius: -1.0
+        }
+        .validate());
+    }
 
     #[test]
     fn courant_limit_controls_all_equations_and_restart_time() {

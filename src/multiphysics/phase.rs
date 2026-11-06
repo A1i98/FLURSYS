@@ -13,6 +13,14 @@ pub enum AdvectionScheme {
     FluxCorrected,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CompressionNormal {
+    #[default]
+    FaceDifference,
+    ReconstructedGradient,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct PhaseOptions {
@@ -22,6 +30,8 @@ pub struct PhaseOptions {
     pub cyclic_pairs: Vec<crate::periodic::TranslationalCyclicPair>,
     pub max_courant: f64,
     pub max_subcycles: usize,
+    pub interface_compression: f64,
+    pub compression_normal: CompressionNormal,
     /// First-phase fraction for every patch that experiences inflow/backflow.
     pub incoming: BTreeMap<String, f64>,
 }
@@ -35,6 +45,8 @@ impl Default for PhaseOptions {
             cyclic_pairs: Vec::new(),
             max_courant: 0.5,
             max_subcycles: 10000,
+            interface_compression: 0.0,
+            compression_normal: CompressionNormal::FaceDifference,
             incoming: BTreeMap::new(),
         }
     }
@@ -96,6 +108,9 @@ pub fn advance(
         || options.max_courant <= 0.0
         || options.max_courant > 1.0
         || options.max_subcycles == 0
+        || !options.interface_compression.is_finite()
+        || !(0.0..=1.0).contains(&options.interface_compression)
+        || (options.interface_compression > 0.0 && options.scheme != AdvectionScheme::FluxCorrected)
         || alpha
             .iter()
             .any(|a| !a.is_finite() || !(0.0..=1.0).contains(a))
@@ -219,6 +234,13 @@ pub fn advance(
     } else {
         vec![0.5; mesh.face_count()]
     };
+    let mut gradients = if options.interface_compression > 0.0
+        && options.compression_normal == CompressionNormal::ReconstructedGradient
+    {
+        vec![crate::Vec3::ZERO; mesh.cell_count()]
+    } else {
+        Vec::new()
+    };
     if !owner_weight.is_empty() {
         for (i, face) in mesh.faces().iter().enumerate() {
             let link = cyclic.as_ref().and_then(|map| map.link(i));
@@ -264,6 +286,38 @@ pub fn advance(
         if options.scheme == AdvectionScheme::FluxCorrected {
             positive.fill(0.0);
             negative.fill(0.0);
+            if !gradients.is_empty() {
+                gradients.fill(crate::Vec3::ZERO);
+                for (i, face) in mesh.faces().iter().enumerate() {
+                    let link = cyclic.as_ref().and_then(|map| map.link(i));
+                    let neighbour = face
+                        .neighbour
+                        .or_else(|| link.map(|l| mesh.faces()[l.peer_face].owner));
+                    let value = if let Some(neighbour) = neighbour {
+                        let weight = if let Some(link) = link {
+                            if i > link.peer_face {
+                                1.0 - owner_weight[link.peer_face]
+                            } else {
+                                owner_weight[i]
+                            }
+                        } else {
+                            owner_weight[i]
+                        };
+                        weight * candidate[face.owner] + (1.0 - weight) * candidate[neighbour]
+                    } else if flux[i] < 0.0 {
+                        incoming[i].unwrap_or(candidate[face.owner])
+                    } else {
+                        candidate[face.owner]
+                    };
+                    gradients[face.owner] = gradients[face.owner] + face.area_vector * value;
+                    if let Some(neighbour) = face.neighbour {
+                        gradients[neighbour] = gradients[neighbour] - face.area_vector * value;
+                    }
+                }
+                for (gradient, volume) in gradients.iter_mut().zip(&metrics.volumes) {
+                    *gradient = *gradient * (1.0 / volume);
+                }
+            }
             for (i, face) in mesh.faces().iter().enumerate() {
                 let neighbour = match face.neighbour {
                     Some(neighbour) => neighbour,
@@ -277,11 +331,39 @@ pub fn advance(
                 } else {
                     candidate[neighbour]
                 };
-                let anti = subdt
-                    * flux[i]
-                    * (owner_weight[i] * candidate[face.owner]
-                        + (1.0 - owner_weight[i]) * candidate[neighbour]
-                        - donor);
+                let interpolated = owner_weight[i] * candidate[face.owner]
+                    + (1.0 - owner_weight[i]) * candidate[neighbour];
+                let gradient = candidate[neighbour] - candidate[face.owner];
+                let face_direction = if gradient > 0.0 {
+                    1.0
+                } else if gradient < 0.0 {
+                    -1.0
+                } else {
+                    0.0
+                };
+                let direction = if gradients.is_empty() || face_direction == 0.0 {
+                    face_direction
+                } else {
+                    let normal = gradients[face.owner] * owner_weight[i]
+                        + gradients[neighbour] * (1.0 - owner_weight[i]);
+                    let norm = normal.norm();
+                    let projected = if norm > 1e-14 {
+                        normal.dot(face.normal) / norm
+                    } else {
+                        0.0
+                    };
+                    if projected * face_direction > 0.0 {
+                        projected
+                    } else {
+                        0.0
+                    }
+                };
+                let compression = options.interface_compression
+                    * flux[i].abs()
+                    * interpolated
+                    * (1.0 - interpolated)
+                    * direction;
+                let anti = subdt * flux[i] * (interpolated - donor) + subdt * compression;
                 correction[i] = anti;
                 if anti >= 0.0 {
                     negative[face.owner] += anti;
@@ -412,7 +494,16 @@ mod tests {
         };
         options.incoming.insert("boundary".into(), 1.0);
         let original = vec![1.0, 0.0];
-        for dt in [0.2, 1.1] {
+        for (dt, compression, normal) in [
+            (0.2, 0.0, CompressionNormal::FaceDifference),
+            (1.1, 0.0, CompressionNormal::FaceDifference),
+            (0.2, 1.0, CompressionNormal::FaceDifference),
+            (1.1, 1.0, CompressionNormal::FaceDifference),
+            (0.2, 1.0, CompressionNormal::ReconstructedGradient),
+            (1.1, 1.0, CompressionNormal::ReconstructedGradient),
+        ] {
+            options.interface_compression = compression;
+            options.compression_normal = normal;
             let mut values = original.clone();
             let report = advance(&mesh, &measures, &flux, &mut values, dt, &options).unwrap();
             assert!(values.iter().all(|x| (0.0..=1.0).contains(x)));
@@ -431,6 +522,10 @@ mod tests {
         let mut constant = vec![1.0; 2];
         advance(&mesh, &measures, &flux, &mut constant, 0.4, &options).unwrap();
         assert_eq!(constant, vec![1.0; 2]);
+        options.incoming.insert("boundary".into(), 0.5);
+        let mut constant = vec![0.5; 2];
+        advance(&mesh, &measures, &flux, &mut constant, 0.4, &options).unwrap();
+        assert_eq!(constant, vec![0.5; 2]);
         assert_eq!(
             serde_json::from_str::<PhaseOptions>("{}").unwrap().scheme,
             AdvectionScheme::Upwind
@@ -602,9 +697,27 @@ mod tests {
         assert_eq!(resumed.phase_fraction, uninterrupted.phase_fraction);
         assert_eq!(resumed.temperature, uninterrupted.temperature);
         assert_eq!(resumed.time, uninterrupted.time);
-        for scheme in [AdvectionScheme::Upwind, AdvectionScheme::FluxCorrected] {
+        for (scheme, compression, normal) in [
+            (
+                AdvectionScheme::Upwind,
+                0.0,
+                CompressionNormal::FaceDifference,
+            ),
+            (
+                AdvectionScheme::FluxCorrected,
+                0.0,
+                CompressionNormal::FaceDifference,
+            ),
+            (
+                AdvectionScheme::FluxCorrected,
+                0.5,
+                CompressionNormal::ReconstructedGradient,
+            ),
+        ] {
             let options = PhaseOptions {
                 scheme,
+                interface_compression: compression,
+                compression_normal: normal,
                 cyclic_pairs: vec![pair.clone()],
                 ..Default::default()
             };

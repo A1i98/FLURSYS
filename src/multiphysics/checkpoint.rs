@@ -69,20 +69,22 @@ pub fn physics_signature(mesh: &UnstructuredMesh, options: &Options) -> Result<S
     // Backward Euler restart allows a new dt and additional step/output budget.
     frozen.provenance.clear();
     // Unused GUI defaults on non-inflow patches are not a physics change.
-    frozen.phase.incoming.retain(|name, _| {
-        mesh.boundary_patches()
-            .iter()
-            .find(|p| &p.name == name)
-            .is_some_and(|patch| {
-                patch.face_indices.iter().any(|&face| {
-                    options
-                        .face_flux
-                        .as_ref()
-                        .and_then(|f| f.get(face))
-                        .is_some_and(|q| *q < 0.0)
+    if options.prescribed_velocity.is_none() {
+        frozen.phase.incoming.retain(|name, _| {
+            mesh.boundary_patches()
+                .iter()
+                .find(|p| &p.name == name)
+                .is_some_and(|patch| {
+                    patch.face_indices.iter().any(|&face| {
+                        options
+                            .face_flux
+                            .as_ref()
+                            .and_then(|f| f.get(face))
+                            .is_some_and(|q| *q < 0.0)
+                    })
                 })
-            })
-    });
+        });
+    }
     if frozen
         .face_flux
         .as_ref()
